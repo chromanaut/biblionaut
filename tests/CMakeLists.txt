@@ -32,6 +32,10 @@ bn_add_unit_test(core_tests
     unit/core/arena_test.cpp
     unit/core/byte_source_test.cpp
     unit/core/heap_test.cpp
+    unit/core/metrics_test.cpp
+    unit/core/trace_level0_test.cpp
+    unit/core/trace_level1_test.cpp
+    unit/core/trace_test.cpp
   LIBS bn_core)
 
 bn_add_unit_test(reader_tests

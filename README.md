@@ -8,7 +8,7 @@ a desktop.
 
 | Directory | Contents |
 |---|---|
-| `core/` | Shared foundation: arenas, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source) |
+| `core/` | Shared foundation: arenas, the timing trace, counters and gauges, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source) |
 | `hw/` | Hardware abstraction layer. `hw/include` is the interface; `hw/desktop` implements it for the host and `hw/x4` for the X4 |
 | `epub/` | Book parsing: zip, XML, OPF / TOC, CSS, the importer and the intermediate format |
 | `draw/` | Fonts and drawing: glyphs, metrics, the display-list format, the band renderer, images |
@@ -52,6 +52,11 @@ ctest --preset host
 
 The `host` preset is a debug build with AddressSanitizer and
 UndefinedBehaviorSanitizer. `host-release` is optimised, without sanitizers.
+
+How much timing trace is compiled in is set with `BN_TRACE_LEVEL`: `0` for
+none, `1` for top-level spans only, `2` (the default) for everything. Pass it
+when configuring, for example `cmake --preset host -DBN_TRACE_LEVEL=0` or
+`tools/idf -DBN_TRACE_LEVEL=1 build`.
 
 ## Device build
 

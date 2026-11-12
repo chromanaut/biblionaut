@@ -23,6 +23,7 @@
 #   classes, structs, aliases, functions, methods, template parameters   PascalCase
 #   variables, parameters, members     camelCase (private members end in '_')
 #   constants (constexpr, and const at namespace, class or static scope)   kPascalCase
+#   enum values                        kPascalCase
 #   macros                             UPPER_CASE
 Checks: >
   -*,
@@ -119,4 +120,6 @@ CheckOptions:
   readability-identifier-naming.StaticConstantPrefix: k
   readability-identifier-naming.ClassConstantCase: CamelCase
   readability-identifier-naming.ClassConstantPrefix: k
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.EnumConstantPrefix: k
   readability-identifier-naming.MacroDefinitionCase: UPPER_CASE

@@ -1,7 +1,9 @@
 # core: shared foundation for every other part. Depends on nothing.
 add_library(bn_core STATIC
   src/arena.cpp
-  src/byte_source.cpp)
+  src/byte_source.cpp
+  src/metrics.cpp
+  src/trace.cpp)
 target_include_directories(bn_core PUBLIC include)
 target_link_libraries(bn_core PRIVATE bn_options)
 

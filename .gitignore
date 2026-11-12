@@ -11,6 +11,7 @@
 /app/firmware/managed_components/
 
 # Editors and OS
+/.cache/
 .DS_Store
 .idea/
 .vscode/

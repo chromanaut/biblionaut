@@ -205,6 +205,31 @@ tools/idf -DBN_PLANE_CHECK=ON build flash
 tools/idf -DBN_PLANE_CHECK=OFF build flash     # back to the normal firmware
 ```
 
+## Storage
+
+Files are reached through three things in `core`:
+
+- `core/storage.h` is the bare interface a hardware port implements: open,
+  read and write at an offset, sync, and the handful of calls that work on
+  names. Every call says how it ended (`StorageStatus`), and every port
+  accepts the same paths, which are the ones an SD card can hold.
+- `core/block_file.h` is what code reads and writes files with. It keeps a
+  position and a buffer of its own, asks storage for whole blocks at
+  multiples of the block size, and counts what it asks for (`sd_reads`,
+  `sd_read_bytes`, `sd_seeks`, `sd_writes`, `sd_write_bytes`, `sd_syncs`).
+  It is also a `ByteSource`, so a parser can read a file without knowing it
+  is one.
+- `core/file_replacement.h` writes a file so that it is never found half
+  written, whenever the power goes. An SD card cannot put one file in the
+  place of another in one step, so it takes several, and
+  `RecoverReplacement()` finishes or undoes whatever was cut short.
+
+On the desktop the card is a folder (`hw/desktop/folder_storage.h`). It is
+made to behave as a card does where that is cheap: the same paths are
+refused, only four files can be open at once, an open file cannot be
+removed or renamed, and a rename will not replace a file. The SD card
+itself is not driven yet.
+
 ## Device build
 
 The firmware builds with ESP-IDF. A setup script installs the pinned version

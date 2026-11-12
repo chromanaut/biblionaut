@@ -244,7 +244,28 @@ TEST(App, ShowsTheTestPatternAndLetsTheButtonsStepThroughIt) {
     sweeps += id == static_cast<std::uint16_t>(bn::reader::kSpanPanelSweep) ? 1 : 0;
   }
   EXPECT_EQ(presses, 1);
-  EXPECT_EQ(sweeps, 3);  // The first picture, the second, and the old plane after it.
+  EXPECT_EQ(sweeps, 3);  // The first picture, the second got ready ahead of the press, and the third after it.
+}
+
+TEST(App, CanHaveThePanelsPlanesCheckedAsItRuns) {
+  AppFixture fixture;
+  fixture.display.present = true;
+  fixture.app.CheckPanelPlanes();
+  fixture.app.Start();
+  fixture.display.busy = false;
+  fixture.RunFor(1'000'000);
+  EXPECT_EQ(fixture.display.reads, 12) << "both planes, a band at a time";
+  fixture.RunFor(5'000'000);
+  EXPECT_NE(fixture.Metrics().find("plane_checks="), std::string::npos) << fixture.Metrics();
+  EXPECT_NE(fixture.Metrics().find("planes_unexpected="), std::string::npos) << fixture.Metrics();
+
+  // Without being told to, it reads nothing.
+  AppFixture plain;
+  plain.display.present = true;
+  plain.app.Start();
+  plain.display.busy = false;
+  plain.RunFor(1'000'000);
+  EXPECT_EQ(plain.display.reads, 0);
 }
 
 TEST(App, ReportsButtonsThatCannotBeRead) {

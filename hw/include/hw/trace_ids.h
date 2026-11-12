@@ -34,7 +34,14 @@
   /* number (core/input.h). The start of the span is the moment to measure */ \
   /* the device's response from.                                           */ \
   X(9, kSpanButtonPress, "button_press", "button")                            \
-  X(10, kSpanButtonRelease, "button_release", "button")
+  X(10, kSpanButtonRelease, "button_release", "button")                       \
+  /* Reading rows of pixels back out of one of the panel's planes. */         \
+  X(11, kSpanPanelRead, "panel_read", "bytes")                                \
+  /* What the panel's controller says of itself, the first time it is read */ \
+  /* from: its status byte, and then the twelve bytes of its display       */ \
+  /* options four to a record, the first of each four in the top byte.     */ \
+  X(12, kInstantPanelStatus, "panel_status", "byte")                          \
+  X(13, kInstantPanelOptions, "panel_options", "bytes")
 
 namespace bn::hw {
 

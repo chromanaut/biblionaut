@@ -19,7 +19,9 @@ void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s [--run-ms N]\n"
                "  --run-ms N   keep running for N milliseconds (default: start and exit)\n"
-               "Set BN_SERIAL_OUT to a file name to capture the diagnostic stream.\n",
+               "Set BN_SERIAL_OUT to a file name to capture the diagnostic stream.\n"
+               "Set BN_PLANE_CHECK to have the panel's planes read back and checked\n"
+               "whenever it comes to rest.\n",
                program);
 }
 
@@ -44,6 +46,10 @@ int main(int argc, char** argv) {
   bn::core::SetHeapFailureHandler(OnHeapFailure);
 
   bn::reader::App app(bn::reader::DefaultServices());
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any other thread exists.
+  if (std::getenv("BN_PLANE_CHECK") != nullptr) {
+    app.CheckPanelPlanes();
+  }
   app.Start();
   std::printf("Biblionaut %s (%s)\n", bn::reader::Version(), bn::hw::PortName());
 

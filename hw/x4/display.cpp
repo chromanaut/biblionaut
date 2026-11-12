@@ -28,6 +28,13 @@
 // the panel from them, and watches the controller's BUSY line to know when
 // it has finished. It holds no copy of the screen itself.
 //
+// The panel's maker has set the controller to swap the roles of its two
+// memories after every fast refresh ("RAM ping-pong" in its datasheet), and
+// switching the drive voltages off was found to put them back. The driver
+// passes that on as it is: core/display.h says what it means for whoever
+// drives the panel. The commands to write and read a plane go by role, so
+// nothing here needs to know which memory is which.
+//
 // The command numbers and their meanings are the controller's own. The
 // values sent while setting the panel up, and the order of the steps, follow
 // the OpenX4 community SDK (see THIRD_PARTY.md), which worked them out for
@@ -44,6 +51,8 @@ constexpr gpio_num_t kPinBusy = GPIO_NUM_6;  // High while the controller is wor
 
 constexpr core::DisplaySize kSize{.width = 800, .height = 480};
 constexpr int kClockHz = 40'000'000;
+// The controller answers far more slowly than it listens: 2.5 MHz at most.
+constexpr int kReadClockHz = 1'000'000;
 
 // Controller commands.
 constexpr std::uint8_t kCmdDriverOutputControl = 0x01;
@@ -58,7 +67,11 @@ constexpr std::uint8_t kCmdUpdateControl1 = 0x21;
 constexpr std::uint8_t kCmdUpdateControl2 = 0x22;
 constexpr std::uint8_t kCmdWriteNewPlane = 0x24;
 constexpr std::uint8_t kCmdWriteOldPlane = 0x26;
+constexpr std::uint8_t kCmdReadPlane = 0x27;
+constexpr std::uint8_t kCmdReadDisplayOptions = 0x2D;
+constexpr std::uint8_t kCmdReadStatus = 0x2F;
 constexpr std::uint8_t kCmdBorderWaveform = 0x3C;
+constexpr std::uint8_t kCmdPlaneToRead = 0x41;
 constexpr std::uint8_t kCmdRowAddressRange = 0x45;
 constexpr std::uint8_t kCmdColumnAddressRange = 0x44;
 constexpr std::uint8_t kCmdFillPlaneA = 0x46;
@@ -115,6 +128,8 @@ class X4Display final : public core::Display {
   [[nodiscard]] bool WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
                                std::span<const std::uint8_t> rows) noexcept override {
     const std::size_t rowBytes = kSize.RowBytes();
+    // The controller takes nothing while it is busy: what is sent then is
+    // lost without a sign.
     if (!started_ || Busy() || rows.empty() || rows.size() % rowBytes != 0 ||
         firstRow + (rows.size() / rowBytes) > kSize.height) {
       return false;
@@ -128,6 +143,33 @@ class X4Display final : public core::Display {
                       SendData(rows);
     spi_device_release_bus(device_);
     return sent;
+  }
+
+  [[nodiscard]] bool ReadRows(core::DisplayPlane plane, std::uint16_t firstRow,
+                              std::span<std::uint8_t> rows) noexcept override {
+    const std::size_t rowBytes = kSize.RowBytes();
+    if (!started_ || Busy() || rows.empty() || rows.size() % rowBytes != 0 ||
+        firstRow + (rows.size() / rowBytes) > kSize.height || !AttachReader()) {
+      return false;
+    }
+    BN_TRACE_SCOPE_ARG(kSpanPanelRead, static_cast<std::uint32_t>(rows.size()));
+    if (spi_device_acquire_bus(reader_, portMAX_DELAY) != ESP_OK) {
+      return false;
+    }
+    // Everything goes at the reading rate until the bus is given back.
+    active_ = reader_;
+    if (!selfReported_) {
+      selfReported_ = true;
+      ReportSelf();
+    }
+    // The same rows, in the same order, as a write to them would cover. The
+    // first byte the controller sends back means nothing.
+    const bool read = SetRows(firstRow, static_cast<std::uint16_t>(rows.size() / rowBytes)) &&
+                      Command(kCmdPlaneToRead, static_cast<std::uint8_t>(plane == core::DisplayPlane::kNew ? 0 : 1)) &&
+                      Receive(kCmdReadPlane, 1, rows);
+    active_ = device_;
+    spi_device_release_bus(reader_);
+    return read;
   }
 
   [[nodiscard]] bool StartRefresh(core::RefreshMode mode, core::AfterRefresh after) noexcept override {
@@ -244,6 +286,7 @@ class X4Display final : public core::Display {
     if (spi_bus_add_device(kSharedSpiHost, &config, &device_) != ESP_OK) {
       return false;
     }
+    active_ = device_;
 
     gpio_set_level(kPinSelect, 1);
     gpio_set_level(kPinDataNotCommand, 1);
@@ -269,6 +312,40 @@ class X4Display final : public core::Display {
     }
     attached_ = true;
     return true;
+  }
+
+  // A second way onto the same wires, for reading back: the controller
+  // answers on the wire it is sent data on, one direction at a time, and
+  // slowly. It is set up the first time something is read, so a firmware
+  // that never reads is not changed by it.
+  bool AttachReader() noexcept {
+    if (reader_ != nullptr) {
+      return true;
+    }
+    spi_device_interface_config_t config = {};
+    config.clock_speed_hz = kReadClockHz;
+    config.mode = 0;
+    config.spics_io_num = -1;
+    config.queue_size = 1;
+    config.flags = SPI_DEVICE_HALFDUPLEX | SPI_DEVICE_3WIRE;
+    return spi_bus_add_device(kSharedSpiHost, &config, &reader_) == ESP_OK;
+  }
+
+  // Records what the controller says of itself. The reading device must
+  // hold the bus.
+  void ReportSelf() noexcept {
+    std::array<std::uint8_t, 1> status{};
+    if (Receive(kCmdReadStatus, 0, status)) {
+      BN_TRACE_INSTANT(kInstantPanelStatus, status[0]);
+    }
+    std::array<std::uint8_t, 12> options{};
+    if (Receive(kCmdReadDisplayOptions, 0, options)) {
+      for (std::size_t i = 0; i < options.size(); i += 4) {
+        BN_TRACE_INSTANT(kInstantPanelOptions, (static_cast<std::uint32_t>(options[i]) << 24U) |
+                                                   (static_cast<std::uint32_t>(options[i + 1]) << 16U) |
+                                                   (static_cast<std::uint32_t>(options[i + 2]) << 8U) | options[i + 3]);
+      }
+    }
   }
 
   // Starts switching the drive voltages off, which the controller does as an
@@ -374,7 +451,7 @@ class X4Display final : public core::Display {
     transaction.tx_data[0] = command;
     gpio_set_level(kPinDataNotCommand, 0);
     gpio_set_level(kPinSelect, 0);
-    const esp_err_t result = spi_device_polling_transmit(device_, &transaction);
+    const esp_err_t result = spi_device_polling_transmit(active_, &transaction);
     gpio_set_level(kPinSelect, 1);
     return result == ESP_OK;
   }
@@ -409,11 +486,56 @@ class X4Display final : public core::Display {
         transaction.flags = SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL;
       }
       transaction.length = count * 8;
-      sent = spi_device_polling_transmit(device_, &transaction) == ESP_OK;
+      sent = spi_device_polling_transmit(active_, &transaction) == ESP_OK;
       data = data.subspan(count);
     }
     gpio_set_level(kPinSelect, 1);
     return sent;
+  }
+
+  // Sends `command` and takes the controller's answer: `skip` bytes that
+  // mean nothing, then enough to fill `out`. The select line stays low from
+  // the command to the last byte, which is how the controller knows the
+  // answer is wanted. The reading device must hold the bus.
+  bool Receive(std::uint8_t command, std::size_t skip, std::span<std::uint8_t> out) noexcept {
+    spi_transaction_t send = {};
+    send.flags = SPI_TRANS_USE_TXDATA;
+    send.length = 8;
+    send.tx_data[0] = command;
+    gpio_set_level(kPinDataNotCommand, 0);
+    gpio_set_level(kPinSelect, 0);
+    bool received = spi_device_polling_transmit(reader_, &send) == ESP_OK;
+    gpio_set_level(kPinDataNotCommand, 1);
+    for (; received && skip > 0; --skip) {
+      spi_transaction_t discard = {};
+      discard.flags = SPI_TRANS_USE_RXDATA;
+      discard.rxlength = 8;
+      received = spi_device_polling_transmit(reader_, &discard) == ESP_OK;
+    }
+    while (received && !out.empty()) {
+      spi_transaction_t transaction = {};
+      std::size_t count = 0;
+      if (out.size() <= sizeof(transaction.rx_data)) {
+        // A few bytes arrive inside the transaction itself.
+        count = out.size();
+        transaction.flags = SPI_TRANS_USE_RXDATA;
+        transaction.rxlength = count * 8;
+        received = spi_device_polling_transmit(reader_, &transaction) == ESP_OK;
+        std::memcpy(out.data(), transaction.rx_data, count);
+      } else {
+        // More come by DMA, through the small buffer, for the reasons given
+        // in SendData().
+        count = std::min(out.size(), bounce_.size());
+        count -= count % 4;
+        transaction.rx_buffer = bounce_.data();
+        transaction.rxlength = count * 8;
+        received = spi_device_polling_transmit(reader_, &transaction) == ESP_OK;
+        std::memcpy(out.data(), bounce_.data(), count);
+      }
+      out = out.subspan(count);
+    }
+    gpio_set_level(kPinSelect, 1);
+    return received;
   }
 
   // Call just before sending something that makes the controller busy: the
@@ -465,6 +587,9 @@ class X4Display final : public core::Display {
   }
 
   spi_device_handle_t device_ = nullptr;
+  spi_device_handle_t reader_ = nullptr;  // For reading back: see AttachReader().
+  spi_device_handle_t active_ = nullptr;  // The one of the two that commands and data now go through.
+  bool selfReported_ = false;
   SemaphoreHandle_t idle_ = nullptr;  // Given by the interrupt when BUSY falls.
   StaticSemaphore_t idleStorage_ = {};
   bool attached_ = false;

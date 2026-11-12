@@ -72,6 +72,10 @@ class App {
 
   const PatternViewer& Viewer() const noexcept { return viewer_; }
 
+  // Has the panel's planes read back and checked whenever it comes to rest
+  // (PatternViewer::CheckPlanes). Call before Start().
+  void CheckPanelPlanes() noexcept { viewer_.CheckPlanes(); }
+
  private:
   void SampleMemory() noexcept;
   void SendCrashReport() noexcept;

@@ -50,6 +50,11 @@ constexpr SpanId MakeSpanId(TracePart part, std::uint8_t index) noexcept {
 
 constexpr TracePart PartOf(SpanId id) noexcept { return static_cast<TracePart>(static_cast<std::uint16_t>(id) >> 8U); }
 
+// Task numbers with a fixed meaning. Ordinary tasks are numbered from 0 in
+// the order they first record something.
+inline constexpr std::uint8_t kTraceTaskOther = 254;      // More tasks than the port can number.
+inline constexpr std::uint8_t kTraceTaskInterrupt = 255;  // Recorded from an interrupt handler.
+
 enum class TraceKind : std::uint8_t {
   kSpan = 0,     // Work with a duration.
   kInstant = 1,  // A moment: something happened at startUs.

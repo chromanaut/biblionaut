@@ -20,6 +20,7 @@ include(GoogleTest)
 function(bn_add_unit_test name)
   cmake_parse_arguments(arg "" "" "SOURCES;LIBS" ${ARGN})
   add_executable(${name} ${arg_SOURCES})
+  target_include_directories(${name} PRIVATE support)
   target_link_libraries(${name} PRIVATE ${arg_LIBS} bn_core_runtime bn_options GTest::gtest_main)
   gtest_discover_tests(${name}
     # The heap tests ask for impossible sizes on purpose; without this the
@@ -31,10 +32,13 @@ bn_add_unit_test(core_tests
   SOURCES
     unit/core/arena_test.cpp
     unit/core/byte_source_test.cpp
+    unit/core/checksum_test.cpp
+    unit/core/frame_test.cpp
     unit/core/heap_test.cpp
     unit/core/metrics_test.cpp
     unit/core/trace_level0_test.cpp
     unit/core/trace_level1_test.cpp
+    unit/core/trace_stream_test.cpp
     unit/core/trace_test.cpp
   LIBS bn_core)
 

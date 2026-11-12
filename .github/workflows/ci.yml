@@ -109,6 +109,9 @@ jobs:
       - name: Build
         run: tools/idf build
 
+      - name: Portable parts call nothing that throws
+        run: tools/check-firmware-symbols.sh
+
       - name: Report image size
         run: |
           {

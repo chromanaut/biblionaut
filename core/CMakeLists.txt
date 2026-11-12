@@ -2,8 +2,11 @@
 add_library(bn_core STATIC
   src/arena.cpp
   src/byte_source.cpp
+  src/checksum.cpp
+  src/frame.cpp
   src/metrics.cpp
-  src/trace.cpp)
+  src/trace.cpp
+  src/trace_stream.cpp)
 target_include_directories(bn_core PUBLIC include)
 target_link_libraries(bn_core PRIVATE bn_options)
 

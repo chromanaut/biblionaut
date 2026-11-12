@@ -38,3 +38,9 @@ add_library(bn_hw INTERFACE)
 target_link_libraries(bn_hw INTERFACE idf::bn_hw)
 
 bn_add_portable_parts("${CMAKE_BINARY_DIR}/bn")
+
+# The portable parts use the C and C++ runtime libraries. Declaring that, for
+# linking only, puts the parts ahead of those libraries on the link line.
+# Left undeclared they come last, and a library function that only they call
+# is not found.
+target_link_libraries(bn_core INTERFACE "$<LINK_ONLY:idf::cxx>" "$<LINK_ONLY:idf::esp_libc>")

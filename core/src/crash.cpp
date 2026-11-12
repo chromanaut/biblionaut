@@ -11,25 +11,28 @@ namespace bn::core {
 namespace {
 
 constexpr std::size_t kChecksumSize = 4;
+constexpr std::size_t kWireTraceRecordSize = 16;
 
-// Receives the encoding a byte at a time and keeps only the part that falls
-// in a window: bytes before `offset` are counted and dropped, and so are
-// bytes after the window is full. Everything is checksummed either way, so
-// the checksum at the end is right whichever window is being produced.
+// Receives the encoding in order and keeps only the part that falls in a
+// window: bytes before `offset` are counted and dropped, and so are bytes
+// after the window is full.
+//
+// The checksum that ends the encoding covers everything before it, so it
+// costs a pass over the whole report. A window that stops short of those
+// last bytes has no use for it; `checksum` says whether to work it out.
 class WindowWriter {
  public:
-  WindowWriter(std::size_t offset, std::span<std::uint8_t> out) noexcept : skip_(offset), out_(out) {}
-
-  void Put(std::uint8_t byte) noexcept {
-    crc_ = Crc32({&byte, 1}, crc_);
-    PutUnchecked(byte);
-  }
+  WindowWriter(std::size_t offset, std::span<std::uint8_t> out, bool checksum) noexcept
+      : skip_(offset), out_(out), checksum_(checksum) {}
 
   void Put(std::span<const std::uint8_t> bytes) noexcept {
-    for (const std::uint8_t byte : bytes) {
-      Put(byte);
+    if (checksum_) {
+      crc_ = Crc32(bytes, crc_);
     }
+    Keep(bytes);
   }
+
+  void Put(std::uint8_t byte) noexcept { Put(std::span<const std::uint8_t>(&byte, 1)); }
 
   void PutU16(std::uint16_t value) noexcept {
     std::array<std::uint8_t, 2> bytes{};
@@ -47,39 +50,35 @@ class WindowWriter {
   void PutText(std::span<const char> field) noexcept {
     const std::string_view text = CrashText(field);
     Put(static_cast<std::uint8_t>(text.size()));
-    for (const char c : text) {
-      Put(static_cast<std::uint8_t>(c));
-    }
+    Put({reinterpret_cast<const std::uint8_t*>(text.data()), text.size()});
   }
 
   // Ends the encoding with the checksum of what came before.
   void PutChecksum() noexcept {
     std::array<std::uint8_t, kChecksumSize> bytes{};
     StoreLe32(bytes, crc_);
-    for (const std::uint8_t byte : bytes) {
-      PutUnchecked(byte);
-    }
+    Keep(bytes);
   }
 
   // Bytes kept in the window.
   std::size_t Written() const noexcept { return written_; }
-  // Bytes of encoding produced, kept or not.
-  std::size_t Total() const noexcept { return total_; }
 
  private:
-  void PutUnchecked(std::uint8_t byte) noexcept {
-    ++total_;
-    if (skip_ > 0) {
-      --skip_;
-    } else if (written_ < out_.size()) {
-      out_[written_++] = byte;
+  void Keep(std::span<const std::uint8_t> bytes) noexcept {
+    const std::size_t skipped = std::min(skip_, bytes.size());
+    skip_ -= skipped;
+    bytes = bytes.subspan(skipped);
+    const std::size_t kept = std::min(bytes.size(), out_.size() - written_);
+    if (kept > 0) {
+      std::memcpy(out_.data() + written_, bytes.data(), kept);
+      written_ += kept;
     }
   }
 
   std::size_t skip_;
   std::span<std::uint8_t> out_;
+  bool checksum_;
   std::size_t written_ = 0;
-  std::size_t total_ = 0;
   std::uint32_t crc_ = 0;
 };
 
@@ -215,13 +214,23 @@ std::string_view CrashText(std::span<const char> field) noexcept {
 }
 
 std::size_t EncodedCrashReportSize(const CrashReport& report) noexcept {
-  WindowWriter writer(0, {});
-  Encode(report, writer);
-  return writer.Total();
+  const Counts counts = CountsOf(report);
+  constexpr std::size_t kFixedFields = 22;  // Everything before the text fields.
+  constexpr std::size_t kTextFields = 4;    // Each has a length byte.
+  return kFixedFields + kTextFields + CrashText(report.reason).size() + CrashText(report.task).size() +
+         CrashText(report.version).size() + CrashText(report.buildId).size() +
+         (counts.registers * sizeof(std::uint32_t)) + counts.stack + (counts.trace * kWireTraceRecordSize) +
+         kChecksumSize;
 }
 
 std::size_t EncodeCrashReport(const CrashReport& report, std::size_t offset, std::span<std::uint8_t> out) noexcept {
-  WindowWriter writer(offset, out);
+  const std::size_t total = EncodedCrashReportSize(report);
+  if (offset >= total || out.empty()) {
+    return 0;
+  }
+  // Only the piece that holds the end of the report needs the checksum.
+  const std::size_t end = offset + std::min(out.size(), total - offset);
+  WindowWriter writer(offset, out, end > total - kChecksumSize);
   Encode(report, writer);
   return writer.Written();
 }

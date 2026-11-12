@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -115,6 +116,52 @@ TEST(CrashReport, CanBeEncodedInPiecesOfAnySize) {
   std::array<std::uint8_t, 8> extra{};
   EXPECT_EQ(EncodeCrashReport(report, whole.size(), extra), 0u);
   EXPECT_EQ(EncodeCrashReport(report, whole.size() + 100, extra), 0u);
+}
+
+TEST(CrashReport, TheStatedSizeIsTheSizeProducedWhateverIsInUse) {
+  // The size is worked out from the counts; the bytes are produced by
+  // encoding. They must agree, or pieces would be cut short or never end.
+  for (const std::size_t stackSize : {std::size_t{0}, std::size_t{1}, std::size_t{640}, std::size_t{1024}}) {
+    for (const std::size_t traceCount : {std::size_t{0}, std::size_t{13}, std::size_t{32}}) {
+      for (const char* reason : {"", "x", "assert failed: Tick app.cpp:83 (count > 0)"}) {
+        CrashReport report = SampleCrashReport();
+        report.stackSize = static_cast<std::uint16_t>(stackSize);
+        report.traceCount = static_cast<std::uint8_t>(traceCount);
+        report.registerCount = static_cast<std::uint8_t>(traceCount);  // 0, 13 and 32 serve here too.
+        SetCrashText(report.reason, reason);
+
+        const std::size_t stated = EncodedCrashReportSize(report);
+        std::vector<std::uint8_t> roomy(stated + 64, 0xEE);
+        ASSERT_EQ(EncodeCrashReport(report, 0, roomy), stated);
+        EXPECT_EQ(roomy[stated], 0xEE);
+        roomy.resize(stated);
+        CrashReport decoded{};
+        EXPECT_TRUE(DecodeCrashReport(roomy, decoded)) << stackSize << " " << traceCount << " " << reason;
+      }
+    }
+  }
+}
+
+TEST(CrashReport, EveryWindowHoldsTheSameBytesAsTheWholeEncoding) {
+  // Pieces that stop short of the end skip working out the checksum; a
+  // window that touches any of its four bytes must still get them right.
+  CrashReport report = SampleCrashReport();
+  report.stackSize = 40;
+  report.traceCount = 2;
+  const std::vector<std::uint8_t> whole = EncodeAll(report);
+
+  for (std::size_t offset = whole.size() - 12; offset < whole.size(); ++offset) {
+    for (std::size_t size = 1; size <= 16; ++size) {
+      std::vector<std::uint8_t> window(size);
+      const std::size_t expected = std::min(size, whole.size() - offset);
+      ASSERT_EQ(EncodeCrashReport(report, offset, window), expected) << offset << "+" << size;
+      window.resize(expected);
+      const std::vector<std::uint8_t> same(whole.begin() + static_cast<std::ptrdiff_t>(offset),
+                                           whole.begin() + static_cast<std::ptrdiff_t>(offset + expected));
+      EXPECT_EQ(window, same) << offset << "+" << size;
+    }
+  }
+  EXPECT_EQ(EncodeCrashReport(report, 0, {}), 0u);
 }
 
 TEST(CrashReport, CountsBeyondTheArraysAreLimitedWhenEncoding) {

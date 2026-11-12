@@ -7,6 +7,7 @@ add_library(bn_core STATIC
   src/crash.cpp
   src/file_replacement.cpp
   src/frame.cpp
+  src/inflate.cpp
   src/input.cpp
   src/metrics.cpp
   src/storage.cpp

@@ -67,15 +67,16 @@ constexpr std::uint8_t kCmdColumnAddress = 0x4E;
 constexpr std::uint8_t kCmdRowAddress = 0x4F;
 
 // What an activation does, as bits of "update control 2". The controller
-// carries out the steps that are set, in this order.
-constexpr std::uint8_t kStepClockOn = 0x80;
-constexpr std::uint8_t kStepAnalogOn = 0x40;  // The panel's drive voltages.
-constexpr std::uint8_t kStepLoadTemperature = 0x20;
-constexpr std::uint8_t kStepLoadWaveform = 0x10;
-constexpr std::uint8_t kStepDifferential = 0x08;  // Refresh by comparing the two planes.
-constexpr std::uint8_t kStepRefresh = 0x04;
-constexpr std::uint8_t kStepAnalogOff = 0x02;
-constexpr std::uint8_t kStepClockOff = 0x01;
+// carries out the steps that are set, in this order. (Plain unsigned, so
+// that combining them stays unsigned arithmetic.)
+constexpr unsigned kStepClockOn = 0x80;
+constexpr unsigned kStepAnalogOn = 0x40;  // The panel's drive voltages.
+constexpr unsigned kStepLoadTemperature = 0x20;
+constexpr unsigned kStepLoadWaveform = 0x10;
+constexpr unsigned kStepDifferential = 0x08;  // Refresh by comparing the two planes.
+constexpr unsigned kStepRefresh = 0x04;
+constexpr unsigned kStepAnalogOff = 0x02;
+constexpr unsigned kStepClockOff = 0x01;
 
 // "Update control 1": treat the old-image plane as blank.
 constexpr std::uint8_t kIgnoreOldPlane = 0x40;
@@ -131,7 +132,7 @@ class X4Display final : public core::Display {
     if (!started_ || Busy()) {
       return false;
     }
-    std::uint8_t steps = 0;
+    unsigned steps = 0;
     core::SpanId span = kSpanRefreshFull;
     switch (mode) {
       case core::RefreshMode::kFull:
@@ -161,7 +162,7 @@ class X4Display final : public core::Display {
     if (mode == core::RefreshMode::kHalf) {
       sent = sent && Command(kCmdWriteTemperature, kHotTemperature);
     }
-    sent = sent && Command(kCmdUpdateControl2, steps);
+    sent = sent && Command(kCmdUpdateControl2, static_cast<std::uint8_t>(steps));
     if (sent) {
       ExpectBusy(span, powerOff ? 1 : 0);
       sent = Command(kCmdActivate);

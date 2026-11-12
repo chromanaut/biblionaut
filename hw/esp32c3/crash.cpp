@@ -27,9 +27,12 @@
 // copies what a report needs into RTC memory, which a restart leaves alone,
 // and then lets ESP-IDF's handler carry on as usual.
 
-// The linker's names for the handler being wrapped and its replacement.
+// The handler being wrapped and its replacement. The linker's --wrap option
+// fixes these names, underscores and all.
+// NOLINTBEGIN(bugprone-reserved-identifier,readability-identifier-naming)
 extern "C" void __real_esp_panic_handler(panic_info_t* info);
 extern "C" void __wrap_esp_panic_handler(panic_info_t* info);
+// NOLINTEND(bugprone-reserved-identifier,readability-identifier-naming)
 
 namespace bn::hw {
 
@@ -105,10 +108,14 @@ void SaveCrash(const panic_info_t& info) noexcept {
     // may be what went wrong, so it is only followed if it points into RAM,
     // and never past the end of RAM.
     const auto sp = static_cast<std::uint32_t>(frame->sp);
-    if (esp_ptr_in_dram(reinterpret_cast<const void*>(sp)) && (sp % 4) == 0) {
+    // The stack pointer is a number in the saved registers; reading the
+    // stack means treating it as an address.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    const void* const stack = reinterpret_cast<const void*>(sp);
+    if (esp_ptr_in_dram(stack) && (sp % 4) == 0) {
       const std::uint32_t available = SOC_DRAM_HIGH - sp;
       const std::uint32_t size = available < core::kCrashMaxStackBytes ? available : core::kCrashMaxStackBytes;
-      std::memcpy(report.stack.data(), reinterpret_cast<const void*>(sp), size);
+      std::memcpy(report.stack.data(), stack, size);
       report.stackAddress = sp;
       report.stackSize = static_cast<std::uint16_t>(size);
     }

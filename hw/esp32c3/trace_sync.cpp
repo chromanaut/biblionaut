@@ -27,6 +27,9 @@ class EspTraceSync final : public core::TraceSync {
     if (xPortInIsrContext() != 0) {
       return core::kTraceTaskInterrupt;
     }
+    // The handle is a pointer in disguise, and it is the handle that is not
+    // going to change here, not what it points to.
+    // NOLINTNEXTLINE(misc-misplaced-const)
     const TaskHandle_t task = xTaskGetCurrentTaskHandle();
 
     // Entries are written once and the count only grows, so the table can be

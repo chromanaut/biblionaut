@@ -6,6 +6,8 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "trace/decoder.h"
 #include "trace/input.h"
@@ -113,6 +115,7 @@ int main(int argc, char** argv) {
   }
 
   std::signal(SIGINT, OnInterrupt);
+  // Only a device the tool restarted has leftovers to filter out.
   bn::trace_tool::BootFilter bootFilter;
   bootFilter.GiveUp();
   if (input.IsLive()) {
@@ -131,17 +134,21 @@ int main(int argc, char** argv) {
 
   bn::trace_tool::StreamDecoder decoder;
   bn::trace_tool::PerfettoWriter timeline;
-  const auto handleEvents = [&] {
-    for (const bn::trace_tool::Event& event : decoder.TakeEvents()) {
-      if (!bootFilter.Keep(event)) {
-        continue;
-      }
+  const auto show = [&](const std::vector<bn::trace_tool::Event>& events) {
+    for (const bn::trace_tool::Event& event : events) {
       if (!options.quiet) {
         std::puts(bn::trace_tool::FormatEvent(event).c_str());
       }
       timeline.Add(event);
     }
     std::fflush(stdout);
+  };
+  const auto handleEvents = [&] {
+    std::vector<bn::trace_tool::Event> shown;
+    for (bn::trace_tool::Event& event : decoder.TakeEvents()) {
+      bootFilter.Push(std::move(event), shown);
+    }
+    show(shown);
   };
 
   // How long to wait for a restarted device to show its boot before showing
@@ -157,7 +164,7 @@ int main(int argc, char** argv) {
     }
     if (bootFilter.Waiting() && elapsed >= kBootWaitSeconds) {
       std::fprintf(stderr, "The device did not show a boot after the restart; showing what it sends.\n");
-      bootFilter.GiveUp();
+      show(bootFilter.GiveUp());
     }
     std::size_t count = 0;
     const auto result = input.Read(buffer, 100, count);
@@ -175,6 +182,9 @@ int main(int argc, char** argv) {
   }
   decoder.Finish();
   handleEvents();
+  // If the input ended while events were still being held, they are all
+  // there is.
+  show(bootFilter.GiveUp());
 
   if (!options.out.empty()) {
     std::ofstream out(options.out);
@@ -191,7 +201,7 @@ int main(int argc, char** argv) {
   }
   const bn::trace_tool::DecoderStats& stats = decoder.Stats();
   std::fprintf(stderr, "%zu bytes read. Frames: %zu. Trace records: %zu. Plain-text lines: %zu. Boots: %d.\n",
-               stats.bytes, stats.frames, stats.records, stats.rawTextLines, stats.boots);
+               stats.bytes, stats.frames, stats.records, stats.rawTextLines, stats.boots - bootFilter.SkippedBoots());
   if (stats.droppedRecords > 0) {
     std::fprintf(stderr, "warning: %zu trace records were lost on the device (its buffer filled)\n",
                  stats.droppedRecords);

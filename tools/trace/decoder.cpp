@@ -1,8 +1,10 @@
 #include "trace/decoder.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "core/endian.h"
@@ -92,17 +94,41 @@ std::string SanitizeText(std::span<const std::uint8_t> bytes) {
   return out;
 }
 
-bool BootFilter::Keep(const Event& event) noexcept {
+void BootFilter::Push(Event event, std::vector<Event>& shown) {
   if (!waiting_) {
-    return true;
+    event.boot = std::max(0, event.boot - skippedBoots_);
+    shown.push_back(std::move(event));
+    return;
   }
-  const bool romBanner = event.kind == EventKind::kRawText && event.text.starts_with("ESP-ROM:");
-  if (romBanner || event.kind == EventKind::kHello) {
+
+  // The ROM's first line. What was left over can end in a frame cut short
+  // by the restart, with no line ending, so the line may not begin with it.
+  constexpr std::string_view kRomBanner = "ESP-ROM:";
+  const std::size_t banner = event.kind == EventKind::kRawText ? event.text.find(kRomBanner) : std::string::npos;
+  if (banner != std::string::npos) {
+    // Everything so far was left over, including any run that was held.
+    for (const Event& held : held_) {
+      skippedBoots_ += held.kind == EventKind::kHello ? 1 : 0;
+    }
+    skipped_ += held_.size();
+    held_.clear();
     waiting_ = false;
-    return true;
+    event.text.erase(0, banner);
+    event.boot = std::max(0, event.boot - skippedBoots_);
+    shown.push_back(std::move(event));
+    return;
   }
-  ++skipped_;
-  return false;
+
+  if (event.kind == EventKind::kHello || !held_.empty()) {
+    held_.push_back(std::move(event));
+  } else {
+    ++skipped_;
+  }
+}
+
+std::vector<Event> BootFilter::GiveUp() {
+  waiting_ = false;
+  return std::exchange(held_, {});
 }
 
 void StreamDecoder::Feed(std::span<const std::uint8_t> bytes) {

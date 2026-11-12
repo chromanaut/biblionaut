@@ -475,6 +475,17 @@ TEST(StreamDecoder, IgnoresACrashPieceThatClaimsMoreThanItsReport) {
   EXPECT_EQ(decoder.Stats().damagedCrashReports, 1u);
 }
 
+// Runs events through a filter the way the tool does.
+std::vector<Event> Filter(bn::trace_tool::BootFilter& filter, const std::vector<Event>& events) {
+  std::vector<Event> shown;
+  for (const Event& event : events) {
+    filter.Push(event, shown);
+  }
+  return shown;
+}
+
+constexpr std::string_view kRomBoot = "ESP-ROM:esp32c3-api1-20210207\r\nrst:0x15 (USB_UART_CHIP_RESET)\r\n";
+
 TEST(BootFilter, DropsWhatCameBeforeTheRestartedDeviceAnnouncedItself) {
   // What the tool sees after restarting a device that had trace buffered:
   // half a frame, old records, then the new boot.
@@ -483,28 +494,68 @@ TEST(BootFilter, DropsWhatCameBeforeTheRestartedDeviceAnnouncedItself) {
   device.Instant(kInstantHeartbeat, 56'000'000, 56);
   device.PumpAll();
   device.stream.SendText("old log line");
-  device.Raw("ESP-ROM:esp32c3-api1-20210207\r\nrst:0x15 (USB_UART_CHIP_RESET)\r\n");
+  device.Raw(kRomBoot);
   device.stream.SendHello("v");
   device.Instant(kInstantHeartbeat, 1'000'000, 1);
   device.PumpAll();
 
   bn::trace_tool::BootFilter filter;
-  std::vector<Event> kept;
-  for (const Event& event : Decode(device.sink.received)) {
-    if (filter.Keep(event)) {
-      kept.push_back(event);
-    }
-  }
+  const std::vector<Event> kept = Filter(filter, Decode(device.sink.received));
   ASSERT_EQ(kept.size(), 4u);
   EXPECT_EQ(kept[0].text, "ESP-ROM:esp32c3-api1-20210207");
   EXPECT_EQ(kept[1].text, "rst:0x15 (USB_UART_CHIP_RESET)");
   EXPECT_EQ(kept[2].kind, EventKind::kHello);
+  EXPECT_EQ(kept[2].boot, 1);
   EXPECT_EQ(kept[3].arg, 1u);
   EXPECT_EQ(filter.Skipped(), 3u);
+  EXPECT_EQ(filter.SkippedBoots(), 0);
   EXPECT_FALSE(filter.Waiting());
 }
 
-TEST(BootFilter, StartsAtTheHelloWhenTheBootRomIsSilent) {
+TEST(BootFilter, DropsALeftoverRunThatBeginsWithItsOwnHello) {
+  // A device that last started with nothing reading it (after a flash, or
+  // after a crash) still has that whole run buffered, hello first. It is
+  // not the restart the tool asked for.
+  Device<> device;
+  device.stream.SendHello("old run");
+  device.SendCrash(SmallCrashReport());
+  device.Instant(kInstantHeartbeat, 1'000'000, 1);
+  device.Instant(kInstantHeartbeat, 2'000'000, 2);
+  device.PumpAll();
+  device.Raw(kRomBoot);
+  device.stream.SendHello("new run");
+  device.Instant(kInstantHeartbeat, 1'000'000, 1);
+  device.PumpAll();
+
+  bn::trace_tool::BootFilter filter;
+  const std::vector<Event> kept = Filter(filter, Decode(device.sink.received));
+  ASSERT_EQ(kept.size(), 4u);
+  EXPECT_EQ(kept[0].text, "ESP-ROM:esp32c3-api1-20210207");
+  EXPECT_EQ(kept[0].boot, 0);  // Before the first hello that counts.
+  EXPECT_EQ(kept[1].boot, 0);
+  EXPECT_EQ(kept[2].kind, EventKind::kHello);
+  EXPECT_EQ(kept[2].text, "new run");
+  EXPECT_EQ(kept[2].boot, 1);  // Not 2: the run that was dropped is not counted.
+  EXPECT_EQ(kept[3].kind, EventKind::kInstant);
+  EXPECT_EQ(kept[3].boot, 1);
+
+  EXPECT_EQ(filter.Skipped(), 4u);  // Hello, crash report, two heartbeats.
+  EXPECT_EQ(filter.SkippedBoots(), 1);
+  EXPECT_FALSE(filter.Waiting());
+}
+
+TEST(BootFilter, ShowsNothingFromAHelloOnUntilItKnowsWhichRunItWas) {
+  Device<> device;
+  device.stream.SendHello("v");
+  device.stream.SendText("first");
+
+  bn::trace_tool::BootFilter filter;
+  EXPECT_TRUE(Filter(filter, Decode(device.sink.received)).empty());
+  EXPECT_TRUE(filter.Waiting());
+  EXPECT_EQ(filter.Skipped(), 0u);
+}
+
+TEST(BootFilter, StartsAtTheHelloWhenTheBootRomStaysSilent) {
   Device<> device;
   device.Instant(kInstantHeartbeat, 9'000'000, 9);
   device.PumpAll();
@@ -512,21 +563,58 @@ TEST(BootFilter, StartsAtTheHelloWhenTheBootRomIsSilent) {
   device.stream.SendText("after");
 
   bn::trace_tool::BootFilter filter;
-  std::size_t kept = 0;
-  for (const Event& event : Decode(device.sink.received)) {
-    kept += filter.Keep(event) ? 1 : 0;
-  }
-  EXPECT_EQ(kept, 2u);
-  EXPECT_EQ(filter.Skipped(), 1u);
+  EXPECT_TRUE(Filter(filter, Decode(device.sink.received)).empty());
+
+  // No ROM line came, so the tool stops waiting: the hello was the boot.
+  const std::vector<Event> released = filter.GiveUp();
+  ASSERT_EQ(released.size(), 2u);
+  EXPECT_EQ(released[0].kind, EventKind::kHello);
+  EXPECT_EQ(released[0].boot, 1);
+  EXPECT_EQ(released[1].text, "after");
+  EXPECT_EQ(filter.Skipped(), 1u);  // The record from before the hello.
+  EXPECT_EQ(filter.SkippedBoots(), 0);
+  EXPECT_FALSE(filter.Waiting());
+
+  // Nothing is held twice, and what comes later passes straight through.
+  EXPECT_TRUE(filter.GiveUp().empty());
+  Event later;
+  later.kind = EventKind::kText;
+  later.boot = 1;
+  std::vector<Event> shown;
+  filter.Push(later, shown);
+  ASSERT_EQ(shown.size(), 1u);
+  EXPECT_EQ(shown[0].boot, 1);
 }
 
-TEST(BootFilter, KeepsEverythingOnceToldToGiveUp) {
+TEST(BootFilter, FindsTheRomLineStuckToTheEndOfAFrameCutShort) {
+  // The restart cut the device off in the middle of a frame, so the ROM's
+  // first line arrives on the end of those bytes with nothing between.
+  Device<> device;
+  device.stream.SendHello("old run");
+  device.Raw("\x90G\x03");
+  device.Raw(kRomBoot);
+  device.stream.SendHello("new run");
+
+  bn::trace_tool::BootFilter filter;
+  const std::vector<Event> kept = Filter(filter, Decode(device.sink.received));
+  ASSERT_EQ(kept.size(), 3u);
+  EXPECT_EQ(kept[0].text, "ESP-ROM:esp32c3-api1-20210207");  // Without the stray bytes.
+  EXPECT_EQ(kept[1].text, "rst:0x15 (USB_UART_CHIP_RESET)");
+  EXPECT_EQ(kept[2].text, "new run");
+  EXPECT_EQ(kept[2].boot, 1);
+  EXPECT_EQ(filter.SkippedBoots(), 1);
+}
+
+TEST(BootFilter, PassesEverythingOnceToldToGiveUp) {
   bn::trace_tool::BootFilter filter;
   Event event;
   event.kind = EventKind::kText;
-  EXPECT_FALSE(filter.Keep(event));
-  filter.GiveUp();
-  EXPECT_TRUE(filter.Keep(event));
+  std::vector<Event> shown;
+  filter.Push(event, shown);
+  EXPECT_TRUE(shown.empty());
+  EXPECT_TRUE(filter.GiveUp().empty());
+  filter.Push(event, shown);
+  EXPECT_EQ(shown.size(), 1u);
   EXPECT_EQ(filter.Skipped(), 1u);
 }
 

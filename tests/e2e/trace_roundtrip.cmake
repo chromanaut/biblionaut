@@ -2,17 +2,18 @@
 #
 #   1. run the desktop application with its serial line captured to a file;
 #   2. decode the capture with bn-trace;
-#   3. check what came out;
+#   3. check what came out, including the picture the simulated panel shows;
 #   4. do it again with the application holding a crash report from an
 #      earlier run (an invented one), and check that the report arrives.
 #
 # Needs -DAPP=<biblionaut-desktop> -DTOOL=<bn-trace> -DWORK_DIR=<scratch directory>.
 set(capture "${WORK_DIR}/trace_roundtrip.bin")
 set(timeline "${WORK_DIR}/trace_roundtrip.json")
-file(REMOVE "${capture}" "${timeline}")
+set(panel "${WORK_DIR}/trace_roundtrip_panel")
+file(REMOVE "${capture}" "${timeline}" "${panel}-001.png")
 
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env "BN_SERIAL_OUT=${capture}" "${APP}" --run-ms 1300
+  COMMAND "${CMAKE_COMMAND}" -E env "BN_SERIAL_OUT=${capture}" "BN_DISPLAY_OUT=${panel}" "${APP}" --run-ms 1300
   RESULT_VARIABLE app_result)
 if(NOT app_result EQUAL 0)
   message(FATAL_ERROR "the desktop application failed: ${app_result}")
@@ -27,7 +28,12 @@ if(NOT tool_result EQUAL 0)
   message(FATAL_ERROR "bn-trace failed: ${tool_result}\n${tool_errors}")
 endif()
 
-foreach(expected "=== boot 1: " "reader/app_start" "reader/heartbeat uptime_s=1")
+foreach(expected
+    "=== boot 1: "
+    "reader/app_start"
+    "reader/heartbeat uptime_s=1"
+    "hw/panel_write bytes=8000"
+    "reader/panel_sweep step=1")
   string(FIND "${tool_output}" "${expected}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "bn-trace did not print '${expected}'. It printed:\n${tool_output}")
@@ -35,6 +41,16 @@ foreach(expected "=== boot 1: " "reader/app_start" "reader/heartbeat uptime_s=1"
 endforeach()
 if(tool_errors MATCHES "warning")
   message(FATAL_ERROR "bn-trace warned about the capture:\n${tool_errors}")
+endif()
+
+# The first picture of the panel check: a PNG of the panel's size, one bit
+# per pixel. (Signature, then the header chunk: width 800, height 480, depth 1.)
+if(NOT EXISTS "${panel}-001.png")
+  message(FATAL_ERROR "the simulated panel did not save its picture as ${panel}-001.png")
+endif()
+file(READ "${panel}-001.png" picture_start LIMIT 25 HEX)
+if(NOT picture_start STREQUAL "89504e470d0a1a0a0000000d4948445200000320000001e001")
+  message(FATAL_ERROR "the panel picture does not start as an 800 x 480 1-bit PNG should: ${picture_start}")
 endif()
 
 # The timeline must be valid JSON with the start span in it.

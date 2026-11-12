@@ -18,6 +18,7 @@
 #include "core/metrics.h"
 #include "core/trace_stream.h"
 #include "crash_fakes.h"
+#include "hw/trace_ids.h"
 #include "reader/trace_ids.h"
 #include "stream_fakes.h"
 #include "trace/decoder.h"
@@ -647,7 +648,15 @@ TEST(Names, DescribesKnownIdsAndNumbersUnknownOnes) {
   EXPECT_EQ(unknown.part, "draw");
   EXPECT_EQ(unknown.name, "#200");
 
-  EXPECT_GE(bn::trace_tool::KnownSpanCount(), 2u);
+  // Every part with ids of its own is known: the hardware layer's too.
+  const bn::trace_tool::SpanInfo refresh = bn::trace_tool::Describe(bn::hw::kSpanRefreshFast);
+  EXPECT_TRUE(refresh.known);
+  EXPECT_EQ(refresh.part, "hw");
+  EXPECT_EQ(refresh.name, "refresh_fast");
+  EXPECT_EQ(refresh.argument, "power_off_after");
+  EXPECT_EQ(bn::trace_tool::Describe(bn::hw::kSpanPanelWrite).argument, "bytes");
+
+  EXPECT_GE(bn::trace_tool::KnownSpanCount(), 12u);
 }
 
 TEST(FormatEvent, WritesOneReadableLinePerEvent) {

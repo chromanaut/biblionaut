@@ -6,11 +6,17 @@
 # app/firmware/components/bn_hw.
 add_library(bn_hw STATIC
   desktop/crash.cpp
+  desktop/display.cpp
   desktop/memory_probe.cpp
   desktop/platform.cpp
   desktop/serial.cpp
+  desktop/sim_display.cpp
   desktop/trace_sync.cpp)
-target_include_directories(bn_hw PUBLIC include)
+# include/ is what the other parts see. A port's own headers are included
+# from this directory, as "desktop/sim_display.h".
+target_include_directories(bn_hw
+  PUBLIC include
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bn_hw
   PUBLIC bn_core
   PRIVATE bn_options)

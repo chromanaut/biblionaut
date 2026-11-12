@@ -173,6 +173,20 @@ inline void TraceInstant(SpanId id, std::uint32_t arg = 0) noexcept {
   }
 }
 
+// For a span that starts in one place and ends in another, such as work
+// begun by a task and finished in an interrupt handler: note TraceNow() at
+// the start, and pass it to TraceSpanSince() at the end.
+inline std::uint32_t TraceNow() noexcept {
+  Tracer* tracer = ActiveTracer();
+  return tracer != nullptr ? tracer->Now() : 0;
+}
+
+inline void TraceSpanSince(SpanId id, std::uint32_t startUs, std::uint32_t arg = 0) noexcept {
+  if (Tracer* tracer = ActiveTracer()) {
+    tracer->RecordSpan(id, startUs, arg);
+  }
+}
+
 }  // namespace bn::core
 
 #define BN_TRACE_CONCAT_INNER(a, b) a##b
@@ -195,15 +209,25 @@ inline void TraceInstant(SpanId id, std::uint32_t arg = 0) noexcept {
 //
 // TOP_SCOPE is for the few spans that make up the outline of an interaction
 // (lay out a page, refresh the panel); SCOPE is for the detail inside them.
-// INSTANT marks a moment.
+// INSTANT marks a moment. TOP_SPAN_SINCE ends a top-level span that began at
+// a time taken earlier with BN_TRACE_NOW(), possibly somewhere else.
 #if BN_TRACE_LEVEL >= 1
 #define BN_TRACE_TOP_SCOPE(id) BN_TRACE_SCOPE_IMPL(id, 0)
 #define BN_TRACE_TOP_SCOPE_ARG(id, arg) BN_TRACE_SCOPE_IMPL(id, arg)
 #define BN_TRACE_INSTANT(id, arg) ::bn::core::TraceInstant((id), (arg))
+#define BN_TRACE_NOW() ::bn::core::TraceNow()
+#define BN_TRACE_TOP_SPAN_SINCE(id, startUs, arg) ::bn::core::TraceSpanSince((id), (startUs), (arg))
 #else
 #define BN_TRACE_TOP_SCOPE(id) BN_TRACE_IGNORE(id)
 #define BN_TRACE_TOP_SCOPE_ARG(id, arg) BN_TRACE_IGNORE_ARG(id, arg)
 #define BN_TRACE_INSTANT(id, arg) BN_TRACE_IGNORE_ARG(id, arg)
+#define BN_TRACE_NOW() (std::uint32_t{0})
+#define BN_TRACE_TOP_SPAN_SINCE(id, startUs, arg) \
+  static_cast<void>([&] {                         \
+    static_cast<void>(id);                        \
+    static_cast<void>(startUs);                   \
+    static_cast<void>(arg);                       \
+  })
 #endif
 
 #if BN_TRACE_LEVEL >= 2

@@ -253,4 +253,31 @@ TEST(Tracer, WithNoStorageRecordsAreDiscardedSafely) {
   EXPECT_EQ(tracer.WrittenCount(), 0u);
 }
 
+TEST(Tracer, ASpanCanEndSomewhereOtherThanWhereItBegan) {
+  TraceFixture<4> fixture;
+  fixture.clock.now = 1'000;
+  const std::uint32_t began = BN_TRACE_NOW();
+  EXPECT_EQ(began, 1'000u);
+
+  // Later, and from another context: an interrupt handler, say.
+  fixture.clock.now = 1'450;
+  fixture.sync.task = bn::core::kTraceTaskInterrupt;
+  BN_TRACE_TOP_SPAN_SINCE(kSpanOuter, began, 7);
+
+  std::array<TraceRecord, 4> out{};
+  ASSERT_EQ(fixture.tracer.Drain(out), 1u);
+  EXPECT_EQ(out[0].id, kSpanOuter);
+  EXPECT_EQ(out[0].kind, bn::core::TraceKind::kSpan);
+  EXPECT_EQ(out[0].startUs, 1'000u);
+  EXPECT_EQ(out[0].durationUs, 450u);
+  EXPECT_EQ(out[0].arg, 7u);
+  EXPECT_EQ(out[0].task, bn::core::kTraceTaskInterrupt);
+}
+
+TEST(Tracer, EndingASpanWithNoTracerInstalledDoesNothing) {
+  ASSERT_EQ(bn::core::ActiveTracer(), nullptr);
+  EXPECT_EQ(BN_TRACE_NOW(), 0u);
+  BN_TRACE_TOP_SPAN_SINCE(kSpanOuter, 123, 4);
+}
+
 }  // namespace

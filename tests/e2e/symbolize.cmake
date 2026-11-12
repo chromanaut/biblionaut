@@ -9,6 +9,10 @@
 #               the line before.
 #   0x42001122  a return address after a call that never returns, at the very
 #               end of a function: exactly, it is the start of the next one.
+#   0x4200d000  in a source file given by its full path inside this
+#               repository, which is shown without the repository's part.
+#   0x4200d002  in a source file somewhere else whose path happens to have
+#               the repository's path in the middle: shown as it is.
 #
 # Needs -DPYTHON=<python3> -DSCRIPT=<tools/bn-symbolize> -DWORK_DIR=<scratch directory>.
 set(work "${WORK_DIR}/symbolize")
@@ -46,6 +50,8 @@ for address in "$@"; do
       ;;
     0x42001121) echo "$address: OnHeapFailure() at app_main.cpp:40 [$(cat "$elf")]" ;;
     0x42001122) echo "$address: AnnounceSavedCrash() at app_main.cpp:45 [$(cat "$elf")]" ;;
+    0x4200d000) echo "$address: InHere() at $BN_TEST_REPOSITORY/reader/src/app.cpp:9" ;;
+    0x4200d002) echo "$address: Elsewhere() at /elsewhere$BN_TEST_REPOSITORY/src/x.cpp:1" ;;
     *) echo "$address: ?? ??:0" ;;
   esac
 done
@@ -203,10 +209,13 @@ if(NOT found EQUAL -1)
   message(FATAL_ERROR "bn-symbolize --elf still used the archive:\n${output}")
 endif()
 
-# Addresses given as arguments are looked up exactly.
+# Addresses given as arguments are looked up exactly. Two of them are in
+# source files named by full paths, which the stand-in addr2line builds from
+# this repository's.
 execute_process(
-  COMMAND "${PYTHON}" "${SCRIPT}" --addr2line "${addr2line}" --elf "${work}/first.elf" 0x4200a1b2 4200c3d4 0x42001122
-          0x42000100
+  COMMAND "${CMAKE_COMMAND}" -E env "BN_TEST_REPOSITORY=${repository}"
+          "${PYTHON}" "${SCRIPT}" --addr2line "${addr2line}" --elf "${work}/first.elf" 0x4200a1b2 4200c3d4 0x42001122
+          0x42000100 0x4200d000 0x4200d002
   RESULT_VARIABLE result
   OUTPUT_VARIABLE output
   ERROR_VARIABLE errors)
@@ -219,6 +228,8 @@ set(expected
  (inlined by) app_main at app/firmware/main/app_main.cpp:150
 0x42001122: AnnounceSavedCrash() at app_main.cpp:45 [the first build]
 0x42000100: not in ${shown}/first.elf
+0x4200d000: InHere() at reader/src/app.cpp:9
+0x4200d002: Elsewhere() at /elsewhere${repository}/src/x.cpp:1
 ")
 if(NOT output STREQUAL expected)
   message(FATAL_ERROR "bn-symbolize with addresses printed:\n${output}\nbut this was expected:\n${expected}")

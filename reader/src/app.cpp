@@ -38,13 +38,15 @@ Services DefaultServices() noexcept {
                   .traceSync = hw::SystemTraceSync(),
                   .serial = hw::SystemSerial(),
                   .memory = hw::SystemMemoryProbe(),
-                  .crash = hw::SystemCrashStore()};
+                  .crash = hw::SystemCrashStore(),
+                  .display = hw::SystemDisplay()};
 }
 
 App::App(const Services& services) noexcept
     : services_(services),
       tracer_(traceStorage_, services_.clock, services_.traceSync),
-      stream_(tracer_, services_.serial) {}
+      stream_(tracer_, services_.serial),
+      panelCheck_(services_.display, services_.clock) {}
 
 App::~App() {
   if (core::ActiveTracer() == &tracer_) {
@@ -59,12 +61,15 @@ void App::Start() noexcept {
   nextMetricsUs_ = startedAtUs_ + kMetricsIntervalUs;
   started_ = true;
 
-  BN_TRACE_TOP_SCOPE(kSpanAppStart);
-  stream_.SendHello(Version());
+  {
+    BN_TRACE_TOP_SCOPE(kSpanAppStart);
+    stream_.SendHello(Version());
 
-  crashReport_ = services_.crash.Saved();
-  services_.crash.SetVersion(Version());
-  SendCrashReport();
+    crashReport_ = services_.crash.Saved();
+    services_.crash.SetVersion(Version());
+    SendCrashReport();
+  }
+  panelCheck_.Start();
 }
 
 void App::Tick() noexcept {
@@ -80,6 +85,7 @@ void App::Tick() noexcept {
   }
 
   SendCrashReport();
+  panelCheck_.Tick();
 
   const bool metricsDue = now >= nextMetricsUs_;
   if (metricsDue) {

@@ -20,7 +20,10 @@
   /* Once a second while the application runs. */                  \
   X(1, kInstantHeartbeat, "heartbeat", "uptime_s")                 \
   /* Reading heap and stack levels for the metrics line. */        \
-  X(2, kSpanSampleMemory, "sample_memory", "")
+  X(2, kSpanSampleMemory, "sample_memory", "")                     \
+  /* Rendering a whole picture, band by band, and sending it to */ \
+  /* the panel: one or both planes.                             */ \
+  X(3, kSpanPanelSweep, "panel_sweep", "step")
 
 namespace bn::reader {
 

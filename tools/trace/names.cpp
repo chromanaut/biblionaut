@@ -2,6 +2,7 @@
 
 #include <array>
 
+#include "hw/trace_ids.h"
 #include "reader/trace_ids.h"
 
 namespace bn::trace_tool {
@@ -17,9 +18,13 @@ struct KnownSpan {
 // One row per id, generated from each part's list. A part that gains trace
 // ids adds its list here.
 constexpr KnownSpan kKnownSpans[] = {
+#define BN_TOOL_HW_ROW(index, constant, name, argument) \
+  {core::MakeSpanId(core::TracePart::kHw, (index)), (name), (argument)},
+    BN_HW_TRACE_IDS(BN_TOOL_HW_ROW)
+#undef BN_TOOL_HW_ROW
 #define BN_TOOL_READER_ROW(index, constant, name, argument) \
   {core::MakeSpanId(core::TracePart::kReader, (index)), (name), (argument)},
-    BN_READER_TRACE_IDS(BN_TOOL_READER_ROW)
+        BN_READER_TRACE_IDS(BN_TOOL_READER_ROW)
 #undef BN_TOOL_READER_ROW
 };
 

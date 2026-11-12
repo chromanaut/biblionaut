@@ -46,3 +46,18 @@ bn_add_unit_test(reader_tests
   SOURCES
     unit/reader/app_test.cpp
   LIBS bn_reader)
+
+bn_add_unit_test(tools_tests
+  SOURCES
+    unit/tools/trace_tool_test.cpp
+  LIBS bn_trace_tool)
+
+# The whole diagnostic path on the desktop: application -> capture file ->
+# bn-trace -> timeline.
+add_test(
+  NAME e2e.TraceRoundTrip
+  COMMAND ${CMAKE_COMMAND}
+    -DAPP=$<TARGET_FILE:biblionaut-desktop>
+    -DTOOL=$<TARGET_FILE:bn-trace>
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/trace_roundtrip.cmake)

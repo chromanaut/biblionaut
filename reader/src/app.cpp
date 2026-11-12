@@ -58,14 +58,17 @@ void App::Tick() noexcept {
     BN_TRACE_INSTANT(kInstantHeartbeat, static_cast<std::uint32_t>((now - startedAtUs_) / 1'000'000));
     nextHeartbeatUs_ = now + kHeartbeatIntervalUs;
   }
+
+  // Trace first, so what reaches the serial line stays in time order: the
+  // metrics line is stamped now, after the records already buffered.
+  stream_.Pump();
+
   if (now >= nextMetricsUs_) {
     traceDropped.Set(tracer_.DroppedCount());
     streamLost.Set(stream_.LostFrames());
     stream_.SendMetrics(core::DefaultMetrics());
     nextMetricsUs_ = now + kMetricsIntervalUs;
   }
-
-  stream_.Pump();
 }
 
 void App::Flush() noexcept {

@@ -21,7 +21,9 @@
 namespace bn::core {
 
 // Bumped whenever a frame's layout changes.
-inline constexpr std::uint8_t kStreamProtocolVersion = 1;
+//   1  first version
+//   2  text and metrics frames start with the time they were sent
+inline constexpr std::uint8_t kStreamProtocolVersion = 2;
 
 // Trace records carried by one frame.
 inline constexpr std::size_t kMaxRecordsPerFrame = 16;
@@ -42,7 +44,8 @@ class TraceStream {
   // Returns false if the sink had no room.
   bool SendHello(std::string_view version) noexcept;
 
-  // Sends one line of log text. Safe to call from any task.
+  // Sends one line of log text, stamped with the current time. Safe to call
+  // from any task.
   bool SendText(std::string_view text) noexcept;
 
   // Sends every counter and gauge of `registry` as one line.
@@ -58,6 +61,7 @@ class TraceStream {
 
  private:
   bool SendTextFrame(FrameType type, std::string_view text) noexcept;
+  bool SendFrame(FrameWriter& writer) noexcept;
   void EncodePendingTraceFrame(std::size_t count) noexcept;
 
   Tracer& tracer_;

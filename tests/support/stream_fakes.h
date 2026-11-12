@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/byte_sink.h"
+#include "core/endian.h"
 #include "core/frame.h"
 
 namespace bn::test {
@@ -37,7 +38,27 @@ struct StreamItem {
   core::FrameType type = core::FrameType::kText;
   std::vector<std::uint8_t> payload;  // The frame's payload, or the raw bytes.
 
-  std::string Text() const { return {payload.begin(), payload.end()}; }
+  // The payload as text: all of it for raw bytes, and what follows the
+  // leading field for a frame (the version byte of a hello, the time of a
+  // text or metrics frame).
+  std::string Text() const {
+    std::size_t skip = 0;
+    if (isFrame) {
+      skip = type == core::FrameType::kHello ? 1 : 4;
+    }
+    if (skip > payload.size()) {
+      return {};
+    }
+    return {payload.begin() + static_cast<std::ptrdiff_t>(skip), payload.end()};
+  }
+
+  // The time a text or metrics frame was sent.
+  std::uint32_t TimeUs() const {
+    if (payload.size() < 4) {
+      return 0;
+    }
+    return core::LoadLe32(std::span<const std::uint8_t>(payload).first<4>());
+  }
 };
 
 // Splits a captured byte stream the way a host-side reader does: cut at zero

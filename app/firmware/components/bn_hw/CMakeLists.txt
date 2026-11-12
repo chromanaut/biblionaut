@@ -12,13 +12,14 @@ idf_component_register(
     "${bn_root}/hw/esp32c3/spi_bus.cpp"
     "${bn_root}/hw/esp32c3/trace_sync.cpp"
     "${bn_root}/hw/x4/display.cpp"
+    "${bn_root}/hw/x4/input.cpp"
     "${bn_root}/hw/x4/platform.cpp"
   INCLUDE_DIRS "${bn_root}/hw/include"
   # hw/ itself, for headers the device code shares, as "esp32c3/spi_bus.h".
   PRIV_INCLUDE_DIRS "${bn_root}/hw"
   PRIV_REQUIRES
-    esp_app_format esp_driver_gpio esp_driver_spi esp_driver_usb_serial_jtag esp_hw_support esp_rom esp_system
-    esp_timer freertos riscv soc)
+    esp_adc esp_app_format esp_driver_gpio esp_driver_spi esp_driver_usb_serial_jtag esp_hw_support esp_rom
+    esp_system esp_timer freertos riscv soc)
 
 # hw -> core. bn_core is defined by the project after components are
 # registered; CMake resolves the name when it generates.

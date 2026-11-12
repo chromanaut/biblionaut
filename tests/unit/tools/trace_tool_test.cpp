@@ -655,6 +655,9 @@ TEST(Names, DescribesKnownIdsAndNumbersUnknownOnes) {
   EXPECT_EQ(refresh.name, "refresh_fast");
   EXPECT_EQ(refresh.argument, "power_off_after");
   EXPECT_EQ(bn::trace_tool::Describe(bn::hw::kSpanPanelWrite).argument, "bytes");
+  EXPECT_EQ(bn::trace_tool::Describe(bn::hw::kSpanButtonPress).name, "button_press");
+  EXPECT_EQ(bn::trace_tool::Describe(bn::reader::kSpanPressToRefresh).name, "press_to_refresh");
+  EXPECT_EQ(bn::trace_tool::Describe(bn::reader::kSpanPressToRefresh).argument, "button");
 
   EXPECT_GE(bn::trace_tool::KnownSpanCount(), 12u);
 }

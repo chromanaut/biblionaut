@@ -1,0 +1,396 @@
+              | ESP-ROM:esp32c3-api1-20210207
+              | Build:Feb  7 2021
+              | rst:0x15 (USB_UART_CHIP_RESET),boot:0xf (SPI_FAST_FLASH_BOOT)
+              | Saved PC:0x40385b32
+              | SPIWP:0xee
+              | mode:DIO, clock div:1
+              | load:0x3fcd5830,len:0x1594
+              | load:0x403cbf10,len:0xc9c
+              | load:0x403ce710,len:0x300c
+              | entry 0x403cbf1a
+              | I (24) boot: ESP-IDF v6.0.1 2nd stage bootloader
+              | I (24) boot: compile time Nov 11 2026 18:30:36
+              | I (24) boot: chip revision: v0.4
+              | I (25) boot: efuse block revision: v1.3
+              | I (25) boot.esp32c3: SPI Speed      : 80MHz
+              | I (25) boot.esp32c3: SPI Mode       : DIO
+              | I (25) boot.esp32c3: SPI Flash Size : 16MB
+              | I (25) boot: Enabling RNG early entropy source...
+              | I (25) boot: Partition Table:
+              | I (25) boot: ## Label            Usage          Type ST Offset   Length
+              | I (26) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+              | I (26) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+              | I (26) boot:  2 factory          factory app      00 00 00010000 00100000
+              | I (26) boot: End of partition table
+              | I (26) esp_image: segment 0: paddr=00010020 vaddr=3c020020 size=098a8h ( 39080) map
+              | I (33) esp_image: segment 1: paddr=000198d0 vaddr=3fc8d000 size=01c40h (  7232) load
+              | I (35) esp_image: segment 2: paddr=0001b518 vaddr=40380000 size=04b00h ( 19200) load
+              | I (38) esp_image: segment 3: paddr=00020020 vaddr=42000020 size=19010h (102416) map
+              | I (55) esp_image: segment 4: paddr=00039038 vaddr=40384b00 size=08438h ( 33848) load
+              | I (61) esp_image: segment 5: paddr=00041478 vaddr=50000768 size=00024h (    36) load
+              | I (65) boot: Loaded app from partition at offset 0x10000
+              | I (65) boot: Disabling RNG early entropy source...
+              | I (66) cpu_start: Unicore app
+              | I (74) cpu_start: Pro cpu start user code
+              | I (74) cpu_start: cpu freq: 160000000 Hz
+              | I (74) app_init: Application information:
+              | I (74) app_init: Project name:     biblionaut
+              | I (75) app_init: App version:      c44b993-dirty
+              | I (75) app_init: Compile time:     Nov 12 2026 08:59:21
+              | I (75) app_init: ELF file SHA256:  f89e99c1b...
+              | I (75) app_init: ESP-IDF:          v6.0.1
+              | I (75) efuse_init: Min chip rev:     v0.3
+              | I (75) efuse_init: Max chip rev:     v1.99 
+              | I (75) efuse_init: Chip rev:         v0.4
+              | I (75) heap_init: Initializing. RAM available for dynamic allocation:
+              | I (75) heap_init: At 3FC93110 len 0002CEF0 (179 KiB): RAM
+              | I (76) heap_init: At 3FCC0000 len 0001C710 (113 KiB): Retention RAM
+              | I (76) heap_init: At 3FCDC710 len 00002950 (10 KiB): Retention RAM
+              | I (76) heap_init: At 5000078C len 0000185C (6 KiB): RTCRAM
+              | I (77) spi_flash: detected chip: generic
+              | I (77) spi_flash: flash io: dio
+              | I (77) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+              | I (78) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+              | I (78) main_task: Started on CPU0
+              | I (78) main_task: Calling app_main()
+              | Biblionaut 0.1.0-dev+c44b993 (x4)
+              | Crash report saved 13 restart(s) ago: Stack protection fault, in task main. bn-trace shows all of it.
+=== boot 1: 0.1.0-dev+c44b993 (stream protocol 2) ===
+[     0.004159] task 0  reader/app_start  1.054 ms
+[     0.007545] task 0  hw/sd_card_parked reply=1
+[     0.062195] interrupts  hw/panel_reset  1.480 ms
+[     0.064056] interrupts  hw/panel_clear  4.399 ms
+[     0.068465] interrupts  hw/panel_clear  4.396 ms
+[     0.005625] task 0  hw/panel_start busy_cycles=3  67.245 ms
+[     0.082642] task 0  hw/panel_write bytes=8000  1.807 ms
+[     0.084453] task 0  hw/panel_write bytes=8000  1.803 ms
+[     0.100925] task 0  hw/panel_write bytes=8000  1.805 ms
+[     0.102733] task 0  hw/panel_write bytes=8000  1.803 ms
+[     0.119112] task 0  hw/panel_write bytes=8000  1.803 ms
+[     0.120919] task 0  hw/panel_write bytes=8000  1.802 ms
+[     0.124464] task 0  hw/panel_write bytes=8000  1.806 ms
+[     0.126274] task 0  hw/panel_write bytes=8000  1.803 ms
+[     0.131374] task 0  hw/panel_write bytes=8000  1.804 ms
+[     0.133182] task 0  hw/panel_write bytes=8000  1.803 ms
+[     0.138954] task 0  hw/panel_write bytes=8000  1.803 ms
+[     0.140761] task 0  hw/panel_write bytes=8000  1.802 ms
+[     0.072919] task 0  reader/panel_sweep picture=1  69.648 ms
+=== crash report: 13 restarts ago ended in a crash ===
+  firmware   0.1.0-dev+9bbccbb  (ELF ceb4b5785)
+  reason     Stack protection fault
+  when       10.022579 s after it started, in task main
+  registers  mepc    0x4200619c  ra      0x4200619e  sp      0x3fc8e710  gp      0x3fc8a800
+             tp      0x3fc8f740  t0      0x2e2e3036  t1      0x5f6b6361  t2      0x36373133
+             s0      0x00000001  s1      0x3fc8c000  a0      0x00000032  a1      0x00000000
+             a2      0x098ee484  a3      0x00000000  a4      0x00000000  a5      0x00000001
+             a6      0x60023000  a7      0x74732498  s2      0x00000000  s3      0x00000000
+             s4      0x00000000  s5      0x00000000  s6      0x00000000  s7      0x00000000
+             s8      0x00000000  s9      0x00000000  s10     0x00000000  s11     0x00000000
+             t3      0x64616568  t4      0x6d6f6f72  t5      0x3631333d  t6      0x31335b30
+             mstatus 0x00001881  mtvec   0x40380001  mcause  0x0000001b  mtval   0x00003ff9
+  stack      1024 bytes saved from 0x3fc8e710; values in them that could be return addresses:
+             sp+0x04c  0x4200619e
+             sp+0x09c  0x4200619e
+             sp+0x0ec  0x4200619e
+             sp+0x13c  0x4200619e
+             sp+0x18c  0x4200619e
+             sp+0x1dc  0x4200619e
+             sp+0x22c  0x4200619e
+             sp+0x27c  0x4200619e
+             sp+0x2cc  0x4200619e
+             sp+0x31c  0x4200619e
+             sp+0x36c  0x4200619e
+             sp+0x3bc  0x4200619e
+  trace      the last 13 records before the crash:
+             [     0.003792] task 0  reader/app_start  1.041 ms
+             [     1.021841] task 0  reader/heartbeat uptime_s=1
+             [     2.021838] task 0  reader/heartbeat uptime_s=2
+             [     3.021838] task 0  reader/heartbeat uptime_s=3
+             [     4.021838] task 0  reader/heartbeat uptime_s=4
+             [     5.021838] task 0  reader/heartbeat uptime_s=5
+             [     5.021858] task 0  reader/sample_memory  233 us
+             [     6.021838] task 0  reader/heartbeat uptime_s=6
+             [     7.021838] task 0  reader/heartbeat uptime_s=7
+             [     8.021838] task 0  reader/heartbeat uptime_s=8
+             [     9.021838] task 0  reader/heartbeat uptime_s=9
+             [    10.021838] task 0  reader/heartbeat uptime_s=10
+             [    10.021845] task 0  reader/sample_memory  165 us
+=== end of crash report; tools/bn-symbolize turns its addresses into source lines ===
+[     1.012183] task 0  reader/heartbeat uptime_s=1
+[     2.012177] task 0  reader/heartbeat uptime_s=2
+[     3.012177] task 0  reader/heartbeat uptime_s=3
+[     0.142653] interrupts  hw/refresh_full power_off_after=0  3.576 s
+[     4.012177] task 0  reader/heartbeat uptime_s=4
+[     5.012177] task 0  reader/heartbeat uptime_s=5
+[     5.012198] task 0  reader/sample_memory  243 us
+[     5.012522] metrics  app_ticks=487 button_presses=0 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[     5.012522] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=1[1..1]
+[     5.400604] task 1  hw/button_press button=4  5.130 ms
+[     5.421910] task 0  hw/panel_write bytes=8000  1.836 ms
+[     5.438455] task 0  hw/panel_write bytes=8000  1.807 ms
+[     5.454842] task 0  hw/panel_write bytes=8000  1.804 ms
+[     5.458373] task 0  hw/panel_write bytes=8000  1.803 ms
+[     5.463498] task 0  hw/panel_write bytes=8000  1.804 ms
+[     5.469294] task 0  hw/panel_write bytes=8000  1.805 ms
+[     5.412214] task 0  reader/panel_sweep picture=4  58.890 ms
+[     5.400604] task 0  reader/press_to_refresh button=4  70.611 ms
+[     5.525608] task 1  hw/button_release button=4  5.095 ms
+[     5.471191] interrupts  hw/refresh_fast power_off_after=0  417.143 ms
+[     5.901794] task 0  hw/panel_write bytes=8000  1.809 ms
+[     5.918275] task 0  hw/panel_write bytes=8000  1.805 ms
+[     5.934660] task 0  hw/panel_write bytes=8000  1.804 ms
+[     5.938191] task 0  hw/panel_write bytes=8000  1.803 ms
+[     5.943318] task 0  hw/panel_write bytes=8000  1.803 ms
+[     5.949113] task 0  hw/panel_write bytes=8000  1.804 ms
+[     5.892182] task 0  reader/panel_sweep picture=4  58.738 ms
+[     6.012184] task 0  reader/heartbeat uptime_s=6
+[     7.012177] task 0  reader/heartbeat uptime_s=7
+[     7.790604] task 1  hw/button_press button=5  5.119 ms
+[     7.811815] task 0  hw/panel_write bytes=8000  1.808 ms
+[     7.828315] task 0  hw/panel_write bytes=8000  1.805 ms
+[     7.844704] task 0  hw/panel_write bytes=8000  1.803 ms
+[     7.848249] task 0  hw/panel_write bytes=8000  1.805 ms
+[     7.853368] task 0  hw/panel_write bytes=8000  1.803 ms
+[     7.859130] task 0  hw/panel_write bytes=8000  1.804 ms
+[     7.802191] task 0  reader/panel_sweep picture=1  58.746 ms
+[     7.790604] task 0  reader/press_to_refresh button=5  70.432 ms
+[     7.910604] task 1  hw/button_release button=5  5.110 ms
+[     8.012178] task 0  reader/heartbeat uptime_s=8
+[     7.861014] interrupts  hw/refresh_fast power_off_after=0  417.182 ms
+[     8.291801] task 0  hw/panel_write bytes=8000  1.812 ms
+[     8.308295] task 0  hw/panel_write bytes=8000  1.804 ms
+[     8.324685] task 0  hw/panel_write bytes=8000  1.805 ms
+[     8.328231] task 0  hw/panel_write bytes=8000  1.803 ms
+[     8.333348] task 0  hw/panel_write bytes=8000  1.803 ms
+[     8.339108] task 0  hw/panel_write bytes=8000  1.805 ms
+[     8.282182] task 0  reader/panel_sweep picture=1  58.734 ms
+[     9.012179] task 0  reader/heartbeat uptime_s=9
+[    10.012177] task 0  reader/heartbeat uptime_s=10
+[    10.012198] task 0  reader/sample_memory  224 us
+[    10.012505] metrics  app_ticks=967 button_presses=2 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[    10.012505] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=1[1..4]
+[    10.185611] task 1  hw/button_press button=3  5.104 ms
+[    10.201884] task 0  hw/panel_write bytes=8000  1.815 ms
+[    10.218410] task 0  hw/panel_write bytes=8000  1.804 ms
+[    10.234796] task 0  hw/panel_write bytes=8000  1.803 ms
+[    10.238337] task 0  hw/panel_write bytes=8000  1.804 ms
+[    10.243473] task 0  hw/panel_write bytes=8000  1.804 ms
+[    10.249274] task 0  hw/panel_write bytes=8000  1.805 ms
+[    10.192198] task 0  reader/panel_sweep picture=2  58.884 ms
+[    10.185611] task 0  reader/press_to_refresh button=3  65.581 ms
+[    10.305608] task 1  hw/button_release button=3  5.095 ms
+[    10.251168] interrupts  hw/refresh_fast power_off_after=0  417.167 ms
+[    10.681799] task 0  hw/panel_write bytes=8000  1.807 ms
+[    10.698281] task 0  hw/panel_write bytes=8000  1.805 ms
+[    10.714671] task 0  hw/panel_write bytes=8000  1.804 ms
+[    10.718211] task 0  hw/panel_write bytes=8000  1.803 ms
+[    10.723348] task 0  hw/panel_write bytes=8000  1.803 ms
+[    10.729146] task 0  hw/panel_write bytes=8000  1.805 ms
+[    10.672182] task 0  reader/panel_sweep picture=2  58.772 ms
+[    11.012184] task 0  reader/heartbeat uptime_s=11
+[    11.965611] task 1  hw/button_press button=2  5.091 ms
+[    11.981811] task 0  hw/panel_write bytes=8000  1.807 ms
+[    11.998316] task 0  hw/panel_write bytes=8000  1.805 ms
+[    12.014704] task 0  hw/panel_write bytes=8000  1.803 ms
+[    12.018250] task 0  hw/panel_write bytes=8000  1.804 ms
+[    12.023368] task 0  hw/panel_write bytes=8000  1.803 ms
+[    12.029131] task 0  hw/panel_write bytes=8000  1.804 ms
+[    11.972189] task 0  reader/panel_sweep picture=1  58.749 ms
+[    11.965611] task 0  reader/press_to_refresh button=2  65.425 ms
+[    12.032179] task 0  reader/heartbeat uptime_s=12
+[    12.090604] task 1  hw/button_release button=2  5.121 ms
+[    12.031015] interrupts  hw/refresh_fast power_off_after=0  417.071 ms
+[    12.461797] task 0  hw/panel_write bytes=8000  1.813 ms
+[    12.478298] task 0  hw/panel_write bytes=8000  1.805 ms
+[    12.494686] task 0  hw/panel_write bytes=8000  1.803 ms
+[    12.498232] task 0  hw/panel_write bytes=8000  1.805 ms
+[    12.503350] task 0  hw/panel_write bytes=8000  1.803 ms
+[    12.509112] task 0  hw/panel_write bytes=8000  1.804 ms
+[    12.452182] task 0  reader/panel_sweep picture=1  58.738 ms
+[    13.042179] task 0  reader/heartbeat uptime_s=13
+[    14.042177] task 0  reader/heartbeat uptime_s=14
+[    14.505611] task 1  hw/button_press button=1  5.091 ms
+[    14.452260] interrupts  hw/panel_power_off  139.108 ms
+[    14.601807] task 0  hw/panel_write bytes=8000  1.807 ms
+[    14.603618] task 0  hw/panel_write bytes=8000  1.803 ms
+[    14.620118] task 0  hw/panel_write bytes=8000  1.805 ms
+[    14.621926] task 0  hw/panel_write bytes=8000  1.803 ms
+[    14.620607] task 1  hw/button_release button=1  5.106 ms
+[    14.638306] task 0  hw/panel_write bytes=8000  1.804 ms
+[    14.640114] task 0  hw/panel_write bytes=8000  1.803 ms
+[    14.643667] task 0  hw/panel_write bytes=8000  1.805 ms
+[    14.645476] task 0  hw/panel_write bytes=8000  1.935 ms
+[    14.650590] task 0  hw/panel_write bytes=8000  1.925 ms
+[    14.652519] task 0  hw/panel_write bytes=8000  1.803 ms
+[    14.658291] task 0  hw/panel_write bytes=8000  1.805 ms
+[    14.660099] task 0  hw/panel_write bytes=8000  1.803 ms
+[    14.592185] task 0  reader/panel_sweep picture=1  69.720 ms
+[    14.505611] task 0  reader/press_to_refresh button=1  156.426 ms
+[    15.012193] task 0  reader/sample_memory  225 us
+[    15.012494] metrics  app_ticks=1440 button_presses=5 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[    15.012494] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=1[1..4]
+[    15.042182] task 0  reader/heartbeat uptime_s=15
+[    16.042179] task 0  reader/heartbeat uptime_s=16
+[    14.662015] interrupts  hw/refresh_half power_off_after=0  1.569 s
+[    17.042177] task 0  reader/heartbeat uptime_s=17
+[    17.150604] task 1  hw/button_press button=0  5.126 ms
+[    17.171881] task 0  hw/panel_write bytes=8000  1.813 ms
+[    17.173704] task 0  hw/panel_write bytes=8000  1.803 ms
+[    17.190214] task 0  hw/panel_write bytes=8000  1.804 ms
+[    17.192022] task 0  hw/panel_write bytes=8000  1.810 ms
+[    17.208403] task 0  hw/panel_write bytes=8000  1.804 ms
+[    17.210211] task 0  hw/panel_write bytes=8000  1.803 ms
+[    17.213764] task 0  hw/panel_write bytes=8000  1.805 ms
+[    17.215572] task 0  hw/panel_write bytes=8000  1.936 ms
+[    17.220799] task 0  hw/panel_write bytes=8000  1.804 ms
+[    17.222607] task 0  hw/panel_write bytes=8000  1.803 ms
+[    17.228385] task 0  hw/panel_write bytes=8000  1.803 ms
+[    17.230192] task 0  hw/panel_write bytes=8000  1.803 ms
+[    17.162200] task 0  reader/panel_sweep picture=1  69.798 ms
+[    17.150604] task 0  reader/press_to_refresh button=0  81.505 ms
+[    17.320604] task 1  hw/button_release button=0  5.120 ms
+[    18.042179] task 0  reader/heartbeat uptime_s=18
+[    19.042177] task 0  reader/heartbeat uptime_s=19
+[    20.012191] task 0  reader/sample_memory  213 us
+[    20.012473] metrics  app_ticks=1933 button_presses=6 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[    20.012473] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=1[1..4]
+[    20.042182] task 0  reader/heartbeat uptime_s=20
+[    17.232084] interrupts  hw/refresh_full power_off_after=0  3.493 s
+[    21.042179] task 0  reader/heartbeat uptime_s=21
+[    22.042177] task 0  reader/heartbeat uptime_s=22
+[    22.160604] task 1  hw/button_press button=6  5.119 ms
+[    22.265611] task 1  hw/button_release button=6  5.089 ms
+[    22.732268] interrupts  hw/panel_power_off  139.116 ms
+[    23.042177] task 0  reader/heartbeat uptime_s=23
+[    24.042177] task 0  reader/heartbeat uptime_s=24
+[    25.012200] task 0  reader/sample_memory  193 us
+[    25.012453] metrics  app_ticks=2433 button_presses=7 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[    25.012453] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=1[1..4]
+[    25.042180] task 0  reader/heartbeat uptime_s=25
+[    26.042179] task 0  reader/heartbeat uptime_s=26
+[    27.042177] task 0  reader/heartbeat uptime_s=27
+[    28.042177] task 0  reader/heartbeat uptime_s=28
+[    29.042177] task 0  reader/heartbeat uptime_s=29
+[    29.095611] task 1  hw/button_press button=5  5.090 ms
+[    29.111874] task 0  hw/panel_write bytes=8000  1.815 ms
+[    29.128394] task 0  hw/panel_write bytes=8000  1.805 ms
+[    29.144780] task 0  hw/panel_write bytes=8000  1.803 ms
+[    29.148322] task 0  hw/panel_write bytes=8000  1.804 ms
+[    29.153459] task 0  hw/panel_write bytes=8000  1.803 ms
+[    29.159260] task 0  hw/panel_write bytes=8000  1.804 ms
+[    29.102198] task 0  reader/panel_sweep picture=2  58.869 ms
+[    29.095611] task 0  reader/press_to_refresh button=5  65.565 ms
+[    29.200604] task 1  hw/button_release button=5  5.120 ms
+[    29.315611] task 1  hw/button_press button=5  5.090 ms
+[    29.410604] task 1  hw/button_release button=5  5.118 ms
+[    29.161151] interrupts  hw/refresh_fast power_off_after=0  498.736 ms
+[    29.671792] task 0  hw/panel_write bytes=8000  1.811 ms
+[    29.688289] task 0  hw/panel_write bytes=8000  1.805 ms
+[    29.704675] task 0  hw/panel_write bytes=8000  1.803 ms
+[    29.708216] task 0  hw/panel_write bytes=8000  1.804 ms
+[    29.713354] task 0  hw/panel_write bytes=8000  1.803 ms
+[    29.719153] task 0  hw/panel_write bytes=8000  1.805 ms
+[    29.662182] task 0  reader/panel_sweep picture=2  58.779 ms
+[    29.730468] task 0  hw/panel_write bytes=8000  1.925 ms
+[    29.747056] task 0  hw/panel_write bytes=8000  1.805 ms
+[    29.763440] task 0  hw/panel_write bytes=8000  1.803 ms
+[    29.767102] task 0  hw/panel_write bytes=8000  1.804 ms
+[    29.772212] task 0  hw/panel_write bytes=8000  1.803 ms
+[    29.777969] task 0  hw/panel_write bytes=8000  1.805 ms
+[    29.720973] task 0  reader/panel_sweep picture=3  58.804 ms
+[    29.315611] task 0  reader/press_to_refresh button=5  464.264 ms
+[    30.012193] task 0  reader/sample_memory  220 us
+[    30.012494] metrics  app_ticks=2917 button_presses=9 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[    30.012494] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=3[1..4]
+[    30.042182] task 0  reader/heartbeat uptime_s=30
+[    29.779854] interrupts  hw/refresh_fast power_off_after=0  417.246 ms
+[    30.211846] task 0  hw/panel_write bytes=8000  1.816 ms
+[    30.228359] task 0  hw/panel_write bytes=8000  1.804 ms
+[    30.244743] task 0  hw/panel_write bytes=8000  1.803 ms
+[    30.248279] task 0  hw/panel_write bytes=8000  1.805 ms
+[    30.253389] task 0  hw/panel_write bytes=8000  1.803 ms
+[    30.259146] task 0  hw/panel_write bytes=8000  1.804 ms
+[    30.202186] task 0  reader/panel_sweep picture=3  58.768 ms
+[    31.042180] task 0  reader/heartbeat uptime_s=31
+[    32.042177] task 0  reader/heartbeat uptime_s=32
+[    32.202265] interrupts  hw/panel_power_off  139.168 ms
+[    32.450604] task 1  hw/button_press button=1  5.124 ms
+[    32.471815] task 0  hw/panel_write bytes=8000  1.807 ms
+[    32.473626] task 0  hw/panel_write bytes=8000  1.803 ms
+[    32.490110] task 0  hw/panel_write bytes=8000  1.805 ms
+[    32.491918] task 0  hw/panel_write bytes=8000  1.803 ms
+[    32.508288] task 0  hw/panel_write bytes=8000  1.804 ms
+[    32.510096] task 0  hw/panel_write bytes=8000  1.803 ms
+[    32.513640] task 0  hw/panel_write bytes=8000  1.804 ms
+[    32.515448] task 0  hw/panel_write bytes=8000  1.936 ms
+[    32.520553] task 0  hw/panel_write bytes=8000  1.925 ms
+[    32.522482] task 0  hw/panel_write bytes=8000  1.802 ms
+[    32.528250] task 0  hw/panel_write bytes=8000  1.805 ms
+[    32.530058] task 0  hw/panel_write bytes=8000  1.803 ms
+[    32.462194] task 0  reader/panel_sweep picture=3  69.670 ms
+[    32.450604] task 0  reader/press_to_refresh button=1  81.398 ms
+[    32.585611] task 1  hw/button_release button=1  5.092 ms
+[    32.645611] task 1  hw/button_press button=3  5.091 ms
+[    32.790604] task 1  hw/button_release button=3  5.118 ms
+[    33.042179] task 0  reader/heartbeat uptime_s=33
+[    34.042177] task 0  reader/heartbeat uptime_s=34
+[    32.531981] interrupts  hw/refresh_half power_off_after=0  1.569 s
+[    34.111808] task 0  hw/panel_write bytes=8000  1.812 ms
+[    34.128313] task 0  hw/panel_write bytes=8000  1.804 ms
+[    34.144694] task 0  hw/panel_write bytes=8000  1.803 ms
+[    34.148226] task 0  hw/panel_write bytes=8000  1.804 ms
+[    34.153354] task 0  hw/panel_write bytes=8000  1.803 ms
+[    34.159150] task 0  hw/panel_write bytes=8000  1.804 ms
+[    34.102188] task 0  reader/panel_sweep picture=4  58.769 ms
+[    32.645611] task 0  reader/press_to_refresh button=3  1.515 s
+[    34.161034] interrupts  hw/refresh_fast power_off_after=0  417.188 ms
+[    34.591790] task 0  hw/panel_write bytes=8000  1.807 ms
+[    34.608278] task 0  hw/panel_write bytes=8000  1.804 ms
+[    34.624659] task 0  hw/panel_write bytes=8000  1.803 ms
+[    34.628191] task 0  hw/panel_write bytes=8000  1.805 ms
+[    34.633320] task 0  hw/panel_write bytes=8000  1.803 ms
+[    34.639115] task 0  hw/panel_write bytes=8000  1.805 ms
+[    34.582182] task 0  reader/panel_sweep picture=4  58.741 ms
+[    35.012194] task 0  reader/sample_memory  226 us
+[    35.012501] metrics  app_ticks=3395 button_presses=11 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[    35.012501] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=4[1..4]
+[    35.042185] task 0  reader/heartbeat uptime_s=35
+[    36.042177] task 0  reader/heartbeat uptime_s=36
+[    36.582268] interrupts  hw/panel_power_off  139.140 ms
+[    37.042177] task 0  reader/heartbeat uptime_s=37
+[    38.042177] task 0  reader/heartbeat uptime_s=38
+[    39.042177] task 0  reader/heartbeat uptime_s=39
+[    40.012200] task 0  reader/sample_memory  200 us
+[    40.012460] metrics  app_ticks=3895 button_presses=11 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[    40.012460] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=4[1..4]
+[    40.042183] task 0  reader/heartbeat uptime_s=40
+[    40.205611] task 1  hw/button_press button=5  5.097 ms
+[    40.221885] task 0  hw/panel_write bytes=8000  1.813 ms
+[    40.238404] task 0  hw/panel_write bytes=8000  1.805 ms
+[    40.254792] task 0  hw/panel_write bytes=8000  1.803 ms
+[    40.258338] task 0  hw/panel_write bytes=8000  1.805 ms
+[    40.263457] task 0  hw/panel_write bytes=8000  1.803 ms
+[    40.269219] task 0  hw/panel_write bytes=8000  1.804 ms
+[    40.212199] task 0  reader/panel_sweep picture=1  58.827 ms
+[    40.205611] task 0  reader/press_to_refresh button=5  65.526 ms
+[    40.320604] task 1  hw/button_release button=5  5.110 ms
+[    40.271112] interrupts  hw/refresh_fast power_off_after=0  498.754 ms
+[    40.781801] task 0  hw/panel_write bytes=8000  1.809 ms
+[    40.798292] task 0  hw/panel_write bytes=8000  1.805 ms
+[    40.814683] task 0  hw/panel_write bytes=8000  1.805 ms
+[    40.818229] task 0  hw/panel_write bytes=8000  1.803 ms
+[    40.823346] task 0  hw/panel_write bytes=8000  1.803 ms
+[    40.829107] task 0  hw/panel_write bytes=8000  1.804 ms
+[    40.772182] task 0  reader/panel_sweep picture=1  58.732 ms
+[    41.042181] task 0  reader/heartbeat uptime_s=41
+[    42.042177] task 0  reader/heartbeat uptime_s=42
+[    42.772259] interrupts  hw/panel_power_off  139.154 ms
+[    43.042177] task 0  reader/heartbeat uptime_s=43
+[    44.042177] task 0  reader/heartbeat uptime_s=44
+[    45.012194] task 0  reader/sample_memory  215 us
+[    45.012475] metrics  app_ticks=4385 button_presses=12 input_dropped=0 trace_dropped=0[0..0] stream_lost=0[0..0] heap_free=297712[297712..297712] heap_largest_block=163840[163840..163840]
+[    45.012475] metrics  heap_low_water=297712[297712..297712] stack_headroom=3032[3032..3032] input_ok=1[1..1] panel_ok=1[1..1] panel_picture=1[1..4]
+[    45.042185] task 0  reader/heartbeat uptime_s=45
+[    46.042177] task 0  reader/heartbeat uptime_s=46
+[    47.042177] task 0  reader/heartbeat uptime_s=47
+[    48.042177] task 0  reader/heartbeat uptime_s=48

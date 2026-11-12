@@ -271,7 +271,7 @@ TEST(SimDisplay, RecordsEachRefreshInTheTraceFromStartToFinish) {
   SimDisplay display(trace.clock, "");
   ASSERT_TRUE(display.Start());
   trace.clock.now = 1'000;
-  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFast, AfterRefresh::kPowerOff));
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
   trace.clock.now += SimDisplay::kFastRefreshUs + 250;  // Noticed a little late, as by a main loop.
   EXPECT_FALSE(display.Busy());
   EXPECT_FALSE(display.Busy());
@@ -281,7 +281,76 @@ TEST(SimDisplay, RecordsEachRefreshInTheTraceFromStartToFinish) {
   EXPECT_EQ(records[0].id, bn::hw::kSpanRefreshFast);
   EXPECT_EQ(records[0].startUs, 1'000u);
   EXPECT_EQ(records[0].durationUs, SimDisplay::kFastRefreshUs + 250);
+  EXPECT_EQ(records[0].arg, 0u);
+
+  // Switching off as part of a refresh makes the refresh that much longer.
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kPowerOff));
+  trace.clock.now += SimDisplay::kHalfRefreshUs + SimDisplay::kPowerOffUs - 1;
+  EXPECT_TRUE(display.Busy());
+  trace.clock.now += 1;
+  EXPECT_FALSE(display.Busy());
+  ASSERT_EQ(trace.tracer.Drain(records), 1u);
+  EXPECT_EQ(records[0].id, bn::hw::kSpanRefreshHalf);
   EXPECT_EQ(records[0].arg, 1u);
+}
+
+TEST(SimDisplay, SwitchingOffTakesAMomentAndKeepsBothPlanes) {
+  bn::test::TraceFixture<16> trace;
+  SimDisplay display(trace.clock, "");
+  EXPECT_FALSE(display.PowerOff()) << "not started";
+  ASSERT_TRUE(display.Start());
+
+  // Nothing to switch off yet: done at once.
+  EXPECT_TRUE(display.PowerOff());
+  EXPECT_FALSE(display.Busy());
+
+  const std::vector<std::uint8_t> picture = WithBlackRows(100, 50);
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, picture));
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kOld, 0, picture));
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
+  EXPECT_FALSE(display.PowerOff()) << "busy";
+  trace.clock.now += SimDisplay::kFullRefreshUs;
+  ASSERT_FALSE(display.Busy());
+  ASSERT_TRUE(display.Powered());
+
+  trace.clock.now = 20'000'000;
+  EXPECT_TRUE(display.PowerOff());
+  EXPECT_FALSE(display.Powered());
+  EXPECT_TRUE(display.Busy());
+  trace.clock.now += SimDisplay::kPowerOffUs;
+  EXPECT_FALSE(display.Busy());
+  EXPECT_TRUE(display.Started());
+  EXPECT_TRUE(RowIsBlack(display.Plane(DisplayPlane::kNew), 120));
+  EXPECT_TRUE(RowIsBlack(display.Plane(DisplayPlane::kOld), 120));
+
+  std::array<bn::core::TraceRecord, 16> records{};
+  const std::size_t count = trace.tracer.Drain(records);
+  ASSERT_GE(count, 1u);
+  EXPECT_EQ(records[count - 1].id, bn::hw::kSpanPanelPowerOff);
+  EXPECT_EQ(records[count - 1].startUs, 20'000'000u);
+  EXPECT_EQ(records[count - 1].durationUs, SimDisplay::kPowerOffUs);
+
+  // The next refresh switches it on again.
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
+  EXPECT_TRUE(display.Powered());
+}
+
+TEST(SimDisplay, CanWorkFasterThanARealPanel) {
+  bn::test::FakeClock clock;
+  SimDisplay display(clock, "", 20);
+  ASSERT_TRUE(display.Start());
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
+  clock.now += (SimDisplay::kFullRefreshUs / 20) - 1;
+  EXPECT_TRUE(display.Busy());
+  clock.now += 1;
+  EXPECT_FALSE(display.Busy());
+
+  // A speed of nothing is no speed-up at all.
+  SimDisplay ordinary(clock, "", 0);
+  ASSERT_TRUE(ordinary.Start());
+  ASSERT_TRUE(ordinary.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
+  clock.now += SimDisplay::kFastRefreshUs - 1;
+  EXPECT_TRUE(ordinary.Busy());
 }
 
 TEST(SimDisplay, SavesThePanelsPictureAtEveryRefresh) {

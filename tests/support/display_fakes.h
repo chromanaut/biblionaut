@@ -14,7 +14,7 @@ namespace bn::test {
 // unless the test says otherwise, and busy only when the test says so.
 class FakeDisplay final : public core::Display {
  public:
-  enum class Op : std::uint8_t { kStart, kWrite, kRefresh, kSleep };
+  enum class Op : std::uint8_t { kStart, kWrite, kRefresh, kPowerOff, kSleep };
 
   struct Call {
     Op op;
@@ -56,6 +56,7 @@ class FakeDisplay final : public core::Display {
       return false;
     }
     calls.push_back({.op = Op::kRefresh, .mode = mode, .after = after});
+    powered = after == core::AfterRefresh::kStayPowered;
     // What the panel will show, and both planes as they were when asked.
     shownAtRefresh.push_back(newPlane);
     oldAtRefresh.push_back(oldPlane);
@@ -65,6 +66,17 @@ class FakeDisplay final : public core::Display {
 
   bool Busy() noexcept override { return busy; }
 
+  [[nodiscard]] bool PowerOff() noexcept override {
+    if (!started || busy) {
+      ++refused;
+      return false;
+    }
+    calls.push_back({.op = Op::kPowerOff});
+    busy = powered;  // Switching off takes a moment; with nothing to switch off, none.
+    powered = false;
+    return true;
+  }
+
   [[nodiscard]] bool Sleep() noexcept override {
     if (busy) {
       ++refused;
@@ -72,6 +84,7 @@ class FakeDisplay final : public core::Display {
     }
     calls.push_back({.op = Op::kSleep});
     started = false;
+    powered = false;
     return true;
   }
 
@@ -86,6 +99,7 @@ class FakeDisplay final : public core::Display {
   core::DisplaySize size{.width = 800, .height = 480};
   bool present = false;
   bool started = false;
+  bool powered = false;  // The drive voltages are on.
   bool busy = false;
   bool failWrites = false;
   int refused = 0;

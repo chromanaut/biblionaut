@@ -8,7 +8,7 @@ a desktop.
 
 | Directory | Contents |
 |---|---|
-| `core/` | Shared foundation: arenas, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display) |
+| `core/` | Shared foundation: arenas, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display, buttons) |
 | `hw/` | Hardware abstraction layer. `hw/include` is the interface. `hw/desktop` implements it for the host; on a device, `hw/esp32c3` holds what the chip provides and `hw/x4` what is specific to the X4 |
 | `epub/` | Book parsing: zip, XML, OPF / TOC, CSS, the importer and the intermediate format |
 | `draw/` | Fonts and drawing: glyphs, metrics, the display-list format, the band renderer, images |
@@ -105,29 +105,58 @@ Trace ids are turned back into names from the lists in each part's
 `trace_ids.h`, which the tool is built from. A capture from newer firmware
 than the tool shows ids it does not know as numbers.
 
-## The panel
+## The panel and the buttons
 
 The e-ink panel's controller keeps two full images in its own memory, and
 the firmware keeps none: pictures are rendered a band of rows at a time and
 written straight to the controller (`core/display.h`). `hw/x4` drives the
-X4's panel. On the desktop a simulation stands in for it, working out what a
-real panel would show after each refresh, including the stale pixels a fast
-refresh leaves if the two images are allowed to fall out of step. Set
-`BN_DISPLAY_OUT` to see what it shows:
+X4's panel.
+
+The devices have seven buttons. Six of them share two analogue pins and
+cannot raise an interrupt, so `hw/x4` reads them every 5 ms and turns the
+readings into events: pressed, released, held (`core/input.h`). An event
+carries the time the change was first seen.
+
+Until there are pages to show, the application shows a test pattern and the
+buttons step through its four pictures (`reader/pattern_viewer.h`):
+
+| Button | What it does |
+|---|---|
+| Down, Right | The next picture, by a fast refresh |
+| Up, Left | The previous picture, by a fast refresh |
+| Confirm | The same picture again, by a half refresh |
+| Back | The same picture again, by a full refresh |
+
+The pattern is in the panel's own orientation, which on the X4 is with the
+device turned a quarter-turn anticlockwise from the way a book is read.
+
+The trace of a press runs from the button to the panel:
 
 ```
-BN_DISPLAY_OUT=panel ./build/host/app/desktop/biblionaut-desktop --run-ms 13000
-open panel-001.png          # one picture per refresh: panel-001.png to panel-004.png
+task 1  hw/button_press button=5          the button going down, first reading to settled
+task 0  reader/panel_sweep picture=2      rendering the picture and sending it, band by band
+task 0  reader/press_to_refresh button=5  from the button going down to the refresh being started
+interrupts  hw/refresh_fast               the panel's own time
 ```
 
-Until there are pages to show, the application checks the panel when it
-starts (`reader/panel_check.h`): it shows a test pattern four times, by a
-full, a fast, a half and another fast refresh, and then puts the panel to
-sleep. The pattern is in the panel's own orientation, which on the X4 is
-with the device turned a quarter-turn anticlockwise from the way a book is
-read. The trace of a run has each refresh's duration (`hw/refresh_full` and
-so on), each picture's rendering and upload (`reader/panel_sweep`), and each
-band sent (`hw/panel_write`).
+On the desktop a simulation stands in for the panel, working out what a
+real one would show after each refresh, including the stale pixels a fast
+refresh leaves if the two images are allowed to fall out of step. Buttons
+are scripted. Three environment variables control them:
+
+```
+BN_DISPLAY_OUT=panel BN_INPUT=4000:down,5000:down,6000:confirm \
+  ./build/host/app/desktop/biblionaut-desktop --run-ms 9000
+open panel-001.png          # one picture per refresh
+```
+
+- `BN_DISPLAY_OUT=prefix` saves what the panel shows at every refresh, as
+  `prefix-001.png`, `prefix-002.png` and so on.
+- `BN_INPUT` presses buttons: `milliseconds:button`, with an optional third
+  field for how long the button is held (`5000:power:1500`). The buttons
+  are `back`, `confirm`, `left`, `right`, `up`, `down` and `power`.
+- `BN_DISPLAY_SPEED=20` makes the simulated panel twenty times quicker than
+  a real one, which takes 3.6 s over a full refresh.
 
 ## Device build
 

@@ -8,10 +8,11 @@
 #include "core/clock.h"
 #include "core/crash.h"
 #include "core/display.h"
+#include "core/input.h"
 #include "core/memory_probe.h"
 #include "core/trace.h"
 #include "core/trace_stream.h"
-#include "reader/panel_check.h"
+#include "reader/pattern_viewer.h"
 
 namespace bn::reader {
 
@@ -24,6 +25,7 @@ struct Services {
   core::MemoryProbe& memory;
   core::CrashStore& crash;
   core::Display& display;
+  core::Input& input;
 };
 
 // The services of the hardware port this build was linked with.
@@ -35,8 +37,8 @@ inline constexpr std::size_t kTraceRecordCount = 256;
 // The application. So far it owns the diagnostics: the tracer every part
 // records into, the stream that carries trace, log text and metrics to the
 // serial line, and passing on the report of a crash that ended an earlier
-// run. It also checks the panel when it starts (reader/panel_check.h).
-// Reading books comes later.
+// run. In place of a book it shows a test pattern that the buttons step
+// through (reader/pattern_viewer.h). Reading books comes later.
 class App {
  public:
   explicit App(const Services& services) noexcept;
@@ -46,16 +48,17 @@ class App {
   App& operator=(const App&) = delete;
 
   // Installs the tracer and announces the stream. If the device kept a
-  // report of a crash, starts sending it; Tick() sends the rest. Sets the
-  // panel up and puts the first picture of the panel check on it, which
-  // takes some tens of milliseconds. Call once.
+  // report of a crash, starts sending it; Tick() sends the rest. Starts
+  // watching the buttons, sets the panel up and puts the first picture of
+  // the test pattern on it, which takes some tens of milliseconds. Call
+  // once.
   void Start() noexcept;
   bool Started() const noexcept { return started_; }
 
-  // Does the application's periodic work: a heartbeat in the trace every
-  // second, the metrics (with fresh heap and stack levels) every five, and
-  // moving buffered trace records to the serial line. Call it often; it
-  // never waits.
+  // Does the application's periodic work: acting on the buttons, a
+  // heartbeat in the trace every second, the metrics (with fresh heap and
+  // stack levels) every five, and moving buffered trace records to the
+  // serial line. Call it often; it never waits.
   void Tick() noexcept;
 
   // Sends whatever trace is still buffered, for an orderly exit.
@@ -67,7 +70,7 @@ class App {
   // For sending log text.
   core::TraceStream& Stream() noexcept { return stream_; }
 
-  const PanelCheck& Panel() const noexcept { return panelCheck_; }
+  const PatternViewer& Viewer() const noexcept { return viewer_; }
 
  private:
   void SampleMemory() noexcept;
@@ -77,7 +80,7 @@ class App {
   std::array<core::TraceRecord, kTraceRecordCount> traceStorage_{};
   core::Tracer tracer_;
   core::TraceStream stream_;
-  PanelCheck panelCheck_;
+  PatternViewer viewer_;
   std::uint64_t startedAtUs_ = 0;
   std::uint64_t nextHeartbeatUs_ = 0;
   std::uint64_t nextMetricsUs_ = 0;

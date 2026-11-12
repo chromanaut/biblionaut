@@ -13,8 +13,10 @@
 
 namespace {
 
-// How often the application's periodic work runs.
-constexpr TickType_t kTickPeriod = pdMS_TO_TICKS(20);
+// How often the application's periodic work runs, which is also how long a
+// button press can wait before it is acted on. (The buttons themselves are
+// read, and presses timed, by the hardware layer on its own schedule.)
+constexpr TickType_t kTickPeriod = pdMS_TO_TICKS(10);
 
 // Plain console output goes through the ROM printf: it is unbuffered and does
 // not touch the C library's buffered stdio. This toolchain's picolibc has an

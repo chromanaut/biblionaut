@@ -92,8 +92,10 @@ constexpr std::int64_t kMaxBusyUs = 30'000'000;
 constexpr std::uint8_t LowByte(std::uint16_t value) noexcept { return static_cast<std::uint8_t>(value); }
 constexpr std::uint8_t HighByte(std::uint16_t value) noexcept { return static_cast<std::uint8_t>(value >> 8U); }
 
-// At least `milliseconds`, letting other tasks run meanwhile.
-void SleepAtLeastMs(std::uint32_t milliseconds) noexcept { vTaskDelay((milliseconds / portTICK_PERIOD_MS) + 2); }
+// At least `milliseconds`, letting other tasks run meanwhile. A delay of n
+// ticks ends at the n-th tick from now, which may be only just more than
+// n - 1 tick periods away; hence the one extra.
+void SleepAtLeastMs(std::uint32_t milliseconds) noexcept { vTaskDelay((milliseconds / portTICK_PERIOD_MS) + 1); }
 
 class X4Display final : public core::Display {
  public:
@@ -187,6 +189,21 @@ class X4Display final : public core::Display {
     return gpio_get_level(kPinBusy) != 0;
   }
 
+  [[nodiscard]] bool PowerOff() noexcept override {
+    if (!started_ || Busy()) {
+      return false;
+    }
+    if (!analogOn_) {
+      return true;
+    }
+    if (spi_device_acquire_bus(device_, portMAX_DELAY) != ESP_OK) {
+      return false;
+    }
+    const bool sent = SendPowerOff();
+    spi_device_release_bus(device_);
+    return sent;
+  }
+
   [[nodiscard]] bool Sleep() noexcept override {
     if (Busy()) {
       return false;
@@ -197,20 +214,14 @@ class X4Display final : public core::Display {
     if (spi_device_acquire_bus(device_, portMAX_DELAY) != ESP_OK) {
       return false;
     }
-    if (analogOn_) {
-      // Switch the drive voltages off, which the controller does as an
-      // activation with only the "off" steps set.
-      Command(kCmdUpdateControl1, kIgnoreOldPlane);
-      Command(kCmdUpdateControl2, static_cast<std::uint8_t>(kStepAnalogOff | kStepClockOff));
-      ExpectBusy(kSpanPanelPowerOff, 0);
-      Command(kCmdActivate);
+    if (analogOn_ && SendPowerOff()) {
       WaitUntilIdle(2000);
-      analogOn_ = false;
     }
     // Deep sleep, keeping the planes. Only a reset wakes the controller.
     Command(kCmdDeepSleep, std::uint8_t{0x01});
     spi_device_release_bus(device_);
     started_ = false;
+    analogOn_ = false;
     return true;
   }
 
@@ -257,6 +268,22 @@ class X4Display final : public core::Display {
       return false;
     }
     attached_ = true;
+    return true;
+  }
+
+  // Starts switching the drive voltages off, which the controller does as an
+  // activation with only the "off" steps set. The bus must be held.
+  bool SendPowerOff() noexcept {
+    if (!Command(kCmdUpdateControl1, kIgnoreOldPlane) ||
+        !Command(kCmdUpdateControl2, static_cast<std::uint8_t>(kStepAnalogOff | kStepClockOff))) {
+      return false;
+    }
+    ExpectBusy(kSpanPanelPowerOff, 0);
+    if (!Command(kCmdActivate)) {
+      expectingIdle_ = false;
+      return false;
+    }
+    analogOn_ = false;
     return true;
   }
 

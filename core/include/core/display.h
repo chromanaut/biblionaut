@@ -79,9 +79,16 @@ class Display {
   // True while the panel is working on something and will take nothing new.
   virtual bool Busy() noexcept = 0;
 
-  // Puts the panel into its lowest-power state. The image stays on it. If a
-  // refresh left the panel powered, this switches it off first, which takes
-  // a fraction of a second. Returns false if the panel is busy.
+  // Switches the panel's drive voltages off, if a refresh left them on, and
+  // returns at once; Busy() says when it is done. The image stays, and so do
+  // both planes, so the next refresh needs nothing rewritten. Returns false
+  // if the panel is not started or is busy.
+  [[nodiscard]] virtual bool PowerOff() noexcept = 0;
+
+  // Puts the panel into its lowest-power state. The image stays on it, but
+  // the planes are not kept: Start() begins again with both white. If the
+  // drive voltages are still on, this switches them off first and waits,
+  // which takes a fraction of a second. Returns false if the panel is busy.
   [[nodiscard]] virtual bool Sleep() noexcept = 0;
 
  protected:

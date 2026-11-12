@@ -5,6 +5,7 @@ add_library(bn_core STATIC
   src/checksum.cpp
   src/crash.cpp
   src/frame.cpp
+  src/input.cpp
   src/metrics.cpp
   src/trace.cpp
   src/trace_stream.cpp)

@@ -4,6 +4,7 @@
 #include "core/clock.h"
 #include "core/crash.h"
 #include "core/display.h"
+#include "core/input.h"
 #include "core/memory_probe.h"
 #include "core/trace.h"
 
@@ -38,8 +39,17 @@ core::CrashStore& SystemCrashStore() noexcept;
 // The e-ink panel. On the desktop it is a simulation that keeps the two
 // planes in memory and works out what a real panel would show; when the
 // BN_DISPLAY_OUT environment variable is set, it saves that picture at every
-// refresh as BN_DISPLAY_OUT-001.png, -002.png and so on.
+// refresh as BN_DISPLAY_OUT-001.png, -002.png and so on. It takes as long
+// over a refresh as a real panel does; BN_DISPLAY_SPEED=20 makes it twenty
+// times quicker.
 core::Display& SystemDisplay() noexcept;
+
+// The buttons. The desktop has none: there the BN_INPUT environment variable
+// can script some, as presses at times in milliseconds after the start,
+// "2000:down,2600:down,4000:confirm"; a third field gives how long a button
+// is held, also in milliseconds ("5000:power:1500"). The names are back,
+// confirm, left, right, up, down and power.
+core::Input& SystemInput() noexcept;
 
 // Short name of the port, for the boot banner and diagnostics.
 const char* PortName() noexcept;

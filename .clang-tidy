@@ -1,0 +1,122 @@
+# Static analysis for Biblionaut's own code. Run with:
+#
+#   cmake --preset tidy && cmake --build --preset tidy
+#
+# Every finding is an error, so the list is deliberately limited to checks
+# that find mistakes or enforce a rule the project relies on. Style is
+# clang-format's job.
+#
+# Whole groups: bugprone, clang-analyzer, misc, performance, portability.
+# From cppcoreguidelines, modernize and readability, only the checks named.
+#
+# Switched off within the whole groups, and why:
+#   bugprone-easily-swappable-parameters   fires on most functions taking two sizes
+#   misc-include-cleaner                   demands a direct include for every std name
+#   misc-non-private-member-variables-in-classes   plain structs are fine
+#   portability-avoid-pragma-once          '#pragma once' is the project convention
+#
+# cppcoreguidelines-no-malloc is on so that malloc and free stay inside the
+# operator new / delete replacements, the one file that is allowed them.
+#
+# readability-identifier-naming enforces the naming convention:
+#   namespaces                         snake_case
+#   classes, structs, aliases, functions, methods, template parameters   PascalCase
+#   variables, parameters, members     camelCase (private members end in '_')
+#   constants (constexpr, and const at namespace, class or static scope)   kPascalCase
+#   macros                             UPPER_CASE
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  misc-*,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  performance-*,
+  portability-*,
+  -portability-avoid-pragma-once,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-missing-std-forward,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-no-malloc,
+  cppcoreguidelines-prefer-member-initializer,
+  cppcoreguidelines-pro-type-const-cast,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-rvalue-reference-param-not-moved,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-special-member-functions,
+  cppcoreguidelines-virtual-class-destructor,
+  modernize-deprecated-headers,
+  modernize-loop-convert,
+  modernize-redundant-void-arg,
+  modernize-use-bool-literals,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+  readability-avoid-const-params-in-decls,
+  readability-braces-around-statements,
+  readability-const-return-type,
+  readability-delete-null-pointer,
+  readability-duplicate-include,
+  readability-else-after-return,
+  readability-identifier-naming,
+  readability-implicit-bool-conversion,
+  readability-make-member-function-const,
+  readability-misleading-indentation,
+  readability-misplaced-array-index,
+  readability-non-const-parameter,
+  readability-redundant-casting,
+  readability-redundant-control-flow,
+  readability-redundant-declaration,
+  readability-redundant-member-init,
+  readability-simplify-boolean-expr,
+  readability-static-accessed-through-instance,
+  readability-suspicious-call-argument
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/(core|hw|epub|draw|layout|reader|app|tests)/.*'
+CheckOptions:
+  # Interfaces declare a protected destructor and nothing else.
+  cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor: true
+  # Deleting the copy operations already makes a type immovable.
+  cppcoreguidelines-special-member-functions.AllowMissingMoveFunctionsWhenCopyIsDeleted: true
+  # Arena storage is deliberately left uninitialised.
+  cppcoreguidelines-pro-type-member-init.IgnoreArrays: true
+  # Flag variables that could be const, but not every pointer whose pointee could be.
+  misc-const-correctness.WarnPointersAsPointers: false
+  # 'if (pointer)' is the project idiom for a null test.
+  readability-implicit-bool-conversion.AllowPointerConditions: true
+  readability-identifier-naming.NamespaceCase: lower_case
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.UnionCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.TypeAliasCase: CamelCase
+  readability-identifier-naming.TypedefCase: CamelCase
+  readability-identifier-naming.TemplateParameterCase: CamelCase
+  readability-identifier-naming.ConceptCase: CamelCase
+  readability-identifier-naming.FunctionCase: CamelCase
+  readability-identifier-naming.MethodCase: CamelCase
+  # Entry points whose names are fixed by the platform.
+  readability-identifier-naming.FunctionIgnoredRegexp: '^(main|app_main)$'
+  readability-identifier-naming.VariableCase: camelBack
+  readability-identifier-naming.ParameterCase: camelBack
+  readability-identifier-naming.MemberCase: camelBack
+  # Private and protected members need their own case entries: once a suffix
+  # is set for them, they no longer inherit MemberCase.
+  readability-identifier-naming.PrivateMemberCase: camelBack
+  readability-identifier-naming.PrivateMemberSuffix: '_'
+  readability-identifier-naming.ProtectedMemberCase: camelBack
+  readability-identifier-naming.ProtectedMemberSuffix: '_'
+  # Constants: kPascalCase. Local 'const' variables are ordinary variables.
+  readability-identifier-naming.ConstexprVariableCase: CamelCase
+  readability-identifier-naming.ConstexprVariablePrefix: k
+  readability-identifier-naming.GlobalConstantCase: CamelCase
+  readability-identifier-naming.GlobalConstantPrefix: k
+  readability-identifier-naming.StaticConstantCase: CamelCase
+  readability-identifier-naming.StaticConstantPrefix: k
+  readability-identifier-naming.ClassConstantCase: CamelCase
+  readability-identifier-naming.ClassConstantPrefix: k
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE

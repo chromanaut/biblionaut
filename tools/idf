@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Runs idf.py on the firmware project (app/firmware) with the ESP-IDF that
+# tools/setup-idf.sh installed under .esp/. Arguments are passed through:
+#
+#   tools/idf build
+#   tools/idf flash monitor
+#   tools/idf menuconfig
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+idf_dir="$root/.esp/esp-idf"
+
+if [ ! -f "$idf_dir/export.sh" ]; then
+  echo "error: ESP-IDF is not installed. Run tools/setup-idf.sh first." >&2
+  exit 1
+fi
+
+# Without this, ESP-IDF looks for its tools in ~/.espressif.
+export IDF_TOOLS_PATH="$root/.esp/tools"
+
+# export.sh is written to be sourced by an interactive shell and reads
+# variables that may be unset.
+set +u
+# shellcheck disable=SC1091
+. "$idf_dir/export.sh" >/dev/null
+set -u
+
+exec idf.py -C "$root/app/firmware" "$@"

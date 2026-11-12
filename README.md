@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder) and developer scripts |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder) and developer scripts (`bn-symbolize` for crash reports) |
 | `tests/` | Host tests |
 | `corpus/` | Test books |
 
@@ -122,6 +122,47 @@ passes its arguments through.
 
 Flashing replaces whatever firmware is on the device, including its
 bootloader and partition table.
+
+## Crash reports
+
+When the firmware stops unexpectedly (a processor fault, `abort()`, a failed
+assertion, running out of memory, a stack overflow), ESP-IDF prints what it
+knows on the console and restarts the device. Before that happens the
+firmware saves a report of its own: the reason, the task, the registers, the
+top of the stack and the last 32 trace records. The report sits in memory
+that survives a restart, and every later start sends it on the diagnostic
+stream, until the device loses power or crashes again. So after a crash,
+plug the device in and run `bn-trace`: the report is the first thing after
+the boot.
+
+The report gives addresses. `tools/bn-symbolize` turns them into functions
+and source lines:
+
+```
+./build/host/tools/trace/bn-trace | tools/bn-symbolize
+./build/host/tools/trace/bn-trace capture.bin | tools/bn-symbolize
+tools/bn-symbolize 0x4200614a
+```
+
+Addresses only mean something for the exact build that crashed. Every
+firmware build keeps a copy of its ELF file in `.elf-archive/` (ignored by
+git, the newest 40 are kept), named by its SHA-256; a report carries the
+start of that hash, and `bn-symbolize` uses it to pick the right file. If a
+report comes from a build that is not in the archive, its addresses are left
+alone; `--elf FILE` names a file to use regardless.
+
+To see a report without waiting for a bug, build a firmware that crashes on
+purpose ten seconds after it starts:
+
+```
+tools/idf -DBN_CRASH_TEST=fault build flash     # or abort, oom, stack
+./build/host/tools/trace/bn-trace | tools/bn-symbolize
+tools/idf -DBN_CRASH_TEST= build flash          # back to the normal firmware
+```
+
+It does not crash again on the restart that follows a crash. On the desktop,
+`BN_FAKE_CRASH=1` makes the application start with an invented report, which
+exercises everything after the crash itself.
 
 ## Checks
 

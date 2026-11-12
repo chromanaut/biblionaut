@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "core/byte_sink.h"
+#include "core/crash.h"
 #include "core/frame.h"
 #include "core/metrics.h"
 #include "core/trace.h"
@@ -20,7 +21,8 @@
 
 namespace bn::core {
 
-// Bumped whenever a frame's layout changes.
+// Bumped whenever a frame's layout changes. A new type of frame does not
+// change it: a reader skips types it does not know.
 //   1  first version
 //   2  text and metrics frames start with the time they were sent
 inline constexpr std::uint8_t kStreamProtocolVersion = 2;
@@ -31,6 +33,8 @@ inline constexpr std::size_t kMaxRecordsPerFrame = 16;
 inline constexpr std::size_t kWireRecordSize = 16;
 // Longest log or metrics text one frame carries; longer text is cut.
 inline constexpr std::size_t kMaxTextLength = 192;
+// Bytes of a crash report one frame carries.
+inline constexpr std::size_t kCrashPieceSize = 160;
 
 class TraceStream {
  public:
@@ -52,6 +56,13 @@ class TraceStream {
   // a frame, otherwise as several, all stamped with the same time. Returns
   // false if any of the frames was lost.
   bool SendMetrics(const MetricRegistry& registry) noexcept;
+
+  // Sends the piece of `report` that starts at `offset` of its encoded form
+  // and returns how many bytes of it went out: 0 if the sink had no room
+  // (try again later; this is not counted as a lost frame) or if `offset` is
+  // at the end. Call with the offset advanced by the result until it reaches
+  // EncodedCrashReportSize(report).
+  std::size_t SendCrashPiece(const CrashReport& report, std::size_t offset) noexcept;
 
   // Moves trace records from the tracer to the sink, oldest first, until the
   // tracer is empty, the sink is full, or a per-call limit is reached.

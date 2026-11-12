@@ -186,6 +186,30 @@ TEST(Tracer, CopyLatestReturnsTheNewestWithoutConsumingThem) {
   EXPECT_EQ(fixture.tracer.Drain(out), 4u);
 }
 
+TEST(Tracer, CopyLatestUnlockedGivesTheSameWithoutTheLock) {
+  TraceFixture<4> fixture;
+  for (std::uint8_t i = 0; i < 6; ++i) {
+    fixture.tracer.RecordInstant(IdOf(i), i);
+  }
+  const int locksBefore = fixture.sync.lockCount;
+
+  // A crash handler may run while the lock is held; it must not wait for it.
+  std::array<TraceRecord, 3> latest{};
+  ASSERT_EQ(fixture.tracer.CopyLatestUnlocked(latest), 3u);
+  EXPECT_EQ(latest[0].arg, 3u);
+  EXPECT_EQ(latest[2].arg, 5u);
+  EXPECT_EQ(fixture.sync.lockCount, locksBefore);
+
+  // Asking for more than the ring holds gives what there is.
+  std::array<TraceRecord, 8> all{};
+  ASSERT_EQ(fixture.tracer.CopyLatestUnlocked(all), 4u);
+  EXPECT_EQ(all[0].arg, 2u);
+  EXPECT_EQ(all[3].arg, 5u);
+
+  const TraceFixture<4> empty;
+  EXPECT_EQ(empty.tracer.CopyLatestUnlocked(all), 0u);
+}
+
 TEST(Tracer, CopyLatestStillSeesRecordsThatWereAlreadyDrained) {
   TraceFixture<4> fixture;
   fixture.tracer.RecordInstant(IdOf(1), 1);

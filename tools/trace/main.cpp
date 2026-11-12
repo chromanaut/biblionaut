@@ -196,6 +196,10 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "warning: %zu trace records were lost on the device (its buffer filled)\n",
                  stats.droppedRecords);
   }
+  if (stats.damagedCrashReports > 0) {
+    std::fprintf(stderr, "warning: %zu crash reports arrived incomplete or damaged and are not shown\n",
+                 stats.damagedCrashReports);
+  }
   if (stats.unsupportedFrames > 0) {
     std::fprintf(stderr, "warning: %zu frames were skipped (unknown type or stream protocol)\n",
                  stats.unsupportedFrames);

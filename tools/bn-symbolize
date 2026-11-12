@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Turns code addresses in bn-trace output into function names and source lines.
+
+A crash report gives addresses: where the processor was, and the values on
+the stack that could be return addresses. This reads text, copies it to its
+output, and under every line that contains code addresses adds what each one
+is:
+
+    tools/idf build                      # also archives the firmware's ELF file
+    bn-trace capture.bin | tools/bn-symbolize
+    bn-trace | tools/bn-symbolize        # live, from the device
+    tools/bn-symbolize 0x4200614a 0x42001514
+
+Addresses only mean something for the exact firmware that produced them, so
+the ELF file is chosen by the build id a crash report carries ("ELF 1a2b3c"):
+the start of the ELF file's SHA-256. Every firmware build puts a copy of its
+ELF file in .elf-archive/, named by that hash, and this looks there. Until a
+report names a build, the ELF file of the last local build is used. --elf
+overrides both.
+
+It also works on what ESP-IDF itself prints when the firmware crashes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_ARCHIVE = ROOT / ".elf-archive"
+DEFAULT_ELF = ROOT / "app" / "firmware" / "build" / "biblionaut.elf"
+# ELF files kept in the archive; the oldest go first.
+ARCHIVE_LIMIT = 40
+
+ADDRESS = re.compile(r"\b0x([0-9a-fA-F]{8})\b")
+# A crash report's "(ELF 1a2b3c4d5)" and ESP-IDF's "ELF file SHA256: 1a2b3c4d5".
+BUILD_ID = re.compile(r"\(ELF ([0-9a-f]{6,64})\)|ELF file SHA256:\s*([0-9a-f]{6,64})")
+
+# Where an ESP32-C3 runs code from: its ROM, RAM, and flash.
+CODE_RANGES = ((0x40000000, 0x40060000), (0x40380000, 0x403E0000), (0x42000000, 0x42800000))
+
+
+def is_code_address(value: int) -> bool:
+    return value % 2 == 0 and any(low <= value < high for low, high in CODE_RANGES)
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def archive_elf(elf: Path, label: str, archive: Path) -> Path:
+    """Copies `elf` into the archive under its hash and drops the oldest copies."""
+    archive.mkdir(parents=True, exist_ok=True)
+    safe_label = re.sub(r"[^A-Za-z0-9._+-]", "_", label) or "firmware"
+    target = archive / f"{safe_label}-{sha256_of(elf)}.elf"
+    if not target.exists():
+        shutil.copyfile(elf, target)
+    os.utime(target)  # Most recently built counts as newest.
+    kept = sorted(archive.glob("*.elf"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for old in kept[ARCHIVE_LIMIT:]:
+        old.unlink()
+    return target
+
+
+def find_in_archive(build_id: str, archive: Path) -> Path | None:
+    """The archived ELF file whose hash starts with `build_id`, if there is one."""
+    if not archive.is_dir():
+        return None
+    for path in sorted(archive.glob("*.elf")):
+        file_hash = path.stem.rsplit("-", 1)[-1]
+        if file_hash.startswith(build_id):
+            return path
+    return None
+
+
+def find_addr2line(explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    from_environment = os.environ.get("BN_ADDR2LINE")
+    if from_environment:
+        return from_environment
+    name = "riscv32-esp-elf-addr2line"
+    local = sorted((ROOT / ".esp" / "tools" / "tools" / "riscv32-esp-elf").glob(f"**/bin/{name}"))
+    if local:
+        return str(local[-1])
+    return shutil.which(name)
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+class Symbolizer:
+    def __init__(self, addr2line: str, elf: Path | None, elf_is_fixed: bool, archive: Path, out) -> None:
+        self.addr2line = addr2line
+        self.elf = elf
+        self.elf_is_fixed = elf_is_fixed  # Given with --elf: never switched.
+        self.elf_hash: str | None = None
+        self.archive = archive
+        self.out = out
+        self.cache: dict[tuple[Path, int], list[str]] = {}
+        # Until some text names its build, the ELF file is a guess: the last
+        # local build. Addresses looked up on a guess that turns out wrong
+        # get a warning.
+        self.guessing = elf is not None and not elf_is_fixed
+        self.looked_up_on_a_guess = False
+
+    def note(self, text: str) -> None:
+        print(f"      [bn-symbolize] {text}", file=self.out)
+
+    def current_hash(self) -> str | None:
+        if self.elf is not None and self.elf_hash is None:
+            self.elf_hash = sha256_of(self.elf)
+        return self.elf_hash
+
+    def use_build(self, build_id: str) -> None:
+        """Reacts to a line naming the firmware the addresses around it belong to."""
+        current = self.current_hash()
+        if current is not None and current.startswith(build_id):
+            self.guessing = False  # The guess, if it was one, was right.
+            return
+        if self.elf_is_fixed:
+            self.note(f"warning: {display_path(self.elf)} is not firmware {build_id}; its answers may be wrong")
+            return
+        if self.guessing and self.looked_up_on_a_guess:
+            self.note(f"warning: addresses above were looked up in {display_path(self.elf)}, a different build")
+        self.guessing = False
+        self.looked_up_on_a_guess = False
+        archived = find_in_archive(build_id, self.archive)
+        if archived is not None:
+            self.elf, self.elf_hash = archived, None
+            self.note(f"using {display_path(archived)}")
+        else:
+            self.elf, self.elf_hash = None, None
+            self.note(
+                f"no ELF file for firmware {build_id} in {display_path(self.archive)}; "
+                "its addresses are left as they are"
+            )
+
+    def lookup(self, addresses: list[int]) -> list[str]:
+        """Lines describing each address that the ELF file knows."""
+        if self.elf is None:
+            return []
+        missing = [address for address in addresses if (self.elf, address) not in self.cache]
+        if missing:
+            result = subprocess.run(
+                [self.addr2line, "-pfiaC", "-e", str(self.elf), *[f"0x{address:08x}" for address in missing]],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            # One line per address, starting "0x...:", then "(inlined by)" lines.
+            current: int | None = None
+            for line in result.stdout.splitlines():
+                match = re.match(r"0x([0-9a-fA-F]+): ", line)
+                if match:
+                    current = int(match.group(1), 16)
+                    self.cache[(self.elf, current)] = [] if line.rstrip().endswith(("?? ??:0", "?? at ??:0")) else [line]
+                elif current is not None and self.cache[(self.elf, current)]:
+                    self.cache[(self.elf, current)].append(line)
+            for address in missing:
+                self.cache.setdefault((self.elf, address), [])
+        lines: list[str] = []
+        for address in addresses:
+            lines.extend(self.cache[(self.elf, address)])
+        return [line.replace(str(ROOT) + os.sep, "") for line in lines]
+
+    def process(self, line: str) -> None:
+        print(line, file=self.out)
+        build = BUILD_ID.search(line)
+        addresses: list[int] = []
+        for match in ADDRESS.finditer(line):
+            value = int(match.group(1), 16)
+            if is_code_address(value) and value not in addresses:
+                addresses.append(value)
+        # A line naming the build applies to its own addresses too, unless it
+        # is ESP-IDF's, which comes after the addresses it is about.
+        if build and build.group(1):
+            self.use_build(build.group(1))
+        described = self.lookup(addresses)
+        for text in described:
+            print(f"      {text}", file=self.out)
+        if described and self.guessing:
+            self.looked_up_on_a_guess = True
+        if build and build.group(2):
+            self.use_build(build.group(2))
+        self.out.flush()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Turns code addresses in bn-trace output into function names and source lines.",
+        epilog="With no ADDRESS, reads text on standard input and writes it, annotated, to standard output.",
+    )
+    parser.add_argument("addresses", nargs="*", metavar="ADDRESS", help="addresses to look up, such as 0x4200614a")
+    parser.add_argument("--elf", type=Path, help="the ELF file to look addresses up in, whatever build the text names")
+    parser.add_argument("--archive-dir", type=Path, default=DEFAULT_ARCHIVE, help="where archived ELF files are kept")
+    parser.add_argument("--addr2line", help="the addr2line program to use (default: the one ESP-IDF installed)")
+    parser.add_argument("--archive", type=Path, metavar="ELF", help="add ELF to the archive and exit (used by the build)")
+    parser.add_argument("--label", default="firmware", help="with --archive: the firmware's version, for the file name")
+    arguments = parser.parse_args()
+
+    if arguments.archive is not None:
+        if not arguments.archive.is_file():
+            print(f"error: {arguments.archive} does not exist", file=sys.stderr)
+            return 1
+        target = archive_elf(arguments.archive, arguments.label, arguments.archive_dir)
+        print(f"Archived the ELF file as {display_path(target)}")
+        return 0
+
+    addr2line = find_addr2line(arguments.addr2line)
+    if addr2line is None:
+        print("error: riscv32-esp-elf-addr2line not found. Run tools/setup-idf.sh, or pass --addr2line.", file=sys.stderr)
+        return 1
+
+    elf = arguments.elf if arguments.elf is not None else (DEFAULT_ELF if DEFAULT_ELF.is_file() else None)
+    if arguments.elf is not None and not arguments.elf.is_file():
+        print(f"error: {arguments.elf} does not exist", file=sys.stderr)
+        return 1
+    symbolizer = Symbolizer(addr2line, elf, arguments.elf is not None, arguments.archive_dir, sys.stdout)
+
+    if arguments.addresses:
+        if elf is None:
+            print("error: no ELF file: build the firmware (tools/idf build) or pass --elf", file=sys.stderr)
+            return 1
+        failed = False
+        for text in arguments.addresses:
+            try:
+                value = int(text, 16)
+            except ValueError:
+                print(f"error: '{text}' is not a hexadecimal address", file=sys.stderr)
+                failed = True
+                continue
+            described = symbolizer.lookup([value])
+            for line in described or [f"0x{value:08x}: not in {display_path(elf)}"]:
+                print(line)
+        return 1 if failed else 0
+
+    try:
+        for line in sys.stdin:
+            symbolizer.process(line.rstrip("\n"))
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

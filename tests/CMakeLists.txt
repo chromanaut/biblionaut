@@ -33,6 +33,7 @@ bn_add_unit_test(core_tests
     unit/core/arena_test.cpp
     unit/core/byte_source_test.cpp
     unit/core/checksum_test.cpp
+    unit/core/crash_test.cpp
     unit/core/frame_test.cpp
     unit/core/heap_test.cpp
     unit/core/metrics_test.cpp
@@ -61,3 +62,15 @@ add_test(
     -DTOOL=$<TARGET_FILE:bn-trace>
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/trace_roundtrip.cmake)
+
+# tools/bn-symbolize against a stand-in ELF archive and addr2line.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  add_test(
+    NAME e2e.Symbolize
+    COMMAND ${CMAKE_COMMAND}
+      -DPYTHON=${Python3_EXECUTABLE}
+      -DSCRIPT=${PROJECT_SOURCE_DIR}/tools/bn-symbolize
+      -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/symbolize.cmake)
+endif()

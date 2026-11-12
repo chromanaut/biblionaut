@@ -2,7 +2,9 @@
 #
 #   1. run the desktop application with its serial line captured to a file;
 #   2. decode the capture with bn-trace;
-#   3. check what came out.
+#   3. check what came out;
+#   4. do it again with the application holding a crash report from an
+#      earlier run (an invented one), and check that the report arrives.
 #
 # Needs -DAPP=<biblionaut-desktop> -DTOOL=<bn-trace> -DWORK_DIR=<scratch directory>.
 set(capture "${WORK_DIR}/trace_roundtrip.bin")
@@ -54,3 +56,37 @@ if(NOT found_start)
   message(FATAL_ERROR "the timeline has no app_start slice")
 endif()
 message(STATUS "trace round trip: ${event_count} timeline events")
+
+# A run that starts with a crash report to pass on.
+set(crash_capture "${WORK_DIR}/trace_roundtrip_crash.bin")
+file(REMOVE "${crash_capture}")
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "BN_SERIAL_OUT=${crash_capture}" "BN_FAKE_CRASH=1" "${APP}" --run-ms 300
+  RESULT_VARIABLE app_result)
+if(NOT app_result EQUAL 0)
+  message(FATAL_ERROR "the desktop application failed with a crash report to send: ${app_result}")
+endif()
+execute_process(
+  COMMAND "${TOOL}" "${crash_capture}"
+  RESULT_VARIABLE tool_result
+  OUTPUT_VARIABLE tool_output
+  ERROR_VARIABLE tool_errors)
+if(NOT tool_result EQUAL 0)
+  message(FATAL_ERROR "bn-trace failed on the capture with a crash report: ${tool_result}\n${tool_errors}")
+endif()
+foreach(expected
+    "=== crash report: the run before this one ended in a crash ==="
+    "reason     Load access fault"
+    "mepc    0x4200a1b2"
+    "sp+0x004  0x4200c3d4"
+    "reader/heartbeat uptime_s=12"
+    "=== end of crash report")
+  string(FIND "${tool_output}" "${expected}" found)
+  if(found EQUAL -1)
+    message(FATAL_ERROR "bn-trace did not print '${expected}'. It printed:\n${tool_output}")
+  endif()
+endforeach()
+if(tool_errors MATCHES "warning")
+  message(FATAL_ERROR "bn-trace warned about the capture with a crash report:\n${tool_errors}")
+endif()
+message(STATUS "crash report round trip: ok")

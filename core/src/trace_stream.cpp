@@ -65,6 +65,21 @@ bool TraceStream::SendMetrics(const MetricRegistry& registry) noexcept {
   return allSent;
 }
 
+std::size_t TraceStream::SendCrashPiece(const CrashReport& report, std::size_t offset) noexcept {
+  std::array<std::uint8_t, kCrashPieceSize> piece{};
+  const std::size_t size = EncodeCrashReport(report, offset, piece);
+  if (size == 0) {
+    return 0;
+  }
+  std::array<std::uint8_t, MaxEncodedFrameSize(4 + kCrashPieceSize)> buffer{};
+  FrameWriter writer(FrameType::kCrash, buffer);
+  writer.PutU16(static_cast<std::uint16_t>(offset));
+  writer.PutU16(static_cast<std::uint16_t>(EncodedCrashReportSize(report)));
+  writer.Put(std::span(piece).first(size));
+  const std::span<const std::uint8_t> frame = writer.Finish();
+  return !frame.empty() && sink_.Write(frame) ? size : 0;
+}
+
 void TraceStream::EncodePendingTraceFrame(std::size_t count) noexcept {
   FrameWriter writer(FrameType::kTrace, pending_);
   // Lets the reader see that records went missing before this frame.

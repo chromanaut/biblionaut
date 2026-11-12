@@ -12,9 +12,12 @@
 #include <string_view>
 #include <vector>
 
+#include "core/crash.h"
+#include "core/endian.h"
 #include "core/frame.h"
 #include "core/metrics.h"
 #include "core/trace_stream.h"
+#include "crash_fakes.h"
 #include "reader/trace_ids.h"
 #include "stream_fakes.h"
 #include "trace/decoder.h"
@@ -58,7 +61,56 @@ struct Device {
   }
 
   void Raw(std::string_view text) { sink.received.insert(sink.received.end(), text.begin(), text.end()); }
+
+  // Sends all of a crash report, as the application does over several ticks.
+  void SendCrash(const bn::core::CrashReport& report) {
+    std::size_t offset = 0;
+    while (const std::size_t sent = stream.SendCrashPiece(report, offset)) {
+      offset += sent;
+    }
+  }
 };
+
+// A crash an ESP32-C3 could have left: a fault in flash code, with a short
+// stack and two trace records leading up to it.
+bn::core::CrashReport SmallCrashReport() {
+  bn::core::CrashReport report{};
+  report.arch = bn::core::CrashArch::kEsp32C3;
+  report.timeUs = 12'345'678;
+  report.bootsSince = 1;
+  bn::core::SetCrashText(report.reason, "Load access fault");
+  bn::core::SetCrashText(report.task, "main");
+  bn::core::SetCrashText(report.version, "0.1.0-test");
+  bn::core::SetCrashText(report.buildId, "1a2b3c4d5");
+  report.registerCount = bn::core::kCrashMaxRegisters;
+  report.registers[0] = 0x4200A1B2;   // mepc
+  report.registers[1] = 0x4200C3D4;   // ra
+  report.registers[2] = 0x3FC9F000;   // sp
+  report.registers[34] = 5;           // mcause
+  report.registers[35] = 0x00000010;  // mtval
+  report.stackAddress = 0x3FC9F000;
+  report.stackSize = 24;
+  // A saved register, a return address into flash, a data pointer, a return
+  // address into RAM code, an odd value in the flash range, and zero.
+  const std::array<std::uint32_t, 6> words = {0x00000001, 0x4200C3D4, 0x3FC9F040, 0x40381234, 0x42001123, 0};
+  for (std::size_t i = 0; i < words.size(); ++i) {
+    bn::core::StoreLe32(std::span(report.stack).subspan(i * 4).first<4>(), words[i]);
+  }
+  report.traceCount = 2;
+  report.trace[0] = bn::core::TraceRecord{.startUs = 12'000'000,
+                                          .durationUs = 0,
+                                          .arg = 12,
+                                          .id = kInstantHeartbeat,
+                                          .task = 0,
+                                          .kind = bn::core::TraceKind::kInstant};
+  report.trace[1] = bn::core::TraceRecord{.startUs = 12'300'000,
+                                          .durationUs = 250,
+                                          .arg = 0,
+                                          .id = kSpanAppStart,
+                                          .task = 1,
+                                          .kind = bn::core::TraceKind::kSpan};
+  return report;
+}
 
 std::vector<Event> Decode(std::span<const std::uint8_t> bytes, StreamDecoder& decoder) {
   decoder.Feed(bytes);
@@ -332,6 +384,97 @@ TEST(StreamDecoder, SkipsFramesOfAProtocolItDoesNotKnow) {
   EXPECT_NE(bn::trace_tool::FormatEvent(events[0]).find("frames are skipped"), std::string::npos);
 }
 
+TEST(StreamDecoder, PutsACrashReportBackTogetherFromItsPieces) {
+  Device<> device;
+  device.stream.SendHello("0.1.0-test");
+  const bn::core::CrashReport report = bn::test::SampleCrashReport();
+  device.SendCrash(report);
+  device.Instant(kInstantHeartbeat, 1'000'000, 1);
+  device.PumpAll();
+
+  StreamDecoder decoder;
+  const std::vector<Event> events = Decode(device.sink.received, decoder);
+  ASSERT_EQ(events.size(), 3u);
+  EXPECT_EQ(events[1].kind, EventKind::kCrash);
+  EXPECT_EQ(events[1].boot, 1);
+  EXPECT_EQ(events[1].text, "Load access fault");
+  ASSERT_NE(events[1].crash, nullptr);
+  EXPECT_EQ(events[1].crash->bootsSince, 3u);
+  EXPECT_EQ(events[1].crash->timeUs, report.timeUs);
+  EXPECT_EQ(events[1].crash->registers, report.registers);
+  EXPECT_EQ(events[1].crash->stack, report.stack);
+  EXPECT_EQ(events[1].crash->trace[31].arg, report.trace[31].arg);
+  EXPECT_EQ(events[2].kind, EventKind::kInstant);
+
+  EXPECT_EQ(decoder.Stats().crashReports, 1u);
+  EXPECT_EQ(decoder.Stats().damagedCrashReports, 0u);
+  EXPECT_EQ(decoder.Stats().unsupportedFrames, 0u);
+}
+
+TEST(StreamDecoder, DoesNotShowACrashReportWithAPieceMissing) {
+  const bn::core::CrashReport report = bn::test::SampleCrashReport();
+  Device<> device;
+  device.stream.SendHello("0.1.0-test");
+  std::size_t offset = 0;
+  for (int piece = 0;; ++piece) {
+    const std::size_t before = device.sink.received.size();
+    const std::size_t sent = device.stream.SendCrashPiece(report, offset);
+    if (sent == 0) {
+      break;
+    }
+    offset += sent;
+    if (piece == 2) {
+      device.sink.received.resize(before);  // The third piece never arrives.
+    }
+  }
+
+  StreamDecoder decoder;
+  const std::vector<Event> events = Decode(device.sink.received, decoder);
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].kind, EventKind::kHello);
+  EXPECT_EQ(decoder.Stats().crashReports, 0u);
+  EXPECT_EQ(decoder.Stats().damagedCrashReports, 1u);
+}
+
+TEST(StreamDecoder, ARestartPartWayThroughACrashReportStartsItAgain) {
+  const bn::core::CrashReport report = SmallCrashReport();
+  Device<> device;
+  device.stream.SendHello("0.1.0-test");
+  ASSERT_GT(device.stream.SendCrashPiece(report, 0), 0u);
+  // The device restarts and sends the report from the beginning, now one
+  // restart older.
+  bn::core::CrashReport later = report;
+  later.bootsSince = 2;
+  device.stream.SendHello("0.1.0-test");
+  device.SendCrash(later);
+
+  StreamDecoder decoder;
+  const std::vector<Event> events = Decode(device.sink.received, decoder);
+  ASSERT_EQ(events.size(), 3u);
+  EXPECT_EQ(events[2].kind, EventKind::kCrash);
+  EXPECT_EQ(events[2].boot, 2);
+  EXPECT_EQ(events[2].crash->bootsSince, 2u);
+  EXPECT_EQ(decoder.Stats().crashReports, 1u);
+  EXPECT_EQ(decoder.Stats().damagedCrashReports, 1u);
+}
+
+TEST(StreamDecoder, IgnoresACrashPieceThatClaimsMoreThanItsReport) {
+  // A piece whose offset and size run past the stated total is not trusted.
+  std::array<std::uint8_t, 64> buffer{};
+  bn::core::FrameWriter writer(bn::core::FrameType::kCrash, buffer);
+  writer.PutU16(0);
+  writer.PutU16(4);
+  for (std::uint8_t i = 0; i < 8; ++i) {
+    writer.Put(i);
+  }
+  const std::span<const std::uint8_t> frame = writer.Finish();
+
+  StreamDecoder decoder;
+  EXPECT_TRUE(Decode(frame, decoder).empty());
+  EXPECT_EQ(decoder.Stats().crashReports, 0u);
+  EXPECT_EQ(decoder.Stats().damagedCrashReports, 1u);
+}
+
 TEST(BootFilter, DropsWhatCameBeforeTheRestartedDeviceAnnouncedItself) {
   // What the tool sees after restarting a device that had trace buffered:
   // half a frame, old records, then the new boot.
@@ -466,6 +609,95 @@ TEST(FormatEvent, WritesOneReadableLinePerEvent) {
   EXPECT_EQ(FormatEvent(event), "[     5.017809] !! 3 trace records were lost on the device before this point");
 }
 
+TEST(FormatEvent, WritesACrashReportAsABlockOfLines) {
+  Device<> device;
+  device.stream.SendHello("0.1.0-test");
+  device.SendCrash(SmallCrashReport());
+  const std::vector<Event> events = Decode(device.sink.received);
+  ASSERT_EQ(events.size(), 2u);
+
+  const std::string text = bn::trace_tool::FormatEvent(events[1]);
+  const auto has = [&text](std::string_view piece) { return text.find(piece) != std::string::npos; };
+  EXPECT_TRUE(text.starts_with("=== crash report: the run before this one ended in a crash ===\n")) << text;
+  EXPECT_TRUE(has("\n  reason     Load access fault\n")) << text;
+  EXPECT_TRUE(has("\n  firmware   0.1.0-test  (ELF 1a2b3c4d5)\n")) << text;
+  EXPECT_TRUE(has("\n  when       12.345678 s after it started, in task main\n")) << text;
+  EXPECT_TRUE(has("  registers  mepc    0x4200a1b2  ra      0x4200c3d4  sp      0x3fc9f000  gp      0x00000000\n"))
+      << text;
+  EXPECT_TRUE(has("mcause  0x00000005  mtval   0x00000010\n")) << text;
+
+  // Only even values in a code range are offered as return addresses.
+  EXPECT_TRUE(
+      has("  stack      24 bytes saved from 0x3fc9f000; values in them that could be return addresses:\n"
+          "             sp+0x004  0x4200c3d4\n"
+          "             sp+0x00c  0x40381234\n"
+          "  trace "))
+      << text;
+
+  // The trace is placed in time by counting back from the crash.
+  EXPECT_TRUE(
+      has("  trace      the last 2 records before the crash:\n"
+          "             [    12.000000] task 0  reader/heartbeat uptime_s=12\n"
+          "             [    12.300000] task 1  reader/app_start  250 us\n"))
+      << text;
+  EXPECT_TRUE(text.ends_with("==="));
+  EXPECT_NE(text.back(), '\n');
+}
+
+TEST(FormatEvent, SaysHowManyRestartsAgoAnOlderCrashWasAndCopesWithMissingParts) {
+  bn::core::CrashReport report{};
+  report.bootsSince = 4;
+  bn::core::SetCrashText(report.reason, "abort() was called at PC 0x42001234");
+  Device<> device;
+  device.SendCrash(report);
+  const std::vector<Event> events = Decode(device.sink.received);
+  ASSERT_EQ(events.size(), 1u);
+
+  const std::string text = bn::trace_tool::FormatEvent(events[0]);
+  const auto has = [&text](std::string_view piece) { return text.find(piece) != std::string::npos; };
+  EXPECT_TRUE(text.starts_with("=== crash report: 4 restarts ago ended in a crash ===\n")) << text;
+  EXPECT_TRUE(has("  firmware   (not recorded)\n")) << text;
+  EXPECT_TRUE(has("in task (unknown)\n")) << text;
+  EXPECT_TRUE(has("  stack      0 bytes saved from 0x00000000; nothing in them looks like a return address\n")) << text;
+  EXPECT_TRUE(has("  trace      none recorded before the crash\n")) << text;
+}
+
+TEST(FormatEvent, PlacesCrashTraceCorrectlyWhenTheClockWrappedBeforeTheCrash) {
+  // The crash came 5 seconds after the 32-bit clock wrapped; the record is
+  // from 2 seconds before the wrap.
+  bn::core::CrashReport report{};
+  report.arch = bn::core::CrashArch::kEsp32C3;
+  report.bootsSince = 1;
+  report.timeUs = (std::uint64_t{1} << 32U) + 5'000'000;
+  report.traceCount = 1;
+  report.trace[0] = bn::core::TraceRecord{.startUs = 0xFFFFFFFFU - 2'000'000 + 1,
+                                          .durationUs = 0,
+                                          .arg = 4292,
+                                          .id = kInstantHeartbeat,
+                                          .task = 0,
+                                          .kind = bn::core::TraceKind::kInstant};
+  Device<> device;
+  device.SendCrash(report);
+  const std::vector<Event> events = Decode(device.sink.received);
+  ASSERT_EQ(events.size(), 1u);
+  const std::string text = bn::trace_tool::FormatEvent(events[0]);
+  // 2^32 us is 4294.967296 s; two seconds before that.
+  EXPECT_NE(text.find("[  4292.967296] task 0  reader/heartbeat uptime_s=4292"), std::string::npos) << text;
+}
+
+TEST(IsCodeAddress, KnowsWhereAnEsp32C3RunsCodeFrom) {
+  using bn::core::CrashArch;
+  using bn::trace_tool::IsCodeAddress;
+  EXPECT_TRUE(IsCodeAddress(CrashArch::kEsp32C3, 0x42000020));   // Flash.
+  EXPECT_TRUE(IsCodeAddress(CrashArch::kEsp32C3, 0x40380000));   // Code in RAM.
+  EXPECT_TRUE(IsCodeAddress(CrashArch::kEsp32C3, 0x40000000));   // ROM.
+  EXPECT_FALSE(IsCodeAddress(CrashArch::kEsp32C3, 0x42000021));  // Odd.
+  EXPECT_FALSE(IsCodeAddress(CrashArch::kEsp32C3, 0x3FC90000));  // Data.
+  EXPECT_FALSE(IsCodeAddress(CrashArch::kEsp32C3, 0x42800000));  // Past the end of flash.
+  EXPECT_FALSE(IsCodeAddress(CrashArch::kEsp32C3, 0));
+  EXPECT_FALSE(IsCodeAddress(CrashArch::kUnknown, 0x42000020));
+}
+
 TEST(JsonEscape, EscapesWhatJsonRequires) {
   EXPECT_EQ(bn::trace_tool::JsonEscape("plain"), "plain");
   EXPECT_EQ(bn::trace_tool::JsonEscape("a \"quoted\" \\ path"), "a \\\"quoted\\\" \\\\ path");
@@ -522,6 +754,29 @@ TEST(PerfettoWriter, WritesSlicesMarkersCountersAndNames) {
   EXPECT_TRUE(has(R"({"ph":"C","name":"sd_reads","pid":2,"ts":2000000,"args":{"value":7}})"));
   EXPECT_TRUE(has(R"({"ph":"C","name":"heap_free","pid":2,"ts":2000000,"args":{"value":91000}})"));
   EXPECT_FALSE(has("never_set"));
+}
+
+TEST(PerfettoWriter, MarksACrashReportOnTheRunThatDeliveredIt) {
+  Device<> device;
+  device.stream.SendHello("0.1.0-test");
+  bn::core::CrashReport report = SmallCrashReport();
+  bn::core::SetCrashText(report.reason, "assert failed: \"x\"");
+  device.SendCrash(report);
+
+  bn::trace_tool::PerfettoWriter writer;
+  for (const Event& event : Decode(device.sink.received)) {
+    writer.Add(event);
+  }
+  std::ostringstream out;
+  writer.Write(out);
+  const std::string json = out.str();
+  const auto has = [&json](std::string_view piece) { return json.find(piece) != std::string::npos; };
+
+  EXPECT_TRUE(has(R"({"ph":"M","name":"thread_name","pid":2,"tid":1000,"args":{"name":"log"}})")) << json;
+  EXPECT_TRUE(has(R"j({"ph":"i","s":"p","name":"crash report: assert failed: \"x\"","cat":"crash","pid":2,"tid":1000,)j"
+                  R"j("ts":0,"args":{"reason":"assert failed: \"x\"","firmware":"0.1.0-test","elf":"1a2b3c4d5",)j"
+                  R"j("task":"main","restarts_since":1,"crashed_at_us":12345678,"pc":"0x4200a1b2"}})j"))
+      << json;
 }
 
 TEST(PerfettoWriter, AnEmptyTraceIsStillValid) {

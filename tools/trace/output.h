@@ -8,8 +8,13 @@
 
 namespace bn::trace_tool {
 
-// One line of readable text for an event, without a line ending.
+// Readable text for an event, without a line ending: one line, except for a
+// crash report, which is several.
 std::string FormatEvent(const Event& event);
+
+// Whether `address` is somewhere a program for `arch` can run from, which
+// makes a value found on the stack a possible return address.
+bool IsCodeAddress(core::CrashArch arch, std::uint32_t address) noexcept;
 
 // Collects events and writes them as a Chrome trace-event JSON file, which
 // ui.perfetto.dev and chrome://tracing open as a timeline.

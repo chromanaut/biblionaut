@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/endian.h"
+#include "crash_fakes.h"
 #include "stream_fakes.h"
 #include "trace_fakes.h"
 
@@ -203,6 +204,72 @@ TEST(TraceStream, SkipsAMetricThatCouldNeverFitAndSendsTheRest) {
   EXPECT_NE(joined.find("before=1"), std::string::npos);
   EXPECT_NE(joined.find("after=2"), std::string::npos);
   EXPECT_EQ(joined.find(hugeName), std::string::npos);
+}
+
+// The offset, total size and bytes of a crash frame.
+struct CrashPiece {
+  std::size_t offset = 0;
+  std::size_t total = 0;
+  std::vector<std::uint8_t> bytes;
+};
+
+CrashPiece ParseCrashPiece(const StreamItem& item) {
+  CrashPiece piece;
+  const std::span<const std::uint8_t> payload(item.payload);
+  EXPECT_TRUE(item.isFrame);
+  EXPECT_EQ(item.type, FrameType::kCrash);
+  EXPECT_GT(payload.size(), 4u);
+  if (payload.size() > 4) {
+    piece.offset = LoadLe16(payload.subspan(0).first<2>());
+    piece.total = LoadLe16(payload.subspan(2).first<2>());
+    piece.bytes.assign(payload.begin() + 4, payload.end());
+  }
+  return piece;
+}
+
+TEST(TraceStream, SendsACrashReportAsPiecesThatJoinIntoTheWhole) {
+  StreamFixture<4> fixture;
+  const bn::core::CrashReport report = bn::test::SampleCrashReport();
+  const std::size_t total = bn::core::EncodedCrashReportSize(report);
+
+  std::size_t offset = 0;
+  while (true) {
+    const std::size_t sent = fixture.stream.SendCrashPiece(report, offset);
+    if (sent == 0) {
+      break;
+    }
+    EXPECT_LE(sent, bn::core::kCrashPieceSize);
+    offset += sent;
+  }
+  EXPECT_EQ(offset, total);
+
+  std::vector<std::uint8_t> joined;
+  for (const StreamItem& item : fixture.Items()) {
+    const CrashPiece piece = ParseCrashPiece(item);
+    EXPECT_EQ(piece.offset, joined.size());
+    EXPECT_EQ(piece.total, total);
+    joined.insert(joined.end(), piece.bytes.begin(), piece.bytes.end());
+  }
+  bn::core::CrashReport decoded{};
+  ASSERT_TRUE(bn::core::DecodeCrashReport(joined, decoded));
+  EXPECT_EQ(bn::core::CrashText(decoded.reason), "Load access fault");
+  EXPECT_EQ(decoded.stack, report.stack);
+}
+
+TEST(TraceStream, ACrashPieceTheSinkRefusedCanBeSentAgain) {
+  StreamFixture<4> fixture;
+  const bn::core::CrashReport report = bn::test::SampleCrashReport();
+
+  fixture.sink.full = true;
+  EXPECT_EQ(fixture.stream.SendCrashPiece(report, 0), 0u);
+  EXPECT_TRUE(fixture.sink.received.empty());
+  // Nothing was lost: the caller still has the report and tries again.
+  EXPECT_EQ(fixture.stream.LostFrames(), 0u);
+
+  fixture.sink.full = false;
+  EXPECT_EQ(fixture.stream.SendCrashPiece(report, 0), bn::core::kCrashPieceSize);
+  ASSERT_EQ(fixture.Items().size(), 1u);
+  EXPECT_EQ(ParseCrashPiece(fixture.Items()[0]).offset, 0u);
 }
 
 TEST(TraceStream, CountsFramesTheSinkRefused) {

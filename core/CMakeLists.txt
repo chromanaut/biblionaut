@@ -3,6 +3,7 @@ add_library(bn_core STATIC
   src/arena.cpp
   src/byte_source.cpp
   src/checksum.cpp
+  src/crash.cpp
   src/frame.cpp
   src/metrics.cpp
   src/trace.cpp

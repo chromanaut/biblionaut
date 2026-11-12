@@ -1,7 +1,6 @@
 #include "draw/test_pattern.h"
 
 #include <algorithm>
-#include <cstring>
 
 namespace bn::draw {
 
@@ -116,7 +115,9 @@ constexpr int kStripPeriod = 80;
 }  // namespace
 
 void TestPattern::RenderRows(std::uint16_t firstRow, std::span<std::uint8_t> out) const noexcept {
-  std::memset(out.data(), 0xFF, out.size());
+  // Not memset: `out` may be empty, and memset must not be handed the null
+  // pointer an empty span can have, even to write nothing.
+  std::fill(out.begin(), out.end(), std::uint8_t{0xFF});
   const int width = width_;
   const int height = height_;
   if (width <= 0 || height <= 0) {

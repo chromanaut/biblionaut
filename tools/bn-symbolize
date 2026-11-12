@@ -121,6 +121,14 @@ def find_addr2line(explicit: str | None) -> str | None:
     return shutil.which(name)
 
 
+def shorten_source_path(described: str) -> str:
+    """Drops the repository's own path from the front of a source file's, in addr2line's "function at file:line".
+
+    Only there: the same text can turn up inside a longer path, and must then be left alone.
+    """
+    return described.replace(" at " + str(ROOT) + os.sep, " at ")
+
+
 def display_path(path: Path) -> str:
     try:
         return str(path.resolve().relative_to(ROOT))
@@ -209,15 +217,12 @@ class Symbolizer:
             if match:
                 current = int(match.group(1), 16)
                 text = match.group(2).rstrip()
-                self.cache[(elf, current)] = [] if text in ("?? ??:0", "?? at ??:0") else [text]
+                unknown = text in ("?? ??:0", "?? at ??:0")
+                self.cache[(elf, current)] = [] if unknown else [shorten_source_path(text)]
             elif current is not None and self.cache[(elf, current)]:
-                self.cache[(elf, current)].append(line.replace(str(ROOT) + os.sep, ""))
+                self.cache[(elf, current)].append(shorten_source_path(line))
         for address in missing:
             self.cache.setdefault((elf, address), [])
-        for address in missing:
-            lines = self.cache[(elf, address)]
-            if lines:
-                lines[0] = lines[0].replace(str(ROOT) + os.sep, "")
 
     @staticmethod
     def outer_function(described: list[str]) -> str:

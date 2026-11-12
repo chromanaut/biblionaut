@@ -196,6 +196,7 @@ CI runs all of these on every push to `main` and every pull request
 | Check | Command |
 |---|---|
 | Unit tests, with AddressSanitizer and UndefinedBehaviorSanitizer | `cmake --build --preset host && ctest --preset host` |
+| The same tests as CI's Linux job runs them: GCC 14 on Ubuntu, in Docker | `tools/linux-check.sh` (arguments go to `ctest`) |
 | Formatting | `tools/check-format.sh` (`--fix` to rewrite files) |
 | Constructs the portable parts may not use (`std::string`, `std::vector`, `std::function`, `std::shared_ptr`, iostreams, C stdio streams) | `tools/check-banned.py` |
 | clang-tidy (rules in `.clang-tidy`) | `cmake --preset tidy && cmake --build --preset tidy` |
@@ -204,6 +205,11 @@ CI runs all of these on every push to `main` and every pull request
 
 The formatting check and clang-tidy need the LLVM major version named in
 `tools/llvm-version` (`brew install llvm@<version>` on macOS).
+
+The Linux run is worth doing before pushing changes to how memory is
+handled. Its compiler and C library catch faults the macOS build cannot see,
+such as a null pointer passed to `memset` with a length of zero, and under
+the sanitizers a finding fails the test.
 
 ## Licence
 

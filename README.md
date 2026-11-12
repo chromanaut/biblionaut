@@ -8,7 +8,7 @@ a desktop.
 
 | Directory | Contents |
 |---|---|
-| `core/` | Shared foundation: arenas, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink) |
+| `core/` | Shared foundation: arenas, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display) |
 | `hw/` | Hardware abstraction layer. `hw/include` is the interface. `hw/desktop` implements it for the host; on a device, `hw/esp32c3` holds what the chip provides and `hw/x4` what is specific to the X4 |
 | `epub/` | Book parsing: zip, XML, OPF / TOC, CSS, the importer and the intermediate format |
 | `draw/` | Fonts and drawing: glyphs, metrics, the display-list format, the band renderer, images |
@@ -104,6 +104,30 @@ later.
 Trace ids are turned back into names from the lists in each part's
 `trace_ids.h`, which the tool is built from. A capture from newer firmware
 than the tool shows ids it does not know as numbers.
+
+## The panel
+
+The e-ink panel's controller keeps two full images in its own memory, and
+the firmware keeps none: pictures are rendered a band of rows at a time and
+written straight to the controller (`core/display.h`). `hw/x4` drives the
+X4's panel. On the desktop a simulation stands in for it, working out what a
+real panel would show after each refresh, including the stale pixels a fast
+refresh leaves if the two images are allowed to fall out of step. Set
+`BN_DISPLAY_OUT` to see what it shows:
+
+```
+BN_DISPLAY_OUT=panel ./build/host/app/desktop/biblionaut-desktop --run-ms 13000
+open panel-001.png          # one picture per refresh: panel-001.png to panel-004.png
+```
+
+Until there are pages to show, the application checks the panel when it
+starts (`reader/panel_check.h`): it shows a test pattern four times, by a
+full, a fast, a half and another fast refresh, and then puts the panel to
+sleep. The pattern is in the panel's own orientation, which on the X4 is
+with the device turned a quarter-turn anticlockwise from the way a book is
+read. The trace of a run has each refresh's duration (`hw/refresh_full` and
+so on), each picture's rendering and upload (`reader/panel_sweep`), and each
+band sent (`hw/panel_write`).
 
 ## Device build
 

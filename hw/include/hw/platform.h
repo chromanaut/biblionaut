@@ -3,6 +3,7 @@
 #include "core/byte_sink.h"
 #include "core/clock.h"
 #include "core/crash.h"
+#include "core/display.h"
 #include "core/memory_probe.h"
 #include "core/trace.h"
 
@@ -33,6 +34,12 @@ core::MemoryProbe& SystemMemoryProbe() noexcept;
 // desktop has no crashes to report; it makes one up when the BN_FAKE_CRASH
 // environment variable is set, so the path a report takes can be exercised.
 core::CrashStore& SystemCrashStore() noexcept;
+
+// The e-ink panel. On the desktop it is a simulation that keeps the two
+// planes in memory and works out what a real panel would show; when the
+// BN_DISPLAY_OUT environment variable is set, it saves that picture at every
+// refresh as BN_DISPLAY_OUT-001.png, -002.png and so on.
+core::Display& SystemDisplay() noexcept;
 
 // Short name of the port, for the boot banner and diagnostics.
 const char* PortName() noexcept;

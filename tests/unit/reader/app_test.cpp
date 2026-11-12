@@ -10,6 +10,7 @@
 
 #include "core/endian.h"
 #include "crash_fakes.h"
+#include "display_fakes.h"
 #include "memory_fakes.h"
 #include "reader/trace_ids.h"
 #include "stream_fakes.h"
@@ -26,8 +27,9 @@ struct AppFixture {
   bn::test::FakeSink sink;
   bn::test::FakeMemoryProbe memory;
   bn::test::FakeCrashStore crash;
-  bn::reader::App app{
-      bn::reader::Services{.clock = clock, .traceSync = sync, .serial = sink, .memory = memory, .crash = crash}};
+  bn::test::FakeDisplay display;  // Absent unless a test says otherwise.
+  bn::reader::App app{bn::reader::Services{
+      .clock = clock, .traceSync = sync, .serial = sink, .memory = memory, .crash = crash, .display = display}};
 
   // The bytes of every crash frame sent so far, joined, after checking that
   // each piece continues the one before.
@@ -191,6 +193,45 @@ TEST(App, FlushSendsTheRestOfACrashReport) {
   EXPECT_TRUE(bn::core::DecodeCrashReport(fixture.CrashBytes(), decoded));
 }
 
+TEST(App, ReportsAPanelThatCannotBeSetUpAndCarriesOn) {
+  AppFixture fixture;  // Its panel is absent.
+  fixture.app.Start();
+  EXPECT_EQ(fixture.app.Panel().CurrentState(), bn::reader::PanelCheck::State::kFailed);
+  fixture.RunFor(5'100'000);
+  EXPECT_NE(fixture.Metrics().find("panel_ok=0["), std::string::npos) << fixture.Metrics();
+  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kWrite), 0u);
+}
+
+TEST(App, ChecksThePanelWhenItStartsAndAsItTicks) {
+  AppFixture fixture;
+  fixture.display.present = true;
+  fixture.app.Start();
+  EXPECT_EQ(fixture.app.Panel().Step(), 1);
+  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kRefresh), 1u);
+
+  // A panel that finishes each refresh at once: the check runs to its end,
+  // paced only by the pauses between steps.
+  for (int i = 0; i < 200 && fixture.app.Panel().CurrentState() == bn::reader::PanelCheck::State::kRunning; ++i) {
+    fixture.display.busy = false;
+    fixture.RunFor(50'000);
+  }
+  EXPECT_EQ(fixture.app.Panel().CurrentState(), bn::reader::PanelCheck::State::kDone);
+  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kRefresh), 4u);
+  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kSleep), 1u);
+
+  fixture.RunFor(5'100'000);
+  const std::string metrics = fixture.Metrics();
+  EXPECT_NE(metrics.find("panel_ok=1["), std::string::npos) << metrics;
+  EXPECT_NE(metrics.find("panel_step=4["), std::string::npos) << metrics;
+
+  // The sweeps are in the trace, and none of them inside the start-up span.
+  int sweeps = 0;
+  for (const auto& [id, arg] : fixture.TraceRecords()) {
+    sweeps += id == static_cast<std::uint16_t>(bn::reader::kSpanPanelSweep) ? 1 : 0;
+  }
+  EXPECT_EQ(sweeps, 6);
+}
+
 TEST(App, InstallsItsTracerWhileItLives) {
   {
     AppFixture fixture;
@@ -327,6 +368,9 @@ TEST(App, DefaultServicesUseTheLinkedHardwarePort) {
   EXPECT_FALSE(services.memory.StackHeadroom().has_value());
   // And, unless asked to invent one, no crash to report.
   EXPECT_EQ(services.crash.Saved(), nullptr);
+  // Its panel is a simulation of the X4's.
+  EXPECT_EQ(services.display.Size().width, 800u);
+  EXPECT_EQ(services.display.Size().height, 480u);
 }
 
 TEST(Version, IsNotEmpty) { EXPECT_GT(std::strlen(bn::reader::Version()), 0u); }

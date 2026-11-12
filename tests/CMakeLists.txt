@@ -43,10 +43,27 @@ bn_add_unit_test(core_tests
     unit/core/trace_test.cpp
   LIBS bn_core)
 
+bn_add_unit_test(draw_tests
+  SOURCES
+    unit/draw/test_pattern_test.cpp
+  LIBS bn_draw)
+
+# The desktop port, which the other host programs run on. Its own headers
+# are reached the way its sources reach them, as "desktop/...".
+bn_add_unit_test(hw_tests
+  SOURCES
+    unit/hw/sim_display_test.cpp
+  LIBS bn_hw)
+target_include_directories(hw_tests PRIVATE ${PROJECT_SOURCE_DIR}/hw)
+
 bn_add_unit_test(reader_tests
   SOURCES
     unit/reader/app_test.cpp
+    unit/reader/panel_check_test.cpp
   LIBS bn_reader)
+# The panel check's tests compare what reaches the panel with the picture
+# from draw, which the reader links but does not pass on.
+target_include_directories(reader_tests PRIVATE $<TARGET_PROPERTY:bn_draw,INTERFACE_INCLUDE_DIRECTORIES>)
 
 bn_add_unit_test(tools_tests
   SOURCES

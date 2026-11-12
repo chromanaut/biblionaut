@@ -6,6 +6,7 @@
 #include "core/display.h"
 #include "core/input.h"
 #include "core/memory_probe.h"
+#include "core/storage.h"
 #include "core/trace.h"
 
 namespace bn::hw {
@@ -50,6 +51,11 @@ core::Display& SystemDisplay() noexcept;
 // is held, also in milliseconds ("5000:power:1500"). The names are back,
 // confirm, left, right, up, down and power.
 core::Input& SystemInput() noexcept;
+
+// Where files are kept: the SD card on a device. On the desktop it is the
+// folder named by the BN_STORAGE environment variable, and when that is not
+// set there is none, as on a device with no card in it.
+core::Storage& SystemStorage() noexcept;
 
 // Short name of the port, for the boot banner and diagnostics.
 const char* PortName() noexcept;

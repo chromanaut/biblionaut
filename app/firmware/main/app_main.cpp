@@ -67,6 +67,10 @@ extern "C" void app_main() {
   esp_rom_printf("Plane check build: the panel's planes are read back whenever it comes to rest.\n");
   app.CheckPanelPlanes();
 #endif
+#ifdef BN_STORAGE_CHECK
+  esp_rom_printf("Storage check build: the SD card is written to at start and at each press of Power.\n");
+  app.CheckStorage();
+#endif
   app.Start();
 
   while (true) {

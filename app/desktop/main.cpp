@@ -21,7 +21,10 @@ void PrintUsage(const char* program) {
                "  --run-ms N   keep running for N milliseconds (default: start and exit)\n"
                "Set BN_SERIAL_OUT to a file name to capture the diagnostic stream.\n"
                "Set BN_PLANE_CHECK to have the panel's planes read back and checked\n"
-               "whenever it comes to rest.\n",
+               "whenever it comes to rest.\n"
+               "Set BN_STORAGE to a folder to stand for the SD card, and BN_STORAGE_CHECK\n"
+               "to have it put through its paces at start and at each (scripted) press\n"
+               "of Power.\n",
                program);
 }
 
@@ -49,6 +52,10 @@ int main(int argc, char** argv) {
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any other thread exists.
   if (std::getenv("BN_PLANE_CHECK") != nullptr) {
     app.CheckPanelPlanes();
+  }
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
+  if (std::getenv("BN_STORAGE_CHECK") != nullptr) {
+    app.CheckStorage();
   }
   app.Start();
   std::printf("Biblionaut %s (%s)\n", bn::reader::Version(), bn::hw::PortName());

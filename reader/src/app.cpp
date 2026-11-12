@@ -1,5 +1,7 @@
 #include "reader/app.h"
 
+#include <new>
+
 #include "core/metrics.h"
 #include "hw/platform.h"
 #include "reader/trace_ids.h"
@@ -34,6 +36,9 @@ core::Gauge heapLowWater{"heap_low_water"};
 core::Gauge stackHeadroom{"stack_headroom"};
 // 1 if the buttons can be read, 0 if not.
 core::Gauge inputOk{"input_ok"};
+// 1 if storage is ready for use, 0 if not: no card, or none that can be
+// read.
+core::Gauge storageOk{"storage_ok"};
 
 }  // namespace
 
@@ -44,7 +49,8 @@ Services DefaultServices() noexcept {
                   .memory = hw::SystemMemoryProbe(),
                   .crash = hw::SystemCrashStore(),
                   .display = hw::SystemDisplay(),
-                  .input = hw::SystemInput()};
+                  .input = hw::SystemInput(),
+                  .storage = hw::SystemStorage()};
 }
 
 App::App(const Services& services) noexcept
@@ -54,9 +60,24 @@ App::App(const Services& services) noexcept
       viewer_(services_.display, services_.clock) {}
 
 App::~App() {
+  delete storageCheck_;
   if (core::ActiveTracer() == &tracer_) {
     core::SetActiveTracer(nullptr);
   }
+}
+
+void App::CheckStorage() noexcept {
+  if (storageCheck_ == nullptr) {
+    storageCheck_ = new (std::nothrow) StorageCheck(services_.storage);
+  }
+}
+
+void App::StartStorage() noexcept {
+  const std::uint32_t began = BN_TRACE_NOW();
+  const core::StorageStatus status = services_.storage.Start();
+  BN_TRACE_TOP_SPAN_SINCE(kSpanStorageStart, began, static_cast<std::uint32_t>(status));
+  storageReady_ = status == core::StorageStatus::kOk;
+  storageOk.Set(storageReady_ ? 1 : 0);
 }
 
 void App::Start() noexcept {
@@ -76,6 +97,12 @@ void App::Start() noexcept {
   }
   inputOk.Set(services_.input.Start() ? 1 : 0);
   viewer_.Start();
+  // After the panel has been given its first picture, which it takes
+  // seconds over: finding the card then delays nothing anyone can see.
+  StartStorage();
+  if (storageCheck_ != nullptr && storageReady_) {
+    storageCheck_->Begin();
+  }
 }
 
 void App::Tick() noexcept {
@@ -94,9 +121,21 @@ void App::Tick() noexcept {
 
   core::InputEvent event{};
   for (int taken = 0; taken < kMaxInputEventsPerTick && services_.input.Next(event); ++taken) {
+    if (storageCheck_ != nullptr && event.kind == core::InputEventKind::kPress &&
+        event.button == core::Button::kPower) {
+      // The viewer has no use for this button. A card may have been put in
+      // since the last look.
+      if (!storageReady_) {
+        StartStorage();
+      }
+      storageCheck_->Begin();
+    }
     viewer_.OnInput(event);
   }
   viewer_.Tick();
+  if (storageCheck_ != nullptr) {
+    storageCheck_->Tick();
+  }
 
   const bool metricsDue = now >= nextMetricsUs_;
   if (metricsDue) {

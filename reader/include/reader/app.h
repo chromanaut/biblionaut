@@ -10,9 +10,11 @@
 #include "core/display.h"
 #include "core/input.h"
 #include "core/memory_probe.h"
+#include "core/storage.h"
 #include "core/trace.h"
 #include "core/trace_stream.h"
 #include "reader/pattern_viewer.h"
+#include "reader/storage_check.h"
 
 namespace bn::reader {
 
@@ -26,6 +28,7 @@ struct Services {
   core::CrashStore& crash;
   core::Display& display;
   core::Input& input;
+  core::Storage& storage;
 };
 
 // The services of the hardware port this build was linked with.
@@ -38,7 +41,8 @@ inline constexpr std::size_t kTraceRecordCount = 256;
 // records into, the stream that carries trace, log text and metrics to the
 // serial line, and passing on the report of a crash that ended an earlier
 // run. In place of a book it shows a test pattern that the buttons step
-// through (reader/pattern_viewer.h). Reading books comes later.
+// through (reader/pattern_viewer.h). It gets storage ready, and does
+// nothing with it yet. Reading books comes later.
 class App {
  public:
   explicit App(const Services& services) noexcept;
@@ -50,8 +54,8 @@ class App {
   // Installs the tracer and announces the stream. If the device kept a
   // report of a crash, starts sending it; Tick() sends the rest. Starts
   // watching the buttons, sets the panel up and puts the first picture of
-  // the test pattern on it, which takes some tens of milliseconds. Call
-  // once.
+  // the test pattern on it, which takes some tens of milliseconds, and
+  // then gets storage ready while the panel is busy with that. Call once.
   void Start() noexcept;
   bool Started() const noexcept { return started_; }
 
@@ -76,15 +80,26 @@ class App {
   // (PatternViewer::CheckPlanes). Call before Start().
   void CheckPanelPlanes() noexcept { viewer_.CheckPlanes(); }
 
+  // Has storage put through its paces (reader/storage_check.h): once at
+  // start, and again whenever the Power button is pressed, which also
+  // looks for a card again if none was found before. Call before Start().
+  void CheckStorage() noexcept;
+  // The check, if CheckStorage() was called; null otherwise.
+  const StorageCheck* StorageChecker() const noexcept { return storageCheck_; }
+
  private:
   void SampleMemory() noexcept;
   void SendCrashReport() noexcept;
+  void StartStorage() noexcept;
 
   Services services_;
   std::array<core::TraceRecord, kTraceRecordCount> traceStorage_{};
   core::Tracer tracer_;
   core::TraceStream stream_;
   PatternViewer viewer_;
+  // On the heap, and only when asked for: it is 9 KB.
+  StorageCheck* storageCheck_ = nullptr;
+  bool storageReady_ = false;
   std::uint64_t startedAtUs_ = 0;
   std::uint64_t nextHeartbeatUs_ = 0;
   std::uint64_t nextMetricsUs_ = 0;

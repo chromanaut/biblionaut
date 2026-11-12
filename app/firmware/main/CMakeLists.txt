@@ -33,3 +33,11 @@ if(BN_PLANE_CHECK)
                   "Configure with -DBN_PLANE_CHECK=OFF for a normal build.")
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_PLANE_CHECK=1)
 endif()
+
+# A firmware that checks the SD card (see BN_STORAGE_CHECK in the project
+# file).
+if(BN_STORAGE_CHECK)
+  message(WARNING "This firmware writes to the SD card at start and at each press of Power. "
+                  "Configure with -DBN_STORAGE_CHECK=OFF for a normal build.")
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_STORAGE_CHECK=1)
+endif()

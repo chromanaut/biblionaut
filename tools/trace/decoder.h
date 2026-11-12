@@ -101,24 +101,38 @@ class StreamDecoder {
 std::string SanitizeText(std::span<const std::uint8_t> bytes);
 
 // After the tool restarts a device, the first things to arrive are left over
-// from before the restart: trace the device had buffered, possibly a frame
-// cut in half. This drops events until the restarted device announces itself,
-// by the first line its boot ROM prints or, failing that, its hello.
+// from before the restart: whatever the device had buffered, possibly ending
+// in a frame cut in half. This holds events back until the restarted device
+// announces itself.
+//
+// The announcement that can be trusted is the first line the boot ROM
+// prints, since only a restart produces it. A hello cannot be: a device
+// that last started with nothing reading it still has that run's hello in
+// its buffer. So from a hello on, events are held until it is known which
+// it was: if the ROM's line follows, they were left over and are dropped;
+// if the tool gives up waiting (a ROM that prints nothing), they are shown.
 class BootFilter {
  public:
-  // Returns true if the event belongs to the restarted device and should be
-  // kept. Once one is kept, all later ones are.
-  bool Keep(const Event& event) noexcept;
+  // Takes the next event and appends to `shown` the events to show now, in
+  // order: none while still waiting, otherwise this one. Boots that were
+  // dropped are not counted: the restarted device's first hello is boot 1.
+  void Push(Event event, std::vector<Event>& shown);
 
-  // Stops waiting: keep everything from now on. For when no boot ever shows.
-  void GiveUp() noexcept { waiting_ = false; }
+  // Stops waiting. Returns the events that were being held, to be shown;
+  // every later event is passed straight through.
+  std::vector<Event> GiveUp();
 
   bool Waiting() const noexcept { return waiting_; }
+  // Events dropped as left over.
   std::size_t Skipped() const noexcept { return skipped_; }
+  // Hellos among them: runs of the device that are not shown.
+  int SkippedBoots() const noexcept { return skippedBoots_; }
 
  private:
   bool waiting_ = true;
+  std::vector<Event> held_;  // From a hello on, while waiting.
   std::size_t skipped_ = 0;
+  int skippedBoots_ = 0;
 };
 
 }  // namespace bn::trace_tool

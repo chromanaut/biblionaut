@@ -112,6 +112,21 @@ jobs:
       - name: Portable parts call nothing that throws
         run: tools/check-firmware-symbols.sh
 
+      # clang-tidy for our code as this build compiles it: the device code,
+      # which the lint job's host build never sees, and the portable parts
+      # for the device's processor. The version is the one the lint job uses.
+      - name: Install clang-tidy
+        run: |
+          version="$(cat tools/llvm-version)"
+          sudo wget -qO /etc/apt/trusted.gpg.d/apt.llvm.org.asc https://apt.llvm.org/llvm-snapshot.gpg.key
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$version main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-toolchain.list
+          sudo apt-get update
+          sudo apt-get install -y "clang-tidy-$version"
+
+      - name: clang-tidy on the firmware's sources
+        run: tools/check-firmware-tidy.py
+
       - name: Report image size
         run: |
           {

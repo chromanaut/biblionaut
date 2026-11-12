@@ -199,12 +199,20 @@ CI runs all of these on every push to `main` and every pull request
 | The same tests as CI's Linux job runs them: GCC 14 on Ubuntu, in Docker | `tools/linux-check.sh` (arguments go to `ctest`) |
 | Formatting | `tools/check-format.sh` (`--fix` to rewrite files) |
 | Constructs the portable parts may not use (`std::string`, `std::vector`, `std::function`, `std::shared_ptr`, iostreams, C stdio streams) | `tools/check-banned.py` |
-| clang-tidy (rules in `.clang-tidy`) | `cmake --preset tidy && cmake --build --preset tidy` |
+| clang-tidy (rules in `.clang-tidy`) on everything the host build compiles | `cmake --preset tidy && cmake --build --preset tidy` |
+| clang-tidy on what the firmware build compiles: the device code, and the portable parts as built for the device | `tools/check-firmware-tidy.py` (after a firmware build) |
 | Firmware builds | `tools/idf build` |
 | The portable parts (`core`, `epub`, `draw`, `layout`) call nothing that can throw | `tools/check-firmware-symbols.sh` (after a firmware build) |
 
-The formatting check and clang-tidy need the LLVM major version named in
-`tools/llvm-version` (`brew install llvm@<version>` on macOS).
+The formatting check and both clang-tidy runs need the LLVM major version
+named in `tools/llvm-version` (`brew install llvm@<version>` on macOS).
+
+Two clang-tidy runs, because no single build compiles everything. The host
+run sees the portable parts, the desktop port, the tools and the tests, and
+leaves the Clang Static Analyzer out for the tests (`tests/.clang-tidy` says
+why). The firmware run sees the device code under `hw/` and
+`app/firmware`, which nothing else checks, by translating the firmware's
+GCC compile commands into ones clang can use.
 
 The Linux run is worth doing before pushing changes to how memory is
 handled. Its compiler and C library catch faults the macOS build cannot see,

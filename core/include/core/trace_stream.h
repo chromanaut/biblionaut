@@ -48,7 +48,9 @@ class TraceStream {
   // from any task.
   bool SendText(std::string_view text) noexcept;
 
-  // Sends every counter and gauge of `registry` as one line.
+  // Sends every counter and gauge of `registry`: as one line if they fit in
+  // a frame, otherwise as several, all stamped with the same time. Returns
+  // false if any of the frames was lost.
   bool SendMetrics(const MetricRegistry& registry) noexcept;
 
   // Moves trace records from the tracer to the sink, oldest first, until the
@@ -60,7 +62,7 @@ class TraceStream {
   std::uint32_t LostFrames() const noexcept { return lostFrames_.load(std::memory_order_relaxed); }
 
  private:
-  bool SendTextFrame(FrameType type, std::string_view text) noexcept;
+  bool SendTextFrame(FrameType type, std::uint32_t timeUs, std::string_view text) noexcept;
   bool SendFrame(FrameWriter& writer) noexcept;
   void EncodePendingTraceFrame(std::size_t count) noexcept;
 

@@ -18,7 +18,9 @@
   /* Start-up: from installing the tracer to sending the hello. */ \
   X(0, kSpanAppStart, "app_start", "")                             \
   /* Once a second while the application runs. */                  \
-  X(1, kInstantHeartbeat, "heartbeat", "uptime_s")
+  X(1, kInstantHeartbeat, "heartbeat", "uptime_s")                 \
+  /* Reading heap and stack levels for the metrics line. */        \
+  X(2, kSpanSampleMemory, "sample_memory", "")
 
 namespace bn::reader {
 

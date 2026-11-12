@@ -6,6 +6,7 @@ get_filename_component(bn_root "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 idf_component_register(
   SRCS
     "${bn_root}/hw/esp32c3/clock.cpp"
+    "${bn_root}/hw/esp32c3/memory_probe.cpp"
     "${bn_root}/hw/esp32c3/serial.cpp"
     "${bn_root}/hw/esp32c3/trace_sync.cpp"
     "${bn_root}/hw/x4/platform.cpp"

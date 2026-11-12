@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstring>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -111,6 +112,60 @@ TEST(MetricRegistry, LeavesOutWholeMetricsThatDoNotFit) {
 
   std::array<char, 4> tiny{};
   EXPECT_EQ(Line(registry, tiny), "");
+}
+
+TEST(MetricRegistry, CanWriteALongListAsSeveralLines) {
+  MetricRegistry registry;
+  Counter a("alpha", registry);
+  Counter b("beta", registry);
+  Gauge c("gamma", registry);
+  Counter d("delta", registry);
+  Gauge e("epsilon", registry);
+  a.Add(1);
+  b.Add(2);
+  c.Set(3);
+  d.Add(4);
+
+  std::array<char, 128> whole{};
+  const std::string_view full = Line(registry, whole);
+  EXPECT_EQ(full, "alpha=1 beta=2 delta=4 gamma=3[3..3] epsilon=-");
+
+  // Counters come first, then gauges, whatever order they registered in.
+  std::string joined;
+  std::size_t first = 0;
+  int lines = 0;
+  while (first < registry.CounterCount() + registry.GaugeCount()) {
+    std::array<char, 20> small{};
+    const MetricRegistry::Formatted formatted = registry.FormatItems(small, first);
+    ASSERT_GT(formatted.count, 0u);
+    EXPECT_EQ(formatted.length, std::strlen(small.data()));
+    joined += (joined.empty() ? "" : " ") + std::string(small.data(), formatted.length);
+    first += formatted.count;
+    ++lines;
+  }
+  EXPECT_EQ(joined, full);
+  EXPECT_GT(lines, 2);
+}
+
+TEST(MetricRegistry, ReportsNothingWrittenWhenTheNextMetricCannotFit) {
+  MetricRegistry registry;
+  Counter small("a", registry);
+  Counter large("a_rather_long_metric_name", registry);
+  small.Add(1);
+
+  std::array<char, 8> buffer{};
+  MetricRegistry::Formatted formatted = registry.FormatItems(buffer, 0);
+  EXPECT_EQ(formatted.count, 1u);
+  EXPECT_STREQ(buffer.data(), "a=1");
+
+  formatted = registry.FormatItems(buffer, 1);
+  EXPECT_EQ(formatted.count, 0u);
+  EXPECT_EQ(formatted.length, 0u);
+  EXPECT_STREQ(buffer.data(), "");
+
+  // Past the end there is nothing to write.
+  formatted = registry.FormatItems(buffer, 2);
+  EXPECT_EQ(formatted.count, 0u);
 }
 
 TEST(MetricRegistry, AnEmptyBufferIsLeftAlone) {

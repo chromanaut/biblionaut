@@ -2,7 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
+#include <cstdio>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -149,6 +152,57 @@ TEST(TraceStream, SendsMetricsAsOneLine) {
   EXPECT_EQ(items[0].type, FrameType::kMetrics);
   EXPECT_EQ(items[0].TimeUs(), 77u);
   EXPECT_EQ(items[0].Text(), "sd_reads=3 heap_free=1000[1000..1000]");
+}
+
+TEST(TraceStream, SendsManyMetricsAsSeveralFramesWithOneTime) {
+  StreamFixture<4> fixture;
+  bn::core::MetricRegistry registry;
+  // Counters cannot be copied or moved, so they are built in place.
+  std::array<char, 16> names[24]{};
+  std::vector<std::unique_ptr<bn::core::Counter>> counters;
+  std::string expected;
+  for (int i = 0; i < 24; ++i) {
+    std::snprintf(names[i].data(), names[i].size(), "counter_%02d", i);
+    counters.push_back(std::make_unique<bn::core::Counter>(names[i].data(), registry));
+    counters.back()->Add(static_cast<std::uint32_t>(1000 + i));
+    expected += (expected.empty() ? "" : " ") + std::string(names[i].data()) + "=" + std::to_string(1000 + i);
+  }
+  ASSERT_GT(expected.size(), bn::core::kMaxTextLength);
+  fixture.trace.clock.now = 4242;
+
+  EXPECT_TRUE(fixture.stream.SendMetrics(registry));
+
+  const auto items = fixture.Items();
+  ASSERT_GT(items.size(), 1u);
+  std::string joined;
+  for (const StreamItem& item : items) {
+    EXPECT_EQ(item.type, FrameType::kMetrics);
+    EXPECT_EQ(item.TimeUs(), 4242u);
+    EXPECT_LE(item.Text().size(), bn::core::kMaxTextLength);
+    joined += (joined.empty() ? "" : " ") + item.Text();
+  }
+  EXPECT_EQ(joined, expected);
+}
+
+TEST(TraceStream, SkipsAMetricThatCouldNeverFitAndSendsTheRest) {
+  StreamFixture<4> fixture;
+  bn::core::MetricRegistry registry;
+  const std::string hugeName(150, 'x');
+  bn::core::Counter before("before", registry);
+  const bn::core::Counter huge(hugeName.c_str(), registry);
+  bn::core::Counter after("after", registry);
+  before.Add(1);
+  after.Add(2);
+
+  fixture.stream.SendMetrics(registry);
+
+  std::string joined;
+  for (const StreamItem& item : fixture.Items()) {
+    joined += (joined.empty() ? "" : " ") + item.Text();
+  }
+  EXPECT_NE(joined.find("before=1"), std::string::npos);
+  EXPECT_NE(joined.find("after=2"), std::string::npos);
+  EXPECT_EQ(joined.find(hugeName), std::string::npos);
 }
 
 TEST(TraceStream, CountsFramesTheSinkRefused) {

@@ -72,31 +72,42 @@ void Gauge::Set(std::uint32_t value) noexcept {
   hasValue_.store(true, std::memory_order_relaxed);
 }
 
-std::size_t MetricRegistry::FormatLine(std::span<char> out) const noexcept {
+std::size_t MetricRegistry::FormatLine(std::span<char> out) const noexcept { return FormatItems(out, 0).length; }
+
+MetricRegistry::Formatted MetricRegistry::FormatItems(std::span<char> out, std::size_t first) const noexcept {
+  Formatted result;
   if (out.empty()) {
-    return 0;
+    return result;
   }
   out[0] = '\0';
-  std::size_t length = 0;
 
   char item[kMaxItemLength];
+  std::size_t index = 0;
 
   for (const Counter* counter = firstCounter_; counter != nullptr; counter = counter->next_) {
-    const int itemLength = std::snprintf(item, sizeof(item), "%s=%" PRIu32, counter->Name(), counter->Value());
-    if (!AppendItem(out, length, item, itemLength)) {
-      return length;
+    if (index++ < first) {
+      continue;
     }
+    const int itemLength = std::snprintf(item, sizeof(item), "%s=%" PRIu32, counter->Name(), counter->Value());
+    if (!AppendItem(out, result.length, item, itemLength)) {
+      return result;
+    }
+    ++result.count;
   }
   for (const Gauge* gauge = firstGauge_; gauge != nullptr; gauge = gauge->next_) {
+    if (index++ < first) {
+      continue;
+    }
     const int itemLength = gauge->HasValue()
                                ? std::snprintf(item, sizeof(item), "%s=%" PRIu32 "[%" PRIu32 "..%" PRIu32 "]",
                                                gauge->Name(), gauge->Last(), gauge->Min(), gauge->Max())
                                : std::snprintf(item, sizeof(item), "%s=-", gauge->Name());
-    if (!AppendItem(out, length, item, itemLength)) {
-      return length;
+    if (!AppendItem(out, result.length, item, itemLength)) {
+      return result;
     }
+    ++result.count;
   }
-  return length;
+  return result;
 }
 
 }  // namespace bn::core

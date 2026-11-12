@@ -24,6 +24,14 @@ is chosen by build id, the start of the ELF file's SHA-256:
 
 Every firmware build puts a copy of its ELF file in .elf-archive/, named by
 that hash, and this looks there. --elf uses one file for everything.
+
+Most addresses in a crash are return addresses: where a function will carry
+on after a call. The call itself is the instruction before, so that is what
+gets looked up; otherwise the line shown is the one after the call, and a
+call that never returns (abort) at the very end of a function shows as the
+function that happens to come next in memory. Only an address labelled as a
+program counter ("mepc", "PC") is looked up exactly. When the two readings
+of an address land in different functions, both are shown.
 """
 
 from __future__ import annotations
@@ -44,6 +52,9 @@ DEFAULT_ELF = ROOT / "app" / "firmware" / "build" / "biblionaut.elf"
 ARCHIVE_LIMIT = 40
 
 ADDRESS = re.compile(r"\b0x([0-9a-fA-F]{8})\b")
+# Text just before an address that marks it as a program counter: the exact
+# place the processor was, not somewhere it will return to.
+PROGRAM_COUNTER_LABEL = re.compile(r"(?:mepc|\bpc)\s*:?\s*$", re.IGNORECASE)
 # What bn-trace prints around a crash report, and the build id inside one.
 REPORT_START = "=== crash report"
 REPORT_END = "=== end of crash report"
@@ -179,36 +190,72 @@ class Symbolizer:
                 "which is not this firmware"
             )
 
-    def lookup(self, elf: Elf, addresses: list[int]) -> list[str]:
-        """Lines describing each address that the ELF file knows."""
+    def resolve(self, elf: Path, addresses: list[int]) -> None:
+        """Fills the cache with what addr2line says about each address."""
+        missing = [address for address in dict.fromkeys(addresses) if (elf, address) not in self.cache]
+        if not missing:
+            return
+        result = subprocess.run(
+            [self.addr2line, "-pfiaC", "-e", str(elf), *[f"0x{address:08x}" for address in missing]],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # One line per address, "0x...: function at file:line", then
+        # "(inlined by)" lines for the functions it was inlined into.
+        current: int | None = None
+        for line in result.stdout.splitlines():
+            match = re.match(r"0x([0-9a-fA-F]+): (.*)", line)
+            if match:
+                current = int(match.group(1), 16)
+                text = match.group(2).rstrip()
+                self.cache[(elf, current)] = [] if text in ("?? ??:0", "?? at ??:0") else [text]
+            elif current is not None and self.cache[(elf, current)]:
+                self.cache[(elf, current)].append(line.replace(str(ROOT) + os.sep, ""))
+        for address in missing:
+            self.cache.setdefault((elf, address), [])
+        for address in missing:
+            lines = self.cache[(elf, address)]
+            if lines:
+                lines[0] = lines[0].replace(str(ROOT) + os.sep, "")
+
+    @staticmethod
+    def outer_function(described: list[str]) -> str:
+        """The function an address is really in: the last one it was inlined into."""
+        text = described[-1].strip()
+        if text.startswith("(inlined by) "):
+            text = text[len("(inlined by) ") :]
+        return text.rsplit(" at ", 1)[0]
+
+    def lookup(self, elf: Elf, addresses: list[tuple[int, bool]]) -> list[str]:
+        """Lines describing each address the ELF file knows. Each is (address, is a program counter)."""
         if elf.path is None or not addresses:
             return []
-        missing = [address for address in addresses if (elf.path, address) not in self.cache]
-        if missing:
-            result = subprocess.run(
-                [self.addr2line, "-pfiaC", "-e", str(elf.path), *[f"0x{address:08x}" for address in missing]],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            # One line per address, starting "0x...:", then "(inlined by)" lines.
-            current: int | None = None
-            for line in result.stdout.splitlines():
-                match = re.match(r"0x([0-9a-fA-F]+): ", line)
-                if match:
-                    current = int(match.group(1), 16)
-                    unknown = line.rstrip().endswith(("?? ??:0", "?? at ??:0"))
-                    self.cache[(elf.path, current)] = [] if unknown else [line]
-                elif current is not None and self.cache[(elf.path, current)]:
-                    self.cache[(elf.path, current)].append(line)
-            for address in missing:
-                self.cache.setdefault((elf.path, address), [])
+        wanted: list[int] = []
+        for address, exact in addresses:
+            wanted.extend([address] if exact else [address - 1, address])
+        self.resolve(elf.path, wanted)
+
         lines: list[str] = []
-        for address in addresses:
-            lines.extend(self.cache[(elf.path, address)])
+        for address, exact in addresses:
+            here = self.cache[(elf.path, address)]
+            before = [] if exact else self.cache[(elf.path, address - 1)]
+            label = f"0x{address:08x}: "
+            if not before:
+                # A program counter, or nothing is known about the instruction before.
+                if here:
+                    lines.append(label + here[0])
+                    lines.extend(here[1:])
+                continue
+            lines.append(label + before[0])
+            lines.extend(before[1:])
+            if here and self.outer_function(here) != self.outer_function(before):
+                # The address is the first of a function: either that function's
+                # address, or the return address of a call that ended the one before.
+                lines.append(f" (or, if not a return address, the start of {self.outer_function(here)})")
         if lines and not elf.confirmed:
             elf.used_unconfirmed = True
-        return [line.replace(str(ROOT) + os.sep, "") for line in lines]
+        return lines
 
     def process(self, line: str) -> None:
         print(line, file=self.out)
@@ -222,12 +269,13 @@ class Symbolizer:
         if report_build:
             self.report = self.elf_for(report_build.group(1), self.report or self.running)
 
-        addresses: list[int] = []
+        addresses: list[tuple[int, bool]] = []
         if SAVED_REPORT_NOTICE not in line:
             for match in ADDRESS.finditer(line):
                 value = int(match.group(1), 16)
-                if is_code_address(value) and value not in addresses:
-                    addresses.append(value)
+                if is_code_address(value) and all(value != seen for seen, _ in addresses):
+                    exact = PROGRAM_COUNTER_LABEL.search(line[: match.start()]) is not None
+                    addresses.append((value, exact))
         for described in self.lookup(self.report or self.running, addresses):
             print(f"      {described}", file=self.out)
 
@@ -244,7 +292,12 @@ def main() -> int:
         description="Turns code addresses in bn-trace output into function names and source lines.",
         epilog="With no ADDRESS, reads text on standard input and writes it, annotated, to standard output.",
     )
-    parser.add_argument("addresses", nargs="*", metavar="ADDRESS", help="addresses to look up, such as 0x4200614a")
+    parser.add_argument(
+        "addresses",
+        nargs="*",
+        metavar="ADDRESS",
+        help="addresses to look up exactly, such as 0x4200614a; for a return address, give the address less one",
+    )
     parser.add_argument("--elf", type=Path, help="the ELF file to look addresses up in, whatever build the text names")
     parser.add_argument(
         "--assume-elf",
@@ -290,7 +343,7 @@ def main() -> int:
                 print(f"error: '{text}' is not a hexadecimal address", file=sys.stderr)
                 failed = True
                 continue
-            described = symbolizer.lookup(symbolizer.running, [value])
+            described = symbolizer.lookup(symbolizer.running, [(value, True)])
             for line in described or [f"0x{value:08x}: not in {display_path(elf)}"]:
                 print(line)
         return 1 if failed else 0

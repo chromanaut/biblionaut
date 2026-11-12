@@ -1,7 +1,14 @@
 # End-to-end check of tools/bn-symbolize, run by CTest. The real thing needs
 # the device toolchain and a firmware build, so this stands in for both: an
-# "ELF file" that is just some bytes, and an addr2line that knows two
-# addresses.
+# "ELF file" that is just some bytes, and an addr2line that knows a few
+# addresses:
+#
+#   0x4200a1b2  where a crash happened: looked up exactly. The address before
+#               it answers with something that must never be shown.
+#   0x4200c3d4  a return address in the middle of a function: the call is on
+#               the line before.
+#   0x42001122  a return address after a call that never returns, at the very
+#               end of a function: exactly, it is the start of the next one.
 #
 # Needs -DPYTHON=<python3> -DSCRIPT=<tools/bn-symbolize> -DWORK_DIR=<scratch directory>.
 set(work "${WORK_DIR}/symbolize")
@@ -27,11 +34,18 @@ elf="$3"
 shift 3
 for address in "$@"; do
   case "$address" in
+    0x4200a1b2) echo "$address: Crash() at crash.cpp:7 [$(cat "$elf")]" ;;
+    0x4200a1b1) echo "$address: WrongIfShown() at wrong.cpp:1" ;;
+    0x4200c3d3)
+      echo "$address: bn::reader::App::Tick() at reader/src/app.cpp:82 [$(cat "$elf")]"
+      echo " (inlined by) app_main at app/firmware/main/app_main.cpp:150"
+      ;;
     0x4200c3d4)
       echo "$address: bn::reader::App::Tick() at reader/src/app.cpp:83 [$(cat "$elf")]"
       echo " (inlined by) app_main at app/firmware/main/app_main.cpp:150"
       ;;
-    0x4200a1b2) echo "$address: Crash() at crash.cpp:7 [$(cat "$elf")]" ;;
+    0x42001121) echo "$address: OnHeapFailure() at app_main.cpp:40 [$(cat "$elf")]" ;;
+    0x42001122) echo "$address: AnnounceSavedCrash() at app_main.cpp:45 [$(cat "$elf")]" ;;
     *) echo "$address: ?? ??:0" ;;
   esac
 done
@@ -93,7 +107,8 @@ endif()
 
 # Each address is looked up in the build it belongs to: the report's inside
 # a report, the running firmware's everywhere else. The notice of a saved
-# report names no build, so its address is left alone.
+# report names no build, so its address is left alone. Program counters are
+# looked up exactly; everything else as a return address.
 set(expected
 "              | I (64) app_init: ELF file SHA256:  ${id_second}...
       [bn-symbolize] using ${shown}/archive/0.1.0+second-${hash_second}.elf
@@ -105,14 +120,16 @@ set(expected
       0x4200a1b2: Crash() at crash.cpp:7 [the first build]
   registers  mepc    0x4200a1b2  ra      0x4200c3d4  sp      0x3fc9f000  gp      0x00000000
       0x4200a1b2: Crash() at crash.cpp:7 [the first build]
-      0x4200c3d4: bn::reader::App::Tick() at reader/src/app.cpp:83 [the first build]
+      0x4200c3d4: bn::reader::App::Tick() at reader/src/app.cpp:82 [the first build]
        (inlined by) app_main at app/firmware/main/app_main.cpp:150
              sp+0x00c  0x42001122
+      0x42001122: OnHeapFailure() at app_main.cpp:40 [the first build]
+       (or, if not a return address, the start of AnnounceSavedCrash())
 ${report_end}
 [     1.000000] task 0  reader/heartbeat uptime_s=1
               | MEPC    : 0x4200a1b2  RA      : 0x4200c3d4  SP      : 0x3fc8f6b0
       0x4200a1b2: Crash() at crash.cpp:7 [the second build]
-      0x4200c3d4: bn::reader::App::Tick() at reader/src/app.cpp:83 [the second build]
+      0x4200c3d4: bn::reader::App::Tick() at reader/src/app.cpp:82 [the second build]
        (inlined by) app_main at app/firmware/main/app_main.cpp:150
               | ELF file SHA256: ${id_second}
 === crash report: 3 restarts ago ended in a crash ===
@@ -186,9 +203,10 @@ if(NOT found EQUAL -1)
   message(FATAL_ERROR "bn-symbolize --elf still used the archive:\n${output}")
 endif()
 
-# Addresses given as arguments.
+# Addresses given as arguments are looked up exactly.
 execute_process(
   COMMAND "${PYTHON}" "${SCRIPT}" --addr2line "${addr2line}" --elf "${work}/first.elf" 0x4200a1b2 4200c3d4 0x42001122
+          0x42000100
   RESULT_VARIABLE result
   OUTPUT_VARIABLE output
   ERROR_VARIABLE errors)
@@ -199,7 +217,8 @@ set(expected
 "0x4200a1b2: Crash() at crash.cpp:7 [the first build]
 0x4200c3d4: bn::reader::App::Tick() at reader/src/app.cpp:83 [the first build]
  (inlined by) app_main at app/firmware/main/app_main.cpp:150
-0x42001122: not in ${shown}/first.elf
+0x42001122: AnnounceSavedCrash() at app_main.cpp:45 [the first build]
+0x42000100: not in ${shown}/first.elf
 ")
 if(NOT output STREQUAL expected)
   message(FATAL_ERROR "bn-symbolize with addresses printed:\n${output}\nbut this was expected:\n${expected}")

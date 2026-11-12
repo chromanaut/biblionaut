@@ -31,13 +31,16 @@ endfunction()
 bn_add_unit_test(core_tests
   SOURCES
     unit/core/arena_test.cpp
+    unit/core/block_file_test.cpp
     unit/core/byte_source_test.cpp
     unit/core/checksum_test.cpp
     unit/core/crash_test.cpp
+    unit/core/file_replacement_test.cpp
     unit/core/frame_test.cpp
     unit/core/heap_test.cpp
     unit/core/input_sampler_test.cpp
     unit/core/metrics_test.cpp
+    unit/core/storage_test.cpp
     unit/core/trace_level0_test.cpp
     unit/core/trace_level1_test.cpp
     unit/core/trace_stream_test.cpp
@@ -53,6 +56,7 @@ bn_add_unit_test(draw_tests
 # are reached the way its sources reach them, as "desktop/...".
 bn_add_unit_test(hw_tests
   SOURCES
+    unit/hw/folder_storage_test.cpp
     unit/hw/scripted_input_test.cpp
     unit/hw/sim_display_test.cpp
   LIBS bn_hw)

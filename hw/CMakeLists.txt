@@ -7,6 +7,7 @@
 add_library(bn_hw STATIC
   desktop/crash.cpp
   desktop/display.cpp
+  desktop/folder_storage.cpp
   desktop/input.cpp
   desktop/memory_probe.cpp
   desktop/platform.cpp

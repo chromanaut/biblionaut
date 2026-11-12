@@ -10,6 +10,9 @@
 /app/firmware/sdkconfig.old
 /app/firmware/managed_components/
 
+# Copies of each firmware build's ELF file, for symbolizing crash reports
+/.elf-archive/
+
 # Editors and OS
 /.cache/
 .DS_Store

@@ -12,6 +12,9 @@ constexpr std::uint64_t kHeartbeatIntervalUs = 1'000'000;
 constexpr std::uint64_t kMetricsIntervalUs = 5'000'000;
 // Upper bound on Pump() calls in Flush(), in case the sink never has room.
 constexpr int kMaxFlushRounds = 64;
+// Pieces of a crash report sent by one Start() or Tick(), so a report does
+// not crowd out the trace.
+constexpr int kMaxCrashPiecesPerTick = 4;
 
 core::Counter appTicks{"app_ticks"};
 // Trace records overwritten in the ring before they could be sent.
@@ -34,7 +37,8 @@ Services DefaultServices() noexcept {
   return Services{.clock = hw::SystemClock(),
                   .traceSync = hw::SystemTraceSync(),
                   .serial = hw::SystemSerial(),
-                  .memory = hw::SystemMemoryProbe()};
+                  .memory = hw::SystemMemoryProbe(),
+                  .crash = hw::SystemCrashStore()};
 }
 
 App::App(const Services& services) noexcept
@@ -57,6 +61,10 @@ void App::Start() noexcept {
 
   BN_TRACE_TOP_SCOPE(kSpanAppStart);
   stream_.SendHello(Version());
+
+  crashReport_ = services_.crash.Saved();
+  services_.crash.SetVersion(Version());
+  SendCrashReport();
 }
 
 void App::Tick() noexcept {
@@ -70,6 +78,8 @@ void App::Tick() noexcept {
     BN_TRACE_INSTANT(kInstantHeartbeat, static_cast<std::uint32_t>((now - startedAtUs_) / 1'000'000));
     nextHeartbeatUs_ = now + kHeartbeatIntervalUs;
   }
+
+  SendCrashReport();
 
   const bool metricsDue = now >= nextMetricsUs_;
   if (metricsDue) {
@@ -102,7 +112,25 @@ void App::SampleMemory() noexcept {
   }
 }
 
+void App::SendCrashReport() noexcept {
+  for (int pieces = 0; crashReport_ != nullptr && pieces < kMaxCrashPiecesPerTick; ++pieces) {
+    const std::size_t sent = stream_.SendCrashPiece(*crashReport_, crashSent_);
+    if (sent == 0) {
+      // Either the serial line is full, and the next tick tries again, or
+      // the whole report has gone.
+      if (crashSent_ >= core::EncodedCrashReportSize(*crashReport_)) {
+        crashReport_ = nullptr;
+      }
+      return;
+    }
+    crashSent_ += sent;
+  }
+}
+
 void App::Flush() noexcept {
+  for (int round = 0; round < kMaxFlushRounds && crashReport_ != nullptr; ++round) {
+    SendCrashReport();
+  }
   for (int round = 0; round < kMaxFlushRounds; ++round) {
     if (stream_.Pump() == 0) {
       return;

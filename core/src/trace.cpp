@@ -88,13 +88,18 @@ std::size_t Tracer::Drain(std::span<TraceRecord> out) noexcept {
 }
 
 std::size_t Tracer::CopyLatest(std::span<TraceRecord> out) noexcept {
+  const SyncGuard guard(sync_);
+  return CopyLatestUnlocked(out);
+}
+
+std::size_t Tracer::CopyLatestUnlocked(std::span<TraceRecord> out) const noexcept {
   const std::size_t capacity = storage_.size();
   if (capacity == 0 || out.empty()) {
     return 0;
   }
-  const SyncGuard guard(sync_);
-  const std::size_t count = std::min(out.size(), held_);
-  std::size_t slot = (head_ + capacity - count) % capacity;
+  // The values are limited to the ring in case the crash interrupted a write.
+  const std::size_t count = std::min({out.size(), held_, capacity});
+  std::size_t slot = ((head_ % capacity) + capacity - count) % capacity;
   for (std::size_t i = 0; i < count; ++i) {
     out[i] = storage_[slot];
     slot = (slot + 1) % capacity;

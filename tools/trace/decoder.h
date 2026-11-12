@@ -2,10 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
+#include "core/crash.h"
 #include "core/trace.h"
 
 // Turns the bytes of a diagnostic stream (core/frame.h, core/trace_stream.h)
@@ -24,6 +26,7 @@ enum class EventKind : std::uint8_t {
   kMetrics,  // The counters-and-gauges line.
   kRawText,  // A line of plain text that was not in a frame (boot messages, a crash dump).
   kDropped,  // Trace records were lost on the device before this point; `arg` is how many.
+  kCrash,    // The report of a crash that ended an earlier run: `crash`.
 };
 
 struct Event {
@@ -35,6 +38,7 @@ struct Event {
   std::uint8_t task = 0;         // Spans and instants.
   std::uint32_t arg = 0;
   std::string text;
+  std::shared_ptr<const core::CrashReport> crash;  // Crash reports only.
 };
 
 struct DecoderStats {
@@ -44,6 +48,8 @@ struct DecoderStats {
   std::size_t droppedRecords = 0;  // Lost on the device (its ring was full).
   std::size_t rawTextLines = 0;
   std::size_t unsupportedFrames = 0;  // Unknown frame type, malformed payload, or wrong protocol.
+  std::size_t crashReports = 0;
+  std::size_t damagedCrashReports = 0;  // Pieces missing, or the whole did not check out.
   int boots = 0;
 };
 
@@ -65,6 +71,8 @@ class StreamDecoder {
   void EmitRawText(std::span<const std::uint8_t> bytes, bool complete);
   void HandleFrame(std::uint8_t type, std::span<const std::uint8_t> payload);
   void HandleTrace(std::span<const std::uint8_t> payload);
+  void HandleCrashPiece(std::span<const std::uint8_t> payload);
+  void AbandonCrashReport();
   std::uint64_t Unwrap(std::uint32_t timeUs);
 
   std::vector<std::uint8_t> piece_;  // Bytes since the last zero.
@@ -82,6 +90,10 @@ class StreamDecoder {
   std::uint32_t lastTime32_ = 0;
   std::uint64_t lastTime64_ = 0;
   std::uint32_t lastDropped_ = 0;
+
+  // A crash report arrives in pieces; this is what has come so far.
+  std::vector<std::uint8_t> crashBytes_;
+  std::size_t crashTotal_ = 0;  // Size of the whole report; 0 when none is in progress.
 };
 
 // Makes text safe to print and to put in JSON: valid UTF-8 passes through,

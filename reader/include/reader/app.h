@@ -6,6 +6,7 @@
 
 #include "core/byte_sink.h"
 #include "core/clock.h"
+#include "core/crash.h"
 #include "core/memory_probe.h"
 #include "core/trace.h"
 #include "core/trace_stream.h"
@@ -19,6 +20,7 @@ struct Services {
   core::TraceSync& traceSync;
   core::ByteSink& serial;
   core::MemoryProbe& memory;
+  core::CrashStore& crash;
 };
 
 // The services of the hardware port this build was linked with.
@@ -28,8 +30,9 @@ Services DefaultServices() noexcept;
 inline constexpr std::size_t kTraceRecordCount = 256;
 
 // The application. So far it owns the diagnostics: the tracer every part
-// records into, and the stream that carries trace, log text and metrics to
-// the serial line. Reading books comes later.
+// records into, the stream that carries trace, log text and metrics to the
+// serial line, and passing on the report of a crash that ended an earlier
+// run. Reading books comes later.
 class App {
  public:
   explicit App(const Services& services) noexcept;
@@ -38,7 +41,8 @@ class App {
   App(const App&) = delete;
   App& operator=(const App&) = delete;
 
-  // Installs the tracer and announces the stream. Call once.
+  // Installs the tracer and announces the stream. If the device kept a
+  // report of a crash, starts sending it; Tick() sends the rest. Call once.
   void Start() noexcept;
   bool Started() const noexcept { return started_; }
 
@@ -59,6 +63,7 @@ class App {
 
  private:
   void SampleMemory() noexcept;
+  void SendCrashReport() noexcept;
 
   Services services_;
   std::array<core::TraceRecord, kTraceRecordCount> traceStorage_{};
@@ -67,6 +72,8 @@ class App {
   std::uint64_t startedAtUs_ = 0;
   std::uint64_t nextHeartbeatUs_ = 0;
   std::uint64_t nextMetricsUs_ = 0;
+  const core::CrashReport* crashReport_ = nullptr;  // Being sent; null when there is none or it is done.
+  std::size_t crashSent_ = 0;                       // Bytes of its encoded form sent so far.
   bool started_ = false;
 };
 

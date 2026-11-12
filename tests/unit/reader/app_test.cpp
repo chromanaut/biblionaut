@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/endian.h"
+#include "crash_fakes.h"
 #include "memory_fakes.h"
 #include "reader/trace_ids.h"
 #include "stream_fakes.h"
@@ -24,7 +25,25 @@ struct AppFixture {
   bn::test::FakeSync sync;
   bn::test::FakeSink sink;
   bn::test::FakeMemoryProbe memory;
-  bn::reader::App app{bn::reader::Services{.clock = clock, .traceSync = sync, .serial = sink, .memory = memory}};
+  bn::test::FakeCrashStore crash;
+  bn::reader::App app{
+      bn::reader::Services{.clock = clock, .traceSync = sync, .serial = sink, .memory = memory, .crash = crash}};
+
+  // The bytes of every crash frame sent so far, joined, after checking that
+  // each piece continues the one before.
+  std::vector<std::uint8_t> CrashBytes() const {
+    std::vector<std::uint8_t> joined;
+    for (const StreamItem& item : ItemsOfType(FrameType::kCrash)) {
+      const std::span<const std::uint8_t> payload(item.payload);
+      EXPECT_GT(payload.size(), 4u);
+      if (payload.size() <= 4) {
+        continue;
+      }
+      EXPECT_EQ(bn::core::LoadLe16(payload.subspan(0).first<2>()), joined.size());
+      joined.insert(joined.end(), payload.begin() + 4, payload.end());
+    }
+    return joined;
+  }
 
   // Everything sent in metrics frames so far, joined into one line.
   std::string Metrics() const {
@@ -103,6 +122,73 @@ TEST(App, StartAnnouncesTheStreamWithItsVersion) {
   ASSERT_FALSE(hello[0].payload.empty());
   EXPECT_EQ(hello[0].payload[0], bn::core::kStreamProtocolVersion);
   EXPECT_EQ(hello[0].Text(), bn::reader::Version());
+}
+
+TEST(App, SendsNoCrashFramesWhenNothingCrashed) {
+  AppFixture fixture;
+  fixture.app.Start();
+  fixture.RunFor(2'000'000);
+  EXPECT_TRUE(fixture.ItemsOfType(FrameType::kCrash).empty());
+}
+
+TEST(App, NamesItsVersionForAnyCrashReportItLeaves) {
+  AppFixture fixture;
+  EXPECT_EQ(fixture.crash.version, nullptr);
+  fixture.app.Start();
+  EXPECT_STREQ(fixture.crash.version, bn::reader::Version());
+}
+
+TEST(App, SendsASavedCrashReportAfterTheHello) {
+  AppFixture fixture;
+  fixture.crash.report = bn::test::SampleCrashReport();
+  fixture.crash.hasReport = true;
+  fixture.app.Start();
+
+  // The first pieces go out with the start, right behind the hello.
+  const std::vector<StreamItem> atStart = fixture.Items();
+  ASSERT_GE(atStart.size(), 2u);
+  EXPECT_EQ(atStart[0].type, FrameType::kHello);
+  EXPECT_EQ(atStart[1].type, FrameType::kCrash);
+  // A full report is too much for one go; the ticks that follow finish it.
+  EXPECT_LT(fixture.CrashBytes().size(), bn::core::EncodedCrashReportSize(fixture.crash.report));
+
+  fixture.RunFor(500'000);
+  bn::core::CrashReport decoded{};
+  ASSERT_TRUE(bn::core::DecodeCrashReport(fixture.CrashBytes(), decoded));
+  EXPECT_EQ(bn::core::CrashText(decoded.reason), "Load access fault");
+  EXPECT_EQ(decoded.bootsSince, 3u);
+
+  // It is sent once per run.
+  const std::size_t frames = fixture.ItemsOfType(FrameType::kCrash).size();
+  fixture.RunFor(2'000'000);
+  EXPECT_EQ(fixture.ItemsOfType(FrameType::kCrash).size(), frames);
+}
+
+TEST(App, KeepsTryingToSendACrashReportWhileTheSerialLineIsFull) {
+  AppFixture fixture;
+  fixture.crash.report = bn::test::SampleCrashReport();
+  fixture.crash.hasReport = true;
+  fixture.sink.full = true;
+  fixture.app.Start();
+  fixture.RunFor(1'000'000);
+  EXPECT_TRUE(fixture.sink.received.empty());
+
+  fixture.sink.full = false;
+  fixture.RunFor(1'000'000);
+  bn::core::CrashReport decoded{};
+  ASSERT_TRUE(bn::core::DecodeCrashReport(fixture.CrashBytes(), decoded));
+  EXPECT_EQ(decoded.stack, fixture.crash.report.stack);
+}
+
+TEST(App, FlushSendsTheRestOfACrashReport) {
+  AppFixture fixture;
+  fixture.crash.report = bn::test::SampleCrashReport();
+  fixture.crash.hasReport = true;
+  fixture.app.Start();
+  fixture.app.Flush();
+
+  bn::core::CrashReport decoded{};
+  EXPECT_TRUE(bn::core::DecodeCrashReport(fixture.CrashBytes(), decoded));
 }
 
 TEST(App, InstallsItsTracerWhileItLives) {
@@ -239,6 +325,8 @@ TEST(App, DefaultServicesUseTheLinkedHardwarePort) {
   // The desktop port has no fixed heap or task stacks to report on.
   EXPECT_FALSE(services.memory.Heap().has_value());
   EXPECT_FALSE(services.memory.StackHeadroom().has_value());
+  // And, unless asked to invent one, no crash to report.
+  EXPECT_EQ(services.crash.Saved(), nullptr);
 }
 
 TEST(Version, IsNotEmpty) { EXPECT_GT(std::strlen(bn::reader::Version()), 0u); }

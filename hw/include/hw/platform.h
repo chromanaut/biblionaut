@@ -2,6 +2,7 @@
 
 #include "core/byte_sink.h"
 #include "core/clock.h"
+#include "core/crash.h"
 #include "core/memory_probe.h"
 #include "core/trace.h"
 
@@ -26,6 +27,12 @@ core::ByteSink& SystemSerial() noexcept;
 
 // How much heap and stack this device has left.
 core::MemoryProbe& SystemMemoryProbe() noexcept;
+
+// The report of the last crash, kept across restarts. On a device, calling
+// this also arms the crash handler's use of the store, so call it early. The
+// desktop has no crashes to report; it makes one up when the BN_FAKE_CRASH
+// environment variable is set, so the path a report takes can be exercised.
+core::CrashStore& SystemCrashStore() noexcept;
 
 // Short name of the port, for the boot banner and diagnostics.
 const char* PortName() noexcept;

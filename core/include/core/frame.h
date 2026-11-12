@@ -25,6 +25,10 @@ enum class FrameType : std::uint8_t {
   kTrace = 2,    // Dropped-record count (u32), then trace records.
   kText = 3,     // Time (u32 microseconds), then one line of log text without a line ending.
   kMetrics = 4,  // Time (u32 microseconds), then counters and gauges as one line of text.
+  // One piece of an encoded crash report (core/crash.h): the piece's offset
+  // in the report (u16), the report's whole size (u16), then the bytes.
+  // Pieces are sent in order from offset 0.
+  kCrash = 5,
 };
 
 // Size of the largest encoded frame for a payload of `payloadSize` bytes.

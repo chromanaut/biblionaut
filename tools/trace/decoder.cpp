@@ -213,6 +213,7 @@ void StreamDecoder::HandleFrame(std::uint8_t type, std::span<const std::uint8_t>
     lastTime64_ = 0;
     lastDropped_ = 0;
     protocolSupported_ = payload[0] == kSupportedProtocol;
+    AbandonCrashReport();  // The restart cut it short; the new run sends it again.
 
     Event event;
     event.kind = EventKind::kHello;
@@ -246,10 +247,64 @@ void StreamDecoder::HandleFrame(std::uint8_t type, std::span<const std::uint8_t>
       events_.push_back(std::move(event));
       return;
     }
+    case core::FrameType::kCrash:
+      HandleCrashPiece(payload);
+      return;
     case core::FrameType::kHello:
       return;
   }
   ++stats_.unsupportedFrames;
+}
+
+void StreamDecoder::AbandonCrashReport() {
+  if (crashTotal_ != 0) {
+    ++stats_.damagedCrashReports;
+  }
+  crashBytes_.clear();
+  crashTotal_ = 0;
+}
+
+void StreamDecoder::HandleCrashPiece(std::span<const std::uint8_t> payload) {
+  constexpr std::size_t kHeaderSize = 4;
+  if (payload.size() <= kHeaderSize) {
+    ++stats_.unsupportedFrames;
+    return;
+  }
+  const std::size_t offset = core::LoadLe16(payload.subspan(0).first<2>());
+  const std::size_t total = core::LoadLe16(payload.subspan(2).first<2>());
+  const std::span<const std::uint8_t> bytes = payload.subspan(kHeaderSize);
+
+  if (offset == 0) {
+    AbandonCrashReport();
+    crashTotal_ = total;
+  }
+  // Pieces come in order. One that does not continue what is here means a
+  // piece was lost, and the rest cannot be used.
+  if (crashTotal_ == 0 || total != crashTotal_ || offset != crashBytes_.size() || offset + bytes.size() > total) {
+    AbandonCrashReport();
+    return;
+  }
+  crashBytes_.insert(crashBytes_.end(), bytes.begin(), bytes.end());
+  if (crashBytes_.size() < crashTotal_) {
+    return;
+  }
+
+  auto report = std::make_shared<core::CrashReport>();
+  const bool good = core::DecodeCrashReport(crashBytes_, *report);
+  crashBytes_.clear();
+  crashTotal_ = 0;
+  if (!good) {
+    ++stats_.damagedCrashReports;
+    return;
+  }
+  ++stats_.crashReports;
+  Event event;
+  event.kind = EventKind::kCrash;
+  event.boot = boot_;
+  event.timeUs = lastTime64_;
+  event.text = std::string(core::CrashText(report->reason));
+  event.crash = std::move(report);
+  events_.push_back(std::move(event));
 }
 
 void StreamDecoder::HandleTrace(std::span<const std::uint8_t> payload) {

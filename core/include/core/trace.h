@@ -112,8 +112,12 @@ class Tracer {
   [[nodiscard]] std::size_t Drain(std::span<TraceRecord> out) noexcept;
 
   // Copies the newest records into `out`, oldest of them first, without
-  // marking them read. For a crash report.
+  // marking them read.
   [[nodiscard]] std::size_t CopyLatest(std::span<TraceRecord> out) noexcept;
+
+  // The same without taking the lock, for a crash handler: everything else
+  // has stopped, and the lock may be held by the code that crashed.
+  [[nodiscard]] std::size_t CopyLatestUnlocked(std::span<TraceRecord> out) const noexcept;
 
   std::size_t Capacity() const noexcept { return storage_.size(); }
   // Records ever written.

@@ -11,6 +11,15 @@ cmake_minimum_required(VERSION 3.22)
 get_filename_component(BN_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 list(APPEND CMAKE_MODULE_PATH "${BN_ROOT}/cmake")
 
+# For checking crash reports on a device: a firmware that crashes on purpose.
+#
+#   tools/idf -DBN_CRASH_TEST=fault build flash     (back to normal: -DBN_CRASH_TEST=)
+#
+# It crashes ten seconds after starting, in the way named, and does not crash
+# again on the start that follows a crash, so it cannot loop.
+set(BN_CRASH_TEST "" CACHE STRING "Crash on purpose after ten seconds: fault, abort, oom or stack. Empty: never.")
+set_property(CACHE BN_CRASH_TEST PROPERTY STRINGS "" fault abort oom stack)
+
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
 set(COMPONENTS main)
@@ -38,6 +47,16 @@ add_library(bn_hw INTERFACE)
 target_link_libraries(bn_hw INTERFACE idf::bn_hw)
 
 bn_add_portable_parts("${CMAKE_BINARY_DIR}/bn")
+
+# Keep a copy of every firmware's ELF file, named by its SHA-256. A crash
+# report carries the start of that hash, so tools/bn-symbolize can find the
+# exact build a report came from, however many builds ago it was flashed.
+idf_build_get_property(bn_elf EXECUTABLE)
+idf_build_get_property(bn_python PYTHON)
+add_custom_command(TARGET ${bn_elf} POST_BUILD
+  COMMAND ${bn_python} "${BN_ROOT}/tools/bn-symbolize" --archive "$<TARGET_FILE:${bn_elf}>" --label
+          "${BN_VERSION_STRING}"
+  VERBATIM)
 
 # The portable parts use the C and C++ runtime libraries. Declaring that, for
 # linking only, puts the parts ahead of those libraries on the link line.

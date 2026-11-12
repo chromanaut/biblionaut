@@ -1,0 +1,13 @@
+# Tests are checked by the same rules as the rest of the code (the settings
+# in the repository's .clang-tidy apply here too), with one exception: the
+# Clang Static Analyzer is left out.
+#
+# The analyzer explores the paths a function can take, and a test written
+# with GoogleTest's macros has a great many: every EXPECT_ is a branch with a
+# message stream behind it. Analysing the tests took 85% of the whole
+# clang-tidy run (20 to 40 seconds for a single test file, against about one
+# second without it). What it looks for there, the tests already expose by
+# being run under the address and undefined-behaviour sanitizers. For the
+# code under test, which has paths no test takes, it stays on.
+InheritParentConfig: true
+Checks: '-clang-analyzer-*'

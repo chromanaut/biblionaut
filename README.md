@@ -224,11 +224,56 @@ Files are reached through three things in `core`:
   place of another in one step, so it takes several, and
   `RecoverReplacement()` finishes or undoes whatever was cut short.
 
-On the desktop the card is a folder (`hw/desktop/folder_storage.h`). It is
-made to behave as a card does where that is cheap: the same paths are
-refused, only four files can be open at once, an open file cannot be
-removed or renamed, and a rename will not replace a file. The SD card
-itself is not driven yet.
+On a device the card is on the wires it shares with the panel, driven by
+ESP-IDF's SD driver and FatFS, which is called directly
+(`hw/esp32c3/sd_storage.cpp`). Only FAT file systems are understood, which
+is what cards of up to 32 GB are sold with; a bigger card comes with exFAT
+and has to be formatted as FAT32 first.
+
+On the desktop the card is a folder (`hw/desktop/folder_storage.h`), the
+one named by the `BN_STORAGE` environment variable; without it there is no
+card. It is made to behave as a card does where that is cheap: the same
+paths are refused, only four files can be open at once, an open file
+cannot be removed or renamed, and a rename will not replace a file.
+
+The application gets storage ready at start and says whether it is
+(`storage_ok` in the metrics, `reader/storage_start` in the trace). It
+does nothing else with it yet. On a device the trace also says what was
+found, and why not if nothing usable was:
+
+```
+hw/sd_card megabytes=30436          the card's size
+hw/sd_file_system kind=3            1: FAT12, 2: FAT16, 3: FAT32
+hw/sd_start status=0  312.5 ms      0: ready, 1: no card, 8: a card that cannot be used
+hw/sd_card_error code=263           the card did not answer
+hw/sd_mount_error code=13           no file system FatFS knows: exFAT, most likely
+```
+
+A firmware built with `-DBN_STORAGE_CHECK=ON` puts the card through its
+paces (on the desktop, set `BN_STORAGE_CHECK`): at start, and again at each
+press of the Power button, which also looks for a card again if none was
+found before. It writes a 256 KB file in 4 KB blocks, reads it back
+checking every byte, reads short pieces from all over it, replaces a small
+file twice, and removes what it made (`reader/storage_check.h`). It does a
+little each turn, so the panel and the buttons carry on around it. Each
+read, write and sync of the card is in the trace with the time it took
+(`hw/sd_read`, `hw/sd_write`, `hw/sd_sync`), and the outcome is there and
+in the metrics:
+
+```
+reader/storage_check passed=1
+reader/storage_check_failed step_and_status=307     step 3 (writing), status 7 (no space)
+storage_check=1[1..1]
+```
+
+```
+tools/idf -DBN_STORAGE_CHECK=ON build flash
+./build/host/tools/trace/bn-trace | tee card.log
+tools/idf -DBN_STORAGE_CHECK=OFF build flash     # back to the normal firmware
+```
+
+It can be combined with `-DBN_PLANE_CHECK=ON`, to see whether using the
+card disturbs what the panel holds.
 
 ## Device build
 

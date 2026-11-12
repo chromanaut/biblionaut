@@ -17,7 +17,7 @@ file(REMOVE "${capture}" "${timeline}" "${panel}-001.png" "${panel}-002.png")
 # first refresh is over well before the Down button is pressed at 0.4 s.
 execute_process(
   COMMAND "${CMAKE_COMMAND}" -E env "BN_SERIAL_OUT=${capture}" "BN_DISPLAY_OUT=${panel}" "BN_DISPLAY_SPEED=20"
-          "BN_INPUT=400:down" "${APP}" --run-ms 1300
+          "BN_INPUT=400:down" "BN_STORAGE=${WORK_DIR}" "${APP}" --run-ms 1300
   RESULT_VARIABLE app_result)
 if(NOT app_result EQUAL 0)
   message(FATAL_ERROR "the desktop application failed: ${app_result}")
@@ -35,6 +35,7 @@ endif()
 foreach(expected
     "=== boot 1: "
     "reader/app_start"
+    "reader/storage_start status=0"
     "reader/heartbeat uptime_s=1"
     "hw/panel_write bytes=8000"
     "reader/panel_sweep picture=1"

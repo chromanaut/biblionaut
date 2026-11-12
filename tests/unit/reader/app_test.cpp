@@ -14,6 +14,7 @@
 #include "input_fakes.h"
 #include "memory_fakes.h"
 #include "reader/trace_ids.h"
+#include "storage_fakes.h"
 #include "stream_fakes.h"
 #include "trace_fakes.h"
 
@@ -30,13 +31,15 @@ struct AppFixture {
   bn::test::FakeCrashStore crash;
   bn::test::FakeDisplay display;  // Absent unless a test says otherwise.
   bn::test::FakeInput input;
+  bn::test::FakeStorage storage;  // A card with nothing on it.
   bn::reader::App app{bn::reader::Services{.clock = clock,
                                            .traceSync = sync,
                                            .serial = sink,
                                            .memory = memory,
                                            .crash = crash,
                                            .display = display,
-                                           .input = input}};
+                                           .input = input,
+                                           .storage = storage}};
 
   // The bytes of every crash frame sent so far, joined, after checking that
   // each piece continues the one before.
@@ -268,6 +271,72 @@ TEST(App, CanHaveThePanelsPlanesCheckedAsItRuns) {
   EXPECT_EQ(plain.display.reads, 0);
 }
 
+TEST(App, GetsStorageReadyAndSaysWhetherItIs) {
+  AppFixture fixture;
+  fixture.app.Start();
+  EXPECT_TRUE(fixture.storage.started);
+  fixture.RunFor(5'100'000);
+  EXPECT_NE(fixture.Metrics().find("storage_ok=1["), std::string::npos) << fixture.Metrics();
+  bool traced = false;
+  for (const auto& [id, arg] : fixture.TraceRecords()) {
+    traced = traced || (id == static_cast<std::uint16_t>(bn::reader::kSpanStorageStart) && arg == 0);
+  }
+  EXPECT_TRUE(traced);
+  // It does nothing with it unless asked to.
+  EXPECT_EQ(fixture.storage.changes, 0);
+  EXPECT_EQ(fixture.app.StorageChecker(), nullptr);
+
+  AppFixture noCard;
+  noCard.storage.present = false;
+  noCard.app.Start();
+  noCard.RunFor(5'100'000);
+  EXPECT_NE(noCard.Metrics().find("storage_ok=0["), std::string::npos) << noCard.Metrics();
+}
+
+TEST(App, CanPutStorageThroughItsPacesAtStartAndAtEachPressOfPower) {
+  AppFixture fixture;
+  fixture.app.CheckStorage();
+  fixture.app.Start();
+  ASSERT_NE(fixture.app.StorageChecker(), nullptr);
+  EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kRunning);
+  fixture.RunFor(15'000'000);
+  EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kPassed);
+  EXPECT_NE(fixture.Metrics().find("storage_check=1["), std::string::npos) << fixture.Metrics();
+  const int changesInOneRun = fixture.storage.changes;
+  EXPECT_GT(changesInOneRun, 64);
+  EXPECT_FALSE(fixture.storage.Has("/biblionaut-check")) << "it clears up after itself";
+
+  // Power runs it again.
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(100'000);
+  EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kRunning);
+  fixture.RunFor(15'000'000);
+  EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kPassed);
+  EXPECT_EQ(fixture.storage.changes, 2 * changesInOneRun);
+}
+
+TEST(App, LooksForACardAgainWhenPowerIsPressed) {
+  AppFixture fixture;
+  fixture.storage.present = false;
+  fixture.app.CheckStorage();
+  fixture.app.Start();
+  fixture.RunFor(200'000);
+  EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kIdle) << "no card to check";
+
+  // Still none: the check says so.
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(200'000);
+  EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kFailed);
+  EXPECT_EQ(fixture.app.StorageChecker()->FailedStatus(), bn::core::StorageStatus::kAbsent);
+
+  // A card goes in.
+  fixture.storage.present = true;
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(15'000'000);
+  EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kPassed);
+  EXPECT_NE(fixture.Metrics().find("storage_ok=1["), std::string::npos) << fixture.Metrics();
+}
+
 TEST(App, ReportsButtonsThatCannotBeRead) {
   AppFixture fixture;
   fixture.input.present = false;
@@ -290,12 +359,14 @@ TEST(App, TickSendsTheStartSpanAndAHeartbeatEverySecond) {
   fixture.app.Start();
   fixture.RunFor(3'500'000);
 
+  // Start, getting storage ready, then the heartbeats.
   const auto records = fixture.TraceRecords();
-  ASSERT_EQ(records.size(), 4u);
+  ASSERT_EQ(records.size(), 5u);
   EXPECT_EQ(records[0].first, kStartId);
-  EXPECT_EQ(records[1], (std::pair<std::uint16_t, std::uint32_t>{kHeartbeatId, 1}));
-  EXPECT_EQ(records[2], (std::pair<std::uint16_t, std::uint32_t>{kHeartbeatId, 2}));
-  EXPECT_EQ(records[3], (std::pair<std::uint16_t, std::uint32_t>{kHeartbeatId, 3}));
+  EXPECT_EQ(records[1].first, static_cast<std::uint16_t>(bn::reader::kSpanStorageStart));
+  EXPECT_EQ(records[2], (std::pair<std::uint16_t, std::uint32_t>{kHeartbeatId, 1}));
+  EXPECT_EQ(records[3], (std::pair<std::uint16_t, std::uint32_t>{kHeartbeatId, 2}));
+  EXPECT_EQ(records[4], (std::pair<std::uint16_t, std::uint32_t>{kHeartbeatId, 3}));
 }
 
 TEST(App, SendsMetricsEveryFiveSeconds) {
@@ -377,11 +448,11 @@ TEST(App, SendsBufferedTraceBeforeTheMetricsOfTheSameTick) {
       argsBefore.push_back(bn::core::LoadLe32(payload.subspan(at + 8).first<4>()));
     }
   }
-  // Start, heartbeats 1 to 5, then the memory sample.
-  ASSERT_EQ(idsBefore.size(), 7u);
-  EXPECT_EQ(idsBefore[5], kHeartbeatId);
-  EXPECT_EQ(argsBefore[5], 5u);
-  EXPECT_EQ(idsBefore[6], static_cast<std::uint16_t>(bn::reader::kSpanSampleMemory));
+  // Start, storage, heartbeats 1 to 5, then the memory sample.
+  ASSERT_EQ(idsBefore.size(), 8u);
+  EXPECT_EQ(idsBefore[6], kHeartbeatId);
+  EXPECT_EQ(argsBefore[6], 5u);
+  EXPECT_EQ(idsBefore[7], static_cast<std::uint16_t>(bn::reader::kSpanSampleMemory));
 }
 
 TEST(App, KeepsTraceWhileTheSerialLineIsBlockedAndSendsItLater) {
@@ -394,9 +465,9 @@ TEST(App, KeepsTraceWhileTheSerialLineIsBlockedAndSendsItLater) {
   fixture.sink.full = false;
   fixture.app.Flush();
   const auto records = fixture.TraceRecords();
-  ASSERT_EQ(records.size(), 4u);
+  ASSERT_EQ(records.size(), 5u);
   EXPECT_EQ(records[0].first, kStartId);
-  EXPECT_EQ(records[3], (std::pair<std::uint16_t, std::uint32_t>{kHeartbeatId, 3}));
+  EXPECT_EQ(records[4], (std::pair<std::uint16_t, std::uint32_t>{kHeartbeatId, 3}));
 }
 
 TEST(App, DefaultServicesUseTheLinkedHardwarePort) {

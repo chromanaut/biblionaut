@@ -10,3 +10,27 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # defaults; stated so a change in defaults cannot go unnoticed.
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
 CONFIG_COMPILER_CXX_RTTI=n
+
+# The SD card's file system (hw/esp32c3/sd_storage.cpp).
+#   One card. File names as long as a card allows, in UTF-8.
+CONFIG_FATFS_VOLUME_COUNT=1
+CONFIG_FATFS_LFN_STACK=y
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+#   As many files open at once as the storage layer allows. This also has
+#   FatFS refuse to remove or rename a file that is open.
+CONFIG_FATFS_FS_LOCK=4
+#   One sector buffer for the card, not one more for each open file: files
+#   are read and written a block at a time, which does not go through it.
+CONFIG_FATFS_PER_FILE_CACHE=n
+#   That buffer inside FatFS's own record of the card, not taken from the
+#   heap. (ESP-IDF 6.0.1 also fails to compile FatFS with heap buffers and
+#   no per-file cache.) Its size is the largest sector of anything FatFS
+#   might be used on, which unless told otherwise is 4096 bytes for the
+#   chip's own flash; a card's sectors are 512.
+CONFIG_FATFS_USE_DYN_BUFFERS=n
+CONFIG_WL_SECTOR_SIZE_512=y
+
+# Stack for the task the application runs on. FatFS keeps a long file name
+# on the stack while it works on one, which the default (3584) has no room
+# for.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

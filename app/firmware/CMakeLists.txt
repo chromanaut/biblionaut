@@ -29,6 +29,15 @@ set_property(CACHE BN_CRASH_TEST PROPERTY STRINGS "" fault abort oom stack)
 # which takes about a second each time.
 option(BN_PLANE_CHECK "Read the panel's planes back and check them whenever it comes to rest" OFF)
 
+# For checking, on a device, that the SD card can be relied on and how fast
+# it is (reader/storage_check.h says what is done):
+#
+#   tools/idf -DBN_STORAGE_CHECK=ON build flash    (back to normal: -DBN_STORAGE_CHECK=OFF)
+#
+# Such a firmware writes to the card at start, and again at each press of
+# the Power button. It can be combined with BN_PLANE_CHECK.
+option(BN_STORAGE_CHECK "Put the SD card through its paces at start and at each press of Power" OFF)
+
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
 set(COMPONENTS main)

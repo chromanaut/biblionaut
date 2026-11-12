@@ -41,7 +41,17 @@
   X(8, kInstantOldPlaneBands, "old_plane_bands", "bands")           \
   /* A plane could not be read back (0: new image, 1: old), so */   \
   /* no more are tried. */                                          \
-  X(9, kInstantPlaneUnreadable, "plane_unreadable", "plane")
+  X(9, kInstantPlaneUnreadable, "plane_unreadable", "plane")        \
+  /* Getting storage ready at start-up. The argument is how it */   \
+  /* ended, a core::StorageStatus: 0 is ready, 1 no card. */        \
+  X(10, kSpanStorageStart, "storage_start", "status")               \
+  /* A whole run of the storage check (reader/storage_check.h), */  \
+  /* and whether it passed (1) or failed (0). */                    \
+  X(11, kSpanStorageCheck, "storage_check", "passed")               \
+  /* Where a storage check failed: the step's number times 100, */  \
+  /* plus what storage answered (a core::StorageStatus; 0 if it */  \
+  /* answered well but the bytes were wrong). */                    \
+  X(12, kInstantStorageCheckFailed, "storage_check_failed", "step_and_status")
 
 namespace bn::reader {
 

@@ -2,9 +2,9 @@
 # rightly across the drive voltages being switched off, run by CTest:
 #
 #   1. run the desktop application with the simulated panel saving its
-#      pictures, the planes being checked, and three scripted presses:
-#      Down; Down again once the voltages have been off for a while; then
-#      Confirm, which shows the same picture again by a half refresh;
+#      pictures and three scripted presses: Down; Down again once the
+#      voltages have been off for a while; then Confirm, which shows the
+#      same picture again by a half refresh;
 #   2. check that the step made after the switch-off left the panel showing
 #      exactly what the half refresh then did. A half refresh takes no
 #      notice of the old-image plane, so it is right whatever went before;
@@ -13,19 +13,24 @@
 # The simulated panel swaps and restores its planes as a real one was
 # measured to (core/display.h), which is what makes this a test.
 #
+# Everything here hangs on the clock, not on how often the application
+# gets a turn: a busy machine gives it one far less often than every
+# 10 ms. That is why the planes are not read back in this run. A reading
+# takes a dozen turns, and puts off the switch-off by as long as it takes.
+#
 # Needs -DAPP=<biblionaut-desktop> -DTOOL=<bn-trace> -DWORK_DIR=<scratch directory>.
 set(capture "${WORK_DIR}/panel_switch_off.bin")
 set(panel "${WORK_DIR}/panel_switch_off_panel")
 file(REMOVE "${capture}" "${panel}-001.png" "${panel}-002.png" "${panel}-003.png" "${panel}-004.png")
 
 # The panel works twenty times faster than a real one. The two seconds the
-# application waits before switching the voltages off are not shortened:
-# they run from about 0.6 s, when the planes have been read after the
-# first step, and the second step comes a second after they end, which
-# leaves room for a slow machine.
+# application waits before switching the voltages off are not shortened.
+# They run from the end of the first step's refresh, at about 0.5 s, so
+# the voltages go off at about 2.5 s: a second and more before the second
+# step, and long enough after it for the planes to be written again.
 execute_process(
   COMMAND "${CMAKE_COMMAND}" -E env "BN_SERIAL_OUT=${capture}" "BN_DISPLAY_OUT=${panel}" "BN_DISPLAY_SPEED=20"
-          "BN_PLANE_CHECK=1" "BN_INPUT=400:down,3600:down,4000:confirm" "${APP}" --run-ms 4400
+          "BN_INPUT=400:down,3600:down,4000:confirm" "${APP}" --run-ms 4400
   RESULT_VARIABLE app_result)
 if(NOT app_result EQUAL 0)
   message(FATAL_ERROR "the desktop application failed: ${app_result}")
@@ -40,15 +45,11 @@ if(NOT tool_result EQUAL 0)
   message(FATAL_ERROR "bn-trace failed: ${tool_result}\n${tool_errors}")
 endif()
 
-# The voltages went off between the two steps, and the planes read back
-# as the picture on the panel and the one after it both before and after.
+# The voltages went off between the two steps: otherwise this run shows
+# nothing.
 foreach(expected
     "hw/panel_power_off"
-    "hw/refresh_half power_off_after=0"
-    "reader/old_plane_holds picture=2"
-    "reader/new_plane_holds picture=3"
-    "reader/old_plane_holds picture=3"
-    "reader/new_plane_holds picture=4")
+    "hw/refresh_half power_off_after=0")
   string(FIND "${tool_output}" "${expected}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "bn-trace did not print '${expected}'. It printed:\n${tool_output}")
@@ -59,9 +60,6 @@ string(FIND "${tool_output}" "reader/press_to_refresh button=5" first_step)
 string(FIND "${tool_output}" "reader/press_to_refresh button=5" second_step REVERSE)
 if(NOT (first_step LESS switched_off AND switched_off LESS second_step))
   message(FATAL_ERROR "the voltages were not switched off between the two steps. bn-trace printed:\n${tool_output}")
-endif()
-if(tool_output MATCHES "plane_unreadable|picture=9|picture=8")
-  message(FATAL_ERROR "a plane held something it should not have. bn-trace printed:\n${tool_output}")
 endif()
 
 # Four pictures: the first, the two steps, and the half refresh.

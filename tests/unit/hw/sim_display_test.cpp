@@ -182,7 +182,7 @@ TEST(SimDisplay, AFullRefreshShowsTheNewPlaneAndKeepsThePanelBusyMeanwhile) {
   EXPECT_TRUE(fixture.display.Powered());
 }
 
-TEST(SimDisplay, AFastRefreshOnlyChangesPixelsWhereThePlanesDiffer) {
+TEST(SimDisplay, AFastRefreshLeavesAloneOnlyWhatBothPlanesCallWhite) {
   SimFixture fixture;
   ASSERT_TRUE(fixture.display.Start());
   const std::vector<std::uint8_t> first = WithBlackRows(100, 50);
@@ -202,7 +202,8 @@ TEST(SimDisplay, AFastRefreshOnlyChangesPixelsWhereThePlanesDiffer) {
   EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 320));
   EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 120)) << "left over from the first picture";
 
-  // With the old-image plane kept in step, the same change comes out right.
+  // With the old-image plane holding what the panel shows, the same change
+  // comes out right.
   ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, first));
   ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, first));
   ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kStayPowered));
@@ -215,6 +216,177 @@ TEST(SimDisplay, AFastRefreshOnlyChangesPixelsWhereThePlanesDiffer) {
   EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 320));
   EXPECT_FALSE(fixture.display.Powered());
   EXPECT_EQ(fixture.display.RefreshCount(), 4);
+}
+
+TEST(SimDisplay, AFastRefreshDrivesBlackWhateverTheOldPlaneSays) {
+  // Both planes say rows 100 to 149 are black, but the panel is white: a
+  // wrong old-image plane costs nothing where the new image is black.
+  SimFixture fixture;
+  ASSERT_TRUE(fixture.display.Start());
+  const std::vector<std::uint8_t> picture = WithBlackRows(100, 50);
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, picture));
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, picture));
+  ASSERT_TRUE(RowIsWhite(fixture.display.Shown(), 120));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
+  fixture.Finish();
+  EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 120));
+  EXPECT_TRUE(RowIsWhite(fixture.display.Shown(), 99));
+}
+
+// Shows `picture` by a fast refresh, writing only the new-image plane.
+void StepTo(SimFixture& fixture, const std::vector<std::uint8_t>& picture) {
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, picture));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
+  fixture.Finish();
+}
+
+// Shows `picture` by a full refresh, with both planes holding it.
+void StartFrom(SimFixture& fixture, const std::vector<std::uint8_t>& picture) {
+  ASSERT_TRUE(fixture.display.Start());
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, picture));
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, picture));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
+  fixture.Finish();
+}
+
+bool Same(std::span<const std::uint8_t> a, const std::vector<std::uint8_t>& b) {
+  return std::equal(a.begin(), a.end(), b.begin(), b.end());
+}
+
+TEST(SimDisplay, AfterAFastRefreshThePlanesHaveChangedPlaces) {
+  SimFixture fixture;
+  const std::vector<std::uint8_t> first = WithBlackRows(100, 50);
+  const std::vector<std::uint8_t> second = WithBlackRows(200, 50);
+  const std::vector<std::uint8_t> third = WithBlackRows(300, 50);
+  StartFrom(fixture, first);
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kNew), first)) << "a full refresh moves nothing";
+
+  // What was the new image is now the old one, with nothing written; the
+  // new-image plane is left holding the picture before.
+  StepTo(fixture, second);
+  EXPECT_TRUE(Same(fixture.display.Shown(), second));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kOld), second));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kNew), first));
+  // Reading says the same.
+  std::vector<std::uint8_t> rows(kRowBytes * kRows);
+  ASSERT_TRUE(fixture.display.ReadRows(DisplayPlane::kOld, 0, rows));
+  EXPECT_EQ(rows, second);
+
+  // So fast refreshes can follow one another with only the new-image
+  // plane ever written.
+  StepTo(fixture, third);
+  EXPECT_TRUE(Same(fixture.display.Shown(), third));
+  StepTo(fixture, first);
+  EXPECT_TRUE(Same(fixture.display.Shown(), first));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kOld), first));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kNew), third));
+}
+
+TEST(SimDisplay, SwitchingOffPutsThePlanesBackInTheirFirstPlaces) {
+  SimFixture fixture;
+  const std::vector<std::uint8_t> first = WithBlackRows(100, 50);
+  const std::vector<std::uint8_t> second = WithBlackRows(200, 50);
+  const std::vector<std::uint8_t> third = WithBlackRows(300, 50);
+
+  // After one fast refresh that undoes the change of places: the
+  // old-image plane is a picture behind the panel.
+  StartFrom(fixture, first);
+  StepTo(fixture, second);
+  ASSERT_TRUE(fixture.display.PowerOff());
+  fixture.Finish();
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kNew), second));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kOld), first));
+  // A fast refresh now compares against the wrong picture. Rows 200 to
+  // 249, black on the panel, are white in both planes and are left black.
+  StepTo(fixture, third);
+  EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 320));
+  EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 220)) << "left over";
+
+  // Writing the old-image plane with what the panel shows, after the
+  // switch-off, is what puts it right.
+  StartFrom(fixture, first);
+  StepTo(fixture, second);
+  ASSERT_TRUE(fixture.display.PowerOff());
+  fixture.Finish();
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, second));
+  StepTo(fixture, third);
+  EXPECT_TRUE(Same(fixture.display.Shown(), third));
+
+  // After two fast refreshes the planes are in their first places already,
+  // and switching off changes nothing.
+  StartFrom(fixture, first);
+  StepTo(fixture, second);
+  StepTo(fixture, third);
+  ASSERT_TRUE(fixture.display.PowerOff());
+  fixture.Finish();
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kOld), third));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kNew), second));
+  StepTo(fixture, first);
+  EXPECT_TRUE(Same(fixture.display.Shown(), first));
+
+  // A switch-off made as part of the refresh does the same as one made
+  // after it.
+  StartFrom(fixture, first);
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, second));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kPowerOff));
+  fixture.Finish();
+  EXPECT_TRUE(Same(fixture.display.Shown(), second));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kNew), second));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kOld), first));
+
+  // Setting the panel up again starts from the beginning.
+  StartFrom(fixture, first);
+  StepTo(fixture, second);
+  ASSERT_TRUE(fixture.display.Start());
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, third));
+  StepTo(fixture, third);
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kOld), third));
+}
+
+TEST(SimDisplay, TakesNothingWhileItIsBusy) {
+  SimFixture fixture;
+  const std::vector<std::uint8_t> first = WithBlackRows(100, 50);
+  const std::vector<std::uint8_t> second = WithBlackRows(300, 50);
+  StartFrom(fixture, first);
+  std::vector<std::uint8_t> rows(kRowBytes * 80);
+
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, second));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
+  EXPECT_FALSE(fixture.display.WriteRows(DisplayPlane::kOld, 0, second));
+  EXPECT_FALSE(fixture.display.WriteRows(DisplayPlane::kNew, 0, first));
+  EXPECT_FALSE(fixture.display.ReadRows(DisplayPlane::kNew, 0, rows));
+  fixture.Finish();
+  EXPECT_TRUE(Same(fixture.display.Shown(), second));
+  EXPECT_TRUE(Same(fixture.display.Plane(DisplayPlane::kNew), first)) << "nothing refused left a mark";
+
+  // Nor while the voltages are being switched off.
+  ASSERT_TRUE(fixture.display.PowerOff());
+  EXPECT_FALSE(fixture.display.WriteRows(DisplayPlane::kOld, 0, second));
+  EXPECT_FALSE(fixture.display.ReadRows(DisplayPlane::kOld, 0, rows));
+  fixture.Finish();
+  EXPECT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, second));
+}
+
+TEST(SimDisplay, ReadsBackWhatAPlaneHolds) {
+  SimFixture fixture;
+  std::vector<std::uint8_t> rows(kRowBytes * 80);
+  EXPECT_FALSE(fixture.display.ReadRows(DisplayPlane::kNew, 0, rows)) << "before it is started";
+  ASSERT_TRUE(fixture.display.Start());
+
+  const std::vector<std::uint8_t> picture = WithBlackRows(100, 50);
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, picture));
+  ASSERT_TRUE(fixture.display.ReadRows(DisplayPlane::kNew, 80, rows));
+  EXPECT_TRUE(std::equal(rows.begin(), rows.end(), picture.begin() + static_cast<std::ptrdiff_t>(80 * kRowBytes)));
+  ASSERT_TRUE(fixture.display.ReadRows(DisplayPlane::kOld, 80, rows));
+  EXPECT_EQ(rows, std::vector<std::uint8_t>(rows.size(), 0xFF)) << "the other plane is still blank";
+
+  // Not rows that do not fit, and not while the panel is busy.
+  EXPECT_FALSE(fixture.display.ReadRows(DisplayPlane::kNew, 401, rows));
+  EXPECT_FALSE(fixture.display.ReadRows(DisplayPlane::kNew, 0, std::span(rows).first(150)));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
+  EXPECT_FALSE(fixture.display.ReadRows(DisplayPlane::kNew, 80, rows));
+  fixture.Finish();
+  EXPECT_TRUE(fixture.display.ReadRows(DisplayPlane::kNew, 80, rows));
 }
 
 TEST(SimDisplay, RefusesRowsThatDoNotFit) {
@@ -294,7 +466,7 @@ TEST(SimDisplay, RecordsEachRefreshInTheTraceFromStartToFinish) {
   EXPECT_EQ(records[0].arg, 1u);
 }
 
-TEST(SimDisplay, SwitchingOffTakesAMomentAndKeepsBothPlanes) {
+TEST(SimDisplay, SwitchingOffTakesAMomentAndKeepsWhatThePlanesHold) {
   bn::test::TraceFixture<16> trace;
   SimDisplay display(trace.clock, "");
   EXPECT_FALSE(display.PowerOff()) << "not started";

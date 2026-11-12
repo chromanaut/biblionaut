@@ -13,10 +13,36 @@
 //
 // Pixels are in the panel's own orientation, which need not be the way the
 // device is held: turning a page into panel rows is the drawing code's job.
+//
+// The two planes are roles, "new image" and "old image", and the controller
+// moves the roles between its two memories by itself. This is how the X4's
+// panel was found to behave, by reading its planes back; a port to a panel
+// that does otherwise has to make it look like this.
+//
+//  - A fast refresh swaps the roles. The plane that held the new image is
+//    now the old-image plane, and holds what the panel shows. The new-image
+//    plane holds the image before that, ready to be written over.
+//  - Switching the drive voltages off puts the roles back as they were
+//    when the voltages came on. After an odd number of fast refreshes that
+//    undoes the last swap: the old-image plane is then one image behind the
+//    panel, and anything written to the new-image plane for later is in the
+//    wrong one.
+//  - Nothing can be written while the panel is busy.
+//
+// So, for whatever drives the panel:
+//
+//  - With the voltages on, the old-image plane needs nothing after a fast
+//    refresh. Write the next image and refresh again.
+//  - After the voltages have been switched off, write the old-image plane
+//    with what the panel shows before the next fast refresh, and write
+//    again anything written ahead of time.
+//  - A full or half refresh ignores the old-image plane and swaps nothing.
+//    Writing both planes before one leaves everything right.
 
 namespace bn::core {
 
-// Which of the controller's two images.
+// Which of the controller's two images: see above for how the two change
+// places.
 enum class DisplayPlane : std::uint8_t {
   kNew = 0,  // What the next refresh will show.
   kOld = 1,  // What the panel shows now. A fast refresh compares against it.
@@ -31,16 +57,22 @@ enum class RefreshMode : std::uint8_t {
   // A shortened form of the full refresh: quicker, still flashes, still
   // ignores the old-image plane.
   kHalf = 1,
-  // Only pixels that differ between the two planes are driven. Quick and
-  // without a flash, but each one leaves a little ghosting behind. It is
-  // only right if the old-image plane really holds what is on the panel.
+  // Each pixel is driven to what the new-image plane says, except where
+  // both planes say white: those are left as they are. Quick and without a
+  // flash, but each one leaves a little ghosting behind. It is only right
+  // if the old-image plane really holds what is on the panel: where it
+  // does not, black that should have gone stays. Afterwards the planes
+  // have changed places.
   kFast = 2,
 };
 
 // What the panel does once a refresh is finished.
 enum class AfterRefresh : std::uint8_t {
   kStayPowered = 0,  // Keep its drive voltages up: the next refresh starts sooner.
-  kPowerOff = 1,     // Switch them off. The image stays; nothing more is drawn from the battery.
+  // Switch them off. The image stays; nothing more is drawn from the
+  // battery. The planes go back to the roles they had before the voltages
+  // came on.
+  kPowerOff = 1,
 };
 
 struct DisplaySize {
@@ -72,6 +104,14 @@ class Display {
   [[nodiscard]] virtual bool WriteRows(DisplayPlane plane, std::uint16_t firstRow,
                                        std::span<const std::uint8_t> rows) noexcept = 0;
 
+  // Copies whole rows out of a plane, in the form WriteRows() takes them:
+  // what the panel itself holds. This is for checking that the planes are
+  // what the code driving the panel believes them to be. It is slow, and no
+  // part of showing a picture. Returns false if the panel is busy, or
+  // cannot be read at all.
+  [[nodiscard]] virtual bool ReadRows(DisplayPlane plane, std::uint16_t firstRow,
+                                      std::span<std::uint8_t> rows) noexcept = 0;
+
   // Starts a refresh and returns at once; Busy() says when it is over.
   // Returns false, starting nothing, if the panel is not started or is busy.
   [[nodiscard]] virtual bool StartRefresh(RefreshMode mode, AfterRefresh after) noexcept = 0;
@@ -80,9 +120,11 @@ class Display {
   virtual bool Busy() noexcept = 0;
 
   // Switches the panel's drive voltages off, if a refresh left them on, and
-  // returns at once; Busy() says when it is done. The image stays, and so do
-  // both planes, so the next refresh needs nothing rewritten. Returns false
-  // if the panel is not started or is busy.
+  // returns at once; Busy() says when it is done. The image stays. The
+  // planes keep what they hold but go back to the roles they had before
+  // the voltages came on, so the old-image plane may need writing again
+  // (see the top of this file). Returns false if the panel is not started
+  // or is busy.
   [[nodiscard]] virtual bool PowerOff() noexcept = 0;
 
   // Puts the panel into its lowest-power state. The image stays on it, but

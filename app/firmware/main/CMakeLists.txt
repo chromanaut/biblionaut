@@ -25,3 +25,11 @@ if(BN_CRASH_TEST)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE
     BN_CRASH_TEST=${bn_crash_kind} "BN_CRASH_TEST_NAME=\"${BN_CRASH_TEST}\"")
 endif()
+
+# A firmware that checks the panel's planes (see BN_PLANE_CHECK in the
+# project file).
+if(BN_PLANE_CHECK)
+  message(WARNING "This firmware reads the panel's planes back whenever it comes to rest. "
+                  "Configure with -DBN_PLANE_CHECK=OFF for a normal build.")
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_PLANE_CHECK=1)
+endif()

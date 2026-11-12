@@ -1,5 +1,6 @@
 #include "desktop/sim_display.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -91,21 +92,30 @@ SimDisplay::SimDisplay(core::Clock& clock, std::string outputPrefix, std::uint32
     : clock_(clock),
       outputPrefix_(std::move(outputPrefix)),
       speed_(speed < 1 ? 1 : speed),
-      newPlane_(kSize.RowBytes() * kSize.height, 0xFF),
-      oldPlane_(newPlane_),
-      shown_(newPlane_) {}
+      memory_{std::vector<std::uint8_t>(kSize.RowBytes() * kSize.height, 0xFF),
+              std::vector<std::uint8_t>(kSize.RowBytes() * kSize.height, 0xFF)},
+      shown_(memory_[0]) {}
 
-std::span<const std::uint8_t> SimDisplay::Plane(core::DisplayPlane plane) const noexcept {
-  return plane == core::DisplayPlane::kNew ? newPlane_ : oldPlane_;
+std::vector<std::uint8_t>& SimDisplay::Memory(core::DisplayPlane plane) noexcept {
+  return memory_[plane == core::DisplayPlane::kNew ? newIs_ : 1 - newIs_];
 }
+
+const std::vector<std::uint8_t>& SimDisplay::Memory(core::DisplayPlane plane) const noexcept {
+  return memory_[plane == core::DisplayPlane::kNew ? newIs_ : 1 - newIs_];
+}
+
+std::span<const std::uint8_t> SimDisplay::Plane(core::DisplayPlane plane) const noexcept { return Memory(plane); }
 
 bool SimDisplay::Start() noexcept {
   // Resetting a panel stops a refresh in progress. (A real one would be
   // left part-way between the two pictures; here it counts as finished.)
   busy_ = false;
-  // Setting a panel up clears both planes; what it shows does not change.
-  std::memset(newPlane_.data(), 0xFF, newPlane_.size());
-  std::memset(oldPlane_.data(), 0xFF, oldPlane_.size());
+  // Setting a panel up clears both planes and puts them in their first
+  // places; what it shows does not change.
+  for (std::vector<std::uint8_t>& memory : memory_) {
+    std::fill(memory.begin(), memory.end(), std::uint8_t{0xFF});
+  }
+  newIs_ = 0;
   started_ = true;
   powered_ = false;
   return true;
@@ -119,8 +129,18 @@ bool SimDisplay::WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
     return false;
   }
   BN_TRACE_SCOPE_ARG(kSpanPanelWrite, static_cast<std::uint32_t>(rows.size()));
-  std::vector<std::uint8_t>& target = plane == core::DisplayPlane::kNew ? newPlane_ : oldPlane_;
-  std::memcpy(target.data() + (firstRow * rowBytes), rows.data(), rows.size());
+  std::memcpy(Memory(plane).data() + (firstRow * rowBytes), rows.data(), rows.size());
+  return true;
+}
+
+bool SimDisplay::ReadRows(core::DisplayPlane plane, std::uint16_t firstRow, std::span<std::uint8_t> rows) noexcept {
+  const std::size_t rowBytes = kSize.RowBytes();
+  if (!started_ || Busy() || rows.empty() || rows.size() % rowBytes != 0 ||
+      firstRow + (rows.size() / rowBytes) > kSize.height) {
+    return false;
+  }
+  BN_TRACE_SCOPE_ARG(kSpanPanelRead, static_cast<std::uint32_t>(rows.size()));
+  std::memcpy(rows.data(), Memory(plane).data() + (firstRow * rowBytes), rows.size());
   return true;
 }
 
@@ -128,25 +148,36 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
   if (!started_ || Busy()) {
     return false;
   }
+  const std::vector<std::uint8_t>& newPlane = Memory(core::DisplayPlane::kNew);
+  const std::vector<std::uint8_t>& oldPlane = Memory(core::DisplayPlane::kOld);
   std::uint64_t durationUs = kFullRefreshUs;
   core::SpanId span = kSpanRefreshFull;
   if (mode == core::RefreshMode::kFast) {
-    // Only the pixels that differ between the planes are driven; the rest
-    // stay as they are on the panel, right or wrong.
+    // Where both planes say white (a set bit) the panel is left as it is,
+    // right or wrong; everywhere else it goes to what the new one says.
     for (std::size_t i = 0; i < shown_.size(); ++i) {
-      const unsigned changed = static_cast<unsigned>(newPlane_[i]) ^ oldPlane_[i];
-      shown_[i] = static_cast<std::uint8_t>((shown_[i] & ~changed) | (newPlane_[i] & changed));
+      const unsigned leftAlone = static_cast<unsigned>(newPlane[i]) & oldPlane[i];
+      shown_[i] = static_cast<std::uint8_t>((shown_[i] & leftAlone) | (newPlane[i] & ~leftAlone));
     }
+    // And the planes change places: what was just shown is now the old
+    // image. (The moment within the refresh cannot matter: nothing can be
+    // written or read until it is over.)
+    newIs_ = 1 - newIs_;
     durationUs = kFastRefreshUs;
     span = kSpanRefreshFast;
   } else {
-    shown_ = newPlane_;
+    shown_ = newPlane;
     if (mode == core::RefreshMode::kHalf) {
       durationUs = kHalfRefreshUs;
       span = kSpanRefreshHalf;
     }
   }
   const bool powerOff = after == core::AfterRefresh::kPowerOff;
+  if (powerOff) {
+    // By the rule measured for a switch-off made by itself. One made as
+    // part of a refresh has not been read back on a device.
+    newIs_ = 0;
+  }
   powered_ = !powerOff;
   BeginBusy(durationUs + (powerOff ? kPowerOffUs : 0), span, powerOff ? 1 : 0);
   ++refreshCount_;
@@ -176,6 +207,7 @@ bool SimDisplay::PowerOff() noexcept {
   }
   if (powered_) {
     powered_ = false;
+    newIs_ = 0;  // The planes go back to their first places.
     BeginBusy(kPowerOffUs, kSpanPanelPowerOff, 0);
   }
   return true;

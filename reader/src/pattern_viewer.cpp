@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "core/checksum.h"
 #include "core/metrics.h"
 #include "core/trace.h"
 #include "draw/test_pattern.h"
@@ -17,8 +18,38 @@ core::Gauge panelOk{"panel_ok"};
 // The picture of the test pattern now on the panel.
 core::Gauge panelPicture{"panel_picture"};
 core::Counter buttonPresses{"button_presses"};
+// Times both planes were read back, and how many of those found a plane
+// holding something other than it should.
+core::Counter planeChecks{"plane_checks"};
+core::Counter planesUnexpected{"planes_unexpected"};
 
 constexpr int kPictureCount = draw::TestPattern::kStepCount;
+
+// The picture after `picture`, going round from the last to the first.
+std::uint8_t NextPicture(std::uint8_t picture) noexcept {
+  return static_cast<std::uint8_t>((picture % kPictureCount) + 1);
+}
+
+// What a plane read back is recorded as, when it is not one of the
+// pictures.
+constexpr std::uint32_t kHoldsBlank = 8;
+constexpr std::uint32_t kHoldsSomethingElse = 9;
+
+// How a picture is cut into bands for a panel: `count` is 0 if it cannot be.
+struct BandLayout {
+  std::size_t rowBytes = 0;
+  std::size_t rows = 0;  // In every band but, perhaps, the last.
+  std::size_t count = 0;
+};
+
+BandLayout LayoutFor(core::DisplaySize size, std::size_t bandBytes, std::size_t bandRows) noexcept {
+  const std::size_t rowBytes = size.RowBytes();
+  if (rowBytes == 0 || rowBytes > bandBytes) {
+    return {};
+  }
+  const std::size_t rows = std::min(bandRows, bandBytes / rowBytes);
+  return {.rowBytes = rowBytes, .rows = rows, .count = (size.height + rows - 1) / rows};
+}
 
 }  // namespace
 
@@ -34,6 +65,9 @@ void PatternViewer::Start() noexcept {
   panelOk.Set(1);
   // The same as Back on picture 1: both planes, then a full refresh.
   Act(Request{.waiting = true, .redraw = true, .redrawMode = core::RefreshMode::kFull});
+  if (checkingPlanes_ && state_ == State::kReady) {
+    PrepareChecks();  // While the panel is busy with that.
+  }
 }
 
 void PatternViewer::OnInput(const core::InputEvent& event) noexcept {
@@ -65,7 +99,7 @@ void PatternViewer::OnInput(const core::InputEvent& event) noexcept {
       request_.redrawMode = core::RefreshMode::kFull;
       break;
     case core::Button::kPower:
-      return;
+      return;  // Not this viewer's to act on.
   }
   if (!request_.waiting) {
     request_.waiting = true;
@@ -87,23 +121,52 @@ void PatternViewer::Tick() noexcept {
       }
       return;
     }
-    // After a fast refresh the old-image plane still holds the picture
-    // before: bring it into line, or the next fast refresh would compare
-    // against the wrong thing.
-    if (phase_ == Phase::kRefreshing && oldPlaneBehind_) {
-      if (!WriteBands(picture_, false, true)) {
-        Fail();
-        return;
-      }
-      oldPlaneBehind_ = false;
+    if (phase_ == Phase::kPoweringOff) {
+      // The planes are back in the places they had before the voltages
+      // came on, which may not be where they were a moment ago. Nothing
+      // written to either since then is relied on.
+      oldPlaneDue_ = true;
+      inNewPlane_ = 0;
     }
     phase_ = Phase::kIdle;
     phaseStartedUs_ = now;
+    BeginCheck();
+  }
+
+  // The next fast refresh compares against the old-image plane: it has to
+  // hold what the panel shows.
+  if (oldPlaneDue_) {
+    if (!WriteBands(picture_, false, true)) {
+      Fail();
+      return;
+    }
+    oldPlaneDue_ = false;
+    if (!request_.waiting) {
+      return;  // One sweep a turn, unless a press is waiting on this one.
+    }
   }
 
   if (request_.waiting) {
     Act(std::exchange(request_, Request{}));
-  } else if (powered_ && now - phaseStartedUs_ >= kPowerOffAfterUs) {
+    return;
+  }
+
+  if (inNewPlane_ != NextPicture(picture_)) {
+    // Nothing is waiting: get the picture Down would ask for ready.
+    if (!WriteBands(NextPicture(picture_), true, false)) {
+      Fail();
+      return;
+    }
+    inNewPlane_ = NextPicture(picture_);
+    return;
+  }
+
+  if (checkDue_) {
+    CheckNextBand();
+    return;
+  }
+
+  if (powered_ && now - phaseStartedUs_ >= kPowerOffAfterUs) {
     if (!display_.PowerOff()) {
       Fail();
       return;
@@ -124,18 +187,24 @@ void PatternViewer::Act(const Request& request) noexcept {
   }
 
   bool started = false;
+  std::uint8_t newPlaneAfter = 0;
   if (request.redraw) {
-    // A full or half refresh ignores the old-image plane, so both can be
-    // written together and the old one is right for whatever comes next.
+    // A full or half refresh ignores the old-image plane and leaves both
+    // planes where they are, so both can be written together and the old
+    // one is right for whatever comes next.
     started =
         WriteBands(target, true, true) && display_.StartRefresh(request.redrawMode, core::AfterRefresh::kStayPowered);
-    oldPlaneBehind_ = false;
+    newPlaneAfter = target;
   } else {
-    // A fast refresh compares the planes: the old one must stay as it is
-    // until the refresh is over.
-    started = WriteBands(target, true, false) &&
+    // A fast refresh compares the planes, and Tick() has seen to it that
+    // the old one holds what the panel shows. The new one may already hold
+    // the picture wanted.
+    started = (inNewPlane_ == target || WriteBands(target, true, false)) &&
               display_.StartRefresh(core::RefreshMode::kFast, core::AfterRefresh::kStayPowered);
-    oldPlaneBehind_ = true;
+    // Afterwards the planes have changed places: the picture shown is in
+    // the old-image plane without anything being written, and the
+    // new-image plane holds the picture shown before.
+    newPlaneAfter = picture_;
   }
   if (!started) {
     Fail();
@@ -148,6 +217,9 @@ void PatternViewer::Act(const Request& request) noexcept {
                             static_cast<std::uint32_t>(request.button));
   }
   picture_ = target;
+  inNewPlane_ = newPlaneAfter;
+  oldPlaneDue_ = false;
+  checkDue_ = false;  // The planes are about to change: they are read once the panel is at rest again.
   panelPicture.Set(target);
   powered_ = true;
   phase_ = Phase::kRefreshing;
@@ -157,16 +229,15 @@ void PatternViewer::Act(const Request& request) noexcept {
 bool PatternViewer::WriteBands(std::uint8_t picture, bool toNew, bool toOld) noexcept {
   BN_TRACE_TOP_SCOPE_ARG(kSpanPanelSweep, picture);
   const core::DisplaySize size = display_.Size();
-  const std::size_t rowBytes = size.RowBytes();
-  if (rowBytes == 0 || rowBytes > kBandBytes) {
+  const BandLayout layout = LayoutFor(size, kBandBytes, kBandRows);
+  if (layout.count == 0) {
     return false;
   }
   const draw::TestPattern pattern(size.width, size.height, picture);
-  const std::size_t bandRows = std::min(kBandRows, kBandBytes / rowBytes);
-  for (std::size_t row = 0; row < size.height; row += bandRows) {
+  for (std::size_t row = 0; row < size.height; row += layout.rows) {
     // Each band is rendered once, then written wherever it is wanted.
-    const std::size_t rows = std::min<std::size_t>(bandRows, size.height - row);
-    const std::span<std::uint8_t> band = std::span(band_).first(rows * rowBytes);
+    const std::size_t rows = std::min<std::size_t>(layout.rows, size.height - row);
+    const std::span<std::uint8_t> band = std::span(band_).first(rows * layout.rowBytes);
     const auto firstRow = static_cast<std::uint16_t>(row);
     pattern.RenderRows(firstRow, band);
     if (toNew && !display_.WriteRows(core::DisplayPlane::kNew, firstRow, band)) {
@@ -177,6 +248,101 @@ bool PatternViewer::WriteBands(std::uint8_t picture, bool toNew, bool toOld) noe
     }
   }
   return true;
+}
+
+void PatternViewer::PrepareChecks() noexcept {
+  const core::DisplaySize size = display_.Size();
+  const BandLayout layout = LayoutFor(size, kBandBytes, kBandRows);
+  if (layout.count == 0 || layout.count > kMaxCheckBands) {
+    return;
+  }
+  // Entry 0 is a blank plane, entries 1 to 4 the pictures.
+  for (std::size_t picture = 0; picture < kCheckPictures; ++picture) {
+    std::uint32_t whole = 0;
+    for (std::size_t index = 0; index < layout.count; ++index) {
+      const std::size_t row = index * layout.rows;
+      const std::size_t rows = std::min<std::size_t>(layout.rows, size.height - row);
+      const std::span<std::uint8_t> band = std::span(band_).first(rows * layout.rowBytes);
+      if (picture == 0) {
+        std::fill(band.begin(), band.end(), std::uint8_t{0xFF});
+      } else {
+        draw::TestPattern(size.width, size.height, static_cast<std::uint8_t>(picture))
+            .RenderRows(static_cast<std::uint16_t>(row), band);
+      }
+      bandChecksums_[picture][index] = core::Crc32(band);
+      whole = core::Crc32(band, whole);
+    }
+    pictureChecksums_[picture] = whole;
+  }
+  checkBands_ = layout.count;
+}
+
+void PatternViewer::BeginCheck() noexcept {
+  checkDue_ = checkingPlanes_ && checkBands_ > 0;
+  checkStep_ = 0;
+  readChecksum_ = {};
+  readBands_ = {};
+}
+
+void PatternViewer::CheckNextBand() noexcept {
+  const core::DisplaySize size = display_.Size();
+  const BandLayout layout = LayoutFor(size, kBandBytes, kBandRows);
+  const std::size_t index = checkStep_ / 2U;
+  const std::size_t plane = checkStep_ % 2U;  // The new-image plane, then the old.
+  const std::size_t row = index * layout.rows;
+  const std::size_t rows = std::min<std::size_t>(layout.rows, size.height - row);
+  const std::span<std::uint8_t> band = std::span(band_).first(rows * layout.rowBytes);
+  if (!display_.ReadRows(plane == 0 ? core::DisplayPlane::kNew : core::DisplayPlane::kOld,
+                         static_cast<std::uint16_t>(row), band)) {
+    // This panel cannot be read, or would not be: stop asking.
+    BN_TRACE_INSTANT(kInstantPlaneUnreadable, static_cast<std::uint32_t>(plane));
+    checkingPlanes_ = false;
+    checkDue_ = false;
+    return;
+  }
+
+  // Which of the things it might be this is: the first of them is the
+  // blank plane.
+  const auto recognise = [](std::span<const std::uint32_t> known, std::uint32_t checksum) noexcept {
+    const auto found = std::find(known.begin(), known.end(), checksum);
+    if (found == known.end()) {
+      return kHoldsSomethingElse;
+    }
+    return found == known.begin() ? kHoldsBlank : static_cast<std::uint32_t>(found - known.begin());
+  };
+  std::array<std::uint32_t, kCheckPictures> bandOfEach{};
+  for (std::size_t picture = 0; picture < kCheckPictures; ++picture) {
+    bandOfEach[picture] = bandChecksums_[picture][index];
+  }
+  readBands_[plane] = (readBands_[plane] * 10) + recognise(bandOfEach, core::Crc32(band));
+  readChecksum_[plane] = core::Crc32(band, readChecksum_[plane]);
+
+  ++checkStep_;
+  if (checkStep_ < checkBands_ * 2) {
+    return;
+  }
+  const std::uint32_t newHolds = recognise(pictureChecksums_, readChecksum_[0]);
+  const std::uint32_t oldHolds = recognise(pictureChecksums_, readChecksum_[1]);
+  BN_TRACE_INSTANT(kInstantNewPlaneHolds, newHolds);
+  if (newHolds == kHoldsSomethingElse) {
+    BN_TRACE_INSTANT(kInstantNewPlaneBands, readBands_[0]);
+  }
+  BN_TRACE_INSTANT(kInstantOldPlaneHolds, oldHolds);
+  if (oldHolds == kHoldsSomethingElse) {
+    BN_TRACE_INSTANT(kInstantOldPlaneBands, readBands_[1]);
+  }
+  // By now Tick() has written whatever it meant to: the old-image plane
+  // should hold the picture on the panel, and the new one what this code
+  // last knew it to hold.
+  planeChecks.Add();
+  if (newHolds != inNewPlane_ || oldHolds != picture_) {
+    planesUnexpected.Add();
+  }
+  checkDue_ = false;
+  // The voltages stay on for their usual time from here, not from when
+  // the reading began: whoever is watching for these lines before pressing
+  // again still has that long to do it with the voltages on.
+  phaseStartedUs_ = clock_.NowUs();
 }
 
 void PatternViewer::Fail() noexcept {

@@ -20,6 +20,15 @@ list(APPEND CMAKE_MODULE_PATH "${BN_ROOT}/cmake")
 set(BN_CRASH_TEST "" CACHE STRING "Crash on purpose after ten seconds: fault, abort, oom or stack. Empty: never.")
 set_property(CACHE BN_CRASH_TEST PROPERTY STRINGS "" fault abort oom stack)
 
+# For checking, on a device, that the panel's two planes hold what the code
+# driving them believes (reader/pattern_viewer.h says what is checked):
+#
+#   tools/idf -DBN_PLANE_CHECK=ON build flash    (back to normal: -DBN_PLANE_CHECK=OFF)
+#
+# Such a firmware reads both planes back whenever the panel comes to rest,
+# which takes about a second each time.
+option(BN_PLANE_CHECK "Read the panel's planes back and check them whenever it comes to rest" OFF)
+
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
 set(COMPONENTS main)

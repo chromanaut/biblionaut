@@ -63,6 +63,10 @@ extern "C" void app_main() {
   bn::firmware::AnnounceCrashTest();
 
   static bn::reader::App app(bn::reader::DefaultServices());
+#ifdef BN_PLANE_CHECK
+  esp_rom_printf("Plane check build: the panel's planes are read back whenever it comes to rest.\n");
+  app.CheckPanelPlanes();
+#endif
   app.Start();
 
   while (true) {

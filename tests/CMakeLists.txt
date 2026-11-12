@@ -82,6 +82,16 @@ add_test(
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/trace_roundtrip.cmake)
 
+# The application, the simulated panel and the scripted buttons together,
+# across the panel's drive voltages being switched off.
+add_test(
+  NAME e2e.PanelSwitchOff
+  COMMAND ${CMAKE_COMMAND}
+    -DAPP=$<TARGET_FILE:biblionaut-desktop>
+    -DTOOL=$<TARGET_FILE:bn-trace>
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/panel_switch_off.cmake)
+
 # tools/bn-symbolize against a stand-in ELF archive and addr2line.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -20,9 +22,17 @@ std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std:
 // Behaves like the X4's panel as far as the code driving it can tell: it
 // keeps the two planes, refuses work while a refresh is "running" (for about
 // as long as a real one takes), and works out what the panel would show
-// afterwards. In particular a fast refresh changes only the pixels where the
-// planes differ, so code that lets the old-image plane fall out of step
-// with the panel gets the same stale pixels here that it would on a device.
+// afterwards. It follows what was measured on an X4 by reading the planes
+// back, as set out in core/display.h:
+//
+//  - a fast refresh leaves alone the pixels where both planes say white,
+//    and drives the rest to what the new-image plane says;
+//  - after a fast refresh the two planes have changed places;
+//  - switching the drive voltages off puts them back in their first places.
+//
+// So code that lets the old-image plane fall out of step with the panel,
+// or that relies across a switch-off on what it wrote before, gets the same
+// wrong pixels here that it would on a device.
 class SimDisplay final : public core::Display {
  public:
   // How long each operation keeps the panel busy, as measured on an X4.
@@ -40,6 +50,8 @@ class SimDisplay final : public core::Display {
   [[nodiscard]] bool Start() noexcept override;
   [[nodiscard]] bool WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
                                std::span<const std::uint8_t> rows) noexcept override;
+  [[nodiscard]] bool ReadRows(core::DisplayPlane plane, std::uint16_t firstRow,
+                              std::span<std::uint8_t> rows) noexcept override;
   [[nodiscard]] bool StartRefresh(core::RefreshMode mode, core::AfterRefresh after) noexcept override;
   bool Busy() noexcept override;
   [[nodiscard]] bool PowerOff() noexcept override;
@@ -47,6 +59,7 @@ class SimDisplay final : public core::Display {
 
   // What the panel shows (once the refresh in progress, if any, is over).
   std::span<const std::uint8_t> Shown() const noexcept { return shown_; }
+  // What the plane now in that role holds.
   std::span<const std::uint8_t> Plane(core::DisplayPlane plane) const noexcept;
   int RefreshCount() const noexcept { return refreshCount_; }
   bool Started() const noexcept { return started_; }
@@ -56,13 +69,18 @@ class SimDisplay final : public core::Display {
   static constexpr core::DisplaySize kSize{.width = 800, .height = 480};
 
   void SavePicture();
+  // The memory now in the role of `plane`.
+  std::vector<std::uint8_t>& Memory(core::DisplayPlane plane) noexcept;
+  const std::vector<std::uint8_t>& Memory(core::DisplayPlane plane) const noexcept;
   void BeginBusy(std::uint64_t durationUs, core::SpanId span, std::uint32_t argument) noexcept;
 
   core::Clock& clock_;
   std::string outputPrefix_;
   std::uint32_t speed_;
-  std::vector<std::uint8_t> newPlane_;
-  std::vector<std::uint8_t> oldPlane_;
+  // The controller's two memories, and which of them is the new-image
+  // plane at the moment; the other is the old-image plane.
+  std::array<std::vector<std::uint8_t>, 2> memory_;
+  std::size_t newIs_ = 0;
   std::vector<std::uint8_t> shown_;
   bool started_ = false;
   bool powered_ = false;

@@ -134,10 +134,13 @@ The trace of a press runs from the button to the panel:
 
 ```
 task 1  hw/button_press button=5          the button going down, first reading to settled
-task 0  reader/panel_sweep picture=2      rendering the picture and sending it, band by band
 task 0  reader/press_to_refresh button=5  from the button going down to the refresh being started
 interrupts  hw/refresh_fast               the panel's own time
+task 0  reader/panel_sweep picture=3      the picture after, rendered and sent ahead of the next press
 ```
+
+The picture a press asks for is usually in the panel already, written
+there after the last refresh, so the press has only to start the refresh.
 
 On the desktop a simulation stands in for the panel, working out what a
 real one would show after each refresh, including the stale pixels a fast
@@ -157,6 +160,50 @@ open panel-001.png          # one picture per refresh
   are `back`, `confirm`, `left`, `right`, `up`, `down` and `power`.
 - `BN_DISPLAY_SPEED=20` makes the simulated panel twenty times quicker than
   a real one, which takes 3.6 s over a full refresh.
+
+### The panel's two planes
+
+The panel's controller keeps two images, and a fast refresh works from
+both: the new image, and the old one it is to change from. On the X4 the
+two change places by themselves after every fast refresh, and go back to
+their first places when the panel's drive voltages are switched off.
+`core/display.h` sets out the rules, which were found by reading the
+planes back out of a device, and what they ask of whatever drives the
+panel. The pattern viewer follows them: it writes the next picture ahead
+of time, leaves the old image alone while the voltages are on, and writes
+both again once they have been switched off. The simulated panel on the
+desktop behaves the same way, so a mistake here shows in the tests.
+
+A firmware built with `-DBN_PLANE_CHECK=ON` checks this on a device (on
+the desktop, set `BN_PLANE_CHECK`). Whenever the panel comes to rest,
+after a refresh and again after the voltages are switched off, both planes
+are read back and the trace says what was found:
+
+```
+reader/new_plane_holds picture=3
+reader/old_plane_holds picture=2
+```
+
+1 to 4 is that picture, 8 a blank plane and 9 anything else, in which case
+a `new_plane_bands` or `old_plane_bands` line follows with a digit for each
+band of 80 rows. The new-image plane should hold the picture after the one
+on the panel, and the old-image plane the one on the panel. The metrics
+count the readings and how many found otherwise:
+
+```
+plane_checks=14 planes_unexpected=0
+```
+
+Reading back takes about a second, a band at a time; a press during it is
+acted on at once and the reading starts again when the panel is next at
+rest. The first time anything is read, the controller's status byte and
+display options are recorded too (`hw/panel_status`, `hw/panel_options`).
+
+```
+tools/idf -DBN_PLANE_CHECK=ON build flash
+./build/host/tools/trace/bn-trace | tee planes.log
+tools/idf -DBN_PLANE_CHECK=OFF build flash     # back to the normal firmware
+```
 
 ## Device build
 

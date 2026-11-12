@@ -47,9 +47,10 @@ void AnnounceSavedCrash() noexcept {
   if (report == nullptr) {
     return;
   }
-  const unsigned pc = report->registerCount > 0 ? static_cast<unsigned>(report->registers[0]) : 0;
-  esp_rom_printf("Crash report saved %u restart(s) ago: %s (task %s, pc 0x%08x). bn-trace shows all of it.\n",
-                 static_cast<unsigned>(report->bootsSince), report->reason.data(), report->task.data(), pc);
+  // No addresses here: they would be read as belonging to this firmware,
+  // and the crash may have been in an earlier one.
+  esp_rom_printf("Crash report saved %u restart(s) ago: %s, in task %s. bn-trace shows all of it.\n",
+                 static_cast<unsigned>(report->bootsSince), report->reason.data(), report->task.data());
 }
 
 #ifdef BN_CRASH_TEST

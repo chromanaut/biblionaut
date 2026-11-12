@@ -618,9 +618,12 @@ TEST(FormatEvent, WritesACrashReportAsABlockOfLines) {
 
   const std::string text = bn::trace_tool::FormatEvent(events[1]);
   const auto has = [&text](std::string_view piece) { return text.find(piece) != std::string::npos; };
-  EXPECT_TRUE(text.starts_with("=== crash report: the run before this one ended in a crash ===\n")) << text;
-  EXPECT_TRUE(has("\n  reason     Load access fault\n")) << text;
-  EXPECT_TRUE(has("\n  firmware   0.1.0-test  (ELF 1a2b3c4d5)\n")) << text;
+  // The firmware is named before anything that holds an address.
+  EXPECT_TRUE(
+      text.starts_with("=== crash report: the run before this one ended in a crash ===\n"
+                       "  firmware   0.1.0-test  (ELF 1a2b3c4d5)\n"
+                       "  reason     Load access fault\n"))
+      << text;
   EXPECT_TRUE(has("\n  when       12.345678 s after it started, in task main\n")) << text;
   EXPECT_TRUE(has("  registers  mepc    0x4200a1b2  ra      0x4200c3d4  sp      0x3fc9f000  gp      0x00000000\n"))
       << text;

@@ -142,12 +142,14 @@ std::string FormatCrash(const Event& event) {
   const std::size_t registerCount = std::min<std::size_t>(report.registerCount, report.registers.size());
 
   std::string out = "=== crash report: " + BootsAgo(report.bootsSince) + " ended in a crash ===\n";
-  out += "  reason     " + std::string(core::CrashText(report.reason)) + "\n";
+  // The firmware comes first: it names the build every address below
+  // belongs to, and the reason of an abort already holds one.
   out += "  firmware   " + (version.empty() ? std::string("(not recorded)") : std::string(version));
   if (!buildId.empty()) {
     out += "  (ELF " + std::string(buildId) + ")";
   }
   out += '\n';
+  out += "  reason     " + std::string(core::CrashText(report.reason)) + "\n";
 
   std::array<char, 64> when{};
   std::snprintf(when.data(), when.size(), "%" PRIu64 ".%06" PRIu64 " s after it started", report.timeUs / 1'000'000,

@@ -10,6 +10,9 @@
 #include <limits>
 #include <utility>
 
+#include "core/trace.h"
+#include "hw/trace_ids.h"
+
 namespace bn::hw {
 
 namespace {
@@ -158,6 +161,7 @@ StorageStatus FolderStorage::ReadAt(core::FileHandle file, std::uint32_t offset,
   }
   // The file is its one user's from here: the lock is not held while
   // reading.
+  BN_TRACE_SCOPE_ARG(kSpanSdRead, static_cast<std::uint32_t>(dst.size()));
   while (read < dst.size()) {
     const ssize_t count = ::pread(descriptor, dst.data() + read, dst.size() - read,
                                   static_cast<off_t>(offset) + static_cast<off_t>(read));
@@ -193,6 +197,7 @@ StorageStatus FolderStorage::WriteAt(core::FileHandle file, std::uint32_t offset
   if (src.size() > std::numeric_limits<std::uint32_t>::max() - offset) {
     return StorageStatus::kTooBig;
   }
+  BN_TRACE_SCOPE_ARG(kSpanSdWrite, static_cast<std::uint32_t>(src.size()));
   std::size_t written = 0;
   while (written < src.size()) {
     const ssize_t count = ::pwrite(descriptor, src.data() + written, src.size() - written,
@@ -218,6 +223,7 @@ StorageStatus FolderStorage::Sync(core::FileHandle file) noexcept {
     }
     descriptor = found->descriptor;
   }
+  BN_TRACE_SCOPE(kSpanSdSync);
   return ::fsync(descriptor) == 0 ? StorageStatus::kOk : FromErrno(errno);
 }
 

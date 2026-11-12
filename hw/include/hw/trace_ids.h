@@ -41,7 +41,25 @@
   /* from: its status byte, and then the twelve bytes of its display       */ \
   /* options four to a record, the first of each four in the top byte.     */ \
   X(12, kInstantPanelStatus, "panel_status", "byte")                          \
-  X(13, kInstantPanelOptions, "panel_options", "bytes")
+  X(13, kInstantPanelOptions, "panel_options", "bytes")                       \
+  /* Getting storage ready: on a device, finding the SD card and the file  */ \
+  /* system on it. The argument is how it ended, a core::StorageStatus     */ \
+  /* (0: ready; 1: no card; 8: a card, but no file system that can be      */ \
+  /* used).                                                                */ \
+  X(14, kSpanSdStart, "sd_start", "status")                                   \
+  /* One read, write or sync of the card. */                                  \
+  X(15, kSpanSdRead, "sd_read", "bytes")                                      \
+  X(16, kSpanSdWrite, "sd_write", "bytes")                                    \
+  X(17, kSpanSdSync, "sd_sync", "")                                           \
+  /* The card that was found: its size, and which kind of file system it  */  \
+  /* holds (1: FAT12, 2: FAT16, 3: FAT32).                                 */ \
+  X(18, kInstantSdCard, "sd_card", "megabytes")                               \
+  X(19, kInstantSdFileSystem, "sd_file_system", "kind")                       \
+  /* Why storage could not be got ready: the error the card driver gave    */ \
+  /* (an esp_err_t; 263 is "no answer"), or the one the file system gave   */ \
+  /* (a FatFS FRESULT; 13 is "no file system it knows").                   */ \
+  X(20, kInstantSdCardError, "sd_card_error", "code")                         \
+  X(21, kInstantSdMountError, "sd_mount_error", "code")
 
 namespace bn::hw {
 

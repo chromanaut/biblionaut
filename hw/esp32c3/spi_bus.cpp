@@ -17,7 +17,6 @@ namespace {
 constexpr gpio_num_t kPinClock = GPIO_NUM_8;
 constexpr gpio_num_t kPinDataOut = GPIO_NUM_10;
 constexpr gpio_num_t kPinDataIn = GPIO_NUM_7;
-constexpr gpio_num_t kPinSdCardSelect = GPIO_NUM_12;
 
 // What a card answers to the reset command: "idle, no errors".
 constexpr std::uint8_t kSdCardIdle = 0x01;

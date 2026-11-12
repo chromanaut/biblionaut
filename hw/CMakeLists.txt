@@ -14,6 +14,7 @@ add_library(bn_hw STATIC
   desktop/scripted_input.cpp
   desktop/serial.cpp
   desktop/sim_display.cpp
+  desktop/storage.cpp
   desktop/trace_sync.cpp)
 # include/ is what the other parts see. A port's own headers are included
 # from this directory, as "desktop/sim_display.h".

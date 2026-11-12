@@ -8,6 +8,7 @@ idf_component_register(
     "${bn_root}/hw/esp32c3/clock.cpp"
     "${bn_root}/hw/esp32c3/crash.cpp"
     "${bn_root}/hw/esp32c3/memory_probe.cpp"
+    "${bn_root}/hw/esp32c3/sd_storage.cpp"
     "${bn_root}/hw/esp32c3/serial.cpp"
     "${bn_root}/hw/esp32c3/spi_bus.cpp"
     "${bn_root}/hw/esp32c3/trace_sync.cpp"
@@ -18,8 +19,8 @@ idf_component_register(
   # hw/ itself, for headers the device code shares, as "esp32c3/spi_bus.h".
   PRIV_INCLUDE_DIRS "${bn_root}/hw"
   PRIV_REQUIRES
-    esp_adc esp_app_format esp_driver_gpio esp_driver_spi esp_driver_usb_serial_jtag esp_hw_support esp_rom
-    esp_system esp_timer freertos riscv soc)
+    esp_adc esp_app_format esp_driver_gpio esp_driver_sdspi esp_driver_spi esp_driver_usb_serial_jtag
+    esp_hw_support esp_rom esp_system esp_timer fatfs freertos riscv sdmmc soc)
 
 # hw -> core. bn_core is defined by the project after components are
 # registered; CMake resolves the name when it generates.

@@ -66,6 +66,7 @@ bn_add_unit_test(reader_tests
   SOURCES
     unit/reader/app_test.cpp
     unit/reader/pattern_viewer_test.cpp
+    unit/reader/storage_check_test.cpp
   LIBS bn_reader)
 # The pattern viewer's tests compare what reaches the panel with the picture
 # from draw, which the reader links but does not pass on.

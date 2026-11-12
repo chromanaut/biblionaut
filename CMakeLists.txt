@@ -15,8 +15,19 @@ set(BN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${BN_ROOT}/cmake")
 
 if(BN_SANITIZE)
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=address,undefined)
+  # Two adjustments to the undefined-behaviour sanitizer:
+  #
+  # -fno-sanitize=vptr: that check verifies an object's dynamic type through
+  # its RTTI, and this code is built without RTTI. GoogleTest is built with
+  # it, so it would check objects of our test classes, find no type
+  # information, and report every one as having an invalid vptr.
+  #
+  # -fno-sanitize-recover: by default a finding is only printed and the
+  # program carries on, so a test with undefined behaviour still passes.
+  # This makes a finding end the program, which fails the test.
+  set(bn_sanitize_flags -fsanitize=address,undefined -fno-sanitize=vptr -fno-sanitize-recover=undefined)
+  add_compile_options(${bn_sanitize_flags} -fno-omit-frame-pointer)
+  add_link_options(${bn_sanitize_flags})
 endif()
 
 if(BN_CLANG_TIDY)

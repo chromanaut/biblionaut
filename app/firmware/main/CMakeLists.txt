@@ -12,6 +12,7 @@ target_link_libraries(${COMPONENT_LIB} PRIVATE bn_reader bn_core)
 target_sources(${COMPONENT_LIB} PRIVATE $<TARGET_OBJECTS:bn_core_runtime>)
 
 # A firmware that crashes on purpose (see BN_CRASH_TEST in the project file).
+# The code for it, crash_test.cpp, is only part of such a build.
 if(BN_CRASH_TEST)
   set(bn_crash_kinds fault abort oom stack)
   list(FIND bn_crash_kinds "${BN_CRASH_TEST}" bn_crash_kind)
@@ -20,6 +21,7 @@ if(BN_CRASH_TEST)
   endif()
   message(WARNING "This firmware will crash on purpose (${BN_CRASH_TEST}) ten seconds after it starts. "
                   "Configure with -DBN_CRASH_TEST= for a normal build.")
+  target_sources(${COMPONENT_LIB} PRIVATE crash_test.cpp)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE
     BN_CRASH_TEST=${bn_crash_kind} "BN_CRASH_TEST_NAME=\"${BN_CRASH_TEST}\"")
 endif()

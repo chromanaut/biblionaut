@@ -22,7 +22,7 @@ bool TraceStream::SendFrame(FrameWriter& writer) noexcept {
   return true;
 }
 
-bool TraceStream::SendTextFrame(FrameType type, std::string_view text) noexcept {
+bool TraceStream::SendTextFrame(FrameType type, std::uint32_t timeUs, std::string_view text) noexcept {
   // Not substr(): it can throw, which drags the C++ library's exception
   // support into the firmware.
   if (text.size() > kMaxTextLength) {
@@ -30,7 +30,7 @@ bool TraceStream::SendTextFrame(FrameType type, std::string_view text) noexcept 
   }
   std::array<std::uint8_t, MaxEncodedFrameSize(4 + kMaxTextLength)> buffer{};
   FrameWriter writer(type, buffer);
-  writer.PutU32(tracer_.Now());
+  writer.PutU32(timeUs);
   writer.Put(AsBytes(text));
   return SendFrame(writer);
 }
@@ -46,12 +46,23 @@ bool TraceStream::SendHello(std::string_view version) noexcept {
   return SendFrame(writer);
 }
 
-bool TraceStream::SendText(std::string_view text) noexcept { return SendTextFrame(FrameType::kText, text); }
+bool TraceStream::SendText(std::string_view text) noexcept {
+  return SendTextFrame(FrameType::kText, tracer_.Now(), text);
+}
 
 bool TraceStream::SendMetrics(const MetricRegistry& registry) noexcept {
-  std::array<char, kMaxTextLength + 1> line{};
-  const std::size_t length = registry.FormatLine(line);
-  return SendTextFrame(FrameType::kMetrics, std::string_view(line.data(), length));
+  const std::size_t total = registry.CounterCount() + registry.GaugeCount();
+  const std::uint32_t now = tracer_.Now();
+  bool allSent = true;
+  std::size_t first = 0;
+  do {
+    std::array<char, kMaxTextLength + 1> line{};
+    const MetricRegistry::Formatted formatted = registry.FormatItems(line, first);
+    allSent = SendTextFrame(FrameType::kMetrics, now, std::string_view(line.data(), formatted.length)) && allSent;
+    // A metric too long for any frame is skipped, so the rest still go out.
+    first += formatted.count > 0 ? formatted.count : 1;
+  } while (first < total);
+  return allSent;
 }
 
 void TraceStream::EncodePendingTraceFrame(std::size_t count) noexcept {

@@ -2,6 +2,7 @@
 
 #include "core/byte_sink.h"
 #include "core/clock.h"
+#include "core/memory_probe.h"
 #include "core/trace.h"
 
 namespace bn::hw {
@@ -22,6 +23,9 @@ core::TraceSync& SystemTraceSync() noexcept;
 // named by the BN_SERIAL_OUT environment variable, and is discarded when
 // that is not set.
 core::ByteSink& SystemSerial() noexcept;
+
+// How much heap and stack this device has left.
+core::MemoryProbe& SystemMemoryProbe() noexcept;
 
 // Short name of the port, for the boot banner and diagnostics.
 const char* PortName() noexcept;

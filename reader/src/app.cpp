@@ -19,10 +19,22 @@ core::Gauge traceDropped{"trace_dropped"};
 // Log and metrics frames the serial line had no room for.
 core::Gauge streamLost{"stream_lost"};
 
+// The general heap: free now, the largest block that could be allocated now,
+// and the least that was ever free. The last is tracked by the system, so it
+// catches dips between samples.
+core::Gauge heapFree{"heap_free"};
+core::Gauge heapLargestBlock{"heap_largest_block"};
+core::Gauge heapLowWater{"heap_low_water"};
+// Stack the task running the application has never used.
+core::Gauge stackHeadroom{"stack_headroom"};
+
 }  // namespace
 
 Services DefaultServices() noexcept {
-  return Services{.clock = hw::SystemClock(), .traceSync = hw::SystemTraceSync(), .serial = hw::SystemSerial()};
+  return Services{.clock = hw::SystemClock(),
+                  .traceSync = hw::SystemTraceSync(),
+                  .serial = hw::SystemSerial(),
+                  .memory = hw::SystemMemoryProbe()};
 }
 
 App::App(const Services& services) noexcept
@@ -59,15 +71,34 @@ void App::Tick() noexcept {
     nextHeartbeatUs_ = now + kHeartbeatIntervalUs;
   }
 
-  // Trace first, so what reaches the serial line stays in time order: the
-  // metrics line is stamped now, after the records already buffered.
-  stream_.Pump();
-
-  if (now >= nextMetricsUs_) {
+  const bool metricsDue = now >= nextMetricsUs_;
+  if (metricsDue) {
     traceDropped.Set(tracer_.DroppedCount());
     streamLost.Set(stream_.LostFrames());
+    SampleMemory();
+  }
+
+  // Trace goes out before the metrics, so what reaches the serial line stays
+  // in time order: the metrics are stamped now, after every record above.
+  stream_.Pump();
+
+  if (metricsDue) {
     stream_.SendMetrics(core::DefaultMetrics());
     nextMetricsUs_ = now + kMetricsIntervalUs;
+  }
+}
+
+void App::SampleMemory() noexcept {
+  // Traced because reading the largest free block walks the heap; how long
+  // that takes is worth seeing.
+  BN_TRACE_SCOPE(kSpanSampleMemory);
+  if (const std::optional<core::HeapStats> heap = services_.memory.Heap()) {
+    heapFree.Set(heap->freeBytes);
+    heapLargestBlock.Set(heap->largestFreeBlock);
+    heapLowWater.Set(heap->lowestFreeBytes);
+  }
+  if (const std::optional<std::uint32_t> headroom = services_.memory.StackHeadroom()) {
+    stackHeadroom.Set(*headroom);
   }
 }
 

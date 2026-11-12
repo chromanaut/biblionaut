@@ -48,6 +48,18 @@ class MetricRegistry {
   // Returns the length written, not counting the terminator.
   std::size_t FormatLine(std::span<char> out) const noexcept;
 
+  struct Formatted {
+    std::size_t length = 0;  // Characters written, not counting the terminator.
+    std::size_t count = 0;   // Metrics written.
+  };
+
+  // Like FormatLine(), but starts at metric number `first` (counting counters
+  // then gauges from 0), so a list too long for one buffer can be written as
+  // several lines: call again with `first` advanced by the count returned.
+  // A count of 0 while metrics remain means the next one cannot fit in `out`
+  // at all.
+  Formatted FormatItems(std::span<char> out, std::size_t first) const noexcept;
+
  private:
   friend class Counter;
   friend class Gauge;

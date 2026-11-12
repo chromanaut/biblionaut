@@ -6,6 +6,7 @@
 
 #include "core/byte_sink.h"
 #include "core/clock.h"
+#include "core/memory_probe.h"
 #include "core/trace.h"
 #include "core/trace_stream.h"
 
@@ -17,6 +18,7 @@ struct Services {
   core::Clock& clock;
   core::TraceSync& traceSync;
   core::ByteSink& serial;
+  core::MemoryProbe& memory;
 };
 
 // The services of the hardware port this build was linked with.
@@ -41,8 +43,9 @@ class App {
   bool Started() const noexcept { return started_; }
 
   // Does the application's periodic work: a heartbeat in the trace every
-  // second, a metrics line every five, and moving buffered trace records to
-  // the serial line. Call it often; it never waits.
+  // second, the metrics (with fresh heap and stack levels) every five, and
+  // moving buffered trace records to the serial line. Call it often; it
+  // never waits.
   void Tick() noexcept;
 
   // Sends whatever trace is still buffered, for an orderly exit.
@@ -55,6 +58,8 @@ class App {
   core::TraceStream& Stream() noexcept { return stream_; }
 
  private:
+  void SampleMemory() noexcept;
+
   Services services_;
   std::array<core::TraceRecord, kTraceRecordCount> traceStorage_{};
   core::Tracer tracer_;

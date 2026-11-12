@@ -5,6 +5,7 @@
 # needs ESP-IDF, so it is built as an ESP-IDF component by
 # app/firmware/components/bn_hw.
 add_library(bn_hw STATIC
+  desktop/memory_probe.cpp
   desktop/platform.cpp
   desktop/serial.cpp
   desktop/trace_sync.cpp)

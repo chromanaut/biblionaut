@@ -77,7 +77,7 @@ Checks: >
   readability-static-accessed-through-instance,
   readability-suspicious-call-argument
 WarningsAsErrors: '*'
-HeaderFilterRegex: '.*/(core|hw|epub|draw|layout|reader|app|tests)/.*'
+HeaderFilterRegex: '.*/(core|hw|epub|draw|layout|reader|app|tools|tests)/.*'
 CheckOptions:
   # Interfaces declare a protected destructor and nothing else.
   cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor: true

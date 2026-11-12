@@ -108,16 +108,18 @@ TEST(TraceStream, HelloCarriesTheProtocolVersionAndFirmwareVersion) {
   EXPECT_EQ(items[0].type, FrameType::kHello);
   ASSERT_FALSE(items[0].payload.empty());
   EXPECT_EQ(items[0].payload[0], bn::core::kStreamProtocolVersion);
-  EXPECT_EQ(std::string(items[0].payload.begin() + 1, items[0].payload.end()), "0.1.0-test");
+  EXPECT_EQ(items[0].Text(), "0.1.0-test");
 }
 
-TEST(TraceStream, SendsALineOfText) {
+TEST(TraceStream, SendsALineOfTextWithTheTimeItWasSent) {
   StreamFixture<4> fixture;
+  fixture.trace.clock.now = 0x1'2345'6789;
   EXPECT_TRUE(fixture.stream.SendText("page 12 laid out"));
 
   const auto items = fixture.Items();
   ASSERT_EQ(items.size(), 1u);
   EXPECT_EQ(items[0].type, FrameType::kText);
+  EXPECT_EQ(items[0].TimeUs(), 0x2345'6789u);
   EXPECT_EQ(items[0].Text(), "page 12 laid out");
   EXPECT_EQ(fixture.sink.writes, 1);  // One write per frame, so frames never interleave.
 }
@@ -139,11 +141,13 @@ TEST(TraceStream, SendsMetricsAsOneLine) {
   bn::core::Gauge heap("heap_free", registry);
   reads.Add(3);
   heap.Set(1000);
+  fixture.trace.clock.now = 77;
 
   EXPECT_TRUE(fixture.stream.SendMetrics(registry));
   const auto items = fixture.Items();
   ASSERT_EQ(items.size(), 1u);
   EXPECT_EQ(items[0].type, FrameType::kMetrics);
+  EXPECT_EQ(items[0].TimeUs(), 77u);
   EXPECT_EQ(items[0].Text(), "sd_reads=3 heap_free=1000[1000..1000]");
 }
 

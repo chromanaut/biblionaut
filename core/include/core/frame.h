@@ -23,8 +23,8 @@ namespace bn::core {
 enum class FrameType : std::uint8_t {
   kHello = 1,    // Protocol version byte, then the firmware version as text.
   kTrace = 2,    // Dropped-record count (u32), then trace records.
-  kText = 3,     // One line of log text, without a line ending.
-  kMetrics = 4,  // Counters and gauges as one line of text.
+  kText = 3,     // Time (u32 microseconds), then one line of log text without a line ending.
+  kMetrics = 4,  // Time (u32 microseconds), then counters and gauges as one line of text.
 };
 
 // Size of the largest encoded frame for a payload of `payloadSize` bytes.

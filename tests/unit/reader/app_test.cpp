@@ -90,7 +90,7 @@ TEST(App, StartAnnouncesTheStreamWithItsVersion) {
   ASSERT_EQ(hello.size(), 1u);
   ASSERT_FALSE(hello[0].payload.empty());
   EXPECT_EQ(hello[0].payload[0], bn::core::kStreamProtocolVersion);
-  EXPECT_EQ(std::string(hello[0].payload.begin() + 1, hello[0].payload.end()), bn::reader::Version());
+  EXPECT_EQ(hello[0].Text(), bn::reader::Version());
 }
 
 TEST(App, InstallsItsTracerWhileItLives) {
@@ -126,6 +126,34 @@ TEST(App, SendsMetricsEveryFiveSeconds) {
   ASSERT_EQ(metrics.size(), 2u);
   EXPECT_NE(metrics[0].Text().find("app_ticks="), std::string::npos);
   EXPECT_NE(metrics[0].Text().find("trace_dropped=0[0..0]"), std::string::npos);
+}
+
+TEST(App, SendsBufferedTraceBeforeTheMetricsLineOfTheSameTick) {
+  AppFixture fixture;
+  fixture.app.Start();
+  fixture.RunFor(5'100'000);
+
+  // The fifth heartbeat and the first metrics line fall in the same tick; the
+  // heartbeat happened first and must arrive first.
+  const std::vector<StreamItem> items = fixture.Items();
+  std::size_t metricsAt = items.size();
+  std::size_t lastTraceBefore = items.size();
+  for (std::size_t i = 0; i < items.size(); ++i) {
+    if (items[i].isFrame && items[i].type == FrameType::kMetrics) {
+      metricsAt = i;
+      break;
+    }
+    if (items[i].isFrame && items[i].type == FrameType::kTrace) {
+      lastTraceBefore = i;
+    }
+  }
+  ASSERT_LT(metricsAt, items.size());
+  ASSERT_LT(lastTraceBefore, metricsAt);
+  const std::span<const std::uint8_t> payload(items[lastTraceBefore].payload);
+  ASSERT_GE(payload.size(), 4 + bn::core::kWireRecordSize);
+  const auto lastRecord = payload.last(bn::core::kWireRecordSize);
+  EXPECT_EQ(bn::core::LoadLe16(lastRecord.subspan(12).first<2>()), kHeartbeatId);
+  EXPECT_EQ(bn::core::LoadLe32(lastRecord.subspan(8).first<4>()), 5u);
 }
 
 TEST(App, KeepsTraceWhileTheSerialLineIsBlockedAndSendsItLater) {

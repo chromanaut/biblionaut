@@ -13,18 +13,7 @@ std::span<const std::uint8_t> AsBytes(std::string_view text) noexcept {
 
 }  // namespace
 
-bool TraceStream::SendTextFrame(FrameType type, std::string_view text) noexcept {
-  // Not substr(): it can throw, which drags the C++ library's exception
-  // support into the firmware.
-  if (text.size() > kMaxTextLength) {
-    text.remove_suffix(text.size() - kMaxTextLength);
-  }
-  std::array<std::uint8_t, MaxEncodedFrameSize(1 + kMaxTextLength)> buffer{};
-  FrameWriter writer(type, buffer);
-  if (type == FrameType::kHello) {
-    writer.Put(kStreamProtocolVersion);
-  }
-  writer.Put(AsBytes(text));
+bool TraceStream::SendFrame(FrameWriter& writer) noexcept {
   const std::span<const std::uint8_t> frame = writer.Finish();
   if (frame.empty() || !sink_.Write(frame)) {
     lostFrames_.fetch_add(1, std::memory_order_relaxed);
@@ -33,7 +22,29 @@ bool TraceStream::SendTextFrame(FrameType type, std::string_view text) noexcept 
   return true;
 }
 
-bool TraceStream::SendHello(std::string_view version) noexcept { return SendTextFrame(FrameType::kHello, version); }
+bool TraceStream::SendTextFrame(FrameType type, std::string_view text) noexcept {
+  // Not substr(): it can throw, which drags the C++ library's exception
+  // support into the firmware.
+  if (text.size() > kMaxTextLength) {
+    text.remove_suffix(text.size() - kMaxTextLength);
+  }
+  std::array<std::uint8_t, MaxEncodedFrameSize(4 + kMaxTextLength)> buffer{};
+  FrameWriter writer(type, buffer);
+  writer.PutU32(tracer_.Now());
+  writer.Put(AsBytes(text));
+  return SendFrame(writer);
+}
+
+bool TraceStream::SendHello(std::string_view version) noexcept {
+  if (version.size() > kMaxTextLength) {
+    version.remove_suffix(version.size() - kMaxTextLength);
+  }
+  std::array<std::uint8_t, MaxEncodedFrameSize(1 + kMaxTextLength)> buffer{};
+  FrameWriter writer(FrameType::kHello, buffer);
+  writer.Put(kStreamProtocolVersion);
+  writer.Put(AsBytes(version));
+  return SendFrame(writer);
+}
 
 bool TraceStream::SendText(std::string_view text) noexcept { return SendTextFrame(FrameType::kText, text); }
 

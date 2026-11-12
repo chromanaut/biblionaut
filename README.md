@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs and developer scripts |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder) and developer scripts |
 | `tests/` | Host tests |
 | `corpus/` | Test books |
 
@@ -76,6 +76,34 @@ BN_SERIAL_OUT=run.bin ./build/host/app/desktop/biblionaut-desktop --run-ms 5000
 Frames are delimited by zero bytes, so they can share the line with plain
 text such as boot messages. In a serial monitor the frames show up as short
 bursts of unreadable bytes between the readable lines.
+
+`bn-trace` (built with the host build) decodes the stream. It prints every
+event as a line of text and can write a timeline to open at
+[ui.perfetto.dev](https://ui.perfetto.dev) or `chrome://tracing`:
+
+```
+# A capture file from a desktop run
+./build/host/tools/trace/bn-trace run.bin --out run.json
+
+# The plugged-in device, live, until Ctrl-C
+./build/host/tools/trace/bn-trace --out device.json --save device.bin
+```
+
+With no input named, `bn-trace` finds the USB serial device itself; name
+the port (for example `/dev/cu.usbmodem101`) if more than one is plugged in.
+It restarts the device first, so the capture begins with the boot messages
+and the hello that names the firmware. `--no-reset` attaches without
+restarting, and then shows whatever the device had buffered since something
+last read it.
+
+In the timeline each boot of the device is a process and each task a thread;
+spans are slices, log lines are markers, and each counter and gauge is its
+own graph. `--save` keeps the raw bytes so a capture can be decoded again
+later.
+
+Trace ids are turned back into names from the lists in each part's
+`trace_ids.h`, which the tool is built from. A capture from newer firmware
+than the tool shows ids it does not know as numbers.
 
 ## Device build
 

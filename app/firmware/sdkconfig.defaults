@@ -1,0 +1,12 @@
+CONFIG_IDF_TARGET="esp32c3"
+
+# Supported devices have 16 MB of flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Console over the chip's built-in USB Serial/JTAG port.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# C++ without exceptions or RTTI. These are the ESP-IDF
+# defaults; stated so a change in defaults cannot go unnoticed.
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n

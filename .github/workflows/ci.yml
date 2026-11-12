@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Format, banned constructs, clang-tidy
+    # macOS so the tools and standard library match what developers run
+    # locally: clang-tidy's findings depend on both.
+    runs-on: macos-latest
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install LLVM and Ninja
+        run: |
+          llvm="llvm@$(cat tools/llvm-version)"
+          brew install "$llvm" ninja
+          echo "LLVM_BIN=$(brew --prefix "$llvm")/bin" >> "$GITHUB_ENV"
+
+      - name: Formatting
+        run: CLANG_FORMAT="$LLVM_BIN/clang-format" tools/check-format.sh
+
+      - name: Banned constructs
+        run: tools/check-banned.py
+
+      - name: clang-tidy
+        run: |
+          cmake --preset tidy -DBN_CLANG_TIDY_EXE="$LLVM_BIN/clang-tidy"
+          cmake --build --preset tidy
+
+  host:
+    name: Host build and tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS, Apple Clang
+            os: macos-latest
+          - name: Linux, GCC 14
+            os: ubuntu-24.04
+            cc: gcc-14
+            cxx: g++-14
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ${{ matrix.cxx }}
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
+
+      # Debug build with AddressSanitizer and UndefinedBehaviorSanitizer.
+      - name: Configure
+        run: cmake --preset host
+
+      - name: Build
+        run: cmake --build --preset host
+
+      - name: Test
+        run: ctest --preset host
+
+  firmware:
+    name: Firmware build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install ESP-IDF prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget flex bison gperf python3 python3-pip python3-venv \
+            cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
+
+      # ESP-IDF and its toolchain, installed into .esp/ by the same script
+      # developers use. The pinned version lives in that script, so the cache
+      # is replaced whenever the script changes.
+      - name: Cache ESP-IDF
+        uses: actions/cache@v6
+        with:
+          path: .esp
+          key: esp-idf-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/setup-idf.sh') }}
+
+      - name: Install ESP-IDF
+        run: tools/setup-idf.sh
+
+      - name: Build
+        run: tools/idf build
+
+      - name: Report image size
+        run: |
+          {
+            echo '### Firmware size'
+            echo '```'
+            tools/idf size | sed -n '/Memory Type Usage Summary/,$p'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

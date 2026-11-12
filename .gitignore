@@ -1,0 +1,17 @@
+# Host builds (cmake --preset ...)
+/build/
+
+# ESP-IDF and its tools, installed by tools/setup-idf.sh
+/.esp/
+
+# ESP-IDF build output and generated configuration
+/app/firmware/build/
+/app/firmware/sdkconfig
+/app/firmware/sdkconfig.old
+/app/firmware/managed_components/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+compile_commands.json

@@ -1,0 +1,72 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "host",
+      "displayName": "Host, debug, sanitizers on",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/host",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BN_SANITIZE": "ON"
+      }
+    },
+    {
+      "name": "host-release",
+      "displayName": "Host, optimised, no sanitizers",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/host-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BN_SANITIZE": "OFF"
+      }
+    },
+    {
+      "name": "tidy",
+      "displayName": "Host, clang-tidy on every source",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/tidy",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BN_SANITIZE": "OFF",
+        "BN_CLANG_TIDY": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "host",
+      "configurePreset": "host"
+    },
+    {
+      "name": "host-release",
+      "configurePreset": "host-release"
+    },
+    {
+      "name": "tidy",
+      "configurePreset": "tidy"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "host",
+      "configurePreset": "host",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "host-release",
+      "configurePreset": "host-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

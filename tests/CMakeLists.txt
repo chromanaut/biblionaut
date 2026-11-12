@@ -36,6 +36,7 @@ bn_add_unit_test(core_tests
     unit/core/crash_test.cpp
     unit/core/frame_test.cpp
     unit/core/heap_test.cpp
+    unit/core/input_sampler_test.cpp
     unit/core/metrics_test.cpp
     unit/core/trace_level0_test.cpp
     unit/core/trace_level1_test.cpp
@@ -52,6 +53,7 @@ bn_add_unit_test(draw_tests
 # are reached the way its sources reach them, as "desktop/...".
 bn_add_unit_test(hw_tests
   SOURCES
+    unit/hw/scripted_input_test.cpp
     unit/hw/sim_display_test.cpp
   LIBS bn_hw)
 target_include_directories(hw_tests PRIVATE ${PROJECT_SOURCE_DIR}/hw)
@@ -59,9 +61,9 @@ target_include_directories(hw_tests PRIVATE ${PROJECT_SOURCE_DIR}/hw)
 bn_add_unit_test(reader_tests
   SOURCES
     unit/reader/app_test.cpp
-    unit/reader/panel_check_test.cpp
+    unit/reader/pattern_viewer_test.cpp
   LIBS bn_reader)
-# The panel check's tests compare what reaches the panel with the picture
+# The pattern viewer's tests compare what reaches the panel with the picture
 # from draw, which the reader links but does not pass on.
 target_include_directories(reader_tests PRIVATE $<TARGET_PROPERTY:bn_draw,INTERFACE_INCLUDE_DIRECTORIES>)
 

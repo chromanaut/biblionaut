@@ -28,7 +28,13 @@
   X(7, kSpanPanelPowerOff, "panel_power_off", "")                             \
   /* The SD card, which shares the panel's wires, told to keep off them:   */ \
   /* the argument is its reply (1: done; 255: no card answered).           */ \
-  X(8, kInstantSdCardParked, "sd_card_parked", "reply")
+  X(8, kInstantSdCardParked, "sd_card_parked", "reply")                       \
+  /* A button going down, or coming up: from the reading that first showed */ \
+  /* it to the reading that settled it. The argument is the button's       */ \
+  /* number (core/input.h). The start of the span is the moment to measure */ \
+  /* the device's response from.                                           */ \
+  X(9, kSpanButtonPress, "button_press", "button")                            \
+  X(10, kSpanButtonRelease, "button_release", "button")
 
 namespace bn::hw {
 

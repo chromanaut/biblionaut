@@ -7,8 +7,10 @@
 add_library(bn_hw STATIC
   desktop/crash.cpp
   desktop/display.cpp
+  desktop/input.cpp
   desktop/memory_probe.cpp
   desktop/platform.cpp
+  desktop/scripted_input.cpp
   desktop/serial.cpp
   desktop/sim_display.cpp
   desktop/trace_sync.cpp)

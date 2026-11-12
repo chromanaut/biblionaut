@@ -2,7 +2,8 @@
 #
 #   1. run the desktop application with its serial line captured to a file;
 #   2. decode the capture with bn-trace;
-#   3. check what came out, including the picture the simulated panel shows;
+#   3. check what came out, including the pictures the simulated panel shows
+#      and what a scripted button press led to;
 #   4. do it again with the application holding a crash report from an
 #      earlier run (an invented one), and check that the report arrives.
 #
@@ -10,10 +11,13 @@
 set(capture "${WORK_DIR}/trace_roundtrip.bin")
 set(timeline "${WORK_DIR}/trace_roundtrip.json")
 set(panel "${WORK_DIR}/trace_roundtrip_panel")
-file(REMOVE "${capture}" "${timeline}" "${panel}-001.png")
+file(REMOVE "${capture}" "${timeline}" "${panel}-001.png" "${panel}-002.png")
 
+# The simulated panel works twenty times faster than a real one, so its
+# first refresh is over well before the Down button is pressed at 0.4 s.
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env "BN_SERIAL_OUT=${capture}" "BN_DISPLAY_OUT=${panel}" "${APP}" --run-ms 1300
+  COMMAND "${CMAKE_COMMAND}" -E env "BN_SERIAL_OUT=${capture}" "BN_DISPLAY_OUT=${panel}" "BN_DISPLAY_SPEED=20"
+          "BN_INPUT=400:down" "${APP}" --run-ms 1300
   RESULT_VARIABLE app_result)
 if(NOT app_result EQUAL 0)
   message(FATAL_ERROR "the desktop application failed: ${app_result}")
@@ -33,7 +37,11 @@ foreach(expected
     "reader/app_start"
     "reader/heartbeat uptime_s=1"
     "hw/panel_write bytes=8000"
-    "reader/panel_sweep step=1")
+    "reader/panel_sweep picture=1"
+    "hw/refresh_full power_off_after=0"
+    "reader/panel_sweep picture=2"
+    "reader/press_to_refresh button=5"
+    "hw/refresh_fast power_off_after=0")
   string(FIND "${tool_output}" "${expected}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "bn-trace did not print '${expected}'. It printed:\n${tool_output}")
@@ -43,14 +51,23 @@ if(tool_errors MATCHES "warning")
   message(FATAL_ERROR "bn-trace warned about the capture:\n${tool_errors}")
 endif()
 
-# The first picture of the panel check: a PNG of the panel's size, one bit
-# per pixel. (Signature, then the header chunk: width 800, height 480, depth 1.)
-if(NOT EXISTS "${panel}-001.png")
-  message(FATAL_ERROR "the simulated panel did not save its picture as ${panel}-001.png")
-endif()
-file(READ "${panel}-001.png" picture_start LIMIT 25 HEX)
-if(NOT picture_start STREQUAL "89504e470d0a1a0a0000000d4948445200000320000001e001")
-  message(FATAL_ERROR "the panel picture does not start as an 800 x 480 1-bit PNG should: ${picture_start}")
+# One picture for each refresh: the first picture of the test pattern, and
+# the one the button press moved on to. Each is a PNG of the panel's size,
+# one bit per pixel. (Signature, then the header chunk: width 800, height
+# 480, depth 1.)
+foreach(number 001 002)
+  if(NOT EXISTS "${panel}-${number}.png")
+    message(FATAL_ERROR "the simulated panel did not save its picture as ${panel}-${number}.png")
+  endif()
+  file(READ "${panel}-${number}.png" picture_start LIMIT 25 HEX)
+  if(NOT picture_start STREQUAL "89504e470d0a1a0a0000000d4948445200000320000001e001")
+    message(FATAL_ERROR "panel picture ${number} does not start as an 800 x 480 1-bit PNG should: ${picture_start}")
+  endif()
+endforeach()
+file(SHA256 "${panel}-001.png" first_picture)
+file(SHA256 "${panel}-002.png" second_picture)
+if(first_picture STREQUAL second_picture)
+  message(FATAL_ERROR "the button press did not change what the panel shows")
 endif()
 
 # The timeline must be valid JSON with the start span in it.

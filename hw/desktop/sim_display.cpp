@@ -87,9 +87,10 @@ std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std:
   return png;
 }
 
-SimDisplay::SimDisplay(core::Clock& clock, std::string outputPrefix)
+SimDisplay::SimDisplay(core::Clock& clock, std::string outputPrefix, std::uint32_t speed)
     : clock_(clock),
       outputPrefix_(std::move(outputPrefix)),
+      speed_(speed < 1 ? 1 : speed),
       newPlane_(kSize.RowBytes() * kSize.height, 0xFF),
       oldPlane_(newPlane_),
       shown_(newPlane_) {}
@@ -128,7 +129,7 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
     return false;
   }
   std::uint64_t durationUs = kFullRefreshUs;
-  busySpan_ = kSpanRefreshFull;
+  core::SpanId span = kSpanRefreshFull;
   if (mode == core::RefreshMode::kFast) {
     // Only the pixels that differ between the planes are driven; the rest
     // stay as they are on the panel, right or wrong.
@@ -137,22 +138,28 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
       shown_[i] = static_cast<std::uint8_t>((shown_[i] & ~changed) | (newPlane_[i] & changed));
     }
     durationUs = kFastRefreshUs;
-    busySpan_ = kSpanRefreshFast;
+    span = kSpanRefreshFast;
   } else {
     shown_ = newPlane_;
     if (mode == core::RefreshMode::kHalf) {
       durationUs = kHalfRefreshUs;
-      busySpan_ = kSpanRefreshHalf;
+      span = kSpanRefreshHalf;
     }
   }
-  powered_ = after == core::AfterRefresh::kStayPowered;
-  busySpanArg_ = after == core::AfterRefresh::kPowerOff ? 1 : 0;
-  busySinceTrace_ = BN_TRACE_NOW();
-  busyUntilUs_ = clock_.NowUs() + durationUs;
-  busy_ = true;
+  const bool powerOff = after == core::AfterRefresh::kPowerOff;
+  powered_ = !powerOff;
+  BeginBusy(durationUs + (powerOff ? kPowerOffUs : 0), span, powerOff ? 1 : 0);
   ++refreshCount_;
   SavePicture();
   return true;
+}
+
+void SimDisplay::BeginBusy(std::uint64_t durationUs, core::SpanId span, std::uint32_t argument) noexcept {
+  busySpan_ = span;
+  busySpanArg_ = argument;
+  busySinceTrace_ = BN_TRACE_NOW();
+  busyUntilUs_ = clock_.NowUs() + (durationUs / speed_);
+  busy_ = true;
 }
 
 bool SimDisplay::Busy() noexcept {
@@ -161,6 +168,17 @@ bool SimDisplay::Busy() noexcept {
     BN_TRACE_TOP_SPAN_SINCE(busySpan_, busySinceTrace_, busySpanArg_);
   }
   return busy_;
+}
+
+bool SimDisplay::PowerOff() noexcept {
+  if (!started_ || Busy()) {
+    return false;
+  }
+  if (powered_) {
+    powered_ = false;
+    BeginBusy(kPowerOffUs, kSpanPanelPowerOff, 0);
+  }
+  return true;
 }
 
 bool SimDisplay::Sleep() noexcept {

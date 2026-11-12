@@ -15,6 +15,8 @@ constexpr int kMaxFlushRounds = 64;
 // Pieces of a crash report sent by one Start() or Tick(), so a report does
 // not crowd out the trace.
 constexpr int kMaxCrashPiecesPerTick = 4;
+// Button events taken in by one Tick().
+constexpr int kMaxInputEventsPerTick = 16;
 
 core::Counter appTicks{"app_ticks"};
 // Trace records overwritten in the ring before they could be sent.
@@ -30,6 +32,8 @@ core::Gauge heapLargestBlock{"heap_largest_block"};
 core::Gauge heapLowWater{"heap_low_water"};
 // Stack the task running the application has never used.
 core::Gauge stackHeadroom{"stack_headroom"};
+// 1 if the buttons can be read, 0 if not.
+core::Gauge inputOk{"input_ok"};
 
 }  // namespace
 
@@ -39,14 +43,15 @@ Services DefaultServices() noexcept {
                   .serial = hw::SystemSerial(),
                   .memory = hw::SystemMemoryProbe(),
                   .crash = hw::SystemCrashStore(),
-                  .display = hw::SystemDisplay()};
+                  .display = hw::SystemDisplay(),
+                  .input = hw::SystemInput()};
 }
 
 App::App(const Services& services) noexcept
     : services_(services),
       tracer_(traceStorage_, services_.clock, services_.traceSync),
       stream_(tracer_, services_.serial),
-      panelCheck_(services_.display, services_.clock) {}
+      viewer_(services_.display, services_.clock) {}
 
 App::~App() {
   if (core::ActiveTracer() == &tracer_) {
@@ -69,7 +74,8 @@ void App::Start() noexcept {
     services_.crash.SetVersion(Version());
     SendCrashReport();
   }
-  panelCheck_.Start();
+  inputOk.Set(services_.input.Start() ? 1 : 0);
+  viewer_.Start();
 }
 
 void App::Tick() noexcept {
@@ -85,7 +91,12 @@ void App::Tick() noexcept {
   }
 
   SendCrashReport();
-  panelCheck_.Tick();
+
+  core::InputEvent event{};
+  for (int taken = 0; taken < kMaxInputEventsPerTick && services_.input.Next(event); ++taken) {
+    viewer_.OnInput(event);
+  }
+  viewer_.Tick();
 
   const bool metricsDue = now >= nextMetricsUs_;
   if (metricsDue) {

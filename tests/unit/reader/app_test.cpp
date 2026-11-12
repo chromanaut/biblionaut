@@ -11,6 +11,7 @@
 #include "core/endian.h"
 #include "crash_fakes.h"
 #include "display_fakes.h"
+#include "input_fakes.h"
 #include "memory_fakes.h"
 #include "reader/trace_ids.h"
 #include "stream_fakes.h"
@@ -28,8 +29,14 @@ struct AppFixture {
   bn::test::FakeMemoryProbe memory;
   bn::test::FakeCrashStore crash;
   bn::test::FakeDisplay display;  // Absent unless a test says otherwise.
-  bn::reader::App app{bn::reader::Services{
-      .clock = clock, .traceSync = sync, .serial = sink, .memory = memory, .crash = crash, .display = display}};
+  bn::test::FakeInput input;
+  bn::reader::App app{bn::reader::Services{.clock = clock,
+                                           .traceSync = sync,
+                                           .serial = sink,
+                                           .memory = memory,
+                                           .crash = crash,
+                                           .display = display,
+                                           .input = input}};
 
   // The bytes of every crash frame sent so far, joined, after checking that
   // each piece continues the one before.
@@ -196,40 +203,56 @@ TEST(App, FlushSendsTheRestOfACrashReport) {
 TEST(App, ReportsAPanelThatCannotBeSetUpAndCarriesOn) {
   AppFixture fixture;  // Its panel is absent.
   fixture.app.Start();
-  EXPECT_EQ(fixture.app.Panel().CurrentState(), bn::reader::PanelCheck::State::kFailed);
+  EXPECT_EQ(fixture.app.Viewer().CurrentState(), bn::reader::PatternViewer::State::kFailed);
+  fixture.input.Press(bn::core::Button::kDown, fixture.clock.now);
   fixture.RunFor(5'100'000);
   EXPECT_NE(fixture.Metrics().find("panel_ok=0["), std::string::npos) << fixture.Metrics();
   EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kWrite), 0u);
 }
 
-TEST(App, ChecksThePanelWhenItStartsAndAsItTicks) {
+TEST(App, ShowsTheTestPatternAndLetsTheButtonsStepThroughIt) {
   AppFixture fixture;
   fixture.display.present = true;
   fixture.app.Start();
-  EXPECT_EQ(fixture.app.Panel().Step(), 1);
+  EXPECT_TRUE(fixture.input.started);
+  EXPECT_EQ(fixture.app.Viewer().Picture(), 1);
   EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kRefresh), 1u);
+  fixture.display.busy = false;
+  fixture.RunFor(100'000);
 
-  // A panel that finishes each refresh at once: the check runs to its end,
-  // paced only by the pauses between steps.
-  for (int i = 0; i < 200 && fixture.app.Panel().CurrentState() == bn::reader::PanelCheck::State::kRunning; ++i) {
-    fixture.display.busy = false;
-    fixture.RunFor(50'000);
-  }
-  EXPECT_EQ(fixture.app.Panel().CurrentState(), bn::reader::PanelCheck::State::kDone);
-  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kRefresh), 4u);
-  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kSleep), 1u);
+  // A press, and its release, which changes nothing.
+  fixture.input.Press(bn::core::Button::kDown, fixture.clock.now);
+  fixture.input.Release(bn::core::Button::kDown, fixture.clock.now + 80'000);
+  fixture.RunFor(100'000);
+  EXPECT_EQ(fixture.app.Viewer().Picture(), 2);
+  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kRefresh), 2u);
+  EXPECT_TRUE(fixture.input.events.empty());
 
+  fixture.display.busy = false;
   fixture.RunFor(5'100'000);
   const std::string metrics = fixture.Metrics();
   EXPECT_NE(metrics.find("panel_ok=1["), std::string::npos) << metrics;
-  EXPECT_NE(metrics.find("panel_step=4["), std::string::npos) << metrics;
+  EXPECT_NE(metrics.find("panel_picture=2["), std::string::npos) << metrics;
+  EXPECT_NE(metrics.find("input_ok=1["), std::string::npos) << metrics;
+  EXPECT_NE(metrics.find("button_presses="), std::string::npos) << metrics;
 
-  // The sweeps are in the trace, and none of them inside the start-up span.
+  // The press is in the trace, from the button to the refresh.
+  int presses = 0;
   int sweeps = 0;
   for (const auto& [id, arg] : fixture.TraceRecords()) {
+    presses += id == static_cast<std::uint16_t>(bn::reader::kSpanPressToRefresh) ? 1 : 0;
     sweeps += id == static_cast<std::uint16_t>(bn::reader::kSpanPanelSweep) ? 1 : 0;
   }
-  EXPECT_EQ(sweeps, 6);
+  EXPECT_EQ(presses, 1);
+  EXPECT_EQ(sweeps, 3);  // The first picture, the second, and the old plane after it.
+}
+
+TEST(App, ReportsButtonsThatCannotBeRead) {
+  AppFixture fixture;
+  fixture.input.present = false;
+  fixture.app.Start();
+  fixture.RunFor(5'100'000);
+  EXPECT_NE(fixture.Metrics().find("input_ok=0["), std::string::npos) << fixture.Metrics();
 }
 
 TEST(App, InstallsItsTracerWhileItLives) {
@@ -371,6 +394,10 @@ TEST(App, DefaultServicesUseTheLinkedHardwarePort) {
   // Its panel is a simulation of the X4's.
   EXPECT_EQ(services.display.Size().width, 800u);
   EXPECT_EQ(services.display.Size().height, 480u);
+  // And nobody is pressing its buttons, unless a script says so.
+  bn::core::InputEvent event{};
+  EXPECT_TRUE(services.input.Start());
+  EXPECT_FALSE(services.input.Next(event));
 }
 
 TEST(Version, IsNotEmpty) { EXPECT_GT(std::strlen(bn::reader::Version()), 0u); }

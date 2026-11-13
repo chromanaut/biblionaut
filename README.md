@@ -48,7 +48,7 @@ clang-tidy enforces this.
 Needs CMake 3.25 or later, Ninja and a C++20 compiler. GoogleTest is
 downloaded when CMake configures. The tests also link zlib, to check the
 inflater against: macOS has it, and on Linux it is the `zlib1g-dev` package.
-Two of the end-to-end tests are run only if Python 3 is found, and one of
+Three of the end-to-end tests are run only if Python 3 is found, and one of
 them makes more of its test files if there is a `zip` command.
 
 ```
@@ -213,9 +213,10 @@ tools/idf -DBN_PLANE_CHECK=OFF build flash     # back to the normal firmware
 Files are reached through three things in `core`:
 
 - `core/storage.h` is the bare interface a hardware port implements: open,
-  read and write at an offset, sync, and the handful of calls that work on
-  names. Every call says how it ended (`StorageStatus`), and every port
-  accepts the same paths, which are the ones an SD card can hold.
+  read and write at an offset, sync, the handful of calls that work on
+  names, and listing a directory. Every call says how it ended
+  (`StorageStatus`), and every port accepts the same paths, which are the
+  ones an SD card can hold.
 - `core/block_file.h` is what code reads and writes files with. It keeps a
   position and a buffer of its own, asks storage for whole blocks at
   multiples of the block size, and counts what it asks for (`sd_reads`,
@@ -236,8 +237,9 @@ and has to be formatted as FAT32 first.
 On the desktop the card is a folder (`hw/desktop/folder_storage.h`), the
 one named by the `BN_STORAGE` environment variable; without it there is no
 card. It is made to behave as a card does where that is cheap: the same
-paths are refused, only four files can be open at once, an open file
-cannot be removed or renamed, and a rename will not replace a file.
+paths are refused, only four files can be open at once (a directory being
+listed counts as one, and only two can be), an open file cannot be removed
+or renamed, and a rename will not replace a file.
 
 The application gets storage ready at start and says whether it is
 (`storage_ok` in the metrics, `reader/storage_start` in the trace). It
@@ -290,6 +292,10 @@ and the device.
 - **Memory**: the caller provides the 32 KB window the format needs. The
   object itself is 2.6 KB on the device. It allocates nothing.
 - **Flash**: 3.7 KB, as compiled for the device.
+- **Speed**: not yet tuned. On an X4, over 30 books, it gave out about
+  970 KB a second with the ZIP checksum included (which is about a
+  seventh of that time), taking in about 620 KB a second, where the SD
+  card delivered about 880.
 - **Bad input**: whatever bytes it is given, it either produces the data
   they stand for or stops, saying why (`kBadData`, `kTruncated`,
   `kSourceFailed`). It does not check that the data is the right data: that
@@ -353,6 +359,66 @@ hand could share a mistake, an end-to-end test (`tests/e2e/zip_tool.py`)
 also compares `bn-zip`, entry by entry and byte by byte, with Python's
 `zipfile` on files made by `zipfile` and, where there is one, by the `zip`
 command.
+
+### Reading the books on a card
+
+A firmware built with `-DBN_BOOK_CHECK=ON` reads every book on the SD card
+from end to end: at start, and again at each press of the Power button. (On
+the desktop, set `BN_BOOK_CHECK`, with `BN_STORAGE` naming the folder that
+stands for the card.) It is how to find out whether a device reads books
+correctly and how fast. It writes nothing to the card.
+
+It takes for a book every file whose name ends in `.epub` in `/books` and
+in each folder in `/books`, one level down and no further. If there is no
+`/books`, or no book there, it looks in the top directory and its folders
+instead. For each book it finds the ZIP directory, reads every entry to its
+end, which checks the entry's size and checksum, and looks each entry up by
+name (`reader/book_check.h`). It works for about 20 ms a turn, so the panel
+and the buttons carry on around it, and a run takes longer by the clock
+than the times it reports.
+
+What it finds goes out as log text: a line when a book is begun, two when
+it ends, and two at the end for all of them.
+
+```
+book check: the checksum alone, 262144 bytes in 2003 us (127808 KB/s).
+book 1: 1498334 bytes, /books/A Series/1 The First Book.epub
+book 1: ok. 122 entries, 3022700 bytes out of 1477560. Directory found in 1 read, 1 ms.
+book 1: card 2 ms for 372 reads of 1521306 bytes (553727 KB/s); inflating 41 ms: 1477540 bytes in (35041 KB/s), 3022680 out (71686 KB/s); all 43 ms.
+...
+book check: passed. 31 books, 4310 entries, 181650944 bytes out of 85181353.
+book check: card 58 ms for 21188 reads of 86632380 bytes (1455216 KB/s); inflating 1826 ms: 75728235 bytes in (40498 KB/s), 172197826 out (92089 KB/s); all 1930 ms.
+```
+
+(Those figures are a desktop's.) There are three times. `card` is the time
+spent inside storage. `inflating` is the time spent reading out the
+compressed entries with storage's share taken off, which is the processor
+inflating and checksumming, beside what went into the inflater and what
+came out. `all` is everything spent on the book. A KB is 1024 bytes. The
+checksum is timed by itself first, over 256 KB held in memory, so that its
+share of `inflating` can be worked out. A book or an entry that cannot be
+read is reported with `FAILED` and the reason, and the check goes on to the
+next.
+
+`bn-zip check` reads a file the same way, read for read. So the same book
+on the desktop should come to the same entries, the same bytes and the same
+reads (`sd_reads` and `sd_read_bytes`, in the last line `bn-zip check`
+prints) as it does on the device.
+
+The outcome is also in the metrics (`book_check=1` if every book was sound,
+`book_check_books`, `inflate_kb_per_s`, `checksum_kb_per_s`) and in the
+trace (`reader/book_check`, and `reader/book_check_book` for each book),
+where every read of the card is too (`hw/sd_read`).
+
+```
+tools/idf -DBN_BOOK_CHECK=ON build flash
+./build/host/tools/trace/bn-trace | tee books.log
+tools/idf -DBN_BOOK_CHECK=OFF build flash     # back to the normal firmware
+```
+
+It cannot be combined with `-DBN_STORAGE_CHECK=ON`: the two would get in
+each other's way on the card. A firmware built with neither has the code
+of neither in it.
 
 ## Device build
 

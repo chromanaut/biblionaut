@@ -58,6 +58,36 @@ TEST(StoragePath, HasALongestLength) {
   EXPECT_FALSE(IsStoragePath(longest + "a"));
 }
 
+TEST(StorageName, IsOnePartOfAPath) {
+  using bn::core::IsStorageName;
+  EXPECT_TRUE(IsStorageName("a"));
+  EXPECT_TRUE(IsStorageName("War and Peace (vol. 1).epub"));
+  EXPECT_TRUE(IsStorageName(".hidden"));
+  EXPECT_TRUE(IsStorageName("caf\xC3\xA9.epub"));
+
+  EXPECT_FALSE(IsStorageName(""));
+  EXPECT_FALSE(IsStorageName("."));
+  EXPECT_FALSE(IsStorageName(".."));
+  EXPECT_FALSE(IsStorageName("a/b"));
+  EXPECT_FALSE(IsStorageName("/a"));
+  EXPECT_FALSE(IsStorageName("name."));
+  EXPECT_FALSE(IsStorageName("name "));
+  for (const char* name : {"a:b", "a*b", "a?b", "a\"b", "a<b", "a>b", "a|b", "a\\b", "a\tb", "a\x7F"}) {
+    EXPECT_FALSE(IsStorageName(name)) << name;
+  }
+  EXPECT_FALSE(IsStorageName(std::string_view("a\0b", 3)));
+
+  // Whatever is a name makes a path with a '/' in front of it, and nothing
+  // else without a '/' of its own does.
+  const std::string longest(Storage::kMaxPath - 1, 'a');
+  EXPECT_TRUE(IsStorageName(longest));
+  EXPECT_TRUE(IsStoragePath("/" + longest));
+  EXPECT_FALSE(IsStorageName(longest + "a"));
+  for (const char* name : {"a", ".hidden", ".", "..", "name.", "name ", "a:b", "a b", " a", "a\tb"}) {
+    EXPECT_EQ(IsStorageName(name), IsStoragePath("/" + std::string(name))) << name;
+  }
+}
+
 TEST(StorageStatus, EveryStatusHasAName) {
   EXPECT_STREQ(bn::core::StorageStatusName(StorageStatus::kOk), "ok");
   EXPECT_STREQ(bn::core::StorageStatusName(StorageStatus::kAbsent), "absent");

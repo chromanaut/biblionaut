@@ -59,6 +59,9 @@ class FakeStorage final : public core::Storage {
   int OpenCount() const {
     return static_cast<int>(std::count_if(open_.begin(), open_.end(), [](const OpenFile& f) { return f.inUse; }));
   }
+  int ListedCount() const {
+    return static_cast<int>(std::count_if(listed_.begin(), listed_.end(), [](const Listing& l) { return l.inUse; }));
+  }
 
   // The power goes: every open file is forgotten, unsynced writes are
   // lost, and nothing works until PowerOn().
@@ -66,6 +69,9 @@ class FakeStorage final : public core::Storage {
     powered = false;
     for (OpenFile& file : open_) {
       file = OpenFile{};
+    }
+    for (Listing& listing : listed_) {
+      listing = Listing{};
     }
     for (auto& [path, entry] : entries) {
       entry.data = entry.durable;
@@ -105,7 +111,7 @@ class FakeStorage final : public core::Storage {
       return core::StorageStatus::kFailed;  // Emptying a file that is in use.
     }
     const auto place = std::find_if(open_.begin(), open_.end(), [](const OpenFile& f) { return !f.inUse; });
-    if (place == open_.end()) {
+    if (place == open_.end() || OpenCount() + ListedCount() >= static_cast<int>(kMaxOpen)) {
       return core::StorageStatus::kTooManyOpen;
     }
     if (create) {
@@ -260,6 +266,75 @@ class FakeStorage final : public core::Storage {
     return core::StorageStatus::kOk;
   }
 
+  [[nodiscard]] core::StorageStatus OpenDirectory(std::string_view path,
+                                                  core::DirectoryHandle& directory) noexcept override {
+    directory = core::kNoDirectory;
+    if (const core::StorageStatus status = Check(path, false); status != core::StorageStatus::kOk) {
+      return status;
+    }
+    const std::string name(path);
+    const auto found = entries.find(name);
+    if (found == entries.end() || !found->second.isDirectory) {
+      return core::StorageStatus::kNotFound;
+    }
+    const auto place = std::find_if(listed_.begin(), listed_.end(), [](const Listing& l) { return !l.inUse; });
+    if (place == listed_.end() || OpenCount() + ListedCount() >= static_cast<int>(kMaxOpen)) {
+      return core::StorageStatus::kTooManyOpen;
+    }
+    if (failListing) {
+      return core::StorageStatus::kFailed;
+    }
+    // What is in it now, in the order of the names.
+    *place = Listing{.inUse = true, .path = name, .names = {}, .next = 0};
+    const std::string prefix = name == "/" ? name : name + "/";
+    for (const auto& [itemPath, entry] : entries) {
+      if (itemPath.size() > prefix.size() && itemPath.starts_with(prefix) &&
+          itemPath.find('/', prefix.size()) == std::string::npos) {
+        place->names.push_back(itemPath.substr(prefix.size()));
+      }
+    }
+    directory = static_cast<core::DirectoryHandle>(place - listed_.begin());
+    ++directoryOpens;
+    return core::StorageStatus::kOk;
+  }
+
+  [[nodiscard]] core::StorageStatus NextInDirectory(core::DirectoryHandle directory, std::span<char> name,
+                                                    std::size_t& length, core::FileInfo& info) noexcept override {
+    length = 0;
+    if (directory < 0 || static_cast<std::size_t>(directory) >= listed_.size() ||
+        !listed_[static_cast<std::size_t>(directory)].inUse || !powered) {
+      return core::StorageStatus::kFailed;
+    }
+    Listing& listing = listed_[static_cast<std::size_t>(directory)];
+    if (failListingAfter == 0) {
+      return core::StorageStatus::kFailed;
+    }
+    if (failListingAfter > 0) {
+      --failListingAfter;
+    }
+    while (listing.next < listing.names.size()) {
+      const std::string& itemName = listing.names[listing.next++];
+      const auto found = entries.find((listing.path == "/" ? "" : listing.path) + "/" + itemName);
+      if (found == entries.end() || itemName.size() > name.size()) {
+        continue;  // Removed since the listing began, or too long for the caller.
+      }
+      std::memcpy(name.data(), itemName.data(), itemName.size());
+      length = itemName.size();
+      info.isDirectory = found->second.isDirectory;
+      info.size = static_cast<std::uint32_t>(found->second.data.size());
+      return core::StorageStatus::kOk;
+    }
+    return core::StorageStatus::kOk;
+  }
+
+  void CloseDirectory(core::DirectoryHandle directory) noexcept override {
+    if (directory >= 0 && static_cast<std::size_t>(directory) < listed_.size() &&
+        listed_[static_cast<std::size_t>(directory)].inUse) {
+      listed_[static_cast<std::size_t>(directory)] = Listing{};
+      ++directoryCloses;
+    }
+  }
+
   // ---- What tests set and read ----
 
   bool present = true;  // There is a card.
@@ -277,9 +352,13 @@ class FakeStorage final : public core::Storage {
   bool failSize = false;
   bool failRemoves = false;
   bool failRenames = false;
+  bool failListing = false;   // No directory can be listed.
+  int failListingAfter = -1;  // A listing gives this many more things, then fails. -1: never.
 
   int opens = 0;
   int closes = 0;
+  int directoryOpens = 0;
+  int directoryCloses = 0;
   int writes = 0;
   int syncs = 0;
   std::vector<ReadCall> reads;
@@ -291,6 +370,15 @@ class FakeStorage final : public core::Storage {
     bool inUse = false;
     bool writable = false;
     std::string path;
+  };
+
+  // A directory being listed: the names that were in it when the listing
+  // began, and how far through them it has got.
+  struct Listing {
+    bool inUse = false;
+    std::string path;
+    std::vector<std::string> names;
+    std::size_t next = 0;
   };
 
   // Whether a call can go ahead at all; `changing` if it changes what is
@@ -345,7 +433,8 @@ class FakeStorage final : public core::Storage {
                        [&](const auto& item) { return item.first.starts_with(prefix); });
   }
 
-  std::vector<OpenFile> open_ = std::vector<OpenFile>(4);  // As many as a device allows.
+  std::vector<OpenFile> open_ = std::vector<OpenFile>(kMaxOpen);  // As many as a device allows.
+  std::vector<Listing> listed_ = std::vector<Listing>(kMaxListed);
 };
 
 }  // namespace bn::test

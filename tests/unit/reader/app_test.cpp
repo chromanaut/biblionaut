@@ -13,10 +13,12 @@
 #include "display_fakes.h"
 #include "input_fakes.h"
 #include "memory_fakes.h"
+#include "reader/book_check.h"
 #include "reader/trace_ids.h"
 #include "storage_fakes.h"
 #include "stream_fakes.h"
 #include "trace_fakes.h"
+#include "zip_builder.h"
 
 namespace {
 
@@ -285,6 +287,7 @@ TEST(App, GetsStorageReadyAndSaysWhetherItIs) {
   // It does nothing with it unless asked to.
   EXPECT_EQ(fixture.storage.changes, 0);
   EXPECT_EQ(fixture.app.StorageChecker(), nullptr);
+  EXPECT_EQ(fixture.app.BookChecker(), nullptr);
 
   AppFixture noCard;
   noCard.storage.present = false;
@@ -335,6 +338,71 @@ TEST(App, LooksForACardAgainWhenPowerIsPressed) {
   fixture.RunFor(15'000'000);
   EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kPassed);
   EXPECT_NE(fixture.Metrics().find("storage_ok=1["), std::string::npos) << fixture.Metrics();
+}
+
+TEST(App, CanHaveTheBooksOnTheCardReadAtStartAndAtEachPressOfPower) {
+  using BookState = bn::reader::BookCheck::State;
+  AppFixture fixture;
+  bn::test::ZipBuilder builder;
+  builder.Add("mimetype", {'a', 'b', 'c'});
+  builder.Add("OEBPS/chapter.xhtml", std::vector<std::uint8_t>(20'000, 'x'), {.deflate = true});
+  fixture.storage.Put("/books/a.epub", builder.Finish());
+  fixture.app.CheckBooks();
+  fixture.app.Start();
+  ASSERT_NE(fixture.app.BookChecker(), nullptr);
+  EXPECT_EQ(fixture.app.BookChecker()->CurrentState(), BookState::kRunning);
+  fixture.RunFor(5'100'000);
+  EXPECT_EQ(fixture.app.BookChecker()->CurrentState(), BookState::kPassed);
+  EXPECT_EQ(fixture.app.BookChecker()->Totals().bytesOut, 20'003u);
+  EXPECT_NE(fixture.Metrics().find("book_check=1["), std::string::npos) << fixture.Metrics();
+  EXPECT_EQ(fixture.storage.changes, 0) << "it writes nothing";
+
+  // What it found goes out as text.
+  const auto passedLines = [&fixture] {
+    int count = 0;
+    for (const StreamItem& item : fixture.ItemsOfType(FrameType::kText)) {
+      count += item.Text() == "book check: passed. 1 book, 2 entries, 20003 bytes out of " +
+                                  std::to_string(fixture.app.BookChecker()->Totals().bytesIn) + "."
+                   ? 1
+                   : 0;
+    }
+    return count;
+  };
+  EXPECT_EQ(passedLines(), 1);
+
+  // Power runs it again.
+  const int opensInOneRun = fixture.storage.opens;
+  EXPECT_EQ(opensInOneRun, 2) << "the book is open twice, for its directory and for its entries";
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(200'000);
+  EXPECT_EQ(fixture.app.BookChecker()->CurrentState(), BookState::kPassed);
+  EXPECT_EQ(fixture.storage.opens, 2 * opensInOneRun);
+  EXPECT_EQ(passedLines(), 2);
+}
+
+TEST(App, LooksForACardAgainBeforeReadingTheBooksWhenPowerIsPressed) {
+  using BookState = bn::reader::BookCheck::State;
+  AppFixture fixture;
+  bn::test::ZipBuilder builder;
+  builder.Add("mimetype", {'a', 'b', 'c'});
+  fixture.storage.Put("/books/a.epub", builder.Finish());
+  fixture.storage.present = false;
+  fixture.app.CheckBooks();
+  fixture.app.Start();
+  fixture.RunFor(200'000);
+  EXPECT_EQ(fixture.app.BookChecker()->CurrentState(), BookState::kIdle) << "no card to read from";
+
+  // Still none: the check says so.
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(200'000);
+  EXPECT_EQ(fixture.app.BookChecker()->CurrentState(), BookState::kFailed);
+
+  // A card goes in.
+  fixture.storage.present = true;
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(200'000);
+  EXPECT_EQ(fixture.app.BookChecker()->CurrentState(), BookState::kPassed);
+  EXPECT_EQ(fixture.app.BookChecker()->Books(), 1u);
 }
 
 TEST(App, ReportsButtonsThatCannotBeRead) {

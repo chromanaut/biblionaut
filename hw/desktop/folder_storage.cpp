@@ -1,12 +1,15 @@
 #include "desktop/folder_storage.h"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <utility>
 
@@ -45,6 +48,11 @@ FolderStorage::~FolderStorage() {
   for (const OpenFile& file : open_) {
     if (file.descriptor >= 0) {
       ::close(file.descriptor);
+    }
+  }
+  for (DIR* stream : listed_) {
+    if (stream != nullptr) {
+      ::closedir(stream);
     }
   }
 }
@@ -88,6 +96,12 @@ bool FolderStorage::IsOpen(std::string_view path) const {
   return false;
 }
 
+std::size_t FolderStorage::OpenCount() const noexcept {
+  const auto files = std::count_if(open_.begin(), open_.end(), [](const OpenFile& f) { return f.descriptor >= 0; });
+  const auto directories = std::count_if(listed_.begin(), listed_.end(), [](const DIR* d) { return d != nullptr; });
+  return static_cast<std::size_t>(files + directories);
+}
+
 StorageStatus FolderStorage::Open(std::string_view path, core::OpenMode mode, core::FileHandle& file) noexcept {
   file = core::kNoFile;
   const std::lock_guard lock(mutex_);
@@ -99,7 +113,7 @@ StorageStatus FolderStorage::Open(std::string_view path, core::OpenMode mode, co
   while (place < open_.size() && open_[place].descriptor >= 0) {
     ++place;
   }
-  if (place == open_.size()) {
+  if (place == open_.size() || OpenCount() >= kMaxOpen) {
     return StorageStatus::kTooManyOpen;
   }
   if (mode == core::OpenMode::kCreate && IsOpen(path)) {
@@ -300,6 +314,86 @@ StorageStatus FolderStorage::MakeDirectory(std::string_view path) noexcept {
     return StorageStatus::kExists;
   }
   return ::mkdir(hostPath.c_str(), 0755) == 0 ? StorageStatus::kOk : FromErrno(errno);
+}
+
+StorageStatus FolderStorage::OpenDirectory(std::string_view path, core::DirectoryHandle& directory) noexcept {
+  directory = core::kNoDirectory;
+  const std::lock_guard lock(mutex_);
+  std::string hostPath;
+  if (const StorageStatus status = Locate(path, hostPath); status != StorageStatus::kOk) {
+    return status;
+  }
+  std::size_t place = 0;
+  while (place < listed_.size() && listed_[place] != nullptr) {
+    ++place;
+  }
+  if (place == listed_.size() || OpenCount() >= kMaxOpen) {
+    return StorageStatus::kTooManyOpen;
+  }
+  DIR* stream = ::opendir(hostPath.c_str());
+  if (stream == nullptr) {
+    return FromErrno(errno);  // Among them: it is a file.
+  }
+  listed_[place] = stream;
+  directory = static_cast<core::DirectoryHandle>(place);
+  return StorageStatus::kOk;
+}
+
+StorageStatus FolderStorage::NextInDirectory(core::DirectoryHandle directory, std::span<char> name, std::size_t& length,
+                                             core::FileInfo& info) noexcept {
+  length = 0;
+  DIR* stream = nullptr;
+  {
+    const std::lock_guard lock(mutex_);
+    if (directory >= 0 && static_cast<std::size_t>(directory) < listed_.size()) {
+      stream = listed_[static_cast<std::size_t>(directory)];
+    }
+  }
+  if (stream == nullptr) {
+    return StorageStatus::kFailed;
+  }
+  // The listing is its one user's from here, like an open file.
+  const int descriptor = ::dirfd(stream);
+  if (descriptor < 0) {
+    return StorageStatus::kFailed;
+  }
+  for (;;) {
+    errno = 0;
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): safe where each stream has one user, which this one has.
+    const struct dirent* item = ::readdir(stream);
+    if (item == nullptr) {
+      return errno == 0 ? StorageStatus::kOk : StorageStatus::kFailed;
+    }
+    // This drops "." and "..", with everything else a card could not hold.
+    const std::string_view itemName(static_cast<const char*>(item->d_name));
+    if (itemName.size() > name.size() || !core::IsStorageName(itemName)) {
+      continue;
+    }
+    struct stat found = {};
+    if (::fstatat(descriptor, static_cast<const char*>(item->d_name), &found, 0) != 0) {
+      continue;  // Gone since, or a link to nothing.
+    }
+    if (S_ISDIR(found.st_mode)) {
+      info = {.size = 0, .isDirectory = true};
+    } else if (S_ISREG(found.st_mode) &&
+               found.st_size <= static_cast<off_t>(std::numeric_limits<std::uint32_t>::max())) {
+      info = {.size = static_cast<std::uint32_t>(found.st_size), .isDirectory = false};
+    } else {
+      continue;  // Nothing Open() would open.
+    }
+    std::memcpy(name.data(), itemName.data(), itemName.size());
+    length = itemName.size();
+    return StorageStatus::kOk;
+  }
+}
+
+void FolderStorage::CloseDirectory(core::DirectoryHandle directory) noexcept {
+  const std::lock_guard lock(mutex_);
+  if (directory >= 0 && static_cast<std::size_t>(directory) < listed_.size() &&
+      listed_[static_cast<std::size_t>(directory)] != nullptr) {
+    ::closedir(listed_[static_cast<std::size_t>(directory)]);
+    listed_[static_cast<std::size_t>(directory)] = nullptr;
+  }
 }
 
 }  // namespace bn::hw

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -18,8 +19,10 @@
 
 namespace {
 
+using bn::core::DirectoryHandle;
 using bn::core::FileHandle;
 using bn::core::FileInfo;
+using bn::core::kNoDirectory;
 using bn::core::kNoFile;
 using bn::core::OpenMode;
 using bn::core::StorageStatus;
@@ -209,6 +212,136 @@ TEST(FolderStorage, SaysWhatIsAtAPath) {
   EXPECT_EQ(info.size, 0u);
   EXPECT_EQ(fixture.storage->Stat("/nothing", info), StorageStatus::kNotFound);
   EXPECT_EQ(fixture.storage->Stat("/book.epub/inside", info), StorageStatus::kNotFound);
+}
+
+// Everything a listing of `path` gives, as "name" for a directory and
+// "name=size" for a file, in the order of the names.
+std::vector<std::string> Listed(FolderStorage& storage, const std::string& path, std::size_t room = 255) {
+  std::vector<std::string> found;
+  DirectoryHandle directory = kNoDirectory;
+  EXPECT_EQ(storage.OpenDirectory(path, directory), StorageStatus::kOk) << path;
+  if (directory == kNoDirectory) {
+    return found;
+  }
+  std::vector<char> name(room);
+  for (;;) {
+    std::size_t length = 99;
+    FileInfo info;
+    EXPECT_EQ(storage.NextInDirectory(directory, name, length, info), StorageStatus::kOk);
+    if (length == 0 || length == 99) {
+      break;
+    }
+    const std::string text(name.data(), length);
+    found.push_back(info.isDirectory ? text : text + "=" + std::to_string(info.size));
+  }
+  storage.CloseDirectory(directory);
+  std::sort(found.begin(), found.end());
+  return found;
+}
+
+TEST(FolderStorage, ListsWhatIsInADirectory) {
+  FolderFixture fixture;
+  EXPECT_EQ(Listed(*fixture.storage, "/"), std::vector<std::string>{}) << "an empty card";
+
+  fixture.Put("book.epub", std::string(1234, 'x'));
+  fixture.Put("empty", "");
+  fixture.Put(".hidden", "h");
+  ASSERT_EQ(fixture.storage->MakeDirectory("/books"), StorageStatus::kOk);
+  ASSERT_EQ(fixture.storage->MakeDirectory("/books/more"), StorageStatus::kOk);
+  fixture.Put("books/War and Peace (vol. 1).epub", "peace");
+  fixture.Put("books/caf\xC3\xA9.epub", "ab");
+
+  EXPECT_EQ(Listed(*fixture.storage, "/"),
+            (std::vector<std::string>{".hidden=1", "book.epub=1234", "books", "empty=0"}));
+  EXPECT_EQ(Listed(*fixture.storage, "/books"),
+            (std::vector<std::string>{"War and Peace (vol. 1).epub=5", "caf\xC3\xA9.epub=2", "more"}));
+  EXPECT_EQ(Listed(*fixture.storage, "/books/more"), std::vector<std::string>{});
+
+  // Every name it gives is one that opens.
+  FileInfo info;
+  for (const std::string& item : Listed(*fixture.storage, "/books")) {
+    const std::string name = item.substr(0, item.find('='));
+    EXPECT_EQ(fixture.storage->Stat("/books/" + name, info), StorageStatus::kOk) << name;
+  }
+}
+
+TEST(FolderStorage, ListsOnlyDirectoriesThatAreThere) {
+  FolderFixture fixture;
+  fixture.Put("a", "x");
+  DirectoryHandle directory = 7;
+  EXPECT_EQ(fixture.storage->OpenDirectory("/nothing", directory), StorageStatus::kNotFound);
+  EXPECT_EQ(directory, kNoDirectory);
+  EXPECT_EQ(fixture.storage->OpenDirectory("/a", directory), StorageStatus::kNotFound) << "a file is not a directory";
+  EXPECT_EQ(fixture.storage->OpenDirectory("/a/b", directory), StorageStatus::kNotFound);
+  EXPECT_EQ(fixture.storage->OpenDirectory("books", directory), StorageStatus::kBadPath);
+  EXPECT_EQ(fixture.storage->OpenDirectory("/..", directory), StorageStatus::kBadPath);
+
+  // Nothing comes of a handle that is not a listing's, and closing one does no harm.
+  std::array<char, 255> name{};
+  std::size_t length = 99;
+  FileInfo info;
+  EXPECT_EQ(fixture.storage->NextInDirectory(kNoDirectory, name, length, info), StorageStatus::kFailed);
+  EXPECT_EQ(length, 0u);
+  EXPECT_EQ(fixture.storage->NextInDirectory(0, name, length, info), StorageStatus::kFailed);
+  fixture.storage->CloseDirectory(kNoDirectory);
+  fixture.storage->CloseDirectory(0);
+  fixture.storage->CloseDirectory(99);
+
+  FolderStorage absent("");
+  EXPECT_EQ(absent.OpenDirectory("/", directory), StorageStatus::kAbsent);
+}
+
+TEST(FolderStorage, LeavesOutOfAListingWhatACardCouldNotHoldOrTheCallerHasNoRoomFor) {
+  FolderFixture fixture;
+  fixture.Put("good", "x");
+  fixture.Put("a:b", "x");
+  fixture.Put("ends with a dot.", "x");
+  fixture.Put("tab\there", "x");
+  fixture.Put("a name of thirty bytes exactly", "x");
+  std::filesystem::create_symlink(fixture.folder / "no such file", fixture.folder / "dangling");
+  std::filesystem::create_symlink(fixture.folder / "good", fixture.folder / "link");
+
+  EXPECT_EQ(Listed(*fixture.storage, "/"),
+            (std::vector<std::string>{"a name of thirty bytes exactly=1", "good=1", "link=1"}));
+  // With room for 29 bytes, the name of 30 is passed over and the rest still come.
+  EXPECT_EQ(Listed(*fixture.storage, "/", 29), (std::vector<std::string>{"good=1", "link=1"}));
+  EXPECT_EQ(Listed(*fixture.storage, "/", 30).size(), 3u);
+}
+
+TEST(FolderStorage, OnlyAFewDirectoriesCanBeListedAtOnceAndTheyCountAsOpenFiles) {
+  FolderFixture fixture;
+  fixture.Put("a", "x");
+  ASSERT_EQ(fixture.storage->MakeDirectory("/d"), StorageStatus::kOk);
+
+  std::array<DirectoryHandle, FolderStorage::kMaxListed> listings{};
+  for (DirectoryHandle& listing : listings) {
+    ASSERT_EQ(fixture.storage->OpenDirectory("/d", listing), StorageStatus::kOk);
+  }
+  DirectoryHandle extra = kNoDirectory;
+  EXPECT_EQ(fixture.storage->OpenDirectory("/", extra), StorageStatus::kTooManyOpen);
+  EXPECT_EQ(extra, kNoDirectory);
+
+  // Two listings leave room for two files, not four.
+  ASSERT_EQ(FolderStorage::kMaxOpen, 4u);
+  const FileHandle first = fixture.MustOpen("/a", OpenMode::kRead);
+  const FileHandle second = fixture.MustOpen("/a", OpenMode::kRead);
+  FileHandle third = kNoFile;
+  EXPECT_EQ(fixture.storage->Open("/a", OpenMode::kRead, third), StorageStatus::kTooManyOpen);
+  fixture.storage->CloseDirectory(listings[0]);
+  EXPECT_EQ(fixture.storage->Open("/a", OpenMode::kRead, third), StorageStatus::kOk);
+
+  // And four things open leave no room for a listing, though a place for one is free.
+  EXPECT_EQ(fixture.storage->OpenDirectory("/", extra), StorageStatus::kTooManyOpen);
+  fixture.storage->Close(first);
+  EXPECT_EQ(fixture.storage->OpenDirectory("/", extra), StorageStatus::kOk);
+  EXPECT_EQ(extra, listings[0]) << "the freed place is used again";
+  fixture.storage->Close(second);
+  fixture.storage->Close(third);
+
+  // A listing that is under way is not disturbed by another of the same directory.
+  fixture.storage->CloseDirectory(extra);
+  fixture.storage->CloseDirectory(listings[1]);
+  EXPECT_EQ(Listed(*fixture.storage, "/"), (std::vector<std::string>{"a=1", "d"}));
 }
 
 TEST(FolderStorage, RemovesFilesAndEmptyDirectories) {

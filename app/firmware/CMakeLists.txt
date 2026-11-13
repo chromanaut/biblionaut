@@ -38,6 +38,16 @@ option(BN_PLANE_CHECK "Read the panel's planes back and check them whenever it c
 # the Power button. It can be combined with BN_PLANE_CHECK.
 option(BN_STORAGE_CHECK "Put the SD card through its paces at start and at each press of Power" OFF)
 
+# For checking, on a device, that books can be read off the card and how
+# fast (reader/book_check.h says what is done):
+#
+#   tools/idf -DBN_BOOK_CHECK=ON build flash    (back to normal: -DBN_BOOK_CHECK=OFF)
+#
+# Such a firmware reads every EPUB in /books from end to end at start, and
+# again at each press of the Power button. It writes nothing to the card.
+# Not together with BN_STORAGE_CHECK.
+option(BN_BOOK_CHECK "Read every book on the SD card at start and at each press of Power" OFF)
+
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
 set(COMPONENTS main)

@@ -130,6 +130,16 @@ class OneFile final : public bn::core::Storage {
   [[nodiscard]] StorageStatus MakeDirectory(std::string_view /*path*/) noexcept override {
     return StorageStatus::kFailed;
   }
+  // There is nothing here to list.
+  [[nodiscard]] StorageStatus OpenDirectory(std::string_view /*path*/,
+                                            bn::core::DirectoryHandle& /*directory*/) noexcept override {
+    return StorageStatus::kFailed;
+  }
+  [[nodiscard]] StorageStatus NextInDirectory(bn::core::DirectoryHandle /*directory*/, std::span<char> /*name*/,
+                                              std::size_t& /*length*/, bn::core::FileInfo& /*info*/) noexcept override {
+    return StorageStatus::kFailed;
+  }
+  void CloseDirectory(bn::core::DirectoryHandle /*directory*/) noexcept override {}
 
  private:
   std::string path_;

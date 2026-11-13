@@ -169,11 +169,11 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(e2e.XmlTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
-  # against bn-zip, bn-xml and zipfile on the same files.
+  # against bn-zip, bn-xml, bn-epub and zipfile on the same files.
   add_test(
     NAME e2e.BookCheck
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/book_check.py
       $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-trace> $<TARGET_FILE:bn-zip> $<TARGET_FILE:bn-xml>
-      ${CMAKE_CURRENT_BINARY_DIR}/book_check)
+      $<TARGET_FILE:bn-epub> ${CMAKE_CURRENT_BINARY_DIR}/book_check)
   set_tests_properties(e2e.BookCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

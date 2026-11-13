@@ -165,6 +165,9 @@ class Package {
 
   void Clear() noexcept;
   PackageStatus Fail(PackageStatus status) noexcept;
+  // What Read() does, without the record of it in the trace.
+  PackageStatus ReadParts(ZipArchive& archive, core::BlockFile& entries, ZipEntryReader& reader,
+                          XmlParser& xml) noexcept;
   // Adds a file to the manifest, or a document to the spine. False if
   // there is no room.
   bool AddItem(std::uint64_t idHash, std::uint64_t pathHash, MediaType type, std::uint8_t flags) noexcept;

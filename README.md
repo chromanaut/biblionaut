@@ -374,31 +374,40 @@ correctly and how fast. It writes nothing to the card.
 It takes for a book every file whose name ends in `.epub` in `/books` and
 in each folder in `/books`, one level down and no further. If there is no
 `/books`, or no book there, it looks in the top directory and its folders
-instead. For each book it finds the ZIP directory, reads every entry to its
-end, which checks the entry's size and checksum, and looks each entry up by
-name (`reader/book_check.h`). Every entry with an XML file's name (one
-ending in `.xhtml`, `.html`, `.htm`, `.xml`, `.opf` or `.ncx`) is also
-parsed as it is read. It works for about 20 ms a turn, so the panel and the
-buttons carry on around it, and a run takes longer by the clock than the
-times it reports.
+instead (`reader/book_check.h`). With each book it does two things. First
+it opens the book as a reader would: finds the ZIP directory and reads the
+book's package, which says what the book is called and where its documents
+are (see "What a book says of itself" below), all in one go. Then it
+closes the book, opens it afresh, reads every entry to its end, which
+checks the entry's size and checksum, and looks each entry up by name.
+Every entry with an XML file's name (one ending in `.xhtml`, `.html`,
+`.htm`, `.xml`, `.opf` or `.ncx`) is also parsed as it is read. But for the
+package, it works for about 20 ms a turn, so the panel and the buttons
+carry on around it, and a run takes longer by the clock than the times it
+reports.
 
-What it finds goes out as log text: a line when a book is begun, three when
-it ends, and four at the end for all of them.
+What it finds goes out as log text: a line when a book is begun, three for
+its package, three when it ends, and five at the end for all of them.
 
 ```
-book check: the checksum alone, 262144 bytes in 1470 us (174149 KB/s).
+book check: the checksum alone, 262144 bytes in 1354 us (189069 KB/s).
 book 1: 1498334 bytes, /books/A Series/1 The First Book.epub
-book 1: ok. 122 entries, 3022700 bytes out of 1477560. Directory found in 1 read, 1 ms.
-book 1: card 2 ms for 372 reads of 1521306 bytes (645093 KB/s); inflating 39 ms: 1477540 bytes in (36377 KB/s), 3022680 out (74419 KB/s); all 64 ms.
-book 1: XML: 109 documents, 2042449 bytes, 78209 events, checksum 10acf92b; parsing 22 ms (89732 KB/s); most memory 10928.
+book 1: package: title "The First Book", author "A. Writer", language "eng".
+book 1: package: 119 files, 105 documents, cover jpeg, nav, ncx; memory 4844; checksum 3ee7ef89.
+book 1: package: 1 ms: card 0 ms for 9 reads of 35260 bytes.
+book 1: ok. 122 entries, 3022700 bytes out of 1477560. Directory found in 1 read, 0 ms.
+book 1: card 1 ms for 372 reads of 1521306 bytes (1394976 KB/s); inflating 35 ms: 1477540 bytes in (40440 KB/s), 3022680 out (82730 KB/s); all 56 ms.
+book 1: XML: 109 documents, 2042449 bytes, 78209 events, checksum 10acf92b; parsing 19 ms (102244 KB/s); most memory 10928.
 ...
 book check: passed. 31 books, 4310 entries, 181650944 bytes out of 85181353.
-book check: card 82 ms for 21188 reads of 86632380 bytes (1025241 KB/s); inflating 2145 ms: 75728235 bytes in (34467 KB/s), 172197826 out (78375 KB/s); all 2939 ms.
-book check: XML: 2587 documents, 66166529 bytes, 1823978 events; parsing 653 ms (98895 KB/s); 66286144 bytes of events checksummed.
+book check: card 45 ms for 21188 reads of 86632380 bytes (1867015 KB/s); inflating 1829 ms: 75728235 bytes in (40421 KB/s), 172197826 out (91913 KB/s); all 2467 ms.
+book check: XML: 2587 documents, 66166529 bytes, 1823978 events; parsing 543 ms (118946 KB/s); 66286144 bytes of events checksummed.
 book check: XML memory: the most a document used 11648 bytes; documents over 8 KB: 2587, over 12 KB: 0, over 16 KB: 0.
+book check: packages: 31 read; 33 ms: card 22 ms for 368 reads of 1380309 bytes; the longest 1 ms; the most memory 10628.
 ```
 
-(Those figures are a desktop's.) There are four times. `card` is the time
+(Those figures are a desktop's, and the book's names are made up.) There
+are four times. `card` is the time
 spent inside storage. `inflating` is the time spent reading out the
 compressed entries with storage's share taken off, which is the processor
 inflating and checksumming, beside what went into the inflater and what
@@ -415,18 +424,37 @@ wanted more than the 32 KB the parser is given (`Refused for memory: 1.`),
 but neither makes the book a failure: the file is read out and checked all
 the same.
 
+The package's three lines stand apart from the rest. The first has what
+the book calls itself, each name cut short with `...` if it is long. The
+second has how many files its manifest lists and how many documents its
+spine, whether it has a cover and each kind of table of contents, how much
+of the 24 KB the package reader is given it used, and a checksum of
+everything the package was found to hold (`epub/package_digest.h`);
+then, if there are any, how many documents are not in the book or not in
+the manifest, and whether the package file was cut short. The third has
+what it cost to open the book and read that: the time, the card's share of
+it, and the reads, finding the ZIP directory included. None of that is in
+the book's other figures. A book whose package cannot be read has one line
+that says why (`package: NOT READ: no container.`), and that does not make
+the book a failure either.
+
 `bn-zip check` reads a file the same way, read for read. So the same book
 on the desktop should come to the same entries, the same bytes and the same
 reads (`sd_reads` and `sd_read_bytes`, in the last line `bn-zip check`
 prints) as it does on the device. `bn-xml book` parses the same documents,
 and its last line has the count and the checksum of everything found in
-them, which should be the book's on the device too.
+them, which should be the book's on the device too. `bn-epub info` opens
+the book and reads its package the same way, and prints the checksum, the
+memory and the reads that the package's lines should have.
 
 The outcome is also in the metrics (`book_check=1` if every book was sound,
 `book_check_books`, `inflate_kb_per_s`, `checksum_kb_per_s`,
 `xml_kb_per_s`, and `xml_memory` for the most the parser has used) and in
 the trace (`reader/book_check`, and `reader/book_check_book` for each
-book), where every read of the card is too (`hw/sd_read`).
+book), where every read of the card is too (`hw/sd_read`), and the reading
+of each package with its four parts (`epub/package_read`, and
+`epub/package_container`, `package_file`, `package_resolve` and
+`package_find_files`).
 
 ```
 tools/idf -DBN_BOOK_CHECK=ON build flash
@@ -457,9 +485,10 @@ chapters. The parsing is done by [expat](https://libexpat.github.io);
   several kilobytes long, since a whole tag has to be held at once, or
   with elements nested hundreds deep. Text can be any length. On an X4, no
   document in 30 books (1,392 documents) used more than 9.1 KB.
-- **Speed**: on an X4, over the same documents, it took in about 830 KB a
-  second with every event counted and checksummed: from 530 for chapters
-  thick with markup to 1,060 for plain prose.
+- **Speed**: on an X4, over the same documents, it took in 830 to 910 KB a
+  second with every event counted and checksummed, in two runs of two
+  builds of the firmware: from 530 to 650 for chapters thick with markup,
+  and 1,060 to 1,090 for plain prose.
 - **Bad input**: the document is not trusted. Whatever bytes it holds,
   parsing ends with an answer, and one that is not XML is refused with
   expat's error number and the line it is on. What was found before the
@@ -550,6 +579,11 @@ How it does that:
   general heap. A book that needs more than the block is refused
   (`kNoMemory`). The parser's memory is the caller's as well
   (`XmlParser`).
+- **Speed**: on an X4, opening a book and reading its package took 24 to
+  135 ms for each of 30 books, 80 ms at the median; the largest lists 199
+  files. A little over half of that is the card, at 4 ms a read, and most
+  of the rest is parsing the package file. Matching the names is 8 ms at
+  the most. None of those books used more than 5.2 KB of the block.
 - **Two names with one number.** Nothing checks a name against the text
   it came from, so two different names in one book that came to the same
   number would be taken for each other. With 48 bits, that is one book in
@@ -594,21 +628,24 @@ spine: 4
 + xhtml deep/er/one.xhtml
 - xhtml deep/er/cover.xhtml
 unknown: 2
+checksum: cd21187e
 memory: 248
 cost: packages_read=1 packages_failed=0 xml_documents=2 xml_failures=0 zip_finds=2 zip_records=16 sd_reads=2 sd_read_bytes=2504 sd_writes=0 sd_write_bytes=0 sd_syncs=0 sd_seeks=0 xml_memory=9536[8752..9536]
 ```
 
-A `-` for the author, the cover or any of the first lines means the book
-has none. Each line of the spine is `+` for a document in the run of the
-text or `-` for one set aside, then its kind, then the name of its entry
-in the ZIP file, or `?` where the ZIP file has no such file. `unknown` (printed only
-when there are any) counts the documents the spine named that the
-manifest has not got. `memory` is how many bytes of the block were used,
-and `cost` is the counters after the reading: here two lookups by name
-(the container and the package file), 16 records of the directory, and two
-reads of the file. `--memory` holds it to a block of that many bytes, as a
-device would; it exits with 1, and says why, for a file it cannot read as
-a book.
+A `-` for the author, the cover or any of the first lines means the book has
+none. Each line of the spine is `+` for a document in the run of the text or
+`-` for one set aside, then its kind, then the name of its entry in the ZIP
+file, or `?` where the ZIP file has no such file. `unknown` (printed only
+when there are any) counts the documents the spine named that the manifest
+has not got. `checksum` is of everything above it (`epub/package_digest.h`),
+with each file given by where its entry is and not by its name: it is what a
+device's book check reports for the same book, so the two can be compared.
+`memory` is how many bytes of the block were used, and `cost` is the
+counters after the reading: here two lookups by name (the container and the
+package file), 16 records of the directory, and two reads of the file.
+`--memory` holds it to a block of that many bytes, as a device would; it
+exits with 1, and says why, for a file it cannot read as a book.
 
 The unit tests say what should be made of books written for them, in
 either version of EPUB and with their files in any order in the ZIP file,

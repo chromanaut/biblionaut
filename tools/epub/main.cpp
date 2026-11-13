@@ -17,6 +17,7 @@
 #include "core/metrics.h"
 #include "core/storage.h"
 #include "epub/package.h"
+#include "epub/package_digest.h"
 #include "epub/xml.h"
 #include "epub/zip.h"
 #include "support/one_file.h"
@@ -48,6 +49,8 @@ void PrintUsage(const char* program) {
                "                            for each in reading order: + for one in the main\n"
                "                            run of the book and - for one set aside, the kind\n"
                "                            of file, and its path (? if it is not in the book)\n"
+               "  checksum                  of all of the above (epub/package_digest.h): what\n"
+               "                            a device's book check reports for the same book\n"
                "  memory                    the most of its memory the reader used, in bytes\n"
                "  cost                      what it asked of the file\n"
                "\n"
@@ -145,6 +148,7 @@ int Info(const std::string& path, std::size_t memoryBytes) {
   if (package.CutShort()) {
     std::printf("cut short: the package file stopped being XML after its spine\n");
   }
+  std::printf("checksum: %08x\n", static_cast<unsigned>(bn::epub::PackageChecksum(package)));
   std::printf("memory: %zu\n", package.MemoryUsed());
   std::printf("cost: %s\n", cost.data());
   return 0;

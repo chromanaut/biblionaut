@@ -11,6 +11,7 @@
 #include "core/inflate.h"
 #include "core/storage.h"
 #include "core/trace_stream.h"
+#include "epub/package.h"
 #include "epub/xml.h"
 #include "epub/xml_digest.h"
 #include "epub/zip.h"
@@ -19,37 +20,46 @@
 namespace bn::reader {
 
 // Reads every book on the card from end to end, to find out on a device
-// whether the ZIP reader and the inflater work there and how fast they are.
-// It writes nothing to the card.
+// whether the ZIP reader, the inflater, the XML parser and the package
+// reader work there and how fast they are. It writes nothing to the card.
 //
 //   1. times the checksum by itself, over 256 KB held in memory;
 //   2. lists /books and each folder in it, one level down and no
 //      further; or the top directory and its folders, if there is no
 //      /books or no book there;
-//   3. takes each file found whose name ends in ".epub" for a book: finds
-//      its directory, reads every entry to its end, which checks the
+//   3. takes each file found whose name ends in ".epub" for a book, and
+//      first opens it as a reader would: finds its directory and reads
+//      its package (epub/package.h), which says what the book is called
+//      and where its documents are. Then closes it again;
+//   4. opens it afresh, reads every entry to its end, which checks the
 //      entry's size and checksum, and looks each entry up by its name;
-//   4. parses every entry with an XML file's name as it is read, counting
+//   5. parses every entry with an XML file's name as it is read, counting
 //      what the parser finds and taking a checksum of it;
-//   5. says what each book came to, and all of them together, in lines of
+//   6. says what each book came to, and all of them together, in lines of
 //      text on the diagnostic stream.
 //
-// Step 3 is what `bn-zip check` does to a file on the desktop, read for
-// read, and step 4 what `bn-xml book` does, so that the two can be
-// compared: a book should come to the same entries, the same bytes and the
-// same number of reads on both, and its XML to the same events.
+// Step 3 is what `bn-epub info` does to a file on the desktop, step 4 what
+// `bn-zip check` does, read for read, and step 5 what `bn-xml book` does,
+// so that each can be compared: a book should come to the same package
+// (by its checksum, epub/package_digest.h) in the same number of reads,
+// the same entries, the same bytes and the same number of reads again,
+// and its XML to the same events.
 //
 // Time is counted four ways: inside storage, which on a device is the
 // card; reading out compressed entries with storage's share taken off,
 // which is the processor inflating and checksumming; parsing XML, with the
-// reading and inflating of it taken off; and all of it.
+// reading and inflating of it taken off; and all of it. Reading the
+// package is counted by itself, in time and in reads, and is in none of
+// those. It is done in one go, however long it takes, as it would be for
+// a reader.
 //
-// It works for about 20 ms each Tick() and then lets the application carry
-// on, so a run takes longer by the clock than the times it reports, which
-// count its own work only.
+// Otherwise it works for about 20 ms each Tick() and then lets the
+// application carry on, so a run takes longer by the clock than the times
+// it reports, which count its own work only.
 //
-// Used by one task. It is about 81 KB, most of that the inflater's window
-// and the XML parser's memory: too big for a stack.
+// Used by one task. It is about 108 KB, most of that the inflater's
+// window, the XML parser's memory and the package reader's: too big for a
+// stack.
 class BookCheck final : public DeviceCheck {
  public:
   enum class State : std::uint8_t {
@@ -90,6 +100,17 @@ class BookCheck final : public DeviceCheck {
     std::uint32_t xmlOver8K = 0;
     std::uint32_t xmlOver12K = 0;
     std::uint32_t xmlOver16K = 0;
+
+    // Opening the book and reading its package. None of this is in the
+    // figures above.
+    std::uint32_t packagesRead = 0;
+    std::uint32_t packagesNotRead = 0;    // The file could be opened, and its package could not be read.
+    std::uint32_t packageReads = 0;       // Reads of storage, finding the directory included,
+    std::uint64_t packageReadBytes = 0;   // and what they brought.
+    std::uint64_t packageStorageUs = 0;   // Time spent inside storage,
+    std::uint64_t packageUs = 0;          // and all the time it took.
+    std::uint64_t packageLongestUs = 0;   // The longest one book took,
+    std::uint32_t packageMostMemory = 0;  // and the most of the reader's memory one used.
   };
 
   // How much of an entry is read out at a time.
@@ -101,6 +122,9 @@ class BookCheck final : public DeviceCheck {
   // The memory the XML parser is given: more than any document should
   // want, so that what a document uses is what it wants.
   static constexpr std::size_t kXmlMemoryBytes = 32768;
+  // The memory the package reader is given for a book's files and
+  // documents: 16 bytes a file and 28 a document.
+  static constexpr std::size_t kPackageMemoryBytes = 24576;
 
   BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream) noexcept;
 
@@ -126,6 +150,9 @@ class BookCheck final : public DeviceCheck {
   // The checksum of everything the parser found in the XML of the book
   // last finished, its documents taken one after another.
   std::uint32_t XmlChecksum() const noexcept { return xmlChecksum_; }
+  // The checksum of what the package of the book last begun was found to
+  // hold (epub/package_digest.h); 0 if it could not be read.
+  std::uint32_t PackageChecksum() const noexcept { return packageChecksum_; }
 
  private:
   // Storage that passes everything on to another, counting the reads and
@@ -200,6 +227,7 @@ class BookCheck final : public DeviceCheck {
     kOpenDirectory,
     kOpenFolder,
     kNextBook,
+    kReadPackage,
     kOpenBook,
     kNextEntry,
     kParseEntry,
@@ -213,6 +241,7 @@ class BookCheck final : public DeviceCheck {
   void OpenDirectory() noexcept;
   void OpenFolder() noexcept;
   void NextBook() noexcept;
+  void ReadPackage() noexcept;
   void OpenBook() noexcept;
   void NextEntry() noexcept;
   void ParseEntry() noexcept;
@@ -303,6 +332,11 @@ class BookCheck final : public DeviceCheck {
   Feeder feeder_;
   epub::XmlEventDigest digest_;
   std::uint32_t xmlChecksum_ = 0;
+
+  // For the package: the reader with its memory.
+  alignas(8) std::array<std::uint8_t, kPackageMemoryBytes> packageMemory_{};
+  epub::Package package_;
+  std::uint32_t packageChecksum_ = 0;
 };
 
 }  // namespace bn::reader

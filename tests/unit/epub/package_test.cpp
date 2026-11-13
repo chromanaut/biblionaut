@@ -2,9 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -13,9 +15,13 @@
 #include <vector>
 
 #include "core/block_file.h"
+#include "core/checksum.h"
 #include "core/inflate.h"
 #include "core/metrics.h"
+#include "epub/package_digest.h"
+#include "epub/trace_ids.h"
 #include "storage_fakes.h"
+#include "trace_fakes.h"
 #include "zip_builder.h"
 
 namespace {
@@ -946,6 +952,136 @@ TEST(Package, CountsThePackagesItReads) {
   EXPECT_EQ(f.Read({{"mimetype", "x"}}), PackageStatus::kNoContainer);
   EXPECT_EQ(CounterNow("packages_read") - read, 2u);
   EXPECT_EQ(CounterNow("packages_failed") - failed, 1u);
+}
+
+// An entry as the checksum's lines give it, from what the ZIP file's
+// directory says of the file of that name.
+std::string EntryLine(PackageFixture& f, const std::string& name) {
+  bn::epub::ZipEntry found;
+  EXPECT_EQ(f.archive.Find(name, found), bn::epub::ZipStatus::kOk) << name;
+  std::array<char, 16> crc{};
+  std::snprintf(crc.data(), crc.size(), "%08x", static_cast<unsigned>(found.crc32));
+  return std::to_string(found.headerOffset) + " " + std::to_string(found.size) + " " + crc.data();
+}
+
+std::uint32_t ChecksumOf(const std::string& lines) { return bn::core::Crc32(BytesOf(lines)); }
+
+TEST(PackageChecksum, IsOfTheLinesThatSayWhatThePackageHolds) {
+  PackageFixture f;
+  ASSERT_EQ(f.Read(Epub2Book()), PackageStatus::kOk);
+  const std::string lines =
+      "title: The Book\nauthor: A. Writer\nlanguage: en\npackage: OEBPS/content.opf\n"
+      "manifest: 7\ncover: jpeg " +
+      EntryLine(f, "OEBPS/images/cover.jpg") + "\nnav: -\nncx: " + EntryLine(f, "OEBPS/toc.ncx") +
+      "\nspine: 4\n+ xhtml " + EntryLine(f, "OEBPS/text/cover.xhtml") + "\n+ xhtml " +
+      EntryLine(f, "OEBPS/text/chapter1.xhtml") + "\n+ xhtml " + EntryLine(f, "OEBPS/text/chapter2.xhtml") +
+      "\n- xhtml " + EntryLine(f, "OEBPS/text/notes.xhtml") + "\nunknown: 0\ncut short: 0\n";
+  EXPECT_EQ(bn::epub::PackageChecksum(*f.package), ChecksumOf(lines)) << lines;
+  // The numbers are written as numbers are: one with every digit, and a
+  // checksum with noughts at its front.
+  EXPECT_NE(lines.find(" 20 "), std::string::npos) << "the cover picture is 20 bytes long: " << lines;
+}
+
+TEST(PackageChecksum, HasEveryPartOfABookWithLittleInIt) {
+  // No title, author or language, no cover, an EPUB 3 table of contents, a
+  // document that is not in the book, two the manifest has not got, and a
+  // package file that goes wrong after its spine.
+  const std::string opf =
+      "<package><metadata/><manifest>"
+      "<item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>"
+      "<item id=\"gone\" href=\"gone.xhtml\" media-type=\"text/css\"/>"
+      "<item id=\"n\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>"
+      "</manifest><spine><itemref idref=\"x\"/><itemref idref=\"gone\" linear=\"no\"/><itemref idref=\"a\"/>"
+      "<itemref idref=\"y\"/></spine><oops>";
+  PackageFixture f;
+  ASSERT_EQ(f.Read({{"META-INF/container.xml", Container("p.opf")},
+                    {"p.opf", opf},
+                    {"a.xhtml", std::string(123'456, 'a')},
+                    {"nav.xhtml", "n"}}),
+            PackageStatus::kOk);
+  const std::string lines =
+      "title: -\nauthor: -\nlanguage: -\npackage: p.opf\nmanifest: 3\ncover: -\nnav: " + EntryLine(f, "nav.xhtml") +
+      "\nncx: -\nspine: 2\n- css ?\n+ xhtml " + EntryLine(f, "a.xhtml") + "\nunknown: 2\ncut short: 1\n";
+  EXPECT_EQ(bn::epub::PackageChecksum(*f.package), ChecksumOf(lines)) << lines;
+  EXPECT_NE(lines.find(" 123456 "), std::string::npos) << lines;
+}
+
+TEST(PackageChecksum, ChangesWithAnythingThePackageHolds) {
+  const std::string item =
+      "<item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>"
+      "<item id=\"b\" href=\"b.xhtml\" media-type=\"application/xhtml+xml\"/>";
+  const auto checksumOf = [](const std::string& opf, const std::string& chapter = "a") {
+    PackageFixture f;
+    EXPECT_EQ(f.Read({{"META-INF/container.xml", Container("content.opf")},
+                      {"content.opf", opf},
+                      {"a.xhtml", chapter},
+                      {"b.xhtml", "b"}}),
+              PackageStatus::kOk);
+    return bn::epub::PackageChecksum(*f.package);
+  };
+  const std::string spine = "<itemref idref=\"a\"/><itemref idref=\"b\"/>";
+  const std::uint32_t book = checksumOf(Opf(kMetadata, item, spine));
+  EXPECT_EQ(checksumOf(Opf(kMetadata, item, spine)), book) << "the same book twice";
+  const std::vector<std::string> others = {
+      Opf("<dc:title>The Boot</dc:title><dc:creator>A. Writer</dc:creator><dc:language>en</dc:language>", item, spine),
+      Opf("<dc:title>The Book</dc:title><dc:creator>B. Writer</dc:creator><dc:language>en</dc:language>", item, spine),
+      Opf("<dc:title>The Book</dc:title><dc:creator>A. Writer</dc:creator><dc:language>fr</dc:language>", item, spine),
+      Opf(kMetadata, item + "<item id=\"c\" href=\"c.css\" media-type=\"text/css\"/>", spine),
+      Opf(kMetadata, item, "<itemref idref=\"b\"/><itemref idref=\"a\"/>"),
+      Opf(kMetadata, item, "<itemref idref=\"a\"/><itemref idref=\"b\" linear=\"no\"/>"),
+      Opf(kMetadata, item, spine + "<itemref idref=\"nothing\"/>"),
+      Opf(kMetadata, item, "<itemref idref=\"a\"/>"),
+      Opf(kMetadata, item + "<item id=\"p\" href=\"b.xhtml\" media-type=\"image/png\" properties=\"cover-image\"/>",
+          spine),
+      Opf(kMetadata, item + "<item id=\"n\" href=\"b.xhtml\" media-type=\"text/html\" properties=\"nav\"/>", spine),
+      Opf(kMetadata, item + "<item id=\"ncx\" href=\"b.xhtml\" media-type=\"text/html\"/>", spine),
+      Opf(kMetadata, item, spine) + "<oops>",
+  };
+  std::vector<std::uint32_t> seen = {book};
+  for (const std::string& other : others) {
+    const std::uint32_t checksum = checksumOf(other);
+    EXPECT_EQ(std::count(seen.begin(), seen.end(), checksum), 0) << other;
+    seen.push_back(checksum);
+  }
+  // And with a document's contents, which its entry's checksum is of.
+  EXPECT_NE(checksumOf(Opf(kMetadata, item, spine), "A"), book);
+}
+
+// What the trace holds, in order: each record's id and its number.
+std::vector<std::pair<bn::core::SpanId, std::uint32_t>> Recorded(bn::test::TraceFixture<32>& trace) {
+  std::array<bn::core::TraceRecord, 32> records{};
+  const std::size_t count = trace.tracer.Drain(records);
+  std::vector<std::pair<bn::core::SpanId, std::uint32_t>> out;
+  for (std::size_t i = 0; i < count; ++i) {
+    EXPECT_EQ(records[i].kind, bn::core::TraceKind::kSpan);
+    out.emplace_back(records[i].id, records[i].arg);
+  }
+  return out;
+}
+
+TEST(Package, RecordsItsReadingAndTheFourPartsOfItInTheTrace) {
+  using Records = std::vector<std::pair<bn::core::SpanId, std::uint32_t>>;
+  bn::test::TraceFixture<32> trace;
+  PackageFixture f;
+  ASSERT_EQ(f.Read(Epub2Book()), PackageStatus::kOk);
+  // Each part as it ends, and the whole last: four documents in the spine,
+  // seven files in the manifest, and it ended well.
+  EXPECT_EQ(Recorded(trace), (Records{{bn::epub::kSpanPackageContainer, 0},
+                                      {bn::epub::kSpanPackageFile, 0},
+                                      {bn::epub::kSpanPackageResolve, 4},
+                                      {bn::epub::kSpanPackageFindFiles, 7},
+                                      {bn::epub::kSpanPackageRead, 0}}));
+
+  // One that ends badly says how, and has only the parts it got to.
+  ASSERT_EQ(f.Read({{"META-INF/container.xml", Container("missing.opf")}}), PackageStatus::kNoPackage);
+  EXPECT_EQ(Recorded(trace),
+            (Records{{bn::epub::kSpanPackageContainer, 0},
+                     {bn::epub::kSpanPackageFile, 0},
+                     {bn::epub::kSpanPackageRead, static_cast<std::uint32_t>(PackageStatus::kNoPackage)}}));
+  ASSERT_EQ(f.Read({{"mimetype", "nothing else"}}), PackageStatus::kNoContainer);
+  EXPECT_EQ(Recorded(trace),
+            (Records{{bn::epub::kSpanPackageContainer, 0},
+                     {bn::epub::kSpanPackageRead, static_cast<std::uint32_t>(PackageStatus::kNoContainer)}}));
 }
 
 TEST(MediaType, IsKnownByTheNamesBooksUse) {

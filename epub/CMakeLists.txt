@@ -5,6 +5,7 @@
 add_library(bn_epub STATIC
   src/book_path.cpp
   src/package.cpp
+  src/package_digest.cpp
   src/xml.cpp
   src/xml_digest.cpp
   src/zip.cpp)

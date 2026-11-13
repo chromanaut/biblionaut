@@ -2,6 +2,7 @@
 
 #include <array>
 
+#include "epub/trace_ids.h"
 #include "hw/trace_ids.h"
 #include "reader/trace_ids.h"
 
@@ -22,9 +23,13 @@ constexpr KnownSpan kKnownSpans[] = {
   {core::MakeSpanId(core::TracePart::kHw, (index)), (name), (argument)},
     BN_HW_TRACE_IDS(BN_TOOL_HW_ROW)
 #undef BN_TOOL_HW_ROW
+#define BN_TOOL_EPUB_ROW(index, constant, name, argument) \
+  {core::MakeSpanId(core::TracePart::kEpub, (index)), (name), (argument)},
+        BN_EPUB_TRACE_IDS(BN_TOOL_EPUB_ROW)
+#undef BN_TOOL_EPUB_ROW
 #define BN_TOOL_READER_ROW(index, constant, name, argument) \
   {core::MakeSpanId(core::TracePart::kReader, (index)), (name), (argument)},
-        BN_READER_TRACE_IDS(BN_TOOL_READER_ROW)
+            BN_READER_TRACE_IDS(BN_TOOL_READER_ROW)
 #undef BN_TOOL_READER_ROW
 };
 

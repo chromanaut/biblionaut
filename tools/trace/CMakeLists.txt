@@ -9,10 +9,10 @@ add_library(bn_trace_tool STATIC
   output.cpp)
 # Sources include each other as "trace/<file>.h".
 target_include_directories(bn_trace_tool PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-# bn_reader and bn_hw for their lists of trace ids; each part that gains ids
-# is added here.
+# bn_reader, bn_epub and bn_hw for their lists of trace ids; each part that
+# gains ids is added here.
 target_link_libraries(bn_trace_tool
-  PUBLIC bn_core bn_reader bn_hw
+  PUBLIC bn_core bn_reader bn_epub bn_hw
   PRIVATE bn_options)
 
 add_executable(bn-trace main.cpp)

@@ -89,12 +89,18 @@ target_include_directories(hw_tests PRIVATE ${PROJECT_SOURCE_DIR}/hw)
 bn_add_unit_test(reader_tests
   SOURCES
     unit/reader/app_test.cpp
+    unit/reader/book_check_test.cpp
     unit/reader/pattern_viewer_test.cpp
     unit/reader/storage_check_test.cpp
   LIBS bn_reader)
 # The pattern viewer's tests compare what reaches the panel with the picture
-# from draw, which the reader links but does not pass on.
-target_include_directories(reader_tests PRIVATE $<TARGET_PROPERTY:bn_draw,INTERFACE_INCLUDE_DIRECTORIES>)
+# from draw, which the reader links but does not pass on. The book check's
+# tests are in the same position with the ZIP reader from epub, and make
+# their ZIP files with zlib.
+target_include_directories(reader_tests PRIVATE
+  $<TARGET_PROPERTY:bn_draw,INTERFACE_INCLUDE_DIRECTORIES>
+  $<TARGET_PROPERTY:bn_epub,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(reader_tests PRIVATE ZLIB::ZLIB)
 
 bn_add_unit_test(tools_tests
   SOURCES
@@ -140,4 +146,13 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/zip_tool.py
       $<TARGET_FILE:bn-zip> ${CMAKE_CURRENT_BINARY_DIR}/zip_tool)
   set_tests_properties(e2e.ZipTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # The book check, run by the desktop application over a folder of books,
+  # against bn-zip and zipfile on the same files.
+  add_test(
+    NAME e2e.BookCheck
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/book_check.py
+      $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-trace> $<TARGET_FILE:bn-zip>
+      ${CMAKE_CURRENT_BINARY_DIR}/book_check)
+  set_tests_properties(e2e.BookCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

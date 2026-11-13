@@ -1,5 +1,7 @@
 #pragma once
 
+#include <dirent.h>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -19,14 +21,14 @@ namespace bn::hw {
 //
 // It is made to behave as a card does where that is cheap to do, so that
 // what works here works on a device: the same paths are refused, only as
-// many files can be open at once, a file that is open cannot be removed
-// or renamed, and a rename will not replace a file. Where it cannot be
+// many files can be open and directories listed at once, a file that is
+// open cannot be removed or renamed, and a rename will not replace a file. Where it cannot be
 // the same, it is more forgiving: upper and lower case are different names
 // here unless the computer's file system says otherwise.
 class FolderStorage final : public core::Storage {
  public:
   // As many as a device allows.
-  static constexpr std::size_t kMaxOpenFiles = 4;
+  static constexpr std::size_t kMaxOpenFiles = kMaxOpen;
 
   // `folder` must exist by the time Start() is called; until it does, this
   // is a device with no card in it.
@@ -50,6 +52,11 @@ class FolderStorage final : public core::Storage {
   [[nodiscard]] core::StorageStatus Remove(std::string_view path) noexcept override;
   [[nodiscard]] core::StorageStatus Rename(std::string_view from, std::string_view to) noexcept override;
   [[nodiscard]] core::StorageStatus MakeDirectory(std::string_view path) noexcept override;
+  [[nodiscard]] core::StorageStatus OpenDirectory(std::string_view path,
+                                                  core::DirectoryHandle& directory) noexcept override;
+  [[nodiscard]] core::StorageStatus NextInDirectory(core::DirectoryHandle directory, std::span<char> name,
+                                                    std::size_t& length, core::FileInfo& info) noexcept override;
+  void CloseDirectory(core::DirectoryHandle directory) noexcept override;
 
  private:
   struct OpenFile {
@@ -64,11 +71,15 @@ class FolderStorage final : public core::Storage {
   // The open file `file` names, or null. The lock must be held.
   OpenFile* Find(core::FileHandle file) noexcept;
   bool IsOpen(std::string_view path) const;
+  // How many files are open and directories being listed, together. The
+  // lock must be held.
+  std::size_t OpenCount() const noexcept;
 
   const std::string folder_;
   mutable std::mutex mutex_;  // Guards everything below.
   bool started_ = false;
   std::array<OpenFile, kMaxOpenFiles> open_;
+  std::array<DIR*, kMaxListed> listed_{};  // Null: this place is free.
 };
 
 }  // namespace bn::hw

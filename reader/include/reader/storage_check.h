@@ -7,6 +7,7 @@
 #include "core/block_file.h"
 #include "core/file_replacement.h"
 #include "core/storage.h"
+#include "reader/device_check.h"
 
 namespace bn::reader {
 
@@ -29,7 +30,7 @@ namespace bn::reader {
 // the trace, recorded by the hardware layer.
 //
 // Used by one task. It is about 9 KB, most of it buffers.
-class StorageCheck {
+class StorageCheck final : public DeviceCheck {
  public:
   enum class State : std::uint8_t {
     kIdle,  // Never run.
@@ -64,13 +65,13 @@ class StorageCheck {
 
   StorageCheck(const StorageCheck&) = delete;
   StorageCheck& operator=(const StorageCheck&) = delete;
-  ~StorageCheck() = default;
+  ~StorageCheck() override = default;
 
   // Starts a run from the beginning, unless one is under way.
-  void Begin() noexcept;
+  void Begin() noexcept override;
 
   // Does the next piece of a run, if one is under way.
-  void Tick() noexcept;
+  void Tick() noexcept override;
 
   State CurrentState() const noexcept { return state_; }
   // After a failure: the step that failed, and what storage said, which is

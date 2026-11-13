@@ -71,6 +71,13 @@ extern "C" void app_main() {
   esp_rom_printf("Storage check build: the SD card is written to at start and at each press of Power.\n");
   app.CheckStorage();
 #endif
+#ifdef BN_BOOK_CHECK
+  esp_rom_printf("Book check build: every book on the SD card is read at start and at each press of Power.\n");
+  app.CheckBooks();
+  if (app.BookChecker() == nullptr) {
+    esp_rom_printf("There is not the memory for the book check: it will not run.\n");
+  }
+#endif
   app.Start();
 
   while (true) {

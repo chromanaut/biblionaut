@@ -36,7 +36,9 @@ namespace {
 
 using core::StorageStatus;
 
-constexpr std::size_t kMaxOpenFiles = 4;  // CONFIG_FATFS_FS_LOCK is set to match.
+// CONFIG_FATFS_FS_LOCK is set to match: FatFS keeps a record of each open
+// file and each directory being listed, and has room for that many.
+constexpr std::size_t kMaxOpenFiles = core::Storage::kMaxOpen;
 
 // What a FatFS result comes to.
 StorageStatus FromFatFs(FRESULT result) noexcept {
@@ -240,11 +242,72 @@ class SdCardStorage final : public core::Storage {
     return FromFatFs(f_mkdir(name.Text()));
   }
 
+  [[nodiscard]] StorageStatus OpenDirectory(std::string_view path, core::DirectoryHandle& directory) noexcept override {
+    directory = core::kNoDirectory;
+    if (const StorageStatus status = Check(path); status != StorageStatus::kOk) {
+      return status;
+    }
+    ListedDirectory* place = ClaimDirectory();
+    if (place == nullptr) {
+      return StorageStatus::kTooManyOpen;
+    }
+    const FatPath name(path);
+    const FRESULT result = f_opendir(&place->directory, name.Text());
+    if (result != FR_OK) {
+      ReleaseDirectory(*place);
+      return FromFatFs(result);  // Among them: it is a file.
+    }
+    directory = static_cast<core::DirectoryHandle>(place - listed_.data());
+    return StorageStatus::kOk;
+  }
+
+  [[nodiscard]] StorageStatus NextInDirectory(core::DirectoryHandle directory, std::span<char> name,
+                                              std::size_t& length, core::FileInfo& info) noexcept override {
+    length = 0;
+    ListedDirectory* found = FindDirectory(directory);
+    if (found == nullptr) {
+      return StorageStatus::kFailed;
+    }
+    for (;;) {
+      // FatFS gives the long name where there is one that fits in 255
+      // bytes, and the short one otherwise; either opens the file.
+      FILINFO item = {};
+      const FRESULT result = f_readdir(&found->directory, &item);
+      if (result != FR_OK) {
+        return FromFatFs(result);
+      }
+      const std::string_view itemName(static_cast<const char*>(item.fname));
+      if (itemName.empty()) {
+        return StorageStatus::kOk;  // Nothing more.
+      }
+      if (itemName.size() > name.size() || !core::IsStorageName(itemName)) {
+        continue;
+      }
+      info.isDirectory = (item.fattrib & AM_DIR) != 0;
+      info.size = info.isDirectory ? 0 : item.fsize;
+      std::memcpy(name.data(), itemName.data(), itemName.size());
+      length = itemName.size();
+      return StorageStatus::kOk;
+    }
+  }
+
+  void CloseDirectory(core::DirectoryHandle directory) noexcept override {
+    if (ListedDirectory* found = FindDirectory(directory); found != nullptr) {
+      f_closedir(&found->directory);
+      ReleaseDirectory(*found);
+    }
+  }
+
  private:
   struct OpenFile {
     FIL file;
     bool inUse = false;
     bool writable = false;
+  };
+
+  struct ListedDirectory {
+    FF_DIR directory;
+    bool inUse = false;
   };
 
   // Finds the card and the file system on it.
@@ -310,19 +373,57 @@ class SdCardStorage final : public core::Storage {
     return core::IsStoragePath(path) ? StorageStatus::kOk : StorageStatus::kBadPath;
   }
 
+  // Whether one more file may be opened or directory listed. The lock
+  // must be held.
+  bool HasRoomForOneMore() const noexcept {
+    std::size_t taken = 0;
+    for (const OpenFile& file : open_) {
+      taken += file.inUse ? 1 : 0;
+    }
+    for (const ListedDirectory& directory : listed_) {
+      taken += directory.inUse ? 1 : 0;
+    }
+    return taken < kMaxOpenFiles;
+  }
+
   // A free place for an open file, marked as taken; null if there is none.
   OpenFile* Claim() noexcept {
     OpenFile* claimed = nullptr;
     xSemaphoreTake(lock_, portMAX_DELAY);
-    for (OpenFile& candidate : open_) {
-      if (!candidate.inUse) {
-        candidate.inUse = true;
-        claimed = &candidate;
-        break;
+    if (HasRoomForOneMore()) {
+      for (OpenFile& candidate : open_) {
+        if (!candidate.inUse) {
+          candidate.inUse = true;
+          claimed = &candidate;
+          break;
+        }
       }
     }
     xSemaphoreGive(lock_);
     return claimed;
+  }
+
+  // The same, for a directory to be listed.
+  ListedDirectory* ClaimDirectory() noexcept {
+    ListedDirectory* claimed = nullptr;
+    xSemaphoreTake(lock_, portMAX_DELAY);
+    if (HasRoomForOneMore()) {
+      for (ListedDirectory& candidate : listed_) {
+        if (!candidate.inUse) {
+          candidate.inUse = true;
+          claimed = &candidate;
+          break;
+        }
+      }
+    }
+    xSemaphoreGive(lock_);
+    return claimed;
+  }
+
+  void ReleaseDirectory(ListedDirectory& place) noexcept {
+    xSemaphoreTake(lock_, portMAX_DELAY);
+    place.inUse = false;
+    xSemaphoreGive(lock_);
   }
 
   void Release(OpenFile& place) noexcept {
@@ -342,13 +443,23 @@ class SdCardStorage final : public core::Storage {
     return found.inUse ? &found : nullptr;
   }
 
+  // The same, for a directory being listed.
+  ListedDirectory* FindDirectory(core::DirectoryHandle directory) noexcept {
+    if (!started_ || directory < 0 || static_cast<std::size_t>(directory) >= listed_.size()) {
+      return nullptr;
+    }
+    ListedDirectory& found = listed_[static_cast<std::size_t>(directory)];
+    return found.inUse ? &found : nullptr;
+  }
+
   bool started_ = false;
   bool hostReady_ = false;
   sdmmc_card_t card_ = {};
   FATFS fileSystem_ = {};
-  SemaphoreHandle_t lock_ = nullptr;  // Guards which places in open_ are taken.
+  SemaphoreHandle_t lock_ = nullptr;  // Guards which places in open_ and listed_ are taken.
   StaticSemaphore_t lockStorage_ = {};
   std::array<OpenFile, kMaxOpenFiles> open_ = {};
+  std::array<ListedDirectory, core::Storage::kMaxListed> listed_ = {};
 };
 
 }  // namespace

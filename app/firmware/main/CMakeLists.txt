@@ -41,3 +41,15 @@ if(BN_STORAGE_CHECK)
                   "Configure with -DBN_STORAGE_CHECK=OFF for a normal build.")
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_STORAGE_CHECK=1)
 endif()
+
+# A firmware that reads the books on the SD card (see BN_BOOK_CHECK in the
+# project file).
+if(BN_BOOK_CHECK)
+  if(BN_STORAGE_CHECK)
+    message(FATAL_ERROR "BN_BOOK_CHECK and BN_STORAGE_CHECK would get in each other's way on the card: "
+                        "configure with one of them OFF.")
+  endif()
+  message(WARNING "This firmware reads every book on the SD card at start and at each press of Power. "
+                  "Configure with -DBN_BOOK_CHECK=OFF for a normal build.")
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_BOOK_CHECK=1)
+endif()

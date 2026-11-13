@@ -6,7 +6,8 @@ them. Here books are made the way books are, by Python's zipfile module,
 and what bn-epub says of each is compared, line for line, with what a
 reading of the same book by Python's own XML parser says: the title, the
 author, the language, the cover, the tables of contents, and every
-document of the spine in its order.
+document of the spine in its order; and then every entry of each table of
+contents, with the document it points into.
 
 usage: epub_tool.py BN_EPUB WORK_DIR
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import posixpath
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -137,6 +139,109 @@ def reference(path: Path) -> list[str]:
     return lines
 
 
+SPACE = re.compile(r"[ \t\r\n]+")
+
+
+def label(element: ET.Element | None) -> str:
+    """The text of an entry: every run of spaces and line ends one space. (Not of other kinds of space.)"""
+    return SPACE.sub(" ", "".join(element.itertext())).strip(" ") if element is not None else ""
+
+
+def toc_reference(path: Path, kind: str | None) -> list[str] | str:
+    """What bn-epub toc should print for the book at `path`, but for its last line; or why it should refuse.
+
+    `kind` is "nav", "ncx", or None for whichever the book is read by: its
+    nav if it has one, its NCX if not.
+    """
+    with zipfile.ZipFile(path) as archive:
+        names = {info.orig_filename for info in archive.infolist()}
+        root = ET.fromstring(archive.read("META-INF/container.xml"))
+        package_path = next(e.get("full-path") for e in root.iter() if local(e.tag) == "rootfile")
+        parser = ET.XMLParser()
+        parser.entity["nbsp"] = " "
+        parser.feed(archive.read(package_path))
+        package = parser.close()
+
+        def full(base: str, href: str) -> str:
+            file = unquote(urlsplit(href).path)
+            return posixpath.normpath(file.lstrip("/") if file.startswith("/") else posixpath.join(base, file))
+
+        base = posixpath.dirname(package_path)
+        items = [e for e in package.iter() if local(e.tag) == "item" and e.get("href") and not urlsplit(e.get("href")).scheme]
+        by_id: dict[str, ET.Element] = {}
+        for item in items:
+            if item.get("id"):
+                by_id.setdefault(item.get("id"), item)
+        spine_element = next(e for e in package if local(e.tag) == "spine")
+        spine = [full(base, by_id[e.get("idref")].get("href")) for e in spine_element
+                 if local(e.tag) == "itemref" and e.get("idref") in by_id]
+        nav = next((e for e in items if "nav" in (e.get("properties") or "").split()), None)
+        ncx = by_id.get(spine_element.get("toc")) if spine_element.get("toc") else None
+        if ncx is None:
+            ncx = next((e for e in items if kind_of_file(e) == "ncx"), None)
+        files = {name: full(base, item.get("href")) for name, item in (("nav", nav), ("ncx", ncx))
+                 if item is not None and full(base, item.get("href")) in names}
+        if kind is None:
+            kind = "nav" if "nav" in files else "ncx"
+        if kind not in files:
+            return "no table of contents"
+        own = files[kind]
+        try:
+            table = ET.fromstring(archive.read(own))
+        except ET.ParseError:
+            return "not a table of contents"
+
+    lines: list[str] = []
+
+    def entry(depth: int, text: ET.Element | None, reference: str | None) -> None:
+        document = fragment = "-"
+        if reference is not None and not urlsplit(reference).scheme:
+            parts = urlsplit(reference)
+            file = full(posixpath.dirname(own), reference) if parts.path else own if parts.fragment else None
+            if file in spine:
+                document = str(spine.index(file))
+                fragment = unquote(parts.fragment) or "-"
+        lines.append(f"{depth}\t{document}\t{fragment}\t{label(text)}")
+
+    if kind == "ncx":
+        maps = [e for e in table.iter() if local(e.tag) == "navMap"]
+        if not maps:
+            return "not a table of contents"
+
+        def points(element: ET.Element, depth: int) -> None:
+            for point in element:
+                if local(point.tag) != "navPoint":
+                    continue
+                text = next((e for e in point.iter() if local(e.tag) == "text"), None)
+                content = next((e for e in point if local(e.tag) == "content"), None)
+                entry(depth, text, content.get("src") if content is not None else None)
+                points(point, depth + 1)
+
+        points(maps[0], 0)
+    else:
+        tocs = [e for e in table.iter() if local(e.tag) == "nav"
+                and any(local(name) == "type" and "toc" in value.split() for name, value in e.attrib.items())]
+        if not tocs:
+            return "not a table of contents"
+
+        def lists(element: ET.Element, depth: int) -> None:
+            for child in element:
+                if local(child.tag) not in ("ol", "ul"):
+                    continue
+                for item in child:
+                    head = next((e for e in item if local(e.tag) in ("a", "span")), None)
+                    if head is not None:
+                        entry(depth, head, head.get("href"))
+                    lists(item, depth + 1)
+
+        lists(tocs[0], 0)
+    return [f"toc: {kind}", *lines, f"entries: {len(lines)}"]
+
+
+def kind_of_file(item: ET.Element) -> str:
+    return kind(item.get("media-type"))
+
+
 def container(package_path: str) -> str:
     return ('<?xml version="1.0"?>\n<container version="1.0" '
             'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
@@ -156,23 +261,59 @@ def write_book(path: Path, package_path: str, package: str, files: dict[str, byt
             archive.writestr(name, data, zipfile.ZIP_DEFLATED if len(name) % 3 else zipfile.ZIP_STORED)
 
 
+def tables(names: list[str], with_nav: bool) -> dict[str, bytes]:
+    """The tables of contents of a book of these chapters, in parts of ten: an NCX, and a nav if asked for.
+
+    The two are not the same. The NCX's parts point at their first
+    chapter; the nav's are headings with no link. Every third chapter is
+    pointed at by a place within it.
+    """
+    def target(number: int) -> str:
+        return names[number].replace(" ", "%20") + (f"#s{number}" if number % 3 == 0 else "")
+
+    points = []
+    items = []
+    for first in range(0, len(names), 10):
+        part = range(first, min(first + 10, len(names)))
+        inner = "".join(f'<navPoint id="c{n}" playOrder="{n + 2}"><navLabel><text>Chapter&#160;{n}:\n      The  Tale &amp; '
+                        f'Its Telling</text></navLabel><content src="{target(n)}"/></navPoint>\n' for n in part)
+        points.append(f'<navPoint id="p{first}"><navLabel><text>Part {first // 10 + 1}</text></navLabel>'
+                      f'<content src="{target(first).split("#")[0]}"/>\n{inner}</navPoint>\n')
+        links = "".join(f'<li><a href="{target(n)}">Chapter <i>{n}</i>:<br/> The <b>Tale</b></a></li>\n' for n in part)
+        items.append(f"<li><span>Part {first // 10 + 1}</span>\n<ol>\n{links}</ol></li>\n")
+    ncx = ('<?xml version="1.0" encoding="UTF-8"?>\n<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n'
+           "<head/><docTitle><text>A Novel</text></docTitle>\n<navMap>\n" + "".join(points) + "</navMap>\n"
+           '<pageList><pageTarget type="normal" value="1"><navLabel><text>1</text></navLabel>'
+           f'<content src="{target(0)}"/></pageTarget></pageList>\n</ncx>\n')
+    made = {"OEBPS/toc.ncx": ncx.encode()}
+    if with_nav:
+        nav = ('<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" '
+               'xmlns:epub="http://www.idpf.org/2007/ops">\n<head><title>Contents</title></head>\n<body>\n'
+               f'<nav epub:type="landmarks"><ol><li><a epub:type="bodymatter" href="{target(0)}">Start</a></li></ol></nav>\n'
+               '<nav epub:type="toc" id="toc"><h1>Contents</h1>\n<ol>\n' + "".join(items) + "</ol>\n</nav>\n"
+               f'<nav epub:type="page-list"><ol><li><a href="{target(0)}">1</a></li></ol></nav>\n</body>\n</html>\n')
+        made["OEBPS/nav.xhtml"] = nav.encode()
+    return made
+
+
 def novel(chapters: int, version: str) -> tuple[str, dict[str, bytes]]:
     """A book of `chapters` chapters as EPUB 2 or EPUB 3 lays one out, its package at OEBPS/content.opf."""
-    files: dict[str, bytes] = {"OEBPS/styles/main.css": b"p { margin: 0 }", "OEBPS/images/cover.jpg": b"jpeg",
-                               "OEBPS/toc.ncx": b"<ncx/>"}
+    files: dict[str, bytes] = {"OEBPS/styles/main.css": b"p { margin: 0 }", "OEBPS/images/cover.jpg": b"jpeg"}
     manifest = ['<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
                 '<item id="css" href="styles/main.css" media-type="text/css"/>']
     spine = []
     cover_properties = ' properties="cover-image"' if version == "3.0" else ""
     manifest.append(f'<item id="cover-image" href="images/cover.jpg" media-type="image/jpeg"{cover_properties}/>')
     if version == "3.0":
-        files["OEBPS/nav.xhtml"] = b"<html/>"
         manifest.append('<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>')
+    names = []
     for number in range(chapters):
         name = f"text/chapter {number:03d}.xhtml" if number % 7 == 3 else f"text/chapter{number:03d}.xhtml"
+        names.append(name)
         files["OEBPS/" + name] = f"<html>{number}</html>".encode()
         manifest.append(f'<item id="ch{number}" href="{name.replace(" ", "%20")}" media-type="application/xhtml+xml"/>')
         spine.append(f'<itemref idref="ch{number}"{" linear=" + chr(34) + "no" + chr(34) if number % 11 == 5 else ""}/>')
+    files.update(tables(names, version == "3.0"))
     meta = '<meta name="cover" content="cover-image"/>' if version == "2.0" else ""
     package = (f'<?xml version="1.0" encoding="UTF-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" '
                f'version="{version}" unique-identifier="uid">\n'
@@ -256,6 +397,8 @@ def main() -> int:
     try:
         made = books(work)
         documents = 0
+        tables_read = 0
+        entries = 0
         for path in made:
             expected = reference(path)
             result = info(tool, path)
@@ -268,6 +411,27 @@ def main() -> int:
                 expect(mine == theirs, f"{path.name}: line {number + 1} is {mine!r}, a reading by Python has {theirs!r}")
             expect(len(got) == len(expected), f"{path.name}: {len(got)} lines, a reading by Python has {len(expected)}")
             documents += int(next(line for line in got if line.startswith("spine: ")).split()[1])
+
+            # Its tables of contents: the one it is read by, and each kind by name.
+            for option in (None, "--nav", "--ncx"):
+                expected_toc = toc_reference(path, option[2:] if option else None)
+                result = subprocess.run([tool, "toc", str(path), *([option] if option else [])], capture_output=True,
+                                        check=False)
+                what = f"{path.name}: bn-epub toc {option or ''}".rstrip()
+                if isinstance(expected_toc, str):
+                    expect(result.returncode == 1 and expected_toc.encode() in result.stderr and result.stdout == b"",
+                           f"{what} should have said {expected_toc!r}: {result.returncode}, {result.stderr!r}")
+                    continue
+                expect(result.returncode == 0, f"{what} ended with {result.returncode}: {result.stderr!r}")
+                lines = result.stdout.decode("utf-8").split("\n")
+                expect(lines[-2].startswith("cost: ") and lines[-1] == "", f"{what}: the last line is {lines[-2:]!r}")
+                got_toc = lines[:-2]
+                for number, (mine, theirs) in enumerate(zip(got_toc, expected_toc)):
+                    expect(mine == theirs, f"{what}: line {number + 1} is {mine!r}, a reading by Python has {theirs!r}")
+                expect(len(got_toc) == len(expected_toc),
+                       f"{what}: {len(got_toc)} lines, a reading by Python has {len(expected_toc)}")
+                tables_read += 1
+                entries += len(expected_toc) - 2
 
         # What it costs: a book of 600 chapters, its files in no order, is
         # found with two lookups by name and one reading of the directory,
@@ -301,11 +465,23 @@ def main() -> int:
             result = info(tool, work / name)
             expect(result.returncode == 1 and why in result.stderr and result.stdout == b"",
                    f"{name}: bn-epub ended with {result.returncode}: {result.stderr!r}")
+        # Ten readings: each novel's table by default and by its kind, and
+        # the EPUB 3 novels have two kinds, which differ. The books of
+        # other kinds have files in place of theirs that are not tables of
+        # contents at all.
+        expect(tables_read == 10 and entries > 2_000,
+               f"{tables_read} tables of contents were read, with {entries} entries")
+        both = [toc_reference(work / "novel-3.0.epub", option) for option in ("nav", "ncx")]
+        expect(both[0][1] == "0\t-\t-\tPart 1" and both[1][1] == "0\t0\t-\tPart 1"
+               and both[0][2] == "1\t0\ts0\tChapter 0: The Tale"
+               and both[1][2] == "1\t0\ts0\tChapter\u00a00: The Tale & Its Telling"
+               and "1\t3\ts3\tChapter 3: The Tale" in both[0],
+               f"novel-3.0.epub: the first entries are {both[0][1:3]!r} and {both[1][1:3]!r}")
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
-    print(f"{len(made)} books, {documents} documents: bn-epub agrees with a reading by Python about all of them; "
-          f"5 that are not books refused")
+    print(f"{len(made)} books, {documents} documents, {tables_read} tables of contents with {entries} entries: bn-epub "
+          f"agrees with a reading by Python about all of them; 5 that are not books refused")
     return 0
 
 

@@ -117,6 +117,30 @@ TEST(BookPath, KnowsTheDirectoryAFileIsIn) {
   EXPECT_EQ(BookDirectory("a/"), "a/");
 }
 
+TEST(BookPath, GivesThePlaceWithinAFileThatAReferenceMeans) {
+  const auto fragment = [](const std::string& reference, std::size_t room = 64) {
+    std::array<char, 64> out{};
+    const std::size_t length = bn::epub::ReferenceFragment(reference, std::span(out).first(room));
+    return std::string(out.data(), length);
+  };
+  EXPECT_EQ(fragment("a.xhtml#top"), "top");
+  EXPECT_EQ(fragment("#here"), "here");
+  EXPECT_EQ(fragment("../text/ch%201.xhtml?x=1#sec-2.1"), "sec-2.1");
+  // What it has after its first '#', whatever that is.
+  EXPECT_EQ(fragment("a.xhtml#one#two?three"), "one#two?three");
+  // Escaped bytes are turned back, and what only looks escaped is left.
+  EXPECT_EQ(fragment("a.xhtml#caf%C3%A9%20au%2flait"), "caf\xC3\xA9 au/lait");
+  EXPECT_EQ(fragment("a.xhtml#100%"), "100%");
+  EXPECT_EQ(fragment("a.xhtml#a%zz%4"), "a%zz%4");
+  // None, an empty one, and one there is no room for.
+  EXPECT_EQ(fragment("a.xhtml"), "");
+  EXPECT_EQ(fragment("a.xhtml#"), "");
+  EXPECT_EQ(fragment(""), "");
+  EXPECT_EQ(fragment("a.xhtml#12345678", 8), "12345678");
+  EXPECT_EQ(fragment("a.xhtml#123456789", 8), "");
+  EXPECT_EQ(fragment("a.xhtml#%41%42%43%44", 4), "ABCD") << "the room is for what it comes to";
+}
+
 TEST(NameHash, IsTheSameForTheSameNameAndDifferentForDifferentOnes) {
   EXPECT_EQ(NameHash("OEBPS/chapter1.xhtml"), NameHash(std::string("OEBPS/chapter") + "1.xhtml"));
   EXPECT_NE(NameHash("OEBPS/chapter1.xhtml"), NameHash("OEBPS/chapter2.xhtml"));

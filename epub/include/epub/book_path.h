@@ -31,6 +31,14 @@ inline constexpr std::size_t kMaxBookPath = 512;
 // path would be longer than `path` has room for.
 std::size_t ResolveBookPath(std::string_view base, std::string_view reference, std::span<char> path) noexcept;
 
+// The place within a file that `reference` means: what follows its '#',
+// with %XX turned into the byte it stands for. "top" for "a.xhtml#top".
+// It is the id of an element of that file. Written to `fragment`.
+//
+// Returns how long it is, or 0 if the reference names no place, or names
+// one longer than `fragment` has room for.
+std::size_t ReferenceFragment(std::string_view reference, std::span<char> fragment) noexcept;
+
 // The directory a file of the book is in, in the form ResolveBookPath()
 // wants its `base`: "OEBPS/text/" for "OEBPS/text/ch1.xhtml", and nothing
 // for a file at the top.

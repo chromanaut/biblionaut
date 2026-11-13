@@ -345,6 +345,9 @@ TEST(Package, TellsApartNamesWhoseNumbersAreNearlyTheSame) {
                     {"t/22393.xhtml", "the one"}}),
             PackageStatus::kOk);
   EXPECT_EQ(f.Spine(), (std::vector<std::string>{"+ xhtml second.xhtml", "+ xhtml t/22393.xhtml"}));
+  // And when a path is looked up.
+  EXPECT_EQ(f.package->SpineIndexOf("t/22393.xhtml"), 1u);
+  EXPECT_EQ(f.package->SpineIndexOf("t/10123.xhtml"), Package::kNotInSpine);
 }
 
 TEST(Package, KeepsADocumentThatIsInTheSpineTwiceAndTheFirstOfTwoWithOneId) {
@@ -890,6 +893,9 @@ TEST(Package, ReportsADirectoryItCannotFollowToTheFilesItWants) {
   // not given out either.
   EXPECT_EQ(f.package->Cover(), nullptr);
   EXPECT_EQ(f.package->Ncx(), nullptr);
+  // And no file is said to be a document of a spine that is not given.
+  EXPECT_EQ(f.package->SpineIndexOf("OEBPS/text/cover.xhtml"), Package::kNotInSpine);
+  EXPECT_EQ(f.package->SpineIndexOf("OEBPS/text/chapter1.xhtml"), Package::kNotInSpine);
 }
 
 TEST(Package, PassesOverAFileWithANameLongerThanAnyItKeeps) {
@@ -952,6 +958,58 @@ TEST(Package, CountsThePackagesItReads) {
   EXPECT_EQ(f.Read({{"mimetype", "x"}}), PackageStatus::kNoContainer);
   EXPECT_EQ(CounterNow("packages_read") - read, 2u);
   EXPECT_EQ(CounterNow("packages_failed") - failed, 1u);
+}
+
+TEST(Package, SaysWhichDocumentOfTheSpineAPathIs) {
+  PackageFixture f;
+  EXPECT_EQ(f.package, nullptr);
+  ASSERT_EQ(f.Read(Epub2Book()), PackageStatus::kOk);
+  const Package& package = *f.package;
+  EXPECT_EQ(package.SpineIndexOf("OEBPS/text/cover.xhtml"), 0u);
+  EXPECT_EQ(package.SpineIndexOf("OEBPS/text/chapter2.xhtml"), 2u);
+  EXPECT_EQ(package.SpineIndexOf("OEBPS/text/notes.xhtml"), 3u) << "set aside or not, it is a document of the spine";
+  // A file of the book that is no document of the spine, one that is not
+  // in the book, and a path that is not written as paths within a book are.
+  EXPECT_EQ(package.SpineIndexOf("OEBPS/styles/main.css"), Package::kNotInSpine);
+  EXPECT_EQ(package.SpineIndexOf("OEBPS/text/chapter3.xhtml"), Package::kNotInSpine);
+  EXPECT_EQ(package.SpineIndexOf("text/chapter2.xhtml"), Package::kNotInSpine);
+  EXPECT_EQ(package.SpineIndexOf("/OEBPS/text/chapter2.xhtml"), Package::kNotInSpine);
+  EXPECT_EQ(package.SpineIndexOf(""), Package::kNotInSpine);
+
+  // A document the spine has twice is its first place; one the book lists
+  // and has not got is a document of the spine all the same; and of two
+  // files with one path, the one the spine uses is the one.
+  const std::string manifest =
+      "<item id=\"extra\" href=\"b.xhtml\" media-type=\"application/xhtml+xml\"/>"
+      "<item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>"
+      "<item id=\"b\" href=\"b.xhtml\" media-type=\"application/xhtml+xml\"/>"
+      "<item id=\"gone\" href=\"gone.xhtml\" media-type=\"application/xhtml+xml\"/>";
+  ASSERT_EQ(f.Read({{"META-INF/container.xml", Container("content.opf")},
+                    {"content.opf", Opf(kMetadata, manifest,
+                                        "<itemref idref=\"nothing\"/><itemref idref=\"b\"/><itemref idref=\"a\"/>"
+                                        "<itemref idref=\"gone\"/><itemref idref=\"b\"/>")},
+                    {"a.xhtml", "a"},
+                    {"b.xhtml", "b"}}),
+            PackageStatus::kOk);
+  EXPECT_EQ(f.package->SpineIndexOf("b.xhtml"), 0u);
+  EXPECT_EQ(f.package->SpineIndexOf("a.xhtml"), 1u);
+  EXPECT_EQ(f.package->SpineIndexOf("gone.xhtml"), 2u);
+  EXPECT_FALSE(f.package->Spine()[2].present);
+  EXPECT_EQ(f.package->SpineIndexOf("OEBPS/text/cover.xhtml"), Package::kNotInSpine) << "the last book's";
+
+  // A book that could not be read has no spine to be in.
+  ASSERT_EQ(
+      f.Read({{"META-INF/container.xml", Container("content.opf")},
+              {"content.opf", Opf(kMetadata, manifest, "<itemref idref=\"a\"/><itemref idref=\"b\"/>") + "<oops>"},
+              {"a.xhtml", "a"},
+              {"b.xhtml", "b"}},
+             40),
+      PackageStatus::kNoMemory);
+  EXPECT_EQ(f.package->SpineIndexOf("a.xhtml"), Package::kNotInSpine);
+  // Nor has a Package that has read none.
+  std::array<std::uint8_t, 256> memory{};
+  const Package unread(memory);
+  EXPECT_EQ(unread.SpineIndexOf("a.xhtml"), Package::kNotInSpine);
 }
 
 // An entry as the checksum's lines give it, from what the ZIP file's

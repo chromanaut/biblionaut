@@ -20,6 +20,25 @@ int HexValue(char ch) noexcept {
   return -1;
 }
 
+// Writes `raw` to `out` with every %XX in it turned into the byte it
+// stands for. What only looks like one is left as it is written. Returns
+// false if it does not fit.
+bool Unescape(std::string_view raw, std::span<char> out, std::size_t& length) noexcept {
+  length = 0;
+  for (std::size_t k = 0; k < raw.size(); ++k) {
+    char ch = raw[k];
+    if (ch == '%' && k + 2 < raw.size() && HexValue(raw[k + 1]) >= 0 && HexValue(raw[k + 2]) >= 0) {
+      ch = static_cast<char>((HexValue(raw[k + 1]) * 16) + HexValue(raw[k + 2]));
+      k += 2;
+    }
+    if (length == out.size()) {
+      return false;
+    }
+    out[length++] = ch;
+  }
+  return true;
+}
+
 // Whether `reference` starts the way a reference to somewhere else does:
 // with a scheme and a colon ("https:", "mailto:"), or with "//".
 bool IsElsewhere(std::string_view reference) noexcept {
@@ -125,20 +144,22 @@ std::size_t ResolveBookPath(std::string_view base, std::string_view reference, s
     }
     std::array<char, 256> decoded{};
     std::size_t length = 0;
-    for (std::size_t k = 0; k < raw.size(); ++k) {
-      char ch = raw[k];
-      if (ch == '%' && k + 2 < raw.size() && HexValue(raw[k + 1]) >= 0 && HexValue(raw[k + 2]) >= 0) {
-        ch = static_cast<char>((HexValue(raw[k + 1]) * 16) + HexValue(raw[k + 2]));
-        k += 2;
-      }
-      if (length == decoded.size()) {
-        return 0;  // One name longer than any a book has.
-      }
-      decoded[length++] = ch;
+    if (!Unescape(raw, decoded, length)) {
+      return 0;  // One name longer than any a book has.
     }
     builder.Part(std::string_view(decoded.data(), length));
   }
   return builder.Length();
+}
+
+std::size_t ReferenceFragment(std::string_view reference, std::span<char> fragment) noexcept {
+  const std::size_t hash = reference.find('#');
+  if (hash == std::string_view::npos) {
+    return 0;
+  }
+  reference.remove_prefix(hash + 1);
+  std::size_t length = 0;
+  return Unescape(reference, fragment, length) ? length : 0;
 }
 
 std::string_view BookDirectory(std::string_view path) noexcept {

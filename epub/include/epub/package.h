@@ -77,10 +77,11 @@ struct SpineItem {
 // many the book has, finding them costs one reading of the directory.
 //
 // Memory: the caller provides a block. The spine is built at its front, 28
-// bytes a document, and stays there. The manifest is kept at its back, 16
-// bytes a file, only while Read() runs. A book of 80 files and 50
-// documents needs under 3 KB; the largest seen, 745 files and 394
-// documents, 23 KB. A book that needs more than the block is refused.
+// bytes a document, and the manifest at its back, 16 bytes a file. Both
+// stay: the manifest is what SpineIndexOf() looks a path up in. A book of
+// 80 files and 50 documents needs under 3 KB; the largest seen, 745 files
+// and 394 documents, 23 KB. A book that needs more than the block is
+// refused.
 //
 // Since no name is kept, none is checked: two different names that came to
 // one number would be taken for each other. NameHash() says how seldom
@@ -119,6 +120,15 @@ class Package {
   // The documents of the book, in reading order.
   std::span<const SpineItem> Spine() const noexcept { return {spine_, spineCount_}; }
 
+  // What SpineIndexOf() gives for a file that is no document of the spine.
+  static constexpr std::size_t kNotInSpine = static_cast<std::size_t>(-1);
+  // Which document of the spine the file at `path` is: its place in
+  // Spine(). `path` is a path within the book, as ResolveBookPath() gives
+  // one, which is how a link in the book to one of its documents is
+  // followed. If the spine has the file more than once, its first place.
+  // kNotInSpine if the spine has it nowhere, or if no book has been read.
+  std::size_t SpineIndexOf(std::string_view path) const noexcept;
+
   // The cover picture; the table of contents as EPUB 3 has it, a document
   // of its own (the "nav"); and as EPUB 2 has it (the "NCX"). Each is null
   // if the package names none, or names a file that is not in the book.
@@ -146,8 +156,10 @@ class Package {
     std::uint16_t pathHigh;
     MediaType type;
     std::uint8_t flags;
-    std::uint16_t spare;
+    // The first document of the spine that is this file, or kNoSpineIndex.
+    std::uint16_t spineIndex;
   };
+  static constexpr std::uint16_t kNoSpineIndex = 0xFFFF;
 
   // A file found for one of the book's particular purposes.
   struct Found {

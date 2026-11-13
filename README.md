@@ -15,10 +15,10 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself) and developer scripts (`bn-symbolize` for crash reports) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests |
-| `corpus/` | Test books |
+| `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
 
 Dependency rules, enforced by the build (each part has its own include
 directory and can only see the parts it links):
@@ -333,6 +333,12 @@ at the end of the file:
   directory says the entry holds, and at the end checks that the data
   stopped there and has the checksum the directory gives. It is 2.7 KB on
   the device and needs the inflater's 32 KB window.
+- A name is the bytes the file has for it, and two names are the same if
+  their bytes are. A ZIP file has a flag to say that its names are UTF-8,
+  which nothing here looks at: a book's names are UTF-8 by the EPUB
+  standard, and some books' ZIP files leave the flag off all the same (one
+  Japanese book of some 500 tried does). A reader that goes by the flag
+  cannot find such a book's chapters.
 
 All three read through a `BlockFile`. Finding entries and reading them can
 share one, but each step from an entry back to the directory then reads a
@@ -766,6 +772,72 @@ books whose two tables differ, and compares `bn-epub toc` with a reading of
 each by Python's own XML parser, written separately for the test: every
 entry has to agree.
 
+## Real books
+
+The tests make most of the books they read, so that a test can say exactly
+what should be found in one. A book made for a test has only what its
+writer thought of. `corpus/` holds 28 that nobody here made: 16 from
+Project Gutenberg, 7 from Standard Ebooks, and 5 of the International
+Digital Publishing Forum's EPUB 3 samples. Between them: eleven languages
+in six kinds of writing (Latin, Greek, Cyrillic, Chinese, Arabic and
+Hebrew, the last two read from right to left); EPUB 2 and EPUB 3; tables
+of contents of both kinds; verse, plays and pictures; a book with 1,647
+notes and one with 10,281 formulas in MathML; books with their own
+fonts; documents out of the reading order; and a fixed layout whose
+pages are SVG files. `corpus/README.md` lists them, with where each came
+from and the terms it is passed on under, which are not this project's
+licence. They are kept byte for byte as they were fetched.
+
+`tools/check-books.py` runs `bn-zip`, `bn-xml` and `bn-epub` over every
+EPUB under a folder, and compares what each says of a book with a reading
+of the same book by Python:
+
+```
+tools/check-books.py corpus
+tools/check-books.py --tools build/host ~/books
+```
+
+```
+28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries.
+28 files listed in SHA256SUMS: all there and unchanged.
+The tools and Python agree about every book.
+```
+
+- **The ZIP file**: every entry `bn-zip list` gives is the entry Python's
+  `zipfile` finds; `bn-zip check` inflates every entry and finds its
+  checksum right; and a few entries are read out and compared byte for
+  byte.
+- **The XML**: every document `bn-xml book` parses has the events, in
+  number and by checksum, that the expat in Python finds in it, and one
+  that either takes for XML the other must too.
+- **The package**: every line of `bn-epub info` is the line a reading of
+  the package file by ElementTree comes to, the checksum among them.
+- **The table of contents**: every entry of `bn-epub toc`, for the table
+  the book is read by and for each kind it has, is the entry a reading of
+  that file by ElementTree comes to, and so is their checksum.
+
+Where they differ it prints a line for each difference, starting
+`DIFFERENT`, and ends with 1. It takes the tools from `build/host-release`
+if they are built there, or else from `build/host`; `--tools` names another
+build, and `--zip`, `--xml` and `--epub` one tool each.
+
+A folder with a file named `SHA256SUMS` in it is checked against that file
+as well: every file listed has to be there with that SHA-256, and every
+EPUB in the folder has to be listed. That is how a book in `corpus/` that
+has been changed, or added without its line, is found.
+
+CTest runs it over `corpus/` as `e2e.Corpus`. It is as useful over any
+folder of books on the computer at hand: a few hundred take some seconds
+with the `host-release` tools. The check itself was tried against 17
+faults made on purpose, in the books and in what the tools print, and
+reported each one.
+
+Its readings by Python have to be as careful as the tools are. The first
+book it met whose names are UTF-8 without the ZIP file saying so was read
+rightly by the tools and wrongly by Python's `zipfile`, which takes such
+names for another encoding; the readings now take a name's bytes as UTF-8
+whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
+
 ## Device build
 
 The firmware builds with ESP-IDF. A setup script installs the pinned version
@@ -865,3 +937,5 @@ Linux job runs on x86-64, where it is not slow, and makes that check.
 ## Licence
 
 MIT; see `LICENSE`. Third-party components are listed in `THIRD_PARTY.md`.
+The books in `corpus/` are not part of that: each is under the terms it
+came with, which `corpus/README.md` gives.

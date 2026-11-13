@@ -16,3 +16,18 @@ before a new dependency lands.
 ESP-IDF bundles further components under their own licences; those that end
 up in the firmware image need their own entries here once the image contents
 settle.
+
+## Test books
+
+`corpus/` holds 28 EPUB files that the tests read. They are not this
+project's work and are not under its licence. Each is kept unchanged, under
+the terms it came with. None of it is in the firmware.
+
+| From | Files | Terms |
+|---|---|---|
+| [Project Gutenberg](https://www.gutenberg.org) | 16 | The Project Gutenberg License, which is in each file. The works are in the public domain in the United States |
+| [Standard Ebooks](https://standardebooks.org) | 7 | Texts and artwork in the public domain in the United States; Standard Ebooks' own work on each dedicated to the public domain (CC0 1.0) |
+| [IDPF's EPUB 3 samples](https://github.com/IDPF/epub3-samples), release `20230704` | 5 | Three under CC BY-SA 3.0, one under CC BY-SA 2.5, one under the GNU Free Documentation License 1.2, as each file states. Two carry fonts under the fonts' own free licences (DejaVu Sans; STIX) |
+
+`corpus/README.md` lists every file, with its authors, where it came from
+and its terms.

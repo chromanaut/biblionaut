@@ -1,0 +1,2 @@
+# The test books are kept byte for byte as they were fetched.
+corpus/**/*.epub binary

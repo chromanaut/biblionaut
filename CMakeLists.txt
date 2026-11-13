@@ -2,7 +2,9 @@
 # and the tests. The device build is a separate ESP-IDF project in app/firmware that
 # pulls in the same part definitions.
 cmake_minimum_required(VERSION 3.25)
-project(biblionaut VERSION 0.1.0 LANGUAGES CXX)
+# C is for expat, which CMake fetches and compiles (third_party/expat).
+# Everything of Biblionaut's own is C++.
+project(biblionaut VERSION 0.1.0 LANGUAGES C CXX)
 
 option(BN_BUILD_TESTS "Build the host test suite" ON)
 option(BN_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)

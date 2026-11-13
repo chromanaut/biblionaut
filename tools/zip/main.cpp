@@ -6,10 +6,6 @@
 // entries. With one file object for both, every step from an entry back to
 // the directory would read a block of the file over again.
 
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -24,6 +20,7 @@
 #include "core/metrics.h"
 #include "core/storage.h"
 #include "epub/zip.h"
+#include "support/one_file.h"
 
 namespace {
 
@@ -32,6 +29,7 @@ using bn::epub::ZipArchive;
 using bn::epub::ZipEntry;
 using bn::epub::ZipEntryReader;
 using bn::epub::ZipStatus;
+using bn::tools::OneFile;
 
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
@@ -51,101 +49,6 @@ void PrintUsage(const char* program) {
                "Ends with 0 if all was well, 1 if the file or an entry could not be read.\n",
                program, program, program);
 }
-
-// One file of the computer's, standing in for a whole card: whatever path is
-// asked for, this is the file that is opened. For reading only.
-class OneFile final : public bn::core::Storage {
- public:
-  explicit OneFile(std::string path) : path_(std::move(path)) {}
-
-  OneFile(const OneFile&) = delete;
-  OneFile& operator=(const OneFile&) = delete;
-  ~OneFile() {
-    if (descriptor_ >= 0) {
-      ::close(descriptor_);
-    }
-  }
-
-  [[nodiscard]] StorageStatus Start() noexcept override {
-    descriptor_ = ::open(path_.c_str(), O_RDONLY | O_CLOEXEC);  // NOLINT(cppcoreguidelines-pro-type-vararg)
-    if (descriptor_ < 0) {
-      return StorageStatus::kNotFound;
-    }
-    struct stat info = {};
-    if (::fstat(descriptor_, &info) != 0 || !S_ISREG(info.st_mode)) {
-      return StorageStatus::kNotFound;
-    }
-    if (info.st_size > static_cast<off_t>(UINT32_MAX)) {
-      return StorageStatus::kTooBig;
-    }
-    size_ = static_cast<std::uint32_t>(info.st_size);
-    return StorageStatus::kOk;
-  }
-
-  [[nodiscard]] StorageStatus Open(std::string_view /*path*/, bn::core::OpenMode mode,
-                                   bn::core::FileHandle& file) noexcept override {
-    if (descriptor_ < 0 || mode != bn::core::OpenMode::kRead) {
-      return StorageStatus::kFailed;
-    }
-    file = 0;
-    return StorageStatus::kOk;
-  }
-  void Close(bn::core::FileHandle /*file*/) noexcept override {}
-
-  [[nodiscard]] StorageStatus Size(bn::core::FileHandle /*file*/, std::uint32_t& size) noexcept override {
-    size = size_;
-    return StorageStatus::kOk;
-  }
-
-  [[nodiscard]] StorageStatus ReadAt(bn::core::FileHandle /*file*/, std::uint32_t offset, std::span<std::uint8_t> dst,
-                                     std::size_t& read) noexcept override {
-    read = 0;
-    while (read < dst.size()) {
-      const ssize_t got = ::pread(descriptor_, dst.data() + read, dst.size() - read,
-                                  static_cast<off_t>(offset) + static_cast<off_t>(read));
-      if (got < 0) {
-        return StorageStatus::kFailed;
-      }
-      if (got == 0) {
-        break;
-      }
-      read += static_cast<std::size_t>(got);
-    }
-    return StorageStatus::kOk;
-  }
-
-  // Nothing here changes anything.
-  [[nodiscard]] StorageStatus WriteAt(bn::core::FileHandle /*file*/, std::uint32_t /*offset*/,
-                                      std::span<const std::uint8_t> /*src*/) noexcept override {
-    return StorageStatus::kFailed;
-  }
-  [[nodiscard]] StorageStatus Sync(bn::core::FileHandle /*file*/) noexcept override { return StorageStatus::kFailed; }
-  [[nodiscard]] StorageStatus Stat(std::string_view /*path*/, bn::core::FileInfo& /*info*/) noexcept override {
-    return StorageStatus::kFailed;
-  }
-  [[nodiscard]] StorageStatus Remove(std::string_view /*path*/) noexcept override { return StorageStatus::kFailed; }
-  [[nodiscard]] StorageStatus Rename(std::string_view /*from*/, std::string_view /*to*/) noexcept override {
-    return StorageStatus::kFailed;
-  }
-  [[nodiscard]] StorageStatus MakeDirectory(std::string_view /*path*/) noexcept override {
-    return StorageStatus::kFailed;
-  }
-  // There is nothing here to list.
-  [[nodiscard]] StorageStatus OpenDirectory(std::string_view /*path*/,
-                                            bn::core::DirectoryHandle& /*directory*/) noexcept override {
-    return StorageStatus::kFailed;
-  }
-  [[nodiscard]] StorageStatus NextInDirectory(bn::core::DirectoryHandle /*directory*/, std::span<char> /*name*/,
-                                              std::size_t& /*length*/, bn::core::FileInfo& /*info*/) noexcept override {
-    return StorageStatus::kFailed;
-  }
-  void CloseDirectory(bn::core::DirectoryHandle /*directory*/) noexcept override {}
-
- private:
-  std::string path_;
-  int descriptor_ = -1;
-  std::uint32_t size_ = 0;
-};
 
 // A name as it is printed: every byte that could confuse a reader of lines
 // written out as its number.

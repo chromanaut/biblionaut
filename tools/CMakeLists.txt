@@ -3,4 +3,5 @@
 #
 # Still to come: importer CLI, font builder, perf harness.
 add_subdirectory(trace)
+add_subdirectory(xml)
 add_subdirectory(zip)

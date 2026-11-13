@@ -8,14 +8,15 @@ a desktop.
 
 | Directory | Contents |
 |---|---|
-| `core/` | Shared foundation: arenas, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the inflater, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display, buttons) |
+| `core/` | Shared foundation: arenas, a heap within a fixed block of memory, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the inflater, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display, buttons) |
 | `hw/` | Hardware abstraction layer. `hw/include` is the interface. `hw/desktop` implements it for the host; on a device, `hw/esp32c3` holds what the chip provides and `hw/x4` what is specific to the X4 |
 | `epub/` | Book parsing: zip, XML, OPF / TOC, CSS, the importer and the intermediate format |
 | `draw/` | Fonts and drawing: glyphs, metrics, the display-list format, the band renderer, images |
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does) and developer scripts (`bn-symbolize` for crash reports) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML) and developer scripts (`bn-symbolize` for crash reports) |
+| `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests |
 | `corpus/` | Test books |
 
@@ -45,11 +46,13 @@ clang-tidy enforces this.
 
 ## Host build
 
-Needs CMake 3.25 or later, Ninja and a C++20 compiler. GoogleTest is
-downloaded when CMake configures. The tests also link zlib, to check the
-inflater against: macOS has it, and on Linux it is the `zlib1g-dev` package.
-Three of the end-to-end tests are run only if Python 3 is found, and one of
-them makes more of its test files if there is a `zip` command.
+Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Two
+things are downloaded when CMake configures, each checked against a hash:
+expat, the XML parser, which is C and is why a C compiler is needed, and
+GoogleTest. The tests also link zlib, to check the inflater against: macOS
+has it, and on Linux it is the `zlib1g-dev` package. Four of the end-to-end
+tests are run only if Python 3 is found, and one of them makes more of its
+test files if there is a `zip` command.
 
 ```
 cmake --preset host
@@ -419,6 +422,69 @@ tools/idf -DBN_BOOK_CHECK=OFF build flash     # back to the normal firmware
 It cannot be combined with `-DBN_STORAGE_CHECK=ON`: the two would get in
 each other's way on the card. A firmware built with neither has the code
 of neither in it.
+
+## XML
+
+`epub/xml.h` reads XML: the files an EPUB describes itself with, and its
+chapters. The parsing is done by [expat](https://libexpat.github.io);
+`XmlParser` is what the rest of the code sees of it.
+
+- A document is read from a `ByteSource`, 1 KB at each `Step()`, and never
+  held whole, so a chapter can be parsed as it comes out of the ZIP file
+  and the inflater. What is found is told to an `XmlHandler` as it is
+  found: an element beginning, with its attributes; an element ending;
+  text; an entity that was not expanded.
+- **Memory**: the parser is given a block of memory when it is made, and
+  everything expat needs comes out of that, through a small heap of our
+  own that lives inside the block (`core/region_heap.h`). Nothing comes
+  from the general heap. A document that needs more than the block is
+  refused (`kNoMemory`), which in practice means one with a single tag
+  several kilobytes long, since a whole tag has to be held at once, or
+  with elements nested hundreds deep. Text can be any length.
+- **Bad input**: the document is not trusted. Whatever bytes it holds,
+  parsing ends with an answer, and one that is not XML is refused with
+  expat's error number and the line it is on. What was found before the
+  mistake has been told by then.
+- **Entities are not expanded.** The five every XML document has (`&amp;`
+  and the rest) and numbered characters (`&#160;`) come out as text. An
+  entity of HTML's, such as `&nbsp;`, is told to the handler by name if
+  the document names a DTD, as XHTML with a `PUBLIC` doctype does; in a
+  document that names none it is a mistake by XML's rules, and parsing
+  stops there. An entity a document declares for itself comes out as the
+  reference was written. So there is nothing a document can make expand
+  without end.
+- **Names** are given as written, prefix and all (`dc:title`). Namespaces
+  are not worked out, which also means a book that uses a prefix it never
+  declared can still be read.
+- **Encodings**: UTF-8, UTF-16, ISO-8859-1 and US-ASCII; everything is
+  given out as UTF-8. Any other is refused (`kUnsupportedEncoding`).
+
+expat is not in this repository: CMake downloads the release named in
+`third_party/expat/CMakeLists.txt`, checks its hash, and compiles it with
+the settings in `third_party/expat/expat_config.h`, the same for the
+desktop and the device. The settings leave out what an EPUB does not need:
+entity expansion, parameter entities and external DTDs, and namespace
+processing. It is 72 KB of flash once something in the firmware uses it.
+
+`bn-xml` runs the same code on the desktop:
+
+```
+./build/host/tools/xml/bn-xml events chapter.xhtml
+./build/host/tools/xml/bn-xml book book.epub
+./build/host/tools/xml/bn-xml book book.epub --memory 16384
+```
+
+`events` prints what the parser finds in one file, an event a line. `book`
+parses every XML file in an EPUB as it is read out of the ZIP file, and
+prints for each how it ended, a checksum of its events, and the most
+memory the parser used. `--memory` holds the parser to that many bytes, as
+a device would.
+
+The unit tests say what the parser should make of documents written for
+them, and damage one in every way they can think of. An end-to-end test
+(`tests/e2e/xml_tool.py`) compares `bn-xml` with the expat that Python
+carries, which is another build and another version driven by other code:
+every event of every document has to agree.
 
 ## Device build
 

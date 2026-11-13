@@ -68,8 +68,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          # zlib is what the tests check the inflater against.
-          sudo apt-get install -y ninja-build ${{ matrix.cxx }} zlib1g-dev
+          # zlib is what the tests check the inflater against, and zip
+          # makes some of the files the ZIP reader is tried on.
+          sudo apt-get install -y ninja-build ${{ matrix.cxx }} zip zlib1g-dev
           echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
           echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
 

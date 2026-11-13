@@ -11,6 +11,8 @@
 #include "core/inflate.h"
 #include "core/storage.h"
 #include "core/trace_stream.h"
+#include "epub/xml.h"
+#include "epub/xml_digest.h"
 #include "epub/zip.h"
 #include "reader/device_check.h"
 
@@ -27,23 +29,27 @@ namespace bn::reader {
 //   3. takes each file found whose name ends in ".epub" for a book: finds
 //      its directory, reads every entry to its end, which checks the
 //      entry's size and checksum, and looks each entry up by its name;
-//   4. says what each book came to, and all of them together, in lines of
+//   4. parses every entry with an XML file's name as it is read, counting
+//      what the parser finds and taking a checksum of it;
+//   5. says what each book came to, and all of them together, in lines of
 //      text on the diagnostic stream.
 //
 // Step 3 is what `bn-zip check` does to a file on the desktop, read for
-// read, so that the two can be compared: a book should come to the same
-// entries, the same bytes and the same number of reads on both.
+// read, and step 4 what `bn-xml book` does, so that the two can be
+// compared: a book should come to the same entries, the same bytes and the
+// same number of reads on both, and its XML to the same events.
 //
-// Time is counted three ways: inside storage, which on a device is the
+// Time is counted four ways: inside storage, which on a device is the
 // card; reading out compressed entries with storage's share taken off,
-// which is the processor inflating and checksumming; and all of it.
+// which is the processor inflating and checksumming; parsing XML, with the
+// reading and inflating of it taken off; and all of it.
 //
 // It works for about 20 ms each Tick() and then lets the application carry
 // on, so a run takes longer by the clock than the times it reports, which
 // count its own work only.
 //
-// Used by one task. It is about 48 KB, most of that the inflater's window:
-// too big for a stack.
+// Used by one task. It is about 81 KB, most of that the inflater's window
+// and the XML parser's memory: too big for a stack.
 class BookCheck final : public DeviceCheck {
  public:
   enum class State : std::uint8_t {
@@ -66,6 +72,24 @@ class BookCheck final : public DeviceCheck {
     std::uint64_t storageUs = 0;      // Time spent inside storage.
     std::uint64_t inflateUs = 0;      // Time reading out compressed entries, less storage's share.
     std::uint64_t workUs = 0;         // All the time spent.
+
+    // The entries with an XML file's name, which are parsed as they are
+    // read.
+    std::uint32_t xmlDocuments = 0;
+    std::uint32_t xmlNotXml = 0;      // Of them, those the parser stopped in: not XML, or not in an encoding it knows.
+    std::uint32_t xmlRefused = 0;     // And those that needed more memory than the parser has.
+    std::uint64_t xmlBytes = 0;       // What the parser was given.
+    std::uint32_t xmlEvents = 0;      // What it found there (epub/xml_digest.h),
+    std::uint64_t xmlEventBytes = 0;  // and how many bytes of that the check checksummed.
+    // Time parsing, with the reading and inflating taken off. The check's
+    // own counting and checksumming of what was found is in it.
+    std::uint64_t xmlUs = 0;
+    // The most of its memory the parser used for one document, and how
+    // many documents used more than 8, 12 and 16 KB of it.
+    std::uint32_t xmlMostMemory = 0;
+    std::uint32_t xmlOver8K = 0;
+    std::uint32_t xmlOver12K = 0;
+    std::uint32_t xmlOver16K = 0;
   };
 
   // How much of an entry is read out at a time.
@@ -74,6 +98,9 @@ class BookCheck final : public DeviceCheck {
   static constexpr std::uint64_t kSliceUs = 20'000;
   // How much is checksummed to time the checksum.
   static constexpr std::size_t kChecksumBytes = 64 * kChunkBytes;
+  // The memory the XML parser is given: more than any document should
+  // want, so that what a document uses is what it wants.
+  static constexpr std::size_t kXmlMemoryBytes = 32768;
 
   BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream) noexcept;
 
@@ -96,6 +123,9 @@ class BookCheck final : public DeviceCheck {
   const Figures& Totals() const noexcept { return totals_; }
   // How long checksumming kChecksumBytes took.
   std::uint64_t ChecksumUs() const noexcept { return checksumUs_; }
+  // The checksum of everything the parser found in the XML of the book
+  // last finished, its documents taken one after another.
+  std::uint32_t XmlChecksum() const noexcept { return xmlChecksum_; }
 
  private:
   // Storage that passes everything on to another, counting the reads and
@@ -137,6 +167,33 @@ class BookCheck final : public DeviceCheck {
     Counts counts_;
   };
 
+  // Gives the XML parser the entry being read. It draws on the entry a
+  // chunk at a time, exactly as reading the entry out does, and hands the
+  // parser as much of the chunk as it asks for.
+  class Feeder final : public core::ByteSource {
+   public:
+    explicit Feeder(BookCheck& owner) noexcept : owner_(owner) {}
+
+    // Gets ready for another entry.
+    void Start() noexcept;
+    [[nodiscard]] std::ptrdiff_t Read(std::span<std::uint8_t> dst) noexcept override;
+
+    // The entry has been read to its end, or has failed.
+    bool Ended() const noexcept { return ended_; }
+    // Time spent reading the entry, inflating included, over all entries.
+    std::uint64_t SourceUs() const noexcept { return sourceUs_; }
+    // Bytes handed to the parser since Start().
+    std::uint64_t Given() const noexcept { return given_; }
+
+   private:
+    BookCheck& owner_;
+    std::span<const std::uint8_t> pending_;  // Of the chunk, what the parser has not had yet.
+    bool ended_ = false;
+    bool failed_ = false;
+    std::uint64_t sourceUs_ = 0;
+    std::uint64_t given_ = 0;
+  };
+
   enum class Step : std::uint8_t {
     kNone,
     kChecksum,
@@ -145,6 +202,7 @@ class BookCheck final : public DeviceCheck {
     kNextBook,
     kOpenBook,
     kNextEntry,
+    kParseEntry,
     kReadEntry,
     kFindEntry,
     kEndBook,
@@ -157,9 +215,17 @@ class BookCheck final : public DeviceCheck {
   void NextBook() noexcept;
   void OpenBook() noexcept;
   void NextEntry() noexcept;
+  void ParseEntry() noexcept;
   void ReadEntry() noexcept;
   void FindEntry() noexcept;
   void EndBook() noexcept;
+
+  // Reads the next chunk of the entry, counting it. Returns what the
+  // entry's reader returned: how many bytes, 0 at the end, less on failure.
+  std::ptrdiff_t PullChunk() noexcept;
+  // The entry has been read as far as it goes: notes how that ended and
+  // moves on.
+  void EndEntryRead() noexcept;
 
   // Looks in the top directory next, if that is not where it has just
   // looked; otherwise ends the run.
@@ -229,6 +295,14 @@ class BookCheck final : public DeviceCheck {
   core::BlockFile directoryFile_;
   core::BlockFile entriesFile_;
   epub::ZipEntryReader entryReader_;
+
+  // For the XML: the parser with its memory, what feeds it, and what
+  // takes account of everything it finds in a book.
+  alignas(8) std::array<std::uint8_t, kXmlMemoryBytes> xmlMemory_{};
+  epub::XmlParser xml_;
+  Feeder feeder_;
+  epub::XmlEventDigest digest_;
+  std::uint32_t xmlChecksum_ = 0;
 };
 
 }  // namespace bn::reader

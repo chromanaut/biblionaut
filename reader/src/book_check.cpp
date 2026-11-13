@@ -1,5 +1,8 @@
 #include "reader/book_check.h"
 
+#include <algorithm>
+#include <cstring>
+
 #include "core/checksum.h"
 #include "core/metrics.h"
 #include "core/trace.h"
@@ -21,6 +24,9 @@ core::Gauge bookCheckBooks{"book_check_books"};
 // together, counted in what came out; and at the checksum alone.
 core::Gauge inflateKbPerSecond{"inflate_kb_per_s"};
 core::Gauge checksumKbPerSecond{"checksum_kb_per_s"};
+// And at parsing XML, counted in what the parser was given. The check's
+// own counting and checksumming of what was found is in this.
+core::Gauge xmlKbPerSecond{"xml_kb_per_s"};
 
 constexpr std::string_view kBooksDirectory = "/books";
 constexpr std::string_view kTopDirectory = "/";
@@ -48,6 +54,14 @@ class Line {
     } while (value != 0);
     while (count > 0) {
       Put(digits[--count]);
+    }
+    return *this;
+  }
+  // Eight digits of hexadecimal, as checksums are written.
+  Line& Hex8(std::uint32_t value) noexcept {
+    constexpr std::string_view kDigits = "0123456789abcdef";
+    for (int shift = 28; shift >= 0; shift -= 4) {
+      Put(kDigits[(value >> static_cast<unsigned>(shift)) & 0xFU]);
     }
     return *this;
   }
@@ -123,6 +137,52 @@ void AddTimes(Line& line, const BookCheck::Figures& figures) noexcept {
       .Text(" ms.");
 }
 
+// "XML: ... documents, ...", what parsing the XML of one book or of all
+// of them came to, added to `line`. A book's line carries the checksum of
+// what was found and the most memory a document of it used; the line for
+// all of them, which has no one checksum, says how much of what was found
+// the check itself checksummed, and the memory has a line of its own.
+void AddXml(Line& line, const BookCheck::Figures& figures, const std::uint32_t* checksum) noexcept {
+  line.Text("XML: ")
+      .Count(figures.xmlDocuments, " document, ", " documents, ")
+      .Number(figures.xmlBytes)
+      .Text(" bytes, ")
+      .Count(figures.xmlEvents, " event", " events");
+  if (checksum != nullptr) {
+    line.Text(", checksum ").Hex8(*checksum);
+  }
+  line.Text("; parsing ")
+      .Number(figures.xmlUs / 1000)
+      .Text(" ms (")
+      .Number(KbPerSecond(figures.xmlBytes, figures.xmlUs))
+      .Text(" KB/s); ");
+  if (checksum != nullptr) {
+    line.Text("most memory ").Number(figures.xmlMostMemory);
+  } else {
+    line.Number(figures.xmlEventBytes).Text(" bytes of events checksummed");
+  }
+  line.Text(".");
+  if (figures.xmlNotXml != 0) {
+    line.Text(" Not XML: ").Number(figures.xmlNotXml).Text(".");
+  }
+  if (figures.xmlRefused != 0) {
+    line.Text(" Refused for memory: ").Number(figures.xmlRefused).Text(".");
+  }
+}
+
+// How the documents' use of the parser's memory was spread.
+void AddXmlMemory(Line& line, const BookCheck::Figures& figures) noexcept {
+  line.Text("XML memory: the most a document used ")
+      .Number(figures.xmlMostMemory)
+      .Text(" bytes; documents over 8 KB: ")
+      .Number(figures.xmlOver8K)
+      .Text(", over 12 KB: ")
+      .Number(figures.xmlOver12K)
+      .Text(", over 16 KB: ")
+      .Number(figures.xmlOver16K)
+      .Text(".");
+}
+
 void Add(BookCheck::Figures& total, const BookCheck::Figures& book) noexcept {
   total.entries += book.entries;
   total.failedEntries += book.failedEntries;
@@ -135,6 +195,17 @@ void Add(BookCheck::Figures& total, const BookCheck::Figures& book) noexcept {
   total.storageUs += book.storageUs;
   total.inflateUs += book.inflateUs;
   total.workUs += book.workUs;
+  total.xmlDocuments += book.xmlDocuments;
+  total.xmlNotXml += book.xmlNotXml;
+  total.xmlRefused += book.xmlRefused;
+  total.xmlBytes += book.xmlBytes;
+  total.xmlEvents += book.xmlEvents;
+  total.xmlEventBytes += book.xmlEventBytes;
+  total.xmlUs += book.xmlUs;
+  total.xmlMostMemory = std::max(total.xmlMostMemory, book.xmlMostMemory);
+  total.xmlOver8K += book.xmlOver8K;
+  total.xmlOver12K += book.xmlOver12K;
+  total.xmlOver16K += book.xmlOver16K;
 }
 
 }  // namespace
@@ -223,7 +294,40 @@ void BookCheck::Meter::CloseDirectory(core::DirectoryHandle directory) noexcept 
 // ---- The check ----
 
 // Its size is what a build that runs it takes from the heap.
-static_assert(sizeof(BookCheck) < 51200, "the book check has grown past 50 KB");
+static_assert(sizeof(BookCheck) < 86016, "the book check has grown past 84 KB");
+
+// ---- What feeds the parser ----
+
+void BookCheck::Feeder::Start() noexcept {
+  pending_ = {};
+  ended_ = false;
+  failed_ = false;
+  given_ = 0;
+}
+
+std::ptrdiff_t BookCheck::Feeder::Read(std::span<std::uint8_t> dst) noexcept {
+  if (pending_.empty() && !ended_) {
+    const std::uint64_t began = owner_.clock_.NowUs();
+    const std::ptrdiff_t read = owner_.PullChunk();
+    sourceUs_ += owner_.clock_.NowUs() - began;
+    if (read <= 0) {
+      ended_ = true;
+      failed_ = read < 0;
+    } else {
+      pending_ = std::span<const std::uint8_t>(owner_.chunk_).first(static_cast<std::size_t>(read));
+    }
+  }
+  if (failed_) {
+    return kError;
+  }
+  const std::size_t count = std::min(dst.size(), pending_.size());
+  if (count != 0) {
+    std::memcpy(dst.data(), pending_.data(), count);
+    pending_ = pending_.subspan(count);
+    given_ += count;
+  }
+  return static_cast<std::ptrdiff_t>(count);
+}
 
 BookCheck::BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream) noexcept
     : clock_(clock),
@@ -231,7 +335,9 @@ BookCheck::BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStre
       meter_(storage, clock),
       directoryFile_(directoryBuffer_),
       entriesFile_(entriesBuffer_),
-      entryReader_(window_) {}
+      entryReader_(window_),
+      xml_(xmlMemory_),
+      feeder_(*this) {}
 
 BookCheck::~BookCheck() {
   CloseBook();
@@ -263,10 +369,12 @@ void BookCheck::Tick() noexcept {
   do {
     const Step step = step_;
     const Meter::Counts before = meter_.Now();
+    const std::uint64_t inSourceBefore = feeder_.SourceUs();
     DoStep();
     const std::uint64_t after = clock_.NowUs();
     // The steps that are the reading of a book are counted to it.
-    if (step == Step::kOpenBook || step == Step::kNextEntry || step == Step::kReadEntry || step == Step::kFindEntry) {
+    if (step == Step::kOpenBook || step == Step::kNextEntry || step == Step::kParseEntry || step == Step::kReadEntry ||
+        step == Step::kFindEntry) {
       const Meter::Counts& counts = meter_.Now();
       const std::uint64_t took = after - now;
       const std::uint64_t inStorage = counts.timeUs - before.timeUs;
@@ -276,6 +384,16 @@ void BookCheck::Tick() noexcept {
       book_.readBytes += counts.readBytes - before.readBytes;
       if (step == Step::kReadEntry && entry_.method == epub::kZipDeflated) {
         book_.inflateUs += took > inStorage ? took - inStorage : 0;
+      }
+      if (step == Step::kParseEntry) {
+        // The step's time is the reading of the entry, which the feeder
+        // timed and which is storage and inflating as it is for any
+        // other entry, and the parsing, which is the rest.
+        const std::uint64_t inSource = feeder_.SourceUs() - inSourceBefore;
+        book_.xmlUs += took > inSource ? took - inSource : 0;
+        if (entry_.method == epub::kZipDeflated) {
+          book_.inflateUs += inSource > inStorage ? inSource - inStorage : 0;
+        }
       }
       if (step == Step::kOpenBook) {
         openReads_ = book_.reads;
@@ -307,6 +425,9 @@ void BookCheck::DoStep() noexcept {
       break;
     case Step::kNextEntry:
       NextEntry();
+      break;
+    case Step::kParseEntry:
+      ParseEntry();
       break;
     case Step::kReadEntry:
       ReadEntry();
@@ -450,6 +571,7 @@ void BookCheck::NextBook() noexcept {
   openUs_ = 0;
   firstFailedEntry_ = 0;
   firstFailure_ = ZipStatus::kOk;
+  digest_.Reset();
   bookBeganTrace_ = BN_TRACE_NOW();
   Line line;
   line.Text("book ").Number(books_).Text(": ").Number(bookSize_).Text(" bytes, ").Text(Path());
@@ -495,6 +617,16 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
   times.Text("book check: ");
   AddTimes(times, totals_);
   (void)stream_.SendText(times.View());
+  if (totals_.xmlDocuments != 0) {
+    Line xml;
+    xml.Text("book check: ");
+    AddXml(xml, totals_, nullptr);
+    (void)stream_.SendText(xml.View());
+    Line memory;
+    memory.Text("book check: ");
+    AddXmlMemory(memory, totals_);
+    (void)stream_.SendText(memory.View());
+  }
   Finish(failedBooks_ == 0);
 }
 
@@ -537,10 +669,57 @@ void BookCheck::NextEntry() noexcept {
     EntryFailed(book_.entries, status);
     return;
   }
+  // An entry with an XML file's name is parsed as it is read. (A name too
+  // long to have been kept whole is not taken for one.)
+  if (entry_.nameLength <= entryName_.size() &&
+      epub::HasXmlFileEnding(std::string_view(entryName_.data(), entry_.nameLength))) {
+    feeder_.Start();
+    if (xml_.Begin(feeder_, digest_) == epub::XmlStatus::kOk) {
+      MoveTo(Step::kParseEntry);
+      return;
+    }
+    // There was not the memory even to begin. The entry is read all the
+    // same.
+    ++book_.xmlDocuments;
+    ++book_.xmlRefused;
+  }
   MoveTo(Step::kReadEntry);
 }
 
-void BookCheck::ReadEntry() noexcept {
+void BookCheck::ParseEntry() noexcept {
+  if (xml_.Step()) {
+    return;
+  }
+  // The document is over, well or badly.
+  digest_.EndDocument();
+  ++book_.xmlDocuments;
+  book_.xmlBytes += feeder_.Given();
+  switch (xml_.Status()) {
+    case epub::XmlStatus::kOk:
+    case epub::XmlStatus::kSourceFailed:  // The entry's own failure, which is counted as such below.
+      break;
+    case epub::XmlStatus::kNoMemory:
+      ++book_.xmlRefused;
+      break;
+    default:
+      ++book_.xmlNotXml;
+      break;
+  }
+  const auto memory = static_cast<std::uint32_t>(xml_.Memory().HighWaterSinceReset());
+  book_.xmlMostMemory = std::max(book_.xmlMostMemory, memory);
+  book_.xmlOver8K += memory > 8U * 1024U ? 1 : 0;
+  book_.xmlOver12K += memory > 12U * 1024U ? 1 : 0;
+  book_.xmlOver16K += memory > 16U * 1024U ? 1 : 0;
+  if (feeder_.Ended()) {
+    EndEntryRead();
+  } else {
+    // The parser stopped part way. The rest is read out all the same, so
+    // that the entry is still checked to its end.
+    MoveTo(Step::kReadEntry);
+  }
+}
+
+std::ptrdiff_t BookCheck::PullChunk() noexcept {
   const std::ptrdiff_t read = entryReader_.Read(chunk_);
   if (read > 0) {
     const auto bytes = static_cast<std::uint64_t>(read);
@@ -548,8 +727,17 @@ void BookCheck::ReadEntry() noexcept {
     if (entry_.method == epub::kZipDeflated) {
       book_.inflatedOut += bytes;
     }
-    return;
   }
+  return read;
+}
+
+void BookCheck::ReadEntry() noexcept {
+  if (PullChunk() <= 0) {
+    EndEntryRead();
+  }
+}
+
+void BookCheck::EndEntryRead() noexcept {
   book_.bytesIn += entry_.compressedSize;
   if (entry_.method == epub::kZipDeflated) {
     book_.inflatedIn += entry_.compressedSize;
@@ -599,6 +787,15 @@ void BookCheck::EndBook() noexcept {
   times.Text("book ").Number(books_).Text(": ");
   AddTimes(times, book_);
   (void)stream_.SendText(times.View());
+  book_.xmlEvents = digest_.Events();
+  book_.xmlEventBytes = digest_.Bytes();
+  xmlChecksum_ = digest_.Checksum();
+  if (book_.xmlDocuments != 0) {
+    Line xml;
+    xml.Text("book ").Number(books_).Text(": ");
+    AddXml(xml, book_, &xmlChecksum_);
+    (void)stream_.SendText(xml.View());
+  }
 
   Add(totals_, book_);
   if (!sound) {
@@ -652,6 +849,7 @@ void BookCheck::Finish(bool passed) noexcept {
   bookCheck.Set(passed ? 1 : 0);
   bookCheckBooks.Set(books_);
   inflateKbPerSecond.Set(Clamped(KbPerSecond(totals_.inflatedOut, totals_.inflateUs)));
+  xmlKbPerSecond.Set(Clamped(KbPerSecond(totals_.xmlBytes, totals_.xmlUs)));
   BN_TRACE_TOP_SPAN_SINCE(kSpanBookCheck, beganTrace_, passed ? 1 : 0);
 }
 

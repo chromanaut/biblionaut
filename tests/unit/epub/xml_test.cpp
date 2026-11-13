@@ -15,7 +15,9 @@
 #include <vector>
 
 #include "core/byte_source.h"
+#include "core/checksum.h"
 #include "core/metrics.h"
+#include "epub/xml_digest.h"
 
 namespace {
 
@@ -46,8 +48,8 @@ std::span<const std::uint8_t> BytesOf(std::string_view text) {
 //   -text          text, the pieces it came in joined up
 //   &name          an entity that was not expanded
 //
-// with the line ends, tabs and backslashes in text and values written as
-// \n, \t and \\.
+// with the line ends, tabs, carriage returns and backslashes in text and
+// values written as \n, \t, \r and \\.
 class Recorder final : public bn::epub::XmlHandler {
  public:
   void OnStartElement(std::string_view name, const XmlAttributes& attributes) noexcept override {
@@ -97,6 +99,8 @@ class Recorder final : public bn::epub::XmlHandler {
         out += "\\n";
       } else if (ch == '\t') {
         out += "\\t";
+      } else if (ch == '\r') {
+        out += "\\r";
       } else if (ch == '\\') {
         out += "\\\\";
       } else {
@@ -780,6 +784,70 @@ TEST(XmlStatus, EveryStatusHasAName) {
   EXPECT_STREQ(bn::epub::XmlStatusName(XmlStatus::kNoMemory), "no memory");
   EXPECT_STREQ(bn::epub::XmlStatusName(XmlStatus::kSourceFailed), "source failed");
   EXPECT_STREQ(bn::epub::XmlStatusName(XmlStatus::kStopped), "stopped");
+}
+
+// The digest is the same lines as the Recorder writes, checksummed as
+// they go by and not kept.
+TEST(XmlEventDigest, IsTheCountAndTheChecksumOfTheEventsWrittenAsLines) {
+  const std::string doctype = R"(<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "xhtml11.dtd">)";
+  const std::array<std::string, 5> documents = {
+      "<a/>",
+      "<a>text</a>",
+      doctype + "<html><p class=\"a\tb\" id='c\\d'>one&nbsp;two &amp; three\n\tfour\\five&#13;six</p><br/>tail</html>",
+      "<a x=\"1\" y=\"\">" + std::string(5'000, 't') + "<b/>" + std::string(3'000, 'u') + "</a>",
+      "<a><b>text and then a mistake</c></a>",
+  };
+  std::vector<std::uint8_t> memory(32'768);
+  XmlParser parser(memory);
+  std::string allLines;
+  bn::epub::XmlEventDigest running;
+  for (const std::string& document : documents) {
+    Recorder recorder;
+    PiecewiseSource whole(document, 4096);
+    (void)parser.Parse(whole, recorder);
+    const std::string lines = recorder.Events();
+    const std::uint32_t checksum = bn::core::Crc32(BytesOf(lines));
+    const auto count = static_cast<std::uint32_t>(std::count(lines.begin(), lines.end(), '\n'));
+    ASSERT_GT(count, 0u) << document;
+
+    // However the document, and so its text, is cut up.
+    for (const std::size_t pieceBytes : {1u, 3u, 7u, 4096u}) {
+      bn::epub::XmlEventDigest digest;
+      PiecewiseSource source(document, pieceBytes);
+      (void)parser.Parse(source, digest);
+      digest.EndDocument();
+      EXPECT_EQ(digest.Checksum(), checksum) << document.substr(0, 40) << " " << pieceBytes;
+      EXPECT_EQ(digest.Events(), count) << document.substr(0, 40);
+      EXPECT_EQ(digest.Bytes(), lines.size()) << document.substr(0, 40);
+    }
+
+    // And one digest for several documents is the digest of them all, end to end.
+    allLines += lines;
+    PiecewiseSource source(document, 100);
+    (void)parser.Parse(source, running);
+    running.EndDocument();
+    EXPECT_EQ(running.Checksum(), bn::core::Crc32(BytesOf(allLines)));
+    EXPECT_EQ(running.Bytes(), allLines.size());
+  }
+  EXPECT_NE(allLines.find("-one\n&nbsp\n-two & three\\n\\tfour\\\\five\\rsix\n"), std::string::npos) << allLines;
+
+  running.Reset();
+  EXPECT_EQ(running.Checksum(), 0u);
+  EXPECT_EQ(running.Events(), 0u);
+  EXPECT_EQ(running.Bytes(), 0u);
+  running.EndDocument();
+  EXPECT_EQ(running.Bytes(), 0u) << "with no text waiting there is nothing to end";
+}
+
+TEST(XmlEventDigest, KnowsAnXmlFileByTheEndOfItsName) {
+  for (const char* name : {"a.xhtml", "OEBPS/text/chapter 1.XHTML", "b.html", "c.htm", "d.xml", "content.opf",
+                           "toc.ncx", "TOC.NCX", ".xml", "two.dots.Html"}) {
+    EXPECT_TRUE(bn::epub::HasXmlFileEnding(name)) << name;
+  }
+  for (const char* name : {"", "xml", "a.xhtm", "a.css", "a.jpg", "a.xhtml.bak", "a.xmlx", "html", "a.opf/", "mimetype",
+                           "a.ht", "a_xml"}) {
+    EXPECT_FALSE(bn::epub::HasXmlFileEnding(name)) << name;
+  }
 }
 
 // A chapter with something of everything in it, for the two tests below.

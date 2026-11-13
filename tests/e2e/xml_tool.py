@@ -257,7 +257,13 @@ def main() -> int:
                 expect(said[info.filename] == ("ok", checksum(expected), len(expected)),
                        f"book.epub: {info.filename}: bn-xml says {said[info.filename]}, "
                        f"Python's expat ok, {checksum(expected):08x}, {len(expected)}")
-        expect(lines[-1].startswith(f"{len(wanted)} documents, 0 failed; "), f"book.epub: the last line is {lines[-1]!r}")
+            # And all of them run together, which is what a device's book check reports.
+            everything: list[str] = []
+            for info in wanted:
+                everything += reference_events(archive.read(info))[1]
+        expect(lines[-1].startswith(f"{len(wanted)} documents, 0 failed; {len(everything)} events, "
+                                    f"checksum of all {checksum(everything):08x}; "),
+               f"book.epub: the last line is {lines[-1]!r}")
 
         # And an EPUB with a document in it that is not XML.
         with zipfile.ZipFile(work / "bad.epub", "w", zipfile.ZIP_DEFLATED) as archive:

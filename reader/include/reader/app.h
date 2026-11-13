@@ -111,7 +111,7 @@ class App {
   core::TraceStream stream_;
   PatternViewer viewer_;
   // The checks, each on the heap and only when asked for: the storage
-  // check is 9 KB and the book check 48 KB. They are kept twice. These
+  // check is 9 KB and the book check 81 KB. They are kept twice. These
   // two are for telling callers about them,
   StorageCheck* storageCheck_ = nullptr;
   BookCheck* bookCheck_ = nullptr;

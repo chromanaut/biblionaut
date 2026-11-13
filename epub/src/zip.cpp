@@ -348,6 +348,37 @@ std::ptrdiff_t ZipEntryReader::Raw::Read(std::span<std::uint8_t> dst) noexcept {
 ZipEntryReader::ZipEntryReader(std::span<std::uint8_t> window) noexcept
     : inflater_(raw_, window), hasWindow_(window.size() >= core::Inflater::kWindowBytes) {}
 
+ZipStatus ReadZipEntryName(core::BlockFile& file, const ZipEntry& entry, std::span<char> name,
+                           std::size_t& length) noexcept {
+  length = 0;
+  if (!file.IsOpen()) {
+    return ZipStatus::kNotOpen;
+  }
+  const std::uint32_t fileSize = file.Size();
+  if (std::uint64_t{entry.headerOffset} + kLocalHeaderBytes > fileSize) {
+    return ZipStatus::kDamaged;
+  }
+  std::array<std::uint8_t, kLocalHeaderBytes> header{};
+  if (!file.ReadAt(entry.headerOffset, header)) {
+    return ZipStatus::kStorageFailed;
+  }
+  if (U32(header, 0) != kLocalSignature) {
+    return ZipStatus::kDamaged;
+  }
+  const std::size_t nameLength = U16(header, 26);
+  if (std::uint64_t{entry.headerOffset} + kLocalHeaderBytes + nameLength > fileSize) {
+    return ZipStatus::kDamaged;
+  }
+  const std::size_t wanted = std::min(nameLength, name.size());
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): characters as the bytes they are.
+  const std::span<std::uint8_t> bytes(reinterpret_cast<std::uint8_t*>(name.data()), wanted);
+  if (wanted != 0 && !file.ReadAt(entry.headerOffset + static_cast<std::uint32_t>(kLocalHeaderBytes), bytes)) {
+    return ZipStatus::kStorageFailed;
+  }
+  length = nameLength;
+  return ZipStatus::kOk;
+}
+
 ZipStatus ZipEntryReader::Open(core::BlockFile& file, const ZipEntry& entry) noexcept {
   finished_ = false;
   remaining_ = 0;

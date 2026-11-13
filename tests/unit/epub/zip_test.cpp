@@ -958,6 +958,76 @@ TEST(ZipEntryReader, ReportsCompressedDataThatIsDamaged) {
   EXPECT_LT(harmless, 16);
 }
 
+TEST(ZipEntryName, IsReadBackFromTheEntrysOwnHeader) {
+  const Sample sample;
+  ZipFixture f(sample.zip);
+  ASSERT_EQ(f.archive.Open(f.file), ZipStatus::kOk);
+  // Every entry of the file: the name the directory gives it is the name
+  // read back from where the entry is.
+  ZipArchive::Cursor cursor;
+  std::array<char, 300> listed{};
+  std::array<char, 300> name{};
+  int entries = 0;
+  for (;;) {
+    ZipEntry entry;
+    if (f.archive.Next(cursor, entry, listed) != ZipStatus::kOk) {
+      break;
+    }
+    std::size_t length = 99;
+    ASSERT_EQ(bn::epub::ReadZipEntryName(f.file, entry, name, length), ZipStatus::kOk);
+    EXPECT_EQ(std::string_view(name.data(), length), std::string_view(listed.data(), entry.nameLength));
+    ++entries;
+  }
+  EXPECT_EQ(static_cast<std::uint32_t>(entries), f.archive.EntryCount());
+  EXPECT_GT(entries, 3);
+
+  // Into less room than it needs: its start, and how long all of it is.
+  ZipEntry entry;
+  ASSERT_EQ(f.archive.Find("OEBPS/chapter one.xhtml", entry), ZipStatus::kOk);
+  std::array<char, 8> small{};
+  small.fill('#');
+  std::size_t length = 0;
+  ASSERT_EQ(bn::epub::ReadZipEntryName(f.file, entry, std::span(small).first(5), length), ZipStatus::kOk);
+  EXPECT_EQ(length, 23u);
+  EXPECT_EQ(std::string_view(small.data(), 8), "OEBPS###");
+  ASSERT_EQ(bn::epub::ReadZipEntryName(f.file, entry, std::span<char>(), length), ZipStatus::kOk);
+  EXPECT_EQ(length, 23u);
+}
+
+TEST(ZipEntryName, IsNotReadFromWhatIsNotAnEntry) {
+  const Sample sample;
+  const auto size = static_cast<std::uint32_t>(sample.zip.size());
+  std::array<char, 300> name{};
+  std::size_t length = 99;
+  ZipFixture f(sample.zip);
+  ASSERT_EQ(f.archive.Open(f.file), ZipStatus::kOk);
+  ZipEntry entry;
+  ASSERT_EQ(f.archive.Find("OEBPS/chapter one.xhtml", entry), ZipStatus::kOk);
+
+  // Where there is no room for a header, or no header.
+  for (const std::uint32_t offset :
+       {size - 29, size, 0xFFFFFFFEU, static_cast<std::uint32_t>(sample.builder.Directory())}) {
+    ZipEntry elsewhere = entry;
+    elsewhere.headerOffset = offset;
+    EXPECT_EQ(bn::epub::ReadZipEntryName(f.file, elsewhere, name, length), ZipStatus::kDamaged) << offset;
+    EXPECT_EQ(length, 0u);
+  }
+  // A header that says its name runs past the end of the file.
+  {
+    Bytes zip = sample.zip;
+    Put16(zip, sample.builder.At(2).header + field::kHeaderNameLength, 0xFFFF);
+    ZipFixture damaged(zip);
+    EXPECT_EQ(bn::epub::ReadZipEntryName(damaged.file, entry, name, length), ZipStatus::kDamaged);
+  }
+  // Storage that fails, and a file that is not open.
+  f.storage.failReads = true;
+  f.file.Close();
+  ASSERT_EQ(f.file.Open(f.storage, "/book.epub", OpenMode::kRead), StorageStatus::kOk);
+  EXPECT_EQ(bn::epub::ReadZipEntryName(f.file, entry, name, length), ZipStatus::kStorageFailed);
+  f.file.Close();
+  EXPECT_EQ(bn::epub::ReadZipEntryName(f.file, entry, name, length), ZipStatus::kNotOpen);
+}
+
 TEST(ZipEntryReader, ReadsOneEntryAfterAnother) {
   const Bytes first = Text(50'000, 23);
   const Bytes second = Text(20'000, 24);

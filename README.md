@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML) and developer scripts (`bn-symbolize` for crash reports) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself) and developer scripts (`bn-symbolize` for crash reports) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests |
 | `corpus/` | Test books |
@@ -50,7 +50,7 @@ Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Two
 things are downloaded when CMake configures, each checked against a hash:
 expat, the XML parser, which is C and is why a C compiler is needed, and
 GoogleTest. The tests also link zlib, to check the inflater against: macOS
-has it, and on Linux it is the `zlib1g-dev` package. Four of the end-to-end
+has it, and on Linux it is the `zlib1g-dev` package. Five of the end-to-end
 tests are run only if Python 3 is found, and one of them makes more of its
 test files if there is a `zip` command.
 
@@ -506,6 +506,117 @@ them, and damage one in every way they can think of. An end-to-end test
 (`tests/e2e/xml_tool.py`) compares `bn-xml` with the expat that Python
 carries, which is another build and another version driven by other code:
 every event of every document has to agree.
+
+## What a book says of itself
+
+`epub/package.h` reads the two files an EPUB describes itself with:
+`META-INF/container.xml`, which says where the package file is, and the
+package file (the OPF), which lists every file of the book and the order
+its documents are read in. `Package::Read` gives back:
+
+- the title, the author and the language: the first of each that has
+  anything in it, with its spaces tidied;
+- the spine, which is the documents in reading order, each with the ZIP
+  entry it is in, its kind, and whether the book counts it as part of the
+  run of the text (`linear="no"` marks one that is not);
+- the entry of the cover picture, of the EPUB 3 table of contents (the
+  nav document) and of the EPUB 2 one (the NCX), where the book has them.
+  The tables of contents are found, not yet read.
+
+How it does that:
+
+- **The manifest is kept as numbers, not as text.** A book lists its files
+  twice over: the package names each by an id and a path, and the ZIP file
+  has an entry for each path. For every file the package lists, 16 bytes
+  are kept: a number of 48 bits worked out from its id, another from its
+  path (`NameHash`, in `epub/book_path.h`), its kind, and a few notes. A
+  document of the spine is 28 bytes. So a book of 800 files and 400
+  documents is read in 24 KB, whatever the length of its names.
+- **The ZIP directory is gone through once.** When the package has been
+  read, every entry of the ZIP file is taken in the file's own order, its
+  name turned into the same kind of number, and that looked for among
+  the files that are wanted: the documents of the spine, the cover and the
+  tables of contents. It stops when it has them all. Looking each file up
+  by name instead would read the directory again for every one, since a
+  ZIP file's order is seldom the package's.
+- **Paths** in the package are worked out the way a link is
+  (`ResolveBookPath`): from the folder the package file is in, with `..`
+  and `.` followed (never to above the top of the book), `%20` and the
+  like turned back into bytes, and anything after a `#` dropped. A
+  reference to somewhere else, such as an address on the internet, is not
+  a file of the book and is left out.
+- **Memory**: the caller gives a block, and the records are made in it,
+  files from one end and documents from the other. Nothing comes from the
+  general heap. A book that needs more than the block is refused
+  (`kNoMemory`). The parser's memory is the caller's as well
+  (`XmlParser`).
+- **Two names with one number.** Nothing checks a name against the text
+  it came from, so two different names in one book that came to the same
+  number would be taken for each other. With 48 bits, that is one book in
+  some 500 million for a book of a thousand files. `ReadZipEntryName`
+  reads an entry's name back out of the ZIP file, for whoever needs to be
+  sure.
+- **What is put up with**, because real books do it: metadata written
+  with capitals or with any prefix (`dc:Title`); an id in the spine that
+  the manifest has not got (left out, and counted); a file the package
+  lists that is not in the ZIP file (kept, and marked as not there); a
+  cover named by EPUB 2's `<meta name="cover">` or by EPUB 3's
+  `properties="cover-image"`, the second being believed first; a
+  container that names its package with `%20` in the path; a package
+  that stops being XML after its spine (`CutShort()`).
+- **Bad input**: neither file is trusted. Whatever bytes they hold,
+  reading ends with an answer: `kNoContainer`, `kNoPackage`,
+  `kNotPackage` for one with no documents in its spine, `kUnreadable` for
+  a ZIP file damaged where it had to be read, or `kNoMemory`. After any
+  of those the spine is empty.
+
+`bn-epub` runs the same code on the desktop:
+
+```
+./build/host/tools/epub/bn-epub info book.epub
+./build/host/tools/epub/bn-epub info book.epub --memory 4096
+```
+
+For a small book with some things wrong with it, it prints:
+
+```
+title: Untidy
+author: -
+language: -
+package: deep/er/package.opf
+manifest: 5
+cover: -
+nav: -
+ncx: deep/er/toc.ncx
+spine: 4
++ xhtml deep/er/cover.xhtml
++ xhtml ?
++ xhtml deep/er/one.xhtml
+- xhtml deep/er/cover.xhtml
+unknown: 2
+memory: 248
+cost: packages_read=1 packages_failed=0 xml_documents=2 xml_failures=0 zip_finds=2 zip_records=16 sd_reads=2 sd_read_bytes=2504 sd_writes=0 sd_write_bytes=0 sd_syncs=0 sd_seeks=0 xml_memory=9536[8752..9536]
+```
+
+A `-` for the author, the cover or any of the first lines means the book
+has none. Each line of the spine is `+` for a document in the run of the
+text or `-` for one set aside, then its kind, then the name of its entry
+in the ZIP file, or `?` where the ZIP file has no such file. `unknown` (printed only
+when there are any) counts the documents the spine named that the
+manifest has not got. `memory` is how many bytes of the block were used,
+and `cost` is the counters after the reading: here two lookups by name
+(the container and the package file), 16 records of the directory, and two
+reads of the file. `--memory` holds it to a block of that many bytes, as a
+device would; it exits with 1, and says why, for a file it cannot read as
+a book.
+
+The unit tests say what should be made of books written for them, in
+either version of EPUB and with their files in any order in the ZIP file,
+and of every bit of a package file turned over and every length it can be
+cut to. An end-to-end test (`tests/e2e/epub_tool.py`) makes books and
+compares `bn-epub` with a reading of them by Python's own XML parser and
+ZIP reader, written separately for the test: title, author, cover,
+tables of contents and every document of the spine have to agree.
 
 ## Device build
 

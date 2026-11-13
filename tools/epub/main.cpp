@@ -20,6 +20,7 @@
 #include "epub/package.h"
 #include "epub/package_digest.h"
 #include "epub/toc.h"
+#include "epub/toc_digest.h"
 #include "epub/xml.h"
 #include "epub/zip.h"
 #include "support/one_file.h"
@@ -66,7 +67,9 @@ void PrintUsage(const char* program) {
                "  spine from 0, or - for none; the place within the document (the id after\n"
                "  the link's #), or - for its start; and what the entry is called\n"
                "\n"
-               "and then how many entries there were, and the cost of all of it.\n"
+               "and then how many entries there were, a checksum of them\n"
+               "(epub/toc_digest.h), which is what a device's book check reports for the same\n"
+               "book, and the cost of all of it.\n"
                "\n"
                "  --nav, --ncx    read that table of contents, where a book has both. Without\n"
                "                  either: the nav if the book has one, the NCX if not\n"
@@ -189,10 +192,11 @@ int Info(const std::string& path, std::size_t memoryBytes) {
 }
 
 // Keeps a line for each entry of a table of contents, to print once it is
-// known that the table could be read.
+// known that the table could be read, and takes the checksum of them all.
 class EntryLines final : public bn::epub::TocHandler {
  public:
   bool OnEntry(const bn::epub::TocEntry& entry) noexcept override {
+    (void)digest_.OnEntry(entry);
     lines_ += std::to_string(entry.depth) + "\t";
     lines_ += entry.document == bn::epub::Package::kNotInSpine ? "-" : std::to_string(entry.document);
     lines_ += "\t" + (entry.fragment.empty() ? std::string("-") : Printable(entry.fragment)) + "\t";
@@ -200,9 +204,11 @@ class EntryLines final : public bn::epub::TocHandler {
     return true;
   }
   const std::string& Lines() const noexcept { return lines_; }
+  std::uint32_t Checksum() const noexcept { return digest_.Checksum(); }
 
  private:
   std::string lines_;
+  bn::epub::TocDigest digest_;
 };
 
 int Toc(const std::string& path, std::size_t memoryBytes, TocKind kind) {
@@ -221,6 +227,7 @@ int Toc(const std::string& path, std::size_t memoryBytes, TocKind kind) {
   bn::core::DefaultMetrics().FormatLine(cost);
   std::printf("toc: %s\n%s", bn::epub::TocKindName(toc.Kind()), lines.Lines().c_str());
   std::printf("entries: %u\n", static_cast<unsigned>(toc.Entries()));
+  std::printf("checksum: %08x\n", static_cast<unsigned>(lines.Checksum()));
   if (toc.CutShort()) {
     std::printf("cut short: the file stopped being XML after these\n");
   }

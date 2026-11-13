@@ -12,6 +12,8 @@
 #include "core/storage.h"
 #include "core/trace_stream.h"
 #include "epub/package.h"
+#include "epub/toc.h"
+#include "epub/toc_digest.h"
 #include "epub/xml.h"
 #include "epub/xml_digest.h"
 #include "epub/zip.h"
@@ -28,9 +30,10 @@ namespace bn::reader {
 //      further; or the top directory and its folders, if there is no
 //      /books or no book there;
 //   3. takes each file found whose name ends in ".epub" for a book, and
-//      first opens it as a reader would: finds its directory and reads
-//      its package (epub/package.h), which says what the book is called
-//      and where its documents are. Then closes it again;
+//      first opens it as a reader would: finds its directory, reads its
+//      package (epub/package.h), which says what the book is called and
+//      where its documents are, and then reads its table of contents
+//      (epub/toc.h). Then closes it again;
 //   4. opens it afresh, reads every entry to its end, which checks the
 //      entry's size and checksum, and looks each entry up by its name;
 //   5. parses every entry with an XML file's name as it is read, counting
@@ -38,26 +41,27 @@ namespace bn::reader {
 //   6. says what each book came to, and all of them together, in lines of
 //      text on the diagnostic stream.
 //
-// Step 3 is what `bn-epub info` does to a file on the desktop, step 4 what
-// `bn-zip check` does, read for read, and step 5 what `bn-xml book` does,
-// so that each can be compared: a book should come to the same package
-// (by its checksum, epub/package_digest.h) in the same number of reads,
-// the same entries, the same bytes and the same number of reads again,
-// and its XML to the same events.
+// Step 3 is what `bn-epub info` and `bn-epub toc` do to a file on the
+// desktop, step 4 what `bn-zip check` does, read for read, and step 5 what
+// `bn-xml book` does, so that each can be compared: a book should come to
+// the same package and the same table of contents (by their checksums,
+// epub/package_digest.h and epub/toc_digest.h) in the same number of
+// reads, the same entries, the same bytes and the same number of reads
+// again, and its XML to the same events.
 //
 // Time is counted four ways: inside storage, which on a device is the
 // card; reading out compressed entries with storage's share taken off,
 // which is the processor inflating and checksumming; parsing XML, with the
 // reading and inflating of it taken off; and all of it. Reading the
-// package is counted by itself, in time and in reads, and is in none of
-// those. It is done in one go, however long it takes, as it would be for
-// a reader.
+// package and reading the table of contents are each counted by
+// themselves, in time and in reads, and are in none of those. The package
+// is read in one go, however long it takes, as it would be for a reader.
 //
 // Otherwise it works for about 20 ms each Tick() and then lets the
 // application carry on, so a run takes longer by the clock than the times
 // it reports, which count its own work only.
 //
-// Used by one task. It is about 108 KB, most of that the inflater's
+// Used by one task. It is about 109 KB, most of that the inflater's
 // window, the XML parser's memory and the package reader's: too big for a
 // stack.
 class BookCheck final : public DeviceCheck {
@@ -111,6 +115,19 @@ class BookCheck final : public DeviceCheck {
     std::uint64_t packageUs = 0;          // and all the time it took.
     std::uint64_t packageLongestUs = 0;   // The longest one book took,
     std::uint32_t packageMostMemory = 0;  // and the most of the reader's memory one used.
+
+    // Reading the book's table of contents, which follows with the book
+    // still open. None of this is in the figures above either.
+    std::uint32_t tocsRead = 0;
+    std::uint32_t tocsNav = 0;       // Of those read, how many were a nav and not an NCX.
+    std::uint32_t tocsNone = 0;      // The book has none.
+    std::uint32_t tocsNotRead = 0;   // It has one, which could not be read.
+    std::uint32_t tocEntries = 0;    // The entries of those read.
+    std::uint32_t tocReads = 0;      // Reads of storage,
+    std::uint64_t tocReadBytes = 0;  // and what they brought.
+    std::uint64_t tocStorageUs = 0;  // Time spent inside storage,
+    std::uint64_t tocUs = 0;         // and all the time it took.
+    std::uint64_t tocLongestUs = 0;  // The longest one book took.
   };
 
   // How much of an entry is read out at a time.
@@ -153,6 +170,9 @@ class BookCheck final : public DeviceCheck {
   // The checksum of what the package of the book last begun was found to
   // hold (epub/package_digest.h); 0 if it could not be read.
   std::uint32_t PackageChecksum() const noexcept { return packageChecksum_; }
+  // And of the entries of its table of contents (epub/toc_digest.h); 0 if
+  // it has none, or none that could be read.
+  std::uint32_t TocChecksum() const noexcept { return tocChecksum_; }
 
  private:
   // Storage that passes everything on to another, counting the reads and
@@ -228,6 +248,7 @@ class BookCheck final : public DeviceCheck {
     kOpenFolder,
     kNextBook,
     kReadPackage,
+    kReadToc,
     kOpenBook,
     kNextEntry,
     kParseEntry,
@@ -242,6 +263,7 @@ class BookCheck final : public DeviceCheck {
   void OpenFolder() noexcept;
   void NextBook() noexcept;
   void ReadPackage() noexcept;
+  void ReadToc() noexcept;
   void OpenBook() noexcept;
   void NextEntry() noexcept;
   void ParseEntry() noexcept;
@@ -337,6 +359,12 @@ class BookCheck final : public DeviceCheck {
   alignas(8) std::array<std::uint8_t, kPackageMemoryBytes> packageMemory_{};
   epub::Package package_;
   std::uint32_t packageChecksum_ = 0;
+
+  // For the table of contents: what reads it, and what takes account of
+  // its entries.
+  epub::TocReader toc_;
+  epub::TocDigest tocDigest_;
+  std::uint32_t tocChecksum_ = 0;
 };
 
 }  // namespace bn::reader

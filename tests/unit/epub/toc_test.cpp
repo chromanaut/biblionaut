@@ -11,8 +11,10 @@
 #include <vector>
 
 #include "core/block_file.h"
+#include "core/checksum.h"
 #include "core/inflate.h"
 #include "epub/package.h"
+#include "epub/toc_digest.h"
 #include "storage_fakes.h"
 #include "zip_builder.h"
 
@@ -605,6 +607,57 @@ TEST(TocReader, ReadsItsFileOnceAndKeepsNothingOfIt) {
   // The file's blocks, each once, and no more than two reads besides.
   EXPECT_LE(f.storage.reads.size() - before, (ncx.size() / 4096) + 3);
   EXPECT_LT(sizeof(TocReader), 1100u) << "about 1 KB, whatever the table of contents";
+}
+
+TEST(TocDigest, IsOfALineForEachEntry) {
+  TocFixture f;
+  ASSERT_EQ(f.Open(BookOf({.ncx = Ncx(Point("Beginning", "a.xhtml") +
+                                      Point("Part  One", "b.xhtml", Point("Chapter 1", "b.xhtml#ch%201")) +
+                                      "<navPoint><navLabel><text>No target</text></navLabel></navPoint>" +
+                                      Point("", "c.xhtml#end"))})),
+            PackageStatus::kOk);
+  bn::epub::TocDigest digest;
+  ASSERT_EQ(f.toc.Read(f.package, f.entries, f.reader, f.xml, digest), TocStatus::kOk);
+  // How far in, the document, the place within it and the label, with a
+  // tab between and "-" for a document or a place there is none of.
+  const std::string lines =
+      "0\t0\t-\tBeginning\n0\t1\t-\tPart One\n1\t1\tch 1\tChapter 1\n0\t-\t-\tNo target\n"
+      "0\t2\tend\t\n";
+  EXPECT_EQ(digest.Checksum(), bn::core::Crc32(BytesOf(lines))) << lines;
+  EXPECT_EQ(digest.Entries(), 5u);
+  EXPECT_EQ(digest.Levels(), 2u);
+  EXPECT_EQ(digest.WithoutDocument(), 1u);
+
+  // It goes on over whatever it is given next, until it is started again.
+  ASSERT_EQ(f.toc.Read(f.package, f.entries, f.reader, f.xml, digest), TocStatus::kOk);
+  EXPECT_EQ(digest.Checksum(), bn::core::Crc32(BytesOf(lines + lines)));
+  EXPECT_EQ(digest.Entries(), 10u);
+  EXPECT_EQ(digest.WithoutDocument(), 2u);
+  digest.Reset();
+  EXPECT_EQ(digest.Checksum(), 0u);
+  EXPECT_EQ(digest.Entries(), 0u);
+  EXPECT_EQ(digest.Levels(), 0u);
+  EXPECT_EQ(digest.WithoutDocument(), 0u);
+  ASSERT_EQ(f.toc.Read(f.package, f.entries, f.reader, f.xml, digest), TocStatus::kOk);
+  EXPECT_EQ(digest.Checksum(), bn::core::Crc32(BytesOf(lines)));
+}
+
+TEST(TocDigest, WritesNumbersOfAnyLengthAndNeverAsksForNoMore) {
+  bn::epub::TocDigest digest;
+  // Numbers with every digit, and one with noughts inside it.
+  EXPECT_TRUE(
+      digest.OnEntry({.label = "Deep", .labelCut = true, .depth = 65'535, .document = 1'234'567'890, .fragment = "x"}));
+  EXPECT_TRUE(digest.OnEntry({.label = "", .labelCut = false, .depth = 10, .document = 100, .fragment = ""}));
+  EXPECT_EQ(digest.Checksum(), bn::core::Crc32(BytesOf("65535\t1234567890\tx\tDeep\n10\t100\t-\t\n")));
+  EXPECT_EQ(digest.Entries(), 2u);
+  EXPECT_EQ(digest.Levels(), 65'536u);
+  EXPECT_EQ(digest.WithoutDocument(), 0u);
+  // Anything a label holds changes it, a different label most of all.
+  bn::epub::TocDigest other;
+  EXPECT_TRUE(
+      other.OnEntry({.label = "Deeq", .labelCut = true, .depth = 65'535, .document = 1'234'567'890, .fragment = "x"}));
+  EXPECT_TRUE(other.OnEntry({.label = "", .labelCut = false, .depth = 10, .document = 100, .fragment = ""}));
+  EXPECT_NE(other.Checksum(), digest.Checksum());
 }
 
 TEST(TocReader, NamesEveryStatusAndKind) {

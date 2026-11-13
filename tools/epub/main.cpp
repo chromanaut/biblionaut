@@ -1,6 +1,7 @@
 // bn-epub: says what a book says of itself, read with the code the
 // firmware reads it with: its title and author, the documents it is made
-// of in reading order, and where its cover and its tables of contents are.
+// of in reading order, where its cover and its tables of contents are,
+// and what a table of contents has in it.
 
 #include <array>
 #include <cstddef>
@@ -18,6 +19,7 @@
 #include "core/storage.h"
 #include "epub/package.h"
 #include "epub/package_digest.h"
+#include "epub/toc.h"
 #include "epub/xml.h"
 #include "epub/zip.h"
 #include "support/one_file.h"
@@ -26,6 +28,8 @@ namespace {
 
 using bn::core::StorageStatus;
 using bn::epub::PackageStatus;
+using bn::epub::TocKind;
+using bn::epub::TocStatus;
 using bn::epub::ZipStatus;
 
 // More than any book needs, so that what a book uses is what it wants.
@@ -37,8 +41,9 @@ constexpr std::size_t kXmlMemoryBytes = 16UL * 1024UL;
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s info FILE [--memory BYTES]\n"
+               "       %s toc FILE [--nav | --ncx] [--memory BYTES]\n"
                "\n"
-               "Reads the package of the EPUB FILE the way the firmware does, and prints:\n"
+               "info reads the package of the EPUB FILE the way the firmware does, and prints:\n"
                "\n"
                "  title, author, language   as the book gives them\n"
                "  package                   the path of its package file\n"
@@ -54,12 +59,23 @@ void PrintUsage(const char* program) {
                "  memory                    the most of its memory the reader used, in bytes\n"
                "  cost                      what it asked of the file\n"
                "\n"
+               "toc reads the book's table of contents as well, and prints which kind it\n"
+               "read (toc: nav, or toc: ncx), then a line for each entry, with tabs between:\n"
+               "\n"
+               "  how far in it is, from 0; the document it points into, by its place in the\n"
+               "  spine from 0, or - for none; the place within the document (the id after\n"
+               "  the link's #), or - for its start; and what the entry is called\n"
+               "\n"
+               "and then how many entries there were, and the cost of all of it.\n"
+               "\n"
+               "  --nav, --ncx    read that table of contents, where a book has both. Without\n"
+               "                  either: the nav if the book has one, the NCX if not\n"
                "  --memory BYTES  the memory the reader is given for the manifest and the\n"
                "                  spine (default: %zu)\n"
                "\n"
-               "In a path, a backslash and any byte below a space are printed as \\xNN.\n"
-               "Ends with 0 if the package was read, 1 if not.\n",
-               program, kDefaultMemoryBytes);
+               "In a path or a name, a backslash and any byte below a space are printed as\n"
+               "\\xNN. Ends with 0 if what was asked for was read, 1 if not.\n",
+               program, program, kDefaultMemoryBytes);
 }
 
 // Text as it is printed: every byte that could confuse a reader of lines
@@ -89,39 +105,57 @@ std::string PathOf(bn::core::BlockFile& file, const bn::epub::ZipEntry& entry) {
   return Printable(std::string_view(name.data(), length));
 }
 
-int Info(const std::string& path, std::size_t memoryBytes) {
-  bn::tools::OneFile storage(path);
+// A book open as the firmware has one open: twice, with its directory
+// found and its package read.
+struct Book {
+  Book(const std::string& path, std::size_t memoryBytes) : storage(path), memory(memoryBytes), package(memory) {}
+
+  // Opens the file and reads its package. Says why, and returns false, if
+  // that cannot be done.
+  bool Open(const std::string& path) {
+    if (storage.Start() != StorageStatus::kOk ||
+        directory.Open(storage, "/zip", bn::core::OpenMode::kRead) != StorageStatus::kOk ||
+        entries.Open(storage, "/zip", bn::core::OpenMode::kRead) != StorageStatus::kOk) {
+      std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
+      return false;
+    }
+    if (const ZipStatus status = archive.Open(directory); status != ZipStatus::kOk) {
+      std::fprintf(stderr, "error: %s: %s\n", path.c_str(), bn::epub::ZipStatusName(status));
+      return false;
+    }
+    const PackageStatus status = package.Read(archive, entries, reader, xml);
+    // What the reading cost, before anything is printed: printing a path
+    // reads it back from the file, which costs a read and is no part of it.
+    bn::core::DefaultMetrics().FormatLine(cost);
+    if (status != PackageStatus::kOk) {
+      std::fprintf(stderr, "error: %s: %s\n", path.c_str(), bn::epub::PackageStatusName(status));
+      return false;
+    }
+    return true;
+  }
+
+  bn::tools::OneFile storage;
   std::array<std::uint8_t, 4096> directoryBuffer{};
   std::array<std::uint8_t, 4096> entryBuffer{};
   bn::core::BlockFile directory{directoryBuffer};
   bn::core::BlockFile entries{entryBuffer};
   bn::epub::ZipArchive archive;
-  if (storage.Start() != StorageStatus::kOk ||
-      directory.Open(storage, "/zip", bn::core::OpenMode::kRead) != StorageStatus::kOk ||
-      entries.Open(storage, "/zip", bn::core::OpenMode::kRead) != StorageStatus::kOk) {
-    std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
-    return 1;
-  }
-  if (const ZipStatus status = archive.Open(directory); status != ZipStatus::kOk) {
-    std::fprintf(stderr, "error: %s: %s\n", path.c_str(), bn::epub::ZipStatusName(status));
-    return 1;
-  }
-  std::vector<std::uint8_t> window(bn::core::Inflater::kWindowBytes);
+  std::vector<std::uint8_t> window = std::vector<std::uint8_t>(bn::core::Inflater::kWindowBytes);
   bn::epub::ZipEntryReader reader{window};
-  std::vector<std::uint8_t> xmlMemory(kXmlMemoryBytes);
-  bn::epub::XmlParser xml(xmlMemory);
-  std::vector<std::uint8_t> memory(memoryBytes);
-  bn::epub::Package package(memory);
-
-  const PackageStatus status = package.Read(archive, entries, reader, xml);
-  // What the reading cost, before the printing below reads each path back
-  // from the file, which costs a read apiece and is no part of it.
+  std::vector<std::uint8_t> xmlMemory = std::vector<std::uint8_t>(kXmlMemoryBytes);
+  bn::epub::XmlParser xml{xmlMemory};
+  std::vector<std::uint8_t> memory;
+  bn::epub::Package package;
   std::array<char, 1024> cost{};
-  bn::core::DefaultMetrics().FormatLine(cost);
-  if (status != PackageStatus::kOk) {
-    std::fprintf(stderr, "error: %s: %s\n", path.c_str(), bn::epub::PackageStatusName(status));
+};
+
+int Info(const std::string& path, std::size_t memoryBytes) {
+  Book book(path, memoryBytes);
+  if (!book.Open(path)) {
     return 1;
   }
+  const bn::epub::Package& package = book.package;
+  bn::core::BlockFile& entries = book.entries;
   // What a book does not say is shown as "-", as a file it has not got is.
   const auto said = [](std::string_view text) { return text.empty() ? std::string("-") : Printable(text); };
   std::printf("title: %s\n", said(package.Title()).c_str());
@@ -150,6 +184,46 @@ int Info(const std::string& path, std::size_t memoryBytes) {
   }
   std::printf("checksum: %08x\n", static_cast<unsigned>(bn::epub::PackageChecksum(package)));
   std::printf("memory: %zu\n", package.MemoryUsed());
+  std::printf("cost: %s\n", book.cost.data());
+  return 0;
+}
+
+// Keeps a line for each entry of a table of contents, to print once it is
+// known that the table could be read.
+class EntryLines final : public bn::epub::TocHandler {
+ public:
+  bool OnEntry(const bn::epub::TocEntry& entry) noexcept override {
+    lines_ += std::to_string(entry.depth) + "\t";
+    lines_ += entry.document == bn::epub::Package::kNotInSpine ? "-" : std::to_string(entry.document);
+    lines_ += "\t" + (entry.fragment.empty() ? std::string("-") : Printable(entry.fragment)) + "\t";
+    lines_ += Printable(entry.label) + "\n";
+    return true;
+  }
+  const std::string& Lines() const noexcept { return lines_; }
+
+ private:
+  std::string lines_;
+};
+
+int Toc(const std::string& path, std::size_t memoryBytes, TocKind kind) {
+  Book book(path, memoryBytes);
+  if (!book.Open(path)) {
+    return 1;
+  }
+  bn::epub::TocReader toc;
+  EntryLines lines;
+  const TocStatus status = toc.Read(book.package, book.entries, book.reader, book.xml, lines, kind);
+  if (status != TocStatus::kOk) {
+    std::fprintf(stderr, "error: %s: %s\n", path.c_str(), bn::epub::TocStatusName(status));
+    return 1;
+  }
+  std::array<char, 1024> cost{};
+  bn::core::DefaultMetrics().FormatLine(cost);
+  std::printf("toc: %s\n%s", bn::epub::TocKindName(toc.Kind()), lines.Lines().c_str());
+  std::printf("entries: %u\n", static_cast<unsigned>(toc.Entries()));
+  if (toc.CutShort()) {
+    std::printf("cut short: the file stopped being XML after these\n");
+  }
   std::printf("cost: %s\n", cost.data());
   return 0;
 }
@@ -158,22 +232,28 @@ int Info(const std::string& path, std::size_t memoryBytes) {
 
 int main(int argc, char** argv) {
   const std::string command = argc > 1 ? argv[1] : "";
-  std::size_t memoryBytes = kDefaultMemoryBytes;
-  if (argc == 5 && std::strcmp(argv[3], "--memory") == 0) {
-    char* end = nullptr;
-    const unsigned long long asked = std::strtoull(argv[4], &end, 10);
-    if (end == nullptr || *end != '\0' || asked > (1ULL << 30U)) {
-      PrintUsage(argv[0]);
-      return 2;
-    }
-    memoryBytes = static_cast<std::size_t>(asked);
-  } else if (argc != 3) {
+  if (argc < 3 || (command != "info" && command != "toc")) {
     PrintUsage(argv[0]);
     return 2;
   }
-  if (command == "info") {
-    return Info(argv[2], memoryBytes);
+  std::size_t memoryBytes = kDefaultMemoryBytes;
+  TocKind kind = TocKind::kBest;
+  for (int i = 3; i < argc; ++i) {
+    const std::string option = argv[i];
+    if (option == "--memory" && i + 1 < argc) {
+      char* end = nullptr;
+      const unsigned long long asked = std::strtoull(argv[++i], &end, 10);
+      if (end == nullptr || *end != '\0' || asked > (1ULL << 30U)) {
+        PrintUsage(argv[0]);
+        return 2;
+      }
+      memoryBytes = static_cast<std::size_t>(asked);
+    } else if (command == "toc" && kind == TocKind::kBest && (option == "--nav" || option == "--ncx")) {
+      kind = option == "--nav" ? TocKind::kNav : TocKind::kNcx;
+    } else {
+      PrintUsage(argv[0]);
+      return 2;
+    }
   }
-  PrintUsage(argv[0]);
-  return 2;
+  return command == "info" ? Info(argv[2], memoryBytes) : Toc(argv[2], memoryBytes, kind);
 }

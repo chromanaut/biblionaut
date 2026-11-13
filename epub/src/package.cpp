@@ -7,6 +7,7 @@
 #include "core/metrics.h"
 #include "core/trace.h"
 #include "epub/trace_ids.h"
+#include "names.h"
 
 namespace bn::epub {
 
@@ -32,30 +33,6 @@ constexpr std::uint8_t With(std::uint8_t flags, std::uint32_t flag) noexcept {
 }
 constexpr std::uint8_t Without(std::uint8_t flags, std::uint32_t flag) noexcept {
   return static_cast<std::uint8_t>(std::uint32_t{flags} & ~flag);
-}
-
-constexpr char Lower(char ch) noexcept { return ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch; }
-
-// Whether two names are the same but for capitals among the letters of
-// English.
-bool SameButForCase(std::string_view a, std::string_view b) noexcept {
-  return a.size() == b.size() &&
-         std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return Lower(x) == Lower(y); });
-}
-
-// Whether `word` is one of the words of `list`, which has spaces between
-// them.
-bool HasWord(std::string_view list, std::string_view word) noexcept {
-  std::size_t start = 0;
-  for (std::size_t i = 0; i <= list.size(); ++i) {
-    if (i == list.size() || list[i] == ' ' || list[i] == '\t' || list[i] == '\n' || list[i] == '\r') {
-      if (std::string_view(list.data() + start, i - start) == word) {
-        return true;
-      }
-      start = i + 1;
-    }
-  }
-  return false;
 }
 
 bool IsPicture(MediaType type) noexcept {
@@ -436,7 +413,7 @@ bool Package::AddItem(std::uint64_t idHash, std::uint64_t pathHash, MediaType ty
                                                        .pathHigh = static_cast<std::uint16_t>(pathHash >> 32U),
                                                        .type = type,
                                                        .flags = flags,
-                                                       .spare = 0};
+                                                       .spineIndex = kNoSpineIndex};
   ++itemCount_;
   memoryUsed_ = std::max(memoryUsed_, used + sizeof(Item));
   return true;
@@ -471,6 +448,23 @@ std::uint32_t Package::ItemWithId(std::uint64_t idHash) const noexcept {
   return kNoItem;
 }
 
+std::size_t Package::SpineIndexOf(std::string_view path) const noexcept {
+  if (spineCount_ == 0) {
+    return kNotInSpine;  // No book, or one that could not be read.
+  }
+  const std::uint64_t hash = NameHash(path);
+  const auto low = static_cast<std::uint32_t>(hash);
+  const auto high = static_cast<std::uint16_t>(hash >> 32U);
+  for (std::uint32_t index = 0; index < itemCount_; ++index) {
+    const Item& item = ItemAt(index);
+    // Two items can have one path; the one the spine uses is the one.
+    if (item.pathLow == low && item.pathHigh == high && item.spineIndex != kNoSpineIndex) {
+      return item.spineIndex;
+    }
+  }
+  return kNotInSpine;
+}
+
 void Package::Resolve() noexcept {
   // The spine: each document's id becomes the item it names. One that
   // names no item is dropped.
@@ -482,7 +476,11 @@ void Package::Resolve() noexcept {
       ++unknownSpineItems_;
       continue;
     }
-    ItemAt(index).flags = With(ItemAt(index).flags, kWanted);
+    Item& item = ItemAt(index);
+    item.flags = With(item.flags, kWanted);
+    if (item.spineIndex == kNoSpineIndex && kept < kNoSpineIndex) {
+      item.spineIndex = static_cast<std::uint16_t>(kept);
+    }
     SpineItem& out = spine_[kept++];
     out.linear = spine_[i].linear;
     out.entry = {};

@@ -76,6 +76,7 @@ bn_add_unit_test(epub_tests
   SOURCES
     unit/epub/book_path_test.cpp
     unit/epub/package_test.cpp
+    unit/epub/toc_test.cpp
     unit/epub/xml_test.cpp
     unit/epub/zip_test.cpp
   LIBS bn_epub)

@@ -13,6 +13,10 @@
 # Copies of each firmware build's ELF file, for symbolizing crash reports
 /.elf-archive/
 
+# Captures of the diagnostic stream (bn-trace | tee books.log). One from a
+# device can name the books on its card.
+*.log
+
 # Editors and OS
 /.cache/
 .DS_Store

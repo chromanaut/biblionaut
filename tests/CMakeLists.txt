@@ -52,6 +52,7 @@ bn_add_unit_test(core_tests
     unit/core/inflate_test.cpp
     unit/core/input_sampler_test.cpp
     unit/core/metrics_test.cpp
+    unit/core/region_heap_test.cpp
     unit/core/storage_test.cpp
     unit/core/trace_level0_test.cpp
     unit/core/trace_level1_test.cpp
@@ -72,6 +73,7 @@ bn_add_unit_test(draw_tests
 # compressing and the checksums.
 bn_add_unit_test(epub_tests
   SOURCES
+    unit/epub/xml_test.cpp
     unit/epub/zip_test.cpp
   LIBS bn_epub)
 target_link_libraries(epub_tests PRIVATE ZLIB::ZLIB)
@@ -146,6 +148,14 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/zip_tool.py
       $<TARGET_FILE:bn-zip> ${CMAKE_CURRENT_BINARY_DIR}/zip_tool)
   set_tests_properties(e2e.ZipTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-xml, and through it the XML parser, against Python's own expat on
+  # the same documents, event for event.
+  add_test(
+    NAME e2e.XmlTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/xml_tool.py
+      $<TARGET_FILE:bn-xml> ${CMAKE_CURRENT_BINARY_DIR}/xml_tool)
+  set_tests_properties(e2e.XmlTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
   # against bn-zip and zipfile on the same files.

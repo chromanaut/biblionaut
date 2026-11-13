@@ -59,8 +59,11 @@ project(biblionaut)
 # section flags, libc selection) but none of its include directories.
 idf_build_get_property(bn_idf_compile_options COMPILE_OPTIONS GENERATOR_EXPRESSION)
 idf_build_get_property(bn_idf_cxx_compile_options CXX_COMPILE_OPTIONS GENERATOR_EXPRESSION)
+idf_build_get_property(bn_idf_c_compile_options C_COMPILE_OPTIONS GENERATOR_EXPRESSION)
 add_compile_options("${bn_idf_compile_options}")
 add_cxx_compile_options("${bn_idf_cxx_compile_options}")
+# For the one thing among them that is C: expat (third_party/expat).
+add_c_compile_options("${bn_idf_c_compile_options}")
 
 # ESP-IDF's flags already include -Werror (with a few exceptions), so the
 # parts do not add their own here.

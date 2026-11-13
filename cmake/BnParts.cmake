@@ -12,7 +12,11 @@
 # hw is not added here: the host build adds the desktop port (hw/), the device
 # build adds device support as an ESP-IDF component
 # (app/firmware/components/bn_hw).
+#
+# Before them comes what they use that is not ours, fetched and built by
+# the files under third_party/: expat, for epub.
 function(bn_add_portable_parts binary_root)
+  add_subdirectory("${BN_ROOT}/third_party/expat" "${binary_root}/third_party/expat")
   foreach(part core epub draw layout reader)
     add_subdirectory("${BN_ROOT}/${part}" "${binary_root}/${part}")
   endforeach()

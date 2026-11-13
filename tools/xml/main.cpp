@@ -32,6 +32,7 @@
 #include "core/inflate.h"
 #include "core/storage.h"
 #include "epub/xml.h"
+#include "epub/xml_digest.h"
 #include "epub/zip.h"
 #include "support/one_file.h"
 
@@ -61,7 +62,9 @@ void PrintUsage(const char* program) {
                "          whose names end in .xhtml .html .htm .xml .opf or .ncx, and prints\n"
                "          for each: how it ended, the checksum (CRC-32) of its events as\n"
                "          `events` would print them, how many there were, the most memory\n"
-               "          the parser used, the line it stopped at, and its name\n"
+               "          the parser used, the line it stopped at, and its name; and at the end\n"
+               "          what all of them came to, with the count and the checksum of all their\n"
+               "          events run together, which is what the firmware's book check reports\n"
                "\n"
                "  --memory BYTES  the memory the parser is given (default: %zu)\n"
                "\n"
@@ -154,6 +157,29 @@ class EventWriter final : public bn::epub::XmlHandler {
   std::uint32_t events_ = 0;
 };
 
+// Gives every event to two digests: one for the document in hand, one for
+// all the documents of a book.
+struct Both final : public bn::epub::XmlHandler {
+  void OnStartElement(std::string_view name, const bn::epub::XmlAttributes& attributes) noexcept override {
+    one.OnStartElement(name, attributes);
+    all.OnStartElement(name, attributes);
+  }
+  void OnEndElement(std::string_view name) noexcept override {
+    one.OnEndElement(name);
+    all.OnEndElement(name);
+  }
+  void OnText(std::string_view text) noexcept override {
+    one.OnText(text);
+    all.OnText(text);
+  }
+  void OnEntity(std::string_view name) noexcept override {
+    one.OnEntity(name);
+    all.OnEntity(name);
+  }
+  bn::epub::XmlEventDigest one;
+  bn::epub::XmlEventDigest all;
+};
+
 // A whole file of the computer's, as a source of bytes.
 class FileSource final : public bn::core::ByteSource {
  public:
@@ -190,26 +216,6 @@ int Events(const std::string& path, std::size_t memoryBytes) {
   std::fprintf(stderr, "%u events, checksum %08x, %zu bytes of memory used\n", static_cast<unsigned>(writer.Events()),
                static_cast<unsigned>(writer.Checksum()), parser.Memory().HighWaterSinceReset());
   return 0;
-}
-
-bool IsXmlName(std::string_view name) {
-  for (const std::string_view ending : {".xhtml", ".html", ".htm", ".xml", ".opf", ".ncx"}) {
-    if (name.size() < ending.size()) {
-      continue;
-    }
-    bool same = true;
-    for (std::size_t i = 0; i < ending.size() && same; ++i) {
-      char ch = name[name.size() - ending.size() + i];
-      if (ch >= 'A' && ch <= 'Z') {
-        ch = static_cast<char>(ch - 'A' + 'a');
-      }
-      same = ch == ending[i];
-    }
-    if (same) {
-      return true;
-    }
-  }
-  return false;
 }
 
 // A name as it is printed: every byte that could confuse a reader of lines
@@ -258,6 +264,8 @@ int Book(const std::string& path, std::size_t memoryBytes) {
   std::uint32_t failed = 0;
   std::uint64_t bytes = 0;
   std::size_t mostMemory = 0;
+  // The events of every document, one after another.
+  Both both;
   for (;;) {
     bn::epub::ZipEntry entry;
     const ZipStatus next = archive.Next(cursor, entry, name);
@@ -269,7 +277,7 @@ int Book(const std::string& path, std::size_t memoryBytes) {
       return 1;
     }
     const std::string_view entryName(name.data(), entry.nameLength);
-    if (!IsXmlName(entryName)) {
+    if (!bn::epub::HasXmlFileEnding(entryName)) {
       continue;
     }
     ++documents;
@@ -278,9 +286,11 @@ int Book(const std::string& path, std::size_t memoryBytes) {
       ++failed;
       continue;
     }
-    EventWriter writer(false);
-    XmlStatus status = parser.Parse(reader, writer);
-    writer.Finish();
+    both.one.Reset();
+    const XmlStatus status = parser.Parse(reader, both);
+    both.one.EndDocument();
+    both.all.EndDocument();
+    const bn::epub::XmlEventDigest& writer = both.one;
     // A document the parser liked may still be one the ZIP file got wrong.
     const bool readWell = status != XmlStatus::kOk || reader.Status() == ZipStatus::kOk;
     bytes += entry.size;
@@ -303,9 +313,11 @@ int Book(const std::string& path, std::size_t memoryBytes) {
   }
   const double milliseconds =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-  std::printf("%u documents, %u failed; %llu bytes of XML in %.1f ms; most memory used by one: %zu\n",
-              static_cast<unsigned>(documents), static_cast<unsigned>(failed), static_cast<unsigned long long>(bytes),
-              milliseconds, mostMemory);
+  std::printf(
+      "%u documents, %u failed; %u events, checksum of all %08x; %llu bytes of XML in %.1f ms; "
+      "most memory used by one: %zu\n",
+      static_cast<unsigned>(documents), static_cast<unsigned>(failed), static_cast<unsigned>(both.all.Events()),
+      static_cast<unsigned>(both.all.Checksum()), static_cast<unsigned long long>(bytes), milliseconds, mostMemory);
   return failed == 0 ? 0 : 1;
 }
 

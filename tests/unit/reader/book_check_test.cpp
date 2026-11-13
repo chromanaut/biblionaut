@@ -11,6 +11,8 @@
 #include "core/block_file.h"
 #include "core/inflate.h"
 #include "core/metrics.h"
+#include "epub/xml.h"
+#include "epub/xml_digest.h"
 #include "epub/zip.h"
 #include "reader/trace_ids.h"
 #include "storage_fakes.h"
@@ -43,6 +45,37 @@ Bytes Prose(std::size_t size, unsigned seed = 1) {
   return out;
 }
 
+// A chapter of XHTML exactly `size` bytes long.
+Bytes Xhtml(std::size_t size, unsigned seed = 1) {
+  const std::string open = "<html><body><p class=\"text\">";
+  const std::string close = "</p></body></html>";
+  Bytes out(open.begin(), open.end());
+  const Bytes words = Prose(size - open.size() - close.size(), seed);
+  out.insert(out.end(), words.begin(), words.end());
+  out.insert(out.end(), close.begin(), close.end());
+  return out;
+}
+
+// What the parser finds in `documents`, taken one after another the way
+// the check takes the XML of a book: (how many events, their checksum).
+std::pair<std::uint32_t, std::uint32_t> EventsOf(const std::vector<Bytes>& documents) {
+  std::vector<std::uint8_t> memory(65'536);
+  bn::epub::XmlParser parser(memory);
+  bn::epub::XmlEventDigest digest;
+  for (const Bytes& document : documents) {
+    bn::core::MemoryByteSource source(document);
+    (void)parser.Parse(source, digest);
+    digest.EndDocument();
+  }
+  return {digest.Events(), digest.Checksum()};
+}
+
+std::string Hex8(std::uint32_t value) {
+  std::array<char, 9> text{};
+  std::snprintf(text.data(), text.size(), "%08x", static_cast<unsigned>(value));
+  return text.data();
+}
+
 // A clock that moves on a little every time it is read, so that whatever
 // is timed takes some time.
 class SteppingClock final : public bn::core::Clock {
@@ -55,14 +88,14 @@ class SteppingClock final : public bn::core::Clock {
   std::uint64_t step = 50;
 };
 
-// A small book: 5 entries, of which 3 are compressed.
+// A small book: 5 entries, of which 3 are compressed, and those three XML.
 struct Book {
-  explicit Book(unsigned seed = 1) {
+  explicit Book(unsigned seed = 1) : xml{Xhtml(300, seed), Xhtml(30'000, seed + 1), Xhtml(9'000, seed + 2)} {
     ZipBuilder builder;
     builder.Add("mimetype", BytesOf("application/epub+zip"));
-    builder.Add("META-INF/container.xml", Prose(300, seed), {.deflate = true});
-    builder.Add("OEBPS/chapter1.xhtml", Prose(30'000, seed + 1), {.deflate = true});
-    builder.Add("OEBPS/chapter2.xhtml", Prose(9'000, seed + 2), {.deflate = true, .descriptor = true});
+    builder.Add("META-INF/container.xml", xml[0], {.deflate = true});
+    builder.Add("OEBPS/chapter1.xhtml", xml[1], {.deflate = true});
+    builder.Add("OEBPS/chapter2.xhtml", xml[2], {.deflate = true, .descriptor = true});
     builder.Add("OEBPS/cover.jpg", Prose(5'000, seed + 3));
     file = builder.Finish();
     chapterData = builder.At(2).data;
@@ -73,6 +106,9 @@ struct Book {
   static constexpr std::uint32_t kEntries = 5;
   static constexpr std::uint64_t kBytesOut = 20 + 300 + 30'000 + 9'000 + 5'000;
   static constexpr std::uint64_t kInflatedOut = 300 + 30'000 + 9'000;
+  static constexpr std::uint32_t kXmlDocuments = 3;
+  static constexpr std::uint64_t kXmlBytes = 300 + 30'000 + 9'000;
+  std::vector<Bytes> xml;  // Its XML documents, in the order they are in the file.
   Bytes file;
   std::size_t chapterData = 0;  // Where the first chapter's compressed bytes are.
   std::uint64_t inflatedIn = 0;
@@ -264,9 +300,13 @@ TEST(BookCheck, MakesTheSameReadsAsACheckOnTheDesktopAndCountsEveryOne) {
   ZipBuilder builder;
   builder.Add("mimetype", BytesOf("application/epub+zip"));
   for (int chapter = 0; chapter < 40; ++chapter) {
+    // Every other one is XML and is parsed to its end; the rest are not,
+    // and the parser stops at their first byte. Either way the entry is
+    // read out just as it would be without a parser.
+    const std::size_t size = 3'000 + (static_cast<std::size_t>(chapter) * 700);
+    const auto seed = static_cast<unsigned>(chapter);
     builder.Add("OEBPS/text/chapter-" + std::to_string(chapter) + ".xhtml",
-                Prose(3'000 + (static_cast<std::size_t>(chapter) * 700), static_cast<unsigned>(chapter)),
-                {.deflate = chapter % 5 != 0});
+                chapter % 2 == 0 ? Xhtml(size, seed) : Prose(size, seed), {.deflate = chapter % 5 != 0});
   }
   fixture.storage.Put("/books/long.epub", builder.Finish());
 
@@ -286,6 +326,156 @@ TEST(BookCheck, MakesTheSameReadsAsACheckOnTheDesktopAndCountsEveryOne) {
   EXPECT_EQ(ReadsOfAStraightCheck(fixture.storage, "/books/long.epub"), readsOfTheCheck);
 }
 
+TEST(BookCheck, ParsesTheXmlOfEveryBookAndSaysWhatItFound) {
+  CheckFixture fixture;
+  const Book first(1);
+  const Book second(50);
+  fixture.storage.Put("/books/a.epub", first.file);
+  fixture.storage.Put("/books/b.epub", second.file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.xmlDocuments, 2 * Book::kXmlDocuments);
+  EXPECT_EQ(totals.xmlBytes, 2 * Book::kXmlBytes);
+  EXPECT_EQ(totals.xmlNotXml, 0u);
+  EXPECT_EQ(totals.xmlRefused, 0u);
+  // What the parser found is what it finds in the same documents on
+  // their own, in the same order.
+  const auto [firstEvents, firstChecksum] = EventsOf(first.xml);
+  const auto [secondEvents, secondChecksum] = EventsOf(second.xml);
+  EXPECT_EQ(totals.xmlEvents, firstEvents + secondEvents);
+  EXPECT_EQ(fixture.check->XmlChecksum(), secondChecksum) << "of the book last read";
+  EXPECT_GT(firstEvents, 10u);
+  EXPECT_GT(totals.xmlEventBytes, 2 * Book::kXmlBytes - 400) << "nearly all of it is text, and the text is checksummed";
+  EXPECT_GT(totals.xmlMostMemory, 2'000u);
+  EXPECT_LT(totals.xmlMostMemory, BookCheck::kXmlMemoryBytes);
+
+  const std::string all = fixture.AllLines();
+  EXPECT_NE(all.find("book 1: XML: 3 documents, 39300 bytes, " + std::to_string(firstEvents) + " events, checksum " +
+                     Hex8(firstChecksum) + "; parsing "),
+            std::string::npos)
+      << all;
+  EXPECT_NE(all.find("book 2: XML: 3 documents, 39300 bytes, " + std::to_string(secondEvents) + " events, checksum " +
+                     Hex8(secondChecksum) + "; parsing "),
+            std::string::npos)
+      << all;
+  const std::string line = fixture.LineWith("book 2: XML: ");
+  EXPECT_NE(line.find(" KB/s); most memory "), std::string::npos) << line;
+  EXPECT_TRUE(line.ends_with('.'));
+  EXPECT_EQ(line.find("Not XML"), std::string::npos) << line;
+  const std::string last = fixture.LineWith("book check: XML: ");
+  EXPECT_NE(last.find("book check: XML: 6 documents, 78600 bytes, " + std::to_string(firstEvents + secondEvents) +
+                      " events; parsing "),
+            std::string::npos)
+      << last;
+  EXPECT_TRUE(last.ends_with(" KB/s); " + std::to_string(totals.xmlEventBytes) + " bytes of events checksummed."))
+      << last;
+  EXPECT_EQ(fixture.LineWith("book check: XML memory: "),
+            "book check: XML memory: the most a document used " + std::to_string(totals.xmlMostMemory) +
+                " bytes; documents over 8 KB: " + std::to_string(totals.xmlOver8K) + ", over 12 KB: " +
+                std::to_string(totals.xmlOver12K) + ", over 16 KB: " + std::to_string(totals.xmlOver16K) + ".");
+
+  std::array<char, 2048> metrics{};
+  bn::core::DefaultMetrics().FormatLine(metrics);
+  EXPECT_NE(std::string(metrics.data()).find("xml_kb_per_s="), std::string::npos) << metrics.data();
+}
+
+TEST(BookCheck, TakesAFileForXmlByTheEndOfItsName) {
+  CheckFixture fixture;
+  ZipBuilder builder;
+  const Bytes document = Xhtml(500);
+  for (const char* name : {"a.xhtml", "b.XHTML", "c.html", "d.htm", "e.xml", "f.opf", "g.ncx", "toc.NCX"}) {
+    builder.Add(name, document, {.deflate = true});
+  }
+  for (const char* name : {"h.css", "i.jpg", "xhtml", "j.xhtml.bak", "mimetype"}) {
+    builder.Add(name, document);
+  }
+  fixture.storage.Put("/books/a.epub", builder.Finish());
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  EXPECT_EQ(fixture.check->Totals().entries, 13u);
+  EXPECT_EQ(fixture.check->Totals().xmlDocuments, 8u);
+  EXPECT_EQ(fixture.check->Totals().xmlBytes, 8u * 500);
+}
+
+TEST(BookCheck, CountsWhatIsNotXmlAndReadsItToTheEndAllTheSame) {
+  CheckFixture fixture;
+  // Two documents the parser stops in, one near its start and one near
+  // its end, and a good one between them.
+  Bytes mismatched = BytesOf("<html><body><p>one</b>");
+  const Bytes rest = Prose(20'000);
+  mismatched.insert(mismatched.end(), rest.begin(), rest.end());
+  Bytes unfinished = Xhtml(15'000);
+  unfinished.resize(unfinished.size() - 10);
+  const Bytes good = Xhtml(4'000, 7);
+  const Bytes otherEncoding = BytesOf("<?xml version=\"1.0\" encoding=\"windows-1252\"?><a>caf\xE9</a>");
+  ZipBuilder builder;
+  builder.Add("mismatched.xhtml", mismatched, {.deflate = true});
+  builder.Add("good.xhtml", good, {.deflate = true});
+  builder.Add("unfinished.xhtml", unfinished);
+  builder.Add("windows.xml", otherEncoding);
+  fixture.storage.Put("/books/a.epub", builder.Finish());
+
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  // A book is none the worse, as a file, for holding what is not XML.
+  EXPECT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.entries, 4u);
+  EXPECT_EQ(totals.failedEntries, 0u);
+  EXPECT_EQ(totals.bytesOut, mismatched.size() + good.size() + unfinished.size() + otherEncoding.size())
+      << "every byte was read out";
+  EXPECT_EQ(totals.xmlDocuments, 4u);
+  EXPECT_EQ(totals.xmlNotXml, 3u);
+  EXPECT_EQ(totals.xmlRefused, 0u);
+  // The parser was given no more of the first than it took to find the
+  // mistake, and all of the others.
+  EXPECT_LE(totals.xmlBytes, 4'096u + good.size() + unfinished.size() + otherEncoding.size());
+  EXPECT_GE(totals.xmlBytes, good.size() + unfinished.size() + otherEncoding.size());
+  // What it found before each mistake counts, as it does for bn-xml.
+  const auto [events, checksum] = EventsOf({mismatched, good, unfinished, otherEncoding});
+  EXPECT_EQ(totals.xmlEvents, events);
+  EXPECT_EQ(fixture.check->XmlChecksum(), checksum);
+  EXPECT_TRUE(fixture.LineWith("book 1: XML: 4 documents, ").ends_with(". Not XML: 3.")) << fixture.AllLines();
+  EXPECT_NE(fixture.LineWith("book check: XML: 4 documents, ").find(" Not XML: 3."), std::string::npos)
+      << fixture.AllLines();
+}
+
+TEST(BookCheck, CountsADocumentThatNeedsMoreMemoryThanTheParserHas) {
+  CheckFixture fixture;
+  // One tag longer than all the parser's memory, and a good deal after it.
+  std::string huge = "<html><img src=\"data:" + std::string(2 * BookCheck::kXmlMemoryBytes, 'A') + "\"/>";
+  huge += std::string(10'000, 'x') + "</html>";
+  ZipBuilder builder;
+  builder.Add("huge.xhtml", BytesOf(huge), {.deflate = true});
+  builder.Add("good.xhtml", Xhtml(4'000), {.deflate = true});
+  fixture.storage.Put("/books/a.epub", builder.Finish());
+
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  EXPECT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.failedEntries, 0u);
+  EXPECT_EQ(totals.bytesOut, huge.size() + 4'000);
+  EXPECT_EQ(totals.xmlDocuments, 2u);
+  EXPECT_EQ(totals.xmlRefused, 1u);
+  EXPECT_EQ(totals.xmlNotXml, 0u);
+  // The long one took all it could get; the good one takes its few
+  // thousand bytes, how many depending on the computer.
+  EXPECT_GT(totals.xmlMostMemory, 16u * 1024);
+  EXPECT_EQ(totals.xmlOver16K, 1u);
+  EXPECT_GE(totals.xmlOver12K, 1u);
+  EXPECT_GE(totals.xmlOver8K, totals.xmlOver12K);
+  EXPECT_TRUE(fixture.LineWith("book 1: XML: 2 documents, ").ends_with(". Refused for memory: 1."))
+      << fixture.AllLines();
+  // The good one after it was parsed as if nothing had happened.
+  const std::uint32_t events = EventsOf({Xhtml(4'000)}).first;
+  EXPECT_EQ(totals.xmlEvents, events + 1) << "and the one event the long tag came after";
+}
+
 TEST(BookCheck, CountsItsTimeInThreeParts) {
   CheckFixture fixture;
   fixture.storage.Put("/books/a.epub", Book().file);
@@ -299,7 +489,10 @@ TEST(BookCheck, CountsItsTimeInThreeParts) {
   EXPECT_EQ(totals.storageUs % 50, 0u);
   EXPECT_GE(totals.storageUs, std::uint64_t{50} * totals.reads);
   EXPECT_GT(totals.inflateUs, 0u);
-  EXPECT_GT(totals.workUs, totals.storageUs + totals.inflateUs) << "there is the directory to read as well";
+  EXPECT_GT(totals.xmlUs, 0u);
+  EXPECT_EQ(totals.xmlUs % 50, 0u);
+  EXPECT_GT(totals.workUs, totals.storageUs + totals.inflateUs + totals.xmlUs)
+      << "there is the directory to read as well";
   EXPECT_GT(fixture.check->ChecksumUs(), 0u);
 
   // A book with nothing compressed in it has no inflating to time.
@@ -315,6 +508,10 @@ TEST(BookCheck, CountsItsTimeInThreeParts) {
   EXPECT_EQ(plain.check->Totals().inflatedOut, 0u);
   EXPECT_EQ(plain.check->Totals().inflatedIn, 0u);
   EXPECT_EQ(plain.check->Totals().bytesOut, 20'020u);
+  // Nor any XML to parse, and so no line about it.
+  EXPECT_EQ(plain.check->Totals().xmlDocuments, 0u);
+  EXPECT_EQ(plain.check->Totals().xmlUs, 0u);
+  EXPECT_EQ(plain.AllLines().find("XML"), std::string::npos) << plain.AllLines();
 }
 
 TEST(BookCheck, WorksForAShortWhileEachTurn) {

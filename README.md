@@ -376,42 +376,57 @@ in each folder in `/books`, one level down and no further. If there is no
 `/books`, or no book there, it looks in the top directory and its folders
 instead. For each book it finds the ZIP directory, reads every entry to its
 end, which checks the entry's size and checksum, and looks each entry up by
-name (`reader/book_check.h`). It works for about 20 ms a turn, so the panel
-and the buttons carry on around it, and a run takes longer by the clock
-than the times it reports.
+name (`reader/book_check.h`). Every entry with an XML file's name (one
+ending in `.xhtml`, `.html`, `.htm`, `.xml`, `.opf` or `.ncx`) is also
+parsed as it is read. It works for about 20 ms a turn, so the panel and the
+buttons carry on around it, and a run takes longer by the clock than the
+times it reports.
 
-What it finds goes out as log text: a line when a book is begun, two when
-it ends, and two at the end for all of them.
+What it finds goes out as log text: a line when a book is begun, three when
+it ends, and four at the end for all of them.
 
 ```
-book check: the checksum alone, 262144 bytes in 2003 us (127808 KB/s).
+book check: the checksum alone, 262144 bytes in 1470 us (174149 KB/s).
 book 1: 1498334 bytes, /books/A Series/1 The First Book.epub
 book 1: ok. 122 entries, 3022700 bytes out of 1477560. Directory found in 1 read, 1 ms.
-book 1: card 2 ms for 372 reads of 1521306 bytes (553727 KB/s); inflating 41 ms: 1477540 bytes in (35041 KB/s), 3022680 out (71686 KB/s); all 43 ms.
+book 1: card 2 ms for 372 reads of 1521306 bytes (645093 KB/s); inflating 39 ms: 1477540 bytes in (36377 KB/s), 3022680 out (74419 KB/s); all 64 ms.
+book 1: XML: 109 documents, 2042449 bytes, 78209 events, checksum 10acf92b; parsing 22 ms (89732 KB/s); most memory 10928.
 ...
 book check: passed. 31 books, 4310 entries, 181650944 bytes out of 85181353.
-book check: card 58 ms for 21188 reads of 86632380 bytes (1455216 KB/s); inflating 1826 ms: 75728235 bytes in (40498 KB/s), 172197826 out (92089 KB/s); all 1930 ms.
+book check: card 82 ms for 21188 reads of 86632380 bytes (1025241 KB/s); inflating 2145 ms: 75728235 bytes in (34467 KB/s), 172197826 out (78375 KB/s); all 2939 ms.
+book check: XML: 2587 documents, 66166529 bytes, 1823978 events; parsing 653 ms (98895 KB/s); 66286144 bytes of events checksummed.
+book check: XML memory: the most a document used 11648 bytes; documents over 8 KB: 2587, over 12 KB: 0, over 16 KB: 0.
 ```
 
-(Those figures are a desktop's.) There are three times. `card` is the time
+(Those figures are a desktop's.) There are four times. `card` is the time
 spent inside storage. `inflating` is the time spent reading out the
 compressed entries with storage's share taken off, which is the processor
 inflating and checksumming, beside what went into the inflater and what
-came out. `all` is everything spent on the book. A KB is 1024 bytes. The
-checksum is timed by itself first, over 256 KB held in memory, so that its
-share of `inflating` can be worked out. A book or an entry that cannot be
-read is reported with `FAILED` and the reason, and the check goes on to the
-next.
+came out. `parsing` is the time the XML parser took over what it was given,
+with the reading and inflating of it taken off; the check's own counting
+and checksumming of what the parser found is in that time, and the last
+line but one says how many bytes that was. `all` is everything spent on the
+book. A KB is 1024 bytes. The checksum is timed by itself first, over
+256 KB held in memory, so that its share of `inflating` and of `parsing`
+can be worked out. A book or an entry that cannot be read is reported with
+`FAILED` and the reason, and the check goes on to the next. A file that
+turns out not to be XML is counted (`Not XML: 2.`), and so is one that
+wanted more than the 32 KB the parser is given (`Refused for memory: 1.`),
+but neither makes the book a failure: the file is read out and checked all
+the same.
 
 `bn-zip check` reads a file the same way, read for read. So the same book
 on the desktop should come to the same entries, the same bytes and the same
 reads (`sd_reads` and `sd_read_bytes`, in the last line `bn-zip check`
-prints) as it does on the device.
+prints) as it does on the device. `bn-xml book` parses the same documents,
+and its last line has the count and the checksum of everything found in
+them, which should be the book's on the device too.
 
 The outcome is also in the metrics (`book_check=1` if every book was sound,
-`book_check_books`, `inflate_kb_per_s`, `checksum_kb_per_s`) and in the
-trace (`reader/book_check`, and `reader/book_check_book` for each book),
-where every read of the card is too (`hw/sd_read`).
+`book_check_books`, `inflate_kb_per_s`, `checksum_kb_per_s`,
+`xml_kb_per_s`, and `xml_memory` for the most the parser has used) and in
+the trace (`reader/book_check`, and `reader/book_check_book` for each
+book), where every read of the card is too (`hw/sd_read`).
 
 ```
 tools/idf -DBN_BOOK_CHECK=ON build flash
@@ -440,7 +455,11 @@ chapters. The parsing is done by [expat](https://libexpat.github.io);
   from the general heap. A document that needs more than the block is
   refused (`kNoMemory`), which in practice means one with a single tag
   several kilobytes long, since a whole tag has to be held at once, or
-  with elements nested hundreds deep. Text can be any length.
+  with elements nested hundreds deep. Text can be any length. On an X4, no
+  document in 30 books (1,392 documents) used more than 9.1 KB.
+- **Speed**: on an X4, over the same documents, it took in about 830 KB a
+  second with every event counted and checksummed: from 530 for chapters
+  thick with markup to 1,060 for plain prose.
 - **Bad input**: the document is not trusted. Whatever bytes it holds,
   parsing ends with an answer, and one that is not XML is refused with
   expat's error number and the line it is on. What was found before the
@@ -477,7 +496,9 @@ processing. It is 72 KB of flash once something in the firmware uses it.
 `events` prints what the parser finds in one file, an event a line. `book`
 parses every XML file in an EPUB as it is read out of the ZIP file, and
 prints for each how it ended, a checksum of its events, and the most
-memory the parser used. `--memory` holds the parser to that many bytes, as
+memory the parser used; and at the end the count and the checksum of all
+of them run together (`epub/xml_digest.h`), which is what the firmware's
+book check reports for a book. `--memory` holds the parser to that many bytes, as
 a device would.
 
 The unit tests say what the parser should make of documents written for

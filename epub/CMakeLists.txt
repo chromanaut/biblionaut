@@ -3,6 +3,8 @@
 # on expat, which is fetched and built by third_party/expat and which no
 # header of this part shows.
 add_library(bn_epub STATIC
+  src/book_path.cpp
+  src/package.cpp
   src/xml.cpp
   src/xml_digest.cpp
   src/zip.cpp)

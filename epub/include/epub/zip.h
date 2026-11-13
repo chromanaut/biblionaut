@@ -146,6 +146,14 @@ class ZipArchive {
   std::uint32_t searchIndex_ = 0;
 };
 
+// Reads the name of an entry, as the entry's own header in the file has
+// it, into `name`: the way back from a ZipEntry, which does not carry its
+// name, to the path of the file it is. `length` is how long the name is;
+// if that is more than `name` has room for, only the start of it was
+// read.
+[[nodiscard]] ZipStatus ReadZipEntryName(core::BlockFile& file, const ZipEntry& entry, std::span<char> name,
+                                         std::size_t& length) noexcept;
+
 // The bytes of one entry, as they were before they went into the ZIP file.
 //
 // It is a ByteSource: the bytes come out in pieces of whatever size is

@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder) and developer scripts (`bn-symbolize` for crash reports) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does) and developer scripts (`bn-symbolize` for crash reports) |
 | `tests/` | Host tests |
 | `corpus/` | Test books |
 
@@ -48,6 +48,8 @@ clang-tidy enforces this.
 Needs CMake 3.25 or later, Ninja and a C++20 compiler. GoogleTest is
 downloaded when CMake configures. The tests also link zlib, to check the
 inflater against: macOS has it, and on Linux it is the `zlib1g-dev` package.
+Two of the end-to-end tests are run only if Python 3 is found, and one of
+them makes more of its test files if there is a `zip` command.
 
 ```
 cmake --preset host
@@ -302,6 +304,55 @@ them across kinds of data, sizes, compression levels and strategies, and
 again with the input and output cut into pieces of many sizes. They also
 turn over every bit of a stream, one at a time, and cut it short at every
 length, to see that the inflater always stops.
+
+## ZIP files
+
+An EPUB is a ZIP file, and `epub/zip.h` reads one, going by the directory
+at the end of the file:
+
+- `ZipArchive` finds that directory and then finds entries in it, by name
+  (`Find`) or one after another (`Next`). It is 24 bytes: it keeps no list
+  of the entries, however many there are, and reads the directory from the
+  file when asked. Each search starts where the last one ended, so asking
+  for entries in the file's own order reads the directory once, not once
+  for each.
+- `ZipEntry` is what the directory says of one entry: 24 bytes that can be
+  kept, in memory or in a file, to read the entry later without finding it
+  again.
+- `ZipEntryReader` gives an entry's bytes as a `ByteSource`, read from the
+  file and inflated as they are asked for. It gives out no more than the
+  directory says the entry holds, and at the end checks that the data
+  stopped there and has the checksum the directory gives. It is 2.7 KB on
+  the device and needs the inflater's 32 KB window.
+
+All three read through a `BlockFile`. Finding entries and reading them can
+share one, but each step from an entry back to the directory then reads a
+block again: reading every entry of a 3,000-entry file and looking each up
+by name took 6,189 reads of storage that way and 242 with a `BlockFile`
+each for the directory and the entries.
+
+The file is not trusted: whatever it holds, every call ends with an answer.
+What cannot be read is reported as such (`kUnsupported`): ZIP64, a file in
+several parts, an encrypted entry, and compression other than DEFLATE.
+
+`bn-zip` runs the same code on the desktop:
+
+```
+./build/host/tools/zip/bn-zip list book.epub
+./build/host/tools/zip/bn-zip check book.epub
+./build/host/tools/zip/bn-zip cat book.epub META-INF/container.xml
+```
+
+`list` prints a line for each entry. `check` reads every entry to its end,
+looks each one up by name, and says how many reads of the file that took.
+`cat` writes one entry out.
+
+The unit tests make their ZIP files with a writer of their own, so that
+they can get any one field wrong. Because a writer and a reader by the same
+hand could share a mistake, an end-to-end test (`tests/e2e/zip_tool.py`)
+also compares `bn-zip`, entry by entry and byte by byte, with Python's
+`zipfile` on files made by `zipfile` and, where there is one, by the `zip`
+command.
 
 ## Device build
 

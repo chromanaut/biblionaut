@@ -68,6 +68,14 @@ bn_add_unit_test(draw_tests
     unit/draw/test_pattern_test.cpp
   LIBS bn_draw)
 
+# The ZIP reader's tests make their ZIP files with zlib doing the
+# compressing and the checksums.
+bn_add_unit_test(epub_tests
+  SOURCES
+    unit/epub/zip_test.cpp
+  LIBS bn_epub)
+target_link_libraries(epub_tests PRIVATE ZLIB::ZLIB)
+
 # The desktop port, which the other host programs run on. Its own headers
 # are reached the way its sources reach them, as "desktop/...".
 bn_add_unit_test(hw_tests
@@ -123,4 +131,13 @@ if(Python3_Interpreter_FOUND)
       -DSCRIPT=${PROJECT_SOURCE_DIR}/tools/bn-symbolize
       -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/symbolize.cmake)
+
+  # bn-zip, and through it the ZIP reader, against ZIP files made by
+  # something else: Python's zipfile module, and the zip command where
+  # there is one.
+  add_test(
+    NAME e2e.ZipTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/zip_tool.py
+      $<TARGET_FILE:bn-zip> ${CMAKE_CURRENT_BINARY_DIR}/zip_tool)
+  set_tests_properties(e2e.ZipTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

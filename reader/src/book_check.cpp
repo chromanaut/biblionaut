@@ -187,16 +187,27 @@ void AddXmlMemory(Line& line, const BookCheck::Figures& figures) noexcept {
       .Text(".");
 }
 
-// "... ms: card ... ms for ... reads of ... bytes", what reading one
-// package cost, or all of them, added to `line`.
-void AddPackageCost(Line& line, const BookCheck::Figures& figures) noexcept {
-  line.Number(figures.packageUs / 1000)
+// "... ms: card ... ms for ... reads of ... bytes", what a piece of
+// reading cost, added to `line`.
+void AddCost(Line& line, std::uint64_t allUs, std::uint64_t storageUs, std::uint32_t reads,
+             std::uint64_t readBytes) noexcept {
+  line.Number(allUs / 1000)
       .Text(" ms: card ")
-      .Number(figures.packageStorageUs / 1000)
+      .Number(storageUs / 1000)
       .Text(" ms for ")
-      .Count(figures.packageReads, " read of ", " reads of ")
-      .Number(figures.packageReadBytes)
+      .Count(reads, " read of ", " reads of ")
+      .Number(readBytes)
       .Text(" bytes");
+}
+
+// What reading one package cost, or all of them.
+void AddPackageCost(Line& line, const BookCheck::Figures& figures) noexcept {
+  AddCost(line, figures.packageUs, figures.packageStorageUs, figures.packageReads, figures.packageReadBytes);
+}
+
+// And one table of contents, or all of them.
+void AddTocCost(Line& line, const BookCheck::Figures& figures) noexcept {
+  AddCost(line, figures.tocUs, figures.tocStorageUs, figures.tocReads, figures.tocReadBytes);
 }
 
 // One of the names a book gives itself, as it is shown: in quotation
@@ -244,6 +255,16 @@ void Add(BookCheck::Figures& total, const BookCheck::Figures& book) noexcept {
   total.packageUs += book.packageUs;
   total.packageLongestUs = std::max(total.packageLongestUs, book.packageLongestUs);
   total.packageMostMemory = std::max(total.packageMostMemory, book.packageMostMemory);
+  total.tocsRead += book.tocsRead;
+  total.tocsNav += book.tocsNav;
+  total.tocsNone += book.tocsNone;
+  total.tocsNotRead += book.tocsNotRead;
+  total.tocEntries += book.tocEntries;
+  total.tocReads += book.tocReads;
+  total.tocReadBytes += book.tocReadBytes;
+  total.tocStorageUs += book.tocStorageUs;
+  total.tocUs += book.tocUs;
+  total.tocLongestUs = std::max(total.tocLongestUs, book.tocLongestUs);
 }
 
 }  // namespace
@@ -462,6 +483,9 @@ void BookCheck::DoStep() noexcept {
     case Step::kReadPackage:
       ReadPackage();
       break;
+    case Step::kReadToc:
+      ReadToc();
+      break;
     case Step::kOpenBook:
       OpenBook();
       break;
@@ -615,6 +639,7 @@ void BookCheck::NextBook() noexcept {
   firstFailure_ = ZipStatus::kOk;
   digest_.Reset();
   packageChecksum_ = 0;
+  tocChecksum_ = 0;
   bookBeganTrace_ = BN_TRACE_NOW();
   Line line;
   line.Text("book ").Number(books_).Text(": ").Number(bookSize_).Text(" bytes, ").Text(Path());
@@ -684,14 +709,33 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
     }
     (void)stream_.SendText(packages.View());
   }
+  if (totals_.tocsRead + totals_.tocsNone + totals_.tocsNotRead != 0) {
+    Line contents;
+    contents.Text("book check: contents: ")
+        .Number(totals_.tocsRead)
+        .Text(" read (")
+        .Number(totals_.tocsNav)
+        .Text(" nav), ")
+        .Count(totals_.tocEntries, " entry; ", " entries; ");
+    AddTocCost(contents, totals_);
+    contents.Text("; the longest ").Number(totals_.tocLongestUs / 1000).Text(" ms.");
+    if (totals_.tocsNone != 0) {
+      contents.Text(" None: ").Number(totals_.tocsNone).Text(".");
+    }
+    if (totals_.tocsNotRead != 0) {
+      contents.Text(" Not read: ").Number(totals_.tocsNotRead).Text(".");
+    }
+    (void)stream_.SendText(contents.View());
+  }
   Finish(failedBooks_ == 0);
 }
 
 void BookCheck::ReadPackage() noexcept {
   // What a reader opening the book would do, and all in one go as it
-  // would be: the file opened, its directory found, its package read.
-  // Then the book is closed again, so that the reading of its entries
-  // starts as it would have without this.
+  // would be: the file opened, its directory found, its package read. If
+  // that goes well the book stays open for its table of contents to be
+  // read next. Otherwise it is closed again, so that the reading of its
+  // entries starts as it would have without this.
   const Meter::Counts before = meter_.Now();
   const std::uint64_t began = clock_.NowUs();
   StorageStatus status = directoryFile_.Open(meter_, Path(), core::OpenMode::kRead);
@@ -707,8 +751,6 @@ void BookCheck::ReadPackage() noexcept {
   }
   const epub::PackageStatus read = package_.Read(archive_, entriesFile_, entryReader_, xml_);
   const std::uint64_t took = clock_.NowUs() - began;
-  CloseBook();
-  MoveTo(Step::kOpenBook);
 
   const Meter::Counts& counts = meter_.Now();
   book_.packageReads = counts.reads - before.reads;
@@ -721,6 +763,8 @@ void BookCheck::ReadPackage() noexcept {
   // the package put there.
   Line line;
   if (read != epub::PackageStatus::kOk) {
+    CloseBook();
+    MoveTo(Step::kOpenBook);
     book_.packagesNotRead = 1;
     line.Text("book ").Number(books_).Text(": package: NOT READ: ").Text(epub::PackageStatusName(read)).Text(". ");
     AddPackageCost(line, book_);
@@ -728,6 +772,7 @@ void BookCheck::ReadPackage() noexcept {
     (void)stream_.SendText(line.View());
     return;
   }
+  MoveTo(Step::kReadToc);
   book_.packagesRead = 1;
   book_.packageMostMemory = static_cast<std::uint32_t>(package_.MemoryUsed());
   packageChecksum_ = epub::PackageChecksum(package_);
@@ -781,6 +826,73 @@ void BookCheck::ReadPackage() noexcept {
   line.Text("book ").Number(books_).Text(": package: ");
   AddPackageCost(line, book_);
   line.Text(".");
+  (void)stream_.SendText(line.View());
+}
+
+void BookCheck::ReadToc() noexcept {
+  // The table of contents, with the book still open as the reading of its
+  // package left it, and a piece at a time: the first piece finds the
+  // file and opens it, and each one after reads 1 KB of it.
+  const Meter::Counts before = meter_.Now();
+  const std::uint64_t began = clock_.NowUs();
+  bool more = false;
+  if (count_ == 0) {
+    tocDigest_.Reset();
+    more = toc_.Begin(package_, entriesFile_, entryReader_, xml_, tocDigest_) == epub::TocStatus::kOk;
+  } else {
+    more = toc_.Step();
+  }
+  ++count_;
+  const Meter::Counts& counts = meter_.Now();
+  book_.tocReads += counts.reads - before.reads;
+  book_.tocReadBytes += counts.readBytes - before.readBytes;
+  book_.tocStorageUs += counts.timeUs - before.timeUs;
+  book_.tocUs += clock_.NowUs() - began;
+  if (more) {
+    return;
+  }
+
+  // It is over, well or badly. The book is closed, so that the reading
+  // of its entries starts as it would have without any of this.
+  CloseBook();
+  MoveTo(Step::kOpenBook);
+  book_.tocLongestUs = book_.tocUs;
+  const epub::TocStatus status = toc_.Status();
+  Line line;
+  line.Text("book ").Number(books_).Text(": contents: ");
+  if (status == epub::TocStatus::kNoToc) {
+    book_.tocsNone = 1;
+    line.Text("none.");
+    (void)stream_.SendText(line.View());
+    return;
+  }
+  if (status != epub::TocStatus::kOk) {
+    book_.tocsNotRead = 1;
+    line.Text("NOT READ: ").Text(epub::TocStatusName(status)).Text(". ");
+    AddTocCost(line, book_);
+    line.Text(".");
+    (void)stream_.SendText(line.View());
+    return;
+  }
+  book_.tocsRead = 1;
+  book_.tocsNav = toc_.Kind() == epub::TocKind::kNav ? 1 : 0;
+  book_.tocEntries = tocDigest_.Entries();
+  tocChecksum_ = tocDigest_.Checksum();
+  line.Text(epub::TocKindName(toc_.Kind()))
+      .Text(", ")
+      .Count(tocDigest_.Entries(), " entry, ", " entries, ")
+      .Count(tocDigest_.Levels(), " level", " levels")
+      .Text("; checksum ")
+      .Hex8(tocChecksum_)
+      .Text("; ");
+  AddTocCost(line, book_);
+  line.Text(".");
+  if (tocDigest_.WithoutDocument() != 0) {
+    line.Text(" With no document: ").Number(tocDigest_.WithoutDocument()).Text(".");
+  }
+  if (toc_.CutShort()) {
+    line.Text(" Cut short.");
+  }
   (void)stream_.SendText(line.View());
 }
 

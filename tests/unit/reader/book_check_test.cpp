@@ -13,6 +13,8 @@
 #include "core/metrics.h"
 #include "epub/package.h"
 #include "epub/package_digest.h"
+#include "epub/toc.h"
+#include "epub/toc_digest.h"
 #include "epub/xml.h"
 #include "epub/xml_digest.h"
 #include "epub/zip.h"
@@ -317,7 +319,7 @@ TEST(BookCheck, MakesTheSameReadsAsACheckOnTheDesktopAndCountsEveryOne) {
   ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
   const BookCheck::Figures totals = fixture.check->Totals();
   const std::size_t readsOfTheCheck = fixture.storage.reads.size();
-  EXPECT_EQ(totals.reads + totals.packageReads, readsOfTheCheck)
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads, readsOfTheCheck)
       << "every read of storage is counted, to the reading of the book or to the look for its package";
   EXPECT_GT(totals.reads, 20u);
   EXPECT_GT(totals.packageReads, 0u);
@@ -331,17 +333,27 @@ TEST(BookCheck, MakesTheSameReadsAsACheckOnTheDesktopAndCountsEveryOne) {
   EXPECT_EQ(ReadsOfAStraightCheck(fixture.storage, "/books/long.epub"), totals.reads);
 }
 
+// For a RealBook's NCX: one made to match its chapters.
+const std::string kMadeNcx = "(made)";
+
 // A book that is one: its package names its chapters, its cover and its
-// table of contents.
+// table of contents, which is an NCX with an entry for the chapters as a
+// whole and one under it for each. `ncx` is what the NCX holds, if not
+// that. `nav` is an EPUB 3 table of contents as well, if it is not empty.
 struct RealBook {
   explicit RealBook(const std::string& metadata =
                         "<dc:title>The Book</dc:title><dc:creator>A. Writer</dc:creator>"
                         "<dc:language>en</dc:language>",
-                    int chapters = 3, const std::string& moreInTheSpine = "", const std::string& after = "") {
+                    int chapters = 3, const std::string& moreInTheSpine = "", const std::string& after = "",
+                    const std::string& ncx = kMadeNcx, const std::string& nav = "") {
     std::string manifest =
         "<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>"
         "<item id=\"cover\" href=\"cover.jpg\" media-type=\"image/jpeg\"/>";
+    if (!nav.empty()) {
+      manifest += "<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>";
+    }
     std::string spine;
+    std::string points;
     ZipBuilder builder;
     builder.Add("mimetype", BytesOf("application/epub+zip"));
     builder.Add("META-INF/container.xml",
@@ -353,13 +365,23 @@ struct RealBook {
       manifest +=
           "<item id=\"c" + std::to_string(chapter) + "\" href=\"" + name + "\" media-type=\"application/xhtml+xml\"/>";
       spine += "<itemref idref=\"c" + std::to_string(chapter) + "\"/>";
+      points += "<navPoint><navLabel><text>Chapter " + std::to_string(chapter) + "</text></navLabel><content src=\"" +
+                name + "#top\"/></navPoint>\n";
     }
     builder.Add("OEBPS/content.opf",
                 BytesOf("<package><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">" + metadata +
                         "<meta name=\"cover\" content=\"cover\"/></metadata><manifest>" + manifest +
                         "</manifest><spine toc=\"ncx\">" + spine + moreInTheSpine + "</spine></package>" + after),
                 {.deflate = true});
-    builder.Add("OEBPS/toc.ncx", BytesOf("<ncx/>"), {.deflate = true});
+    builder.Add("OEBPS/toc.ncx",
+                BytesOf(ncx != kMadeNcx ? ncx
+                                        : "<ncx><navMap><navPoint><navLabel><text>The Chapters</text></navLabel>"
+                                          "<content src=\"chapter0.xhtml\"/>\n" +
+                                              points + "</navPoint></navMap></ncx>"),
+                {.deflate = true});
+    if (!nav.empty()) {
+      builder.Add("OEBPS/nav.xhtml", BytesOf(nav), {.deflate = true});
+    }
     // Chapters past the tenth are named and not there: enough to say a
     // book has that many.
     for (int chapter = 0; chapter < std::min(chapters, 10); ++chapter) {
@@ -380,6 +402,13 @@ struct Opened {
   std::size_t memory = 0;
   std::size_t reads = 0;
   std::uint64_t readBytes = 0;
+  // And of its table of contents, read next with the book still open.
+  bn::epub::TocStatus tocStatus = bn::epub::TocStatus::kNotStarted;
+  bn::epub::TocKind tocKind = bn::epub::TocKind::kBest;
+  std::uint32_t tocEntries = 0;
+  std::uint32_t tocChecksum = 0;
+  std::size_t tocReads = 0;
+  std::uint64_t tocReadBytes = 0;
 };
 Opened OpenAsAReaderWould(FakeStorage& storage, const std::string& path) {
   Opened opened;
@@ -405,6 +434,20 @@ Opened OpenAsAReaderWould(FakeStorage& storage, const std::string& path) {
   const std::uint64_t size = storage.Contents(path).size();
   for (std::size_t i = before; i < storage.reads.size(); ++i) {
     opened.readBytes += std::min<std::uint64_t>(storage.reads[i].size, size - storage.reads[i].offset);
+  }
+  if (opened.status != bn::epub::PackageStatus::kOk) {
+    return opened;
+  }
+  const std::size_t beforeToc = storage.reads.size();
+  bn::epub::TocReader toc;
+  bn::epub::TocDigest digest;
+  opened.tocStatus = toc.Read(package, entries, reader, xml, digest);
+  opened.tocKind = toc.Kind();
+  opened.tocEntries = digest.Entries();
+  opened.tocChecksum = digest.Checksum();
+  opened.tocReads = storage.reads.size() - beforeToc;
+  for (std::size_t i = beforeToc; i < storage.reads.size(); ++i) {
+    opened.tocReadBytes += std::min<std::uint64_t>(storage.reads[i].size, size - storage.reads[i].offset);
   }
   return opened;
 }
@@ -515,7 +558,7 @@ TEST(BookCheck, CountsTheTimeAPackageTakesByItself) {
       << all;
 }
 
-TEST(BookCheck, ClosesTheBookAgainOnceItHasItsPackage) {
+TEST(BookCheck, ClosesTheBookAgainOnceItHasItsPackageAndItsTableOfContents) {
   CheckFixture fixture;
   fixture.storage.Put("/books/a.epub", RealBook().file);
   // A clock that uses up a turn each time it is read: one step a turn.
@@ -527,9 +570,18 @@ TEST(BookCheck, ClosesTheBookAgainOnceItHasItsPackage) {
     ++turns;
   }
   ASSERT_FALSE(fixture.LineWith("book 1: package: ").empty());
+  // The package has been read: the book stays open, for its table of
+  // contents to be read from.
+  EXPECT_EQ(fixture.storage.OpenCount(), 2);
+  EXPECT_TRUE(fixture.LineWith("book 1: contents: ").empty());
+  while (fixture.LineWith("book 1: contents: ").empty() && turns < 1'000) {
+    fixture.check->Tick();
+    ++turns;
+  }
+  ASSERT_FALSE(fixture.LineWith("book 1: contents: ").empty());
   ASSERT_EQ(fixture.check->CurrentState(), State::kRunning);
-  // The package has been read and the reading of the entries not begun:
-  // the book is not open, and only /books is being listed.
+  // That has been read too, and the reading of the entries not begun: the
+  // book is not open, and only /books is being listed.
   EXPECT_EQ(fixture.storage.OpenCount(), 0);
   EXPECT_EQ(fixture.storage.ListedCount(), 1);
   EXPECT_EQ(fixture.storage.opens, 2);
@@ -537,6 +589,21 @@ TEST(BookCheck, ClosesTheBookAgainOnceItHasItsPackage) {
   fixture.RunToTheEnd();
   EXPECT_EQ(fixture.check->CurrentState(), State::kPassed);
   EXPECT_EQ(fixture.storage.opens, 4);
+
+  // And a book whose package cannot be read, once that has been said.
+  CheckFixture unread;
+  unread.storage.Put("/books/a.epub", Book().file);
+  unread.clock.step = BookCheck::kSliceUs;
+  unread.check->Begin();
+  turns = 0;
+  while (unread.LineWith("book 1: package: NOT READ").empty() && turns < 1'000) {
+    unread.check->Tick();
+    ++turns;
+  }
+  ASSERT_FALSE(unread.LineWith("book 1: package: NOT READ").empty());
+  EXPECT_EQ(unread.check->CurrentState(), State::kRunning);
+  EXPECT_EQ(unread.storage.OpenCount(), 0);
+  EXPECT_EQ(unread.storage.opens, 2);
 
   // And a file that turns out to be no ZIP file, once that has been found.
   CheckFixture other;
@@ -593,6 +660,258 @@ TEST(BookCheck, SaysWhenABookHasNoPackageItCanReadAndReadsTheBookAllTheSame) {
   EXPECT_TRUE(after.LineWith("book check: packages: ").starts_with("book check: packages: 1 read; "))
       << after.AllLines();
   EXPECT_TRUE(after.LineWith("book check: packages: ").ends_with(" Not read: 1.")) << after.AllLines();
+}
+
+// A nav for a RealBook, with these items in its list.
+std::string NavOf(const std::string& items) {
+  return "<html xmlns:epub=\"http://www.idpf.org/2007/ops\"><body><nav epub:type=\"toc\"><ol>" + items +
+         "</ol></nav></body></html>";
+}
+
+TEST(BookCheck, ReadsTheTableOfContentsOfEveryBookAndSaysWhatItFound) {
+  CheckFixture fixture;
+  // One with an NCX, and one with a nav as well, which is the one read.
+  fixture.storage.Put("/books/a.epub", RealBook().file);
+  fixture.storage.Put(
+      "/books/b.epub",
+      RealBook("<dc:title>B</dc:title>", 7, "", "", kMadeNcx,
+               NavOf("<li><a href=\"chapter0.xhtml\">One</a></li><li><span>A heading</span><ol>"
+                     "<li><a href=\"chapter1.xhtml#x\">Two</a><ol><li><a href=\"chapter6.xhtml\">Under</a></li></ol>"
+                     "</li></ol></li>"))
+          .file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+
+  const Opened first = OpenAsAReaderWould(fixture.storage, "/books/a.epub");
+  const Opened second = OpenAsAReaderWould(fixture.storage, "/books/b.epub");
+  ASSERT_EQ(first.tocStatus, bn::epub::TocStatus::kOk);
+  ASSERT_EQ(second.tocStatus, bn::epub::TocStatus::kOk);
+  ASSERT_EQ(first.tocKind, bn::epub::TocKind::kNcx);
+  ASSERT_EQ(second.tocKind, bn::epub::TocKind::kNav);
+  ASSERT_EQ(first.tocEntries, 4u);
+  ASSERT_EQ(second.tocEntries, 4u);
+
+  // A line a book, after its package's and before the reading of its entries.
+  const std::string all = fixture.AllLines();
+  const std::string one = fixture.LineWith("book 1: contents: ");
+  EXPECT_TRUE(one.starts_with("book 1: contents: ncx, 4 entries, 2 levels; checksum " + Hex8(first.tocChecksum) + "; "))
+      << all;
+  EXPECT_TRUE(one.ends_with(" ms for " + std::to_string(first.tocReads) + " reads of " +
+                            std::to_string(first.tocReadBytes) + " bytes."))
+      << one;
+  const std::string two = fixture.LineWith("book 2: contents: ");
+  EXPECT_TRUE(
+      two.starts_with("book 2: contents: nav, 4 entries, 3 levels; checksum " + Hex8(second.tocChecksum) + "; "))
+      << all;
+  EXPECT_TRUE(two.ends_with(" bytes. With no document: 1.")) << two;
+  EXPECT_LT(all.find("book 1: package: title"), all.find("book 1: contents: ")) << all;
+  EXPECT_LT(all.find("book 1: contents: "), all.find("book 1: ok. ")) << all;
+  EXPECT_EQ(fixture.check->TocChecksum(), second.tocChecksum) << "of the book last read";
+
+  // And one for all of them.
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.tocsRead, 2u);
+  EXPECT_EQ(totals.tocsNav, 1u);
+  EXPECT_EQ(totals.tocsNone, 0u);
+  EXPECT_EQ(totals.tocsNotRead, 0u);
+  EXPECT_EQ(totals.tocEntries, 8u);
+  EXPECT_EQ(totals.tocReads, first.tocReads + second.tocReads);
+  EXPECT_EQ(totals.tocReadBytes, first.tocReadBytes + second.tocReadBytes);
+  const std::string last = fixture.LineWith("book check: contents: ");
+  EXPECT_TRUE(last.starts_with("book check: contents: 2 read (1 nav), 8 entries; ")) << last;
+  EXPECT_NE(last.find(" ms for " + std::to_string(first.tocReads + second.tocReads) + " reads of " +
+                      std::to_string(first.tocReadBytes + second.tocReadBytes) + " bytes; the longest "),
+            std::string::npos)
+      << last;
+  EXPECT_TRUE(last.ends_with(" ms.")) << last;
+
+  // The package's figures are what they were without it, and so are the
+  // book's own.
+  EXPECT_EQ(totals.packageReads, first.reads + second.reads);
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads,
+            fixture.storage.reads.size() - first.reads - first.tocReads - second.reads - second.tocReads)
+      << "every read the check made is counted to one of the three";
+  EXPECT_EQ(totals.failedEntries, 0u);
+}
+
+// A book with a table of contents long enough to be many pieces: this
+// many entries, in a file kept as it is, so that reading it is reads of
+// storage as well.
+Bytes BookWithALongTableOfContents(int entries) {
+  std::string points;
+  for (int i = 0; i < entries; ++i) {
+    points += "<navPoint><navLabel><text>Chapter " + std::to_string(i) +
+              " of a long book</text></navLabel><content src=\"chapter" + std::to_string(i % 3) + ".xhtml#c" +
+              std::to_string(i) + "\"/></navPoint>\n";
+  }
+  const std::string ncx = "<ncx><navMap>" + points + "</navMap></ncx>";
+  ZipBuilder builder;
+  builder.Add("META-INF/container.xml",
+              BytesOf("<container><rootfiles><rootfile full-path=\"p.opf\"/></rootfiles></container>"));
+  std::string manifest = "<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>";
+  std::string spine;
+  for (int i = 0; i < 3; ++i) {
+    manifest += "<item id=\"c" + std::to_string(i) + "\" href=\"chapter" + std::to_string(i) +
+                ".xhtml\" media-type=\"application/xhtml+xml\"/>";
+    spine += "<itemref idref=\"c" + std::to_string(i) + "\"/>";
+    builder.Add("chapter" + std::to_string(i) + ".xhtml", Xhtml(2'000, static_cast<unsigned>(i) + 1));
+  }
+  builder.Add("p.opf", BytesOf("<package><metadata/><manifest>" + manifest + "</manifest><spine>" + spine +
+                               "</spine></package>"));
+  builder.Add("toc.ncx", BytesOf(ncx));
+  return builder.Finish();
+}
+
+TEST(BookCheck, ReadsATableOfContentsAPieceAtATimeAndCountsItsTimeByItself) {
+  // 800 entries: over 80 KB of table.
+  CheckFixture fixture;
+  fixture.storage.Put("/books/long.epub", BookWithALongTableOfContents(800));
+  // Each reading of the clock is two milliseconds: a turn is a few pieces.
+  fixture.clock.step = 2'000;
+  fixture.check->Begin();
+  int turnsWhileReadingIt = 0;
+  int turns = 0;
+  while (fixture.check->CurrentState() == State::kRunning && turns < 10'000) {
+    const bool begun = !fixture.LineWith("book 1: package: ").empty();
+    fixture.check->Tick();
+    ++turns;
+    if (begun && fixture.LineWith("book 1: contents: ").empty()) {
+      ++turnsWhileReadingIt;
+      EXPECT_EQ(fixture.storage.OpenCount(), 2) << "the book stays open from one turn to the next";
+    }
+  }
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  EXPECT_GT(turnsWhileReadingIt, 10) << "about 80 pieces, a few a turn";
+
+  const Opened opened = OpenAsAReaderWould(fixture.storage, "/books/long.epub");
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.tocEntries, 800u);
+  EXPECT_EQ(fixture.check->TocChecksum(), opened.tocChecksum);
+  EXPECT_EQ(totals.tocReads, opened.tocReads);
+  EXPECT_GT(totals.tocReads, 15u);
+  EXPECT_EQ(totals.tocReadBytes, opened.tocReadBytes);
+  // Its time is what its pieces took, with storage's share of that known,
+  // and is not in the book's own.
+  EXPECT_GT(totals.tocUs, totals.tocStorageUs);
+  EXPECT_EQ(totals.tocUs % 2'000, 0u);
+  EXPECT_GE(totals.tocStorageUs, std::uint64_t{2'000} * totals.tocReads);
+  EXPECT_EQ(totals.tocLongestUs, totals.tocUs) << "of one book";
+  const std::string line = fixture.LineWith("book 1: contents: ");
+  EXPECT_NE(line.find("; " + std::to_string(totals.tocUs / 1000) + " ms: card " +
+                      std::to_string(totals.tocStorageUs / 1000) + " ms for " + std::to_string(totals.tocReads) +
+                      " reads of " + std::to_string(totals.tocReadBytes) + " bytes."),
+            std::string::npos)
+      << line;
+  const std::string last = fixture.LineWith("book check: contents: ");
+  EXPECT_TRUE(last.ends_with(" bytes; the longest " + std::to_string(totals.tocUs / 1000) + " ms.")) << last;
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads,
+            fixture.storage.reads.size() - opened.reads - opened.tocReads);
+}
+
+TEST(BookCheck, AddsUpTheTablesOfContentsOfAllTheBooks) {
+  CheckFixture fixture;
+  fixture.storage.Put("/books/a.epub", BookWithALongTableOfContents(600));
+  fixture.storage.Put("/books/b.epub", BookWithALongTableOfContents(300));
+  fixture.clock.step = 2'000;
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  const Opened first = OpenAsAReaderWould(fixture.storage, "/books/a.epub");
+  const Opened second = OpenAsAReaderWould(fixture.storage, "/books/b.epub");
+  ASSERT_GT(first.tocReads, second.tocReads);
+  ASSERT_GT(second.tocReads, 3u);
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.tocsRead, 2u);
+  EXPECT_EQ(totals.tocEntries, 900u);
+  EXPECT_EQ(totals.tocReads, first.tocReads + second.tocReads);
+  EXPECT_EQ(totals.tocReadBytes, first.tocReadBytes + second.tocReadBytes);
+  // The longest is the longer of the two: more than half of all the time,
+  // and not all of it.
+  EXPECT_GT(totals.tocLongestUs, totals.tocUs / 2);
+  EXPECT_LT(totals.tocLongestUs, totals.tocUs);
+  ASSERT_NE(totals.tocLongestUs / 1000, totals.tocUs / 1000);
+  const std::string last = fixture.LineWith("book check: contents: ");
+  EXPECT_TRUE(last.starts_with("book check: contents: 2 read (0 nav), 900 entries; " +
+                               std::to_string(totals.tocUs / 1000) + " ms: card " +
+                               std::to_string(totals.tocStorageUs / 1000) + " ms for " +
+                               std::to_string(totals.tocReads) + " reads of " + std::to_string(totals.tocReadBytes) +
+                               " bytes; the longest " + std::to_string(totals.tocLongestUs / 1000) + " ms."))
+      << last;
+}
+
+TEST(BookCheck, SaysWhenABookHasNoTableOfContentsOrOneItCannotRead) {
+  CheckFixture fixture;
+  // One whose NCX is no table of contents; one with none at all, its
+  // package naming a file that is not in the book; one that is cut short
+  // after two entries; and one whose package could not be read, so that
+  // its table of contents was not looked for.
+  fixture.storage.Put("/books/a.epub", RealBook("<dc:title>A</dc:title>", 2, "", "", "<ncx><head/></ncx>").file);
+  ZipBuilder none;
+  none.Add("META-INF/container.xml",
+           BytesOf("<container><rootfiles><rootfile full-path=\"p.opf\"/></rootfiles></container>"));
+  none.Add("p.opf", BytesOf("<package><metadata/><manifest><item id=\"c\" href=\"c.xhtml\"/>"
+                            "<item id=\"ncx\" href=\"gone.ncx\" media-type=\"application/x-dtbncx+xml\"/></manifest>"
+                            "<spine><itemref idref=\"c\"/></spine></package>"));
+  none.Add("c.xhtml", Xhtml(1'000));
+  fixture.storage.Put("/books/b.epub", none.Finish());
+  fixture.storage.Put(
+      "/books/c.epub",
+      RealBook(
+          "<dc:title>C</dc:title>", 2, "", "",
+          "<ncx><navMap><navPoint><navLabel><text>One</text></navLabel><content src=\"chapter0.xhtml\"/></navPoint>"
+          "<navPoint><navLabel><text>Two</text></navLabel><content src=\"gone.xhtml\"/></navPoint><navPoint>")
+          .file);
+  fixture.storage.Put("/books/d.epub", Book().file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  EXPECT_EQ(fixture.check->CurrentState(), State::kPassed) << "what is checked of a book is that it can be read";
+
+  const std::string all = fixture.AllLines();
+  const std::string notRead = fixture.LineWith("book 1: contents: ");
+  EXPECT_TRUE(notRead.starts_with("book 1: contents: NOT READ: not a table of contents. ")) << all;
+  EXPECT_TRUE(notRead.ends_with(" bytes.")) << notRead;
+  EXPECT_NE(notRead.find(" ms: card "), std::string::npos) << notRead;
+  EXPECT_NE(all.find("book 2: contents: none.\n"), std::string::npos) << all;
+  const std::string cut = fixture.LineWith("book 3: contents: ");
+  EXPECT_TRUE(cut.starts_with("book 3: contents: ncx, 2 entries, 1 level; checksum ")) << all;
+  EXPECT_TRUE(cut.ends_with(" bytes. With no document: 1. Cut short.")) << cut;
+  EXPECT_EQ(all.find("book 4: contents"), std::string::npos) << all;
+  EXPECT_NE(all.find("book 4: package: NOT READ: "), std::string::npos) << all;
+  EXPECT_EQ(fixture.check->TocChecksum(), 0u) << "the last book has none";
+
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.tocsRead, 1u);
+  EXPECT_EQ(totals.tocsNav, 0u);
+  EXPECT_EQ(totals.tocsNone, 1u);
+  EXPECT_EQ(totals.tocsNotRead, 1u);
+  EXPECT_EQ(totals.tocEntries, 2u);
+  const std::string last = fixture.LineWith("book check: contents: ");
+  EXPECT_TRUE(last.starts_with("book check: contents: 1 read (0 nav), 2 entries; ")) << last;
+  EXPECT_TRUE(last.ends_with(" ms. None: 1. Not read: 1.")) << last;
+
+  // With only a book that has none, there is still a line that says so.
+  CheckFixture only;
+  ZipBuilder bare;
+  bare.Add("META-INF/container.xml",
+           BytesOf("<container><rootfiles><rootfile full-path=\"p.opf\"/></rootfiles></container>"));
+  bare.Add("p.opf", BytesOf("<package><metadata/><manifest><item id=\"c\" href=\"c.xhtml\"/></manifest>"
+                            "<spine><itemref idref=\"c\"/></spine></package>"));
+  bare.Add("c.xhtml", Xhtml(1'000));
+  only.storage.Put("/books/a.epub", bare.Finish());
+  only.check->Begin();
+  only.RunToTheEnd();
+  EXPECT_TRUE(only.LineWith("book check: contents: ").starts_with("book check: contents: 0 read (0 nav), 0 entries; "))
+      << only.AllLines();
+  EXPECT_TRUE(only.LineWith("book check: contents: ").ends_with(" ms. None: 1.")) << only.AllLines();
+
+  // With no book whose package could be read, there is no line about
+  // tables of contents at all.
+  CheckFixture without;
+  without.storage.Put("/books/d.epub", Book().file);
+  without.check->Begin();
+  without.RunToTheEnd();
+  EXPECT_EQ(without.AllLines().find("contents"), std::string::npos) << without.AllLines();
 }
 
 TEST(BookCheck, SaysWhatIsAmissWithAPackageItReads) {
@@ -1128,6 +1447,20 @@ TEST(BookCheck, CanBeRunAgainAndStartsItsCountsAfresh) {
   EXPECT_EQ(fixture.check->Totals().reads, first.reads);
   EXPECT_EQ(fixture.check->Totals().packagesNotRead, 1u);
   EXPECT_EQ(fixture.check->Totals().packageReads, first.packageReads);
+
+  // The same with a book that has a table of contents.
+  CheckFixture real;
+  real.storage.Put("/books/a.epub", RealBook().file);
+  real.check->Begin();
+  real.RunToTheEnd();
+  const BookCheck::Figures once = real.check->Totals();
+  const std::uint32_t checksum = real.check->TocChecksum();
+  real.check->Begin();
+  real.RunToTheEnd();
+  EXPECT_EQ(real.check->Totals().tocsRead, 1u);
+  EXPECT_EQ(real.check->Totals().tocEntries, once.tocEntries);
+  EXPECT_EQ(real.check->Totals().tocReads, once.tocReads);
+  EXPECT_EQ(real.check->TocChecksum(), checksum);
 }
 
 TEST(BookCheck, LetsGoOfTheCardWhenItIsDestroyedPartWay) {

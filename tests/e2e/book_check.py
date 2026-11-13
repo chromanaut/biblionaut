@@ -8,9 +8,9 @@ with things that share none of its code path: `bn-zip check`, `bn-xml
 book` and `bn-epub info` on each of the same files, and Python's zipfile
 module. A book should come to the same entries, the same bytes and the
 same number of reads of storage in the application as it does in bn-zip,
-its XML to the same events as in bn-xml, and its package to the same
-checksum in the same number of reads as in bn-epub, which is how a run on
-a device is compared with the desktop.
+its XML to the same events as in bn-xml, and its package and its table of
+contents to the same checksums in the same number of reads as in bn-epub,
+which is how a run on a device is compared with the desktop.
 
 usage: book_check.py APP BN_TRACE BN_ZIP BN_XML BN_EPUB WORK_DIR
 """
@@ -59,13 +59,31 @@ def xhtml(size: int, seed: int) -> bytes:
 
 
 def make_book(path: Path, seed: int, chapters: int) -> None:
-    """An EPUB: its package lists what is in it, and its XML is XML, but for one file."""
+    """An EPUB: its package lists what is in it, and its XML is XML, but for one file.
+
+    It has an NCX, and if `seed` is a multiple of 200 a nav as well, which
+    says less than the NCX does.
+    """
     manifest = "".join(f'<item id="c{chapter}" href="chapter{chapter:02d}.xhtml" media-type="application/xhtml+xml"/>'
                        for chapter in range(chapters))
     manifest += ('<item id="kept" href="kept-as-it-is.xhtml" media-type="application/xhtml+xml"/>'
                  '<item id="odd" href="not-xml.xhtml" media-type="application/xhtml+xml"/>'
                  '<item id="cover" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>'
-                 '<item id="css" href="empty.css" media-type="text/css"/>')
+                 '<item id="css" href="empty.css" media-type="text/css"/>'
+                 '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
+    with_nav = seed % 200 == 0
+    if with_nav:
+        manifest += '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+    points = "".join(f'<navPoint><navLabel><text>Chapter {chapter}:\n  Night &amp; Day</text></navLabel>'
+                     f'<content src="chapter{chapter:02d}.xhtml{"#s" + str(chapter) if chapter % 2 else ""}"/></navPoint>\n'
+                     for chapter in range(chapters))
+    ncx = ('<?xml version="1.0" encoding="utf-8"?>\n<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>\n'
+           f'<navPoint><navLabel><text>Book {seed}</text></navLabel><content src="chapter00.xhtml"/>\n{points}'
+           "</navPoint>\n</navMap></ncx>\n")
+    links = "".join(f'<li><a href="chapter{chapter:02d}.xhtml">Chapter <i>{chapter}</i></a></li>'
+                    for chapter in range(0, chapters, 2))
+    nav = ('<?xml version="1.0" encoding="utf-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" '
+           f'xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol>{links}</ol></nav></body></html>\n')
     spine = "".join(f'<itemref idref="c{chapter}"/>' for chapter in range(chapters))
     package = ('<?xml version="1.0" encoding="utf-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
                '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
@@ -77,6 +95,9 @@ def make_book(path: Path, seed: int, chapters: int) -> None:
         archive.writestr("META-INF/container.xml", '<container><rootfiles><rootfile full-path="OEBPS/content.opf" '
                          'media-type="application/oebps-package+xml"/></rootfiles></container>', zipfile.ZIP_DEFLATED)
         archive.writestr("OEBPS/content.opf", package, zipfile.ZIP_DEFLATED)
+        archive.writestr("OEBPS/toc.ncx", ncx, zipfile.ZIP_DEFLATED)
+        if with_nav:
+            archive.writestr("OEBPS/nav.xhtml", nav, zipfile.ZIP_DEFLATED)
         for chapter in range(chapters):
             archive.writestr(f"OEBPS/chapter{chapter:02d}.xhtml", xhtml(6_000 + 900 * chapter, seed + chapter),
                              zipfile.ZIP_DEFLATED, compresslevel=1 + chapter % 9)
@@ -142,6 +163,19 @@ def epub_info(epub_tool: str, path: Path) -> dict:
             "memory": int(said["memory"]), "reads": int(reads[1]), "read_bytes": int(reads[2])}
 
 
+def epub_toc(epub_tool: str, path: Path) -> dict:
+    """What `bn-epub toc` says of a book's table of contents, and what reading the package and then it cost."""
+    result = subprocess.run([epub_tool, "toc", str(path)], capture_output=True, check=False)
+    out = result.stdout.decode("utf-8", "replace")
+    expect(result.returncode == 0, f"bn-epub toc {path.name} ended with {result.returncode}: {result.stderr!r}")
+    said = dict(line.split(": ", 1) for line in out.splitlines() if ": " in line and "\t" not in line)
+    reads = re.search(r"sd_reads=(\d+) sd_read_bytes=(\d+)", said.get("cost", ""))
+    expect(reads is not None and "checksum" in said, f"bn-epub toc {path.name} said {out[-400:]!r}")
+    depths = [int(line.split("\t")[0]) for line in out.splitlines() if "\t" in line]
+    return {"kind": said["toc"], "entries": int(said["entries"]), "levels": max(depths, default=-1) + 1,
+            "checksum": int(said["checksum"], 16), "reads": int(reads[1]), "read_bytes": int(reads[2])}
+
+
 def reported(lines: list[str]) -> dict[str, dict]:
     """What the book check said of each book, by the book's path."""
     books: dict[int, dict] = {}
@@ -183,6 +217,12 @@ def reported(lines: list[str]) -> dict[str, dict]:
             book.update(package_reads=int(cost[1]), package_read_bytes=int(cost[2]))
         elif unread := re.match(r"package: NOT READ: (.*)\. \d+ ms: card \d+ ms for \d+ reads? of \d+ bytes\.$", rest):
             book.update(package_not_read=unread[1])
+        elif toc := re.match(r"contents: (nav|ncx), (\d+) entr(?:y|ies), (\d+) levels?; checksum ([0-9a-f]{8}); "
+                             r"\d+ ms: card \d+ ms for (\d+) reads? of (\d+) bytes\.(.*)$", rest):
+            book.update(toc_kind=toc[1], toc_entries=int(toc[2]), toc_levels=int(toc[3]), toc_checksum=int(toc[4], 16),
+                        toc_reads=int(toc[5]), toc_read_bytes=int(toc[6]), toc_amiss=toc[7])
+        elif re.match(r"contents: (none\.|NOT READ: .*)$", rest):
+            book.update(toc_missing=rest)
         else:
             raise Failure(f"a line about book {number} that is not understood: {line!r}")
     return {book["path"]: book for book in books.values()}
@@ -248,6 +288,7 @@ def main() -> int:
         total = {"entries": 0, "failed": 0, "out": 0, "in": 0, "reads": 0, "read_bytes": 0}
         xml_total = {"documents": 0, "events": 0, "not": 0}
         package_total = {"reads": 0, "read_bytes": 0, "memory": 0}
+        toc_total = {"read": 0, "nav": 0, "entries": 0, "reads": 0, "read_bytes": 0}
         for name in sorted(names - {"/books/not-a-book.epub"}):
             path = card / name[1:]
             book = found[name]
@@ -297,9 +338,34 @@ def main() -> int:
             expect(book["package_names"] == f'package: title "{theirs_package["title"]}", author '
                    f'"{theirs_package["author"]}", language "{theirs_package["language"]}".',
                    f"{name}: the book check has {book['package_names']!r}, bn-epub has {theirs_package!r}")
-            expect(book["package_amiss"] == "" and theirs_package["documents"] == len(infos) - 6
+            tables = sum(1 for info in infos if info.filename in ("OEBPS/toc.ncx", "OEBPS/nav.xhtml"))
+            expect(book["package_amiss"] == "" and theirs_package["documents"] == len(infos) - 6 - tables
                    and theirs_package["files"] == len(infos) - 3 and theirs_package["cover"] == "jpeg",
                    f"{name}: the package should list every file but itself, the container and the mimetype:\n{said}")
+            # Its table of contents against bn-epub, which reads the
+            # package and then the table with the book still open, as the
+            # check does: the reads of the two together are bn-epub's.
+            theirs_toc = epub_toc(epub_tool, path)
+            expect("toc_missing" not in book and "toc_checksum" in book,
+                   f"{name}: its table of contents should have been read:\n{said}")
+            mine_toc = {"kind": book["toc_kind"], "entries": book["toc_entries"], "levels": book["toc_levels"],
+                        "checksum": book["toc_checksum"], "reads": book["package_reads"] + book["toc_reads"],
+                        "read_bytes": book["package_read_bytes"] + book["toc_read_bytes"]}
+            for key, value in mine_toc.items():
+                expect(value == theirs_toc[key],
+                       f"{name}: the book check has the table of contents' {key} = {value!r}, bn-epub has "
+                       f"{theirs_toc[key]!r}:\n{said}")
+            chapters = len(infos) - 7 - tables  # The spine has one document more, which is no chapter.
+            expect(book["toc_amiss"] == "" and
+                   (book["toc_kind"], book["toc_entries"], book["toc_levels"]) ==
+                   (("nav", (chapters + 1) // 2, 1) if tables == 2 else ("ncx", chapters + 1, 2)),
+                   f"{name}: {chapters} chapters, and its table of contents has {book['toc_entries']} entries "
+                   f"in {book['toc_levels']} levels as {book['toc_kind']}:\n{said}")
+            toc_total["read"] += 1
+            toc_total["nav"] += book["toc_kind"] == "nav"
+            toc_total["entries"] += book["toc_entries"]
+            toc_total["reads"] += book["toc_reads"]
+            toc_total["read_bytes"] += book["toc_read_bytes"]
             package_total["reads"] += book["package_reads"]
             package_total["read_bytes"] += book["package_read_bytes"]
             package_total["memory"] = max(package_total["memory"], book["package_memory"])
@@ -334,6 +400,11 @@ def main() -> int:
                    f" ms for {package_total['reads']} reads of {package_total['read_bytes']} bytes; the longest "
                    in line and line.endswith(f" ms; the most memory {package_total['memory']}.") for line in lines),
                f"the packages of all the books together should be {package_total}:\n{said}")
+        expect(any(line.startswith(f"book check: contents: 4 read ({toc_total['nav']} nav), {toc_total['entries']} "
+                                   "entries; ") and
+                   f" ms for {toc_total['reads']} reads of {toc_total['read_bytes']} bytes; the longest " in line
+                   for line in lines) and toc_total["nav"] == 2,
+               f"the tables of contents of all the books together should be {toc_total}:\n{said}")
         expect("top.epub" not in said and "too-deep" not in said,
                f"only /books and the folders in it are read:\n{said}")
         expect("book check: 1 folder inside a folder not looked in: only one level down is." in lines,
@@ -355,7 +426,7 @@ def main() -> int:
         return 1
     print(f"the book check agrees with bn-zip, bn-xml, bn-epub and zipfile about 4 books: {total['entries']} entries, "
           f"{total['reads']} reads, {xml_total['documents']} XML documents, {xml_total['events']} events, "
-          f"4 packages in {package_total['reads']} reads")
+          f"4 packages in {package_total['reads']} reads, 4 tables of contents with {toc_total['entries']} entries")
     return 0
 
 

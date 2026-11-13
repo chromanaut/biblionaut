@@ -377,9 +377,11 @@ in each folder in `/books`, one level down and no further. If there is no
 instead (`reader/book_check.h`). With each book it does two things. First
 it opens the book as a reader would: finds the ZIP directory and reads the
 book's package, which says what the book is called and where its documents
-are (see "What a book says of itself" below), all in one go. Then it
-closes the book, opens it afresh, reads every entry to its end, which
-checks the entry's size and checksum, and looks each entry up by name.
+are (see "What a book says of itself" below), all in one go; and then, with
+the book still open, reads its table of contents ("The table of contents"
+below). Then it closes the book, opens it afresh, reads every entry to its
+end, which checks the entry's size and checksum, and looks each entry up
+by name.
 Every entry with an XML file's name (one ending in `.xhtml`, `.html`,
 `.htm`, `.xml`, `.opf` or `.ncx`) is also parsed as it is read. But for the
 package, it works for about 20 ms a turn, so the panel and the buttons
@@ -387,23 +389,26 @@ carry on around it, and a run takes longer by the clock than the times it
 reports.
 
 What it finds goes out as log text: a line when a book is begun, three for
-its package, three when it ends, and five at the end for all of them.
+its package, one for its table of contents, three when it ends, and six at
+the end for all of them.
 
 ```
-book check: the checksum alone, 262144 bytes in 1354 us (189069 KB/s).
+book check: the checksum alone, 262144 bytes in 1256 us (203821 KB/s).
 book 1: 1498334 bytes, /books/A Series/1 The First Book.epub
 book 1: package: title "The First Book", author "A. Writer", language "eng".
 book 1: package: 119 files, 105 documents, cover jpeg, nav, ncx; memory 4844; checksum 3ee7ef89.
 book 1: package: 1 ms: card 0 ms for 9 reads of 35260 bytes.
+book 1: contents: nav, 103 entries, 2 levels; checksum 6c3bbc09; 1 ms: card 0 ms for 2 reads of 8192 bytes.
 book 1: ok. 122 entries, 3022700 bytes out of 1477560. Directory found in 1 read, 0 ms.
-book 1: card 1 ms for 372 reads of 1521306 bytes (1394976 KB/s); inflating 35 ms: 1477540 bytes in (40440 KB/s), 3022680 out (82730 KB/s); all 56 ms.
-book 1: XML: 109 documents, 2042449 bytes, 78209 events, checksum 10acf92b; parsing 19 ms (102244 KB/s); most memory 10928.
+book 1: card 0 ms for 372 reads of 1521306 bytes (1533178 KB/s); inflating 33 ms: 1477540 bytes in (42491 KB/s), 3022680 out (86926 KB/s); all 53 ms.
+book 1: XML: 109 documents, 2042449 bytes, 78209 events, checksum 10acf92b; parsing 18 ms (108142 KB/s); most memory 10928.
 ...
 book check: passed. 31 books, 4310 entries, 181650944 bytes out of 85181353.
-book check: card 45 ms for 21188 reads of 86632380 bytes (1867015 KB/s); inflating 1829 ms: 75728235 bytes in (40421 KB/s), 172197826 out (91913 KB/s); all 2467 ms.
-book check: XML: 2587 documents, 66166529 bytes, 1823978 events; parsing 543 ms (118946 KB/s); 66286144 bytes of events checksummed.
+book check: card 50 ms for 21188 reads of 86632380 bytes (1659024 KB/s); inflating 1842 ms: 75728235 bytes in (40128 KB/s), 172197826 out (91247 KB/s); all 2491 ms.
+book check: XML: 2587 documents, 66166529 bytes, 1823978 events; parsing 547 ms (117963 KB/s); 66286144 bytes of events checksummed.
 book check: XML memory: the most a document used 11648 bytes; documents over 8 KB: 2587, over 12 KB: 0, over 16 KB: 0.
-book check: packages: 31 read; 33 ms: card 22 ms for 368 reads of 1380309 bytes; the longest 1 ms; the most memory 10628.
+book check: packages: 31 read; 43 ms: card 33 ms for 368 reads of 1380309 bytes; the longest 2 ms; the most memory 10628.
+book check: contents: 31 read (6 nav), 2400 entries; 14 ms: card 3 ms for 54 reads of 221184 bytes; the longest 1 ms.
 ```
 
 (Those figures are a desktop's, and the book's names are made up.) There
@@ -438,6 +443,16 @@ the book's other figures. A book whose package cannot be read has one line
 that says why (`package: NOT READ: no container.`), and that does not make
 the book a failure either.
 
+The line for the table of contents has which kind was read (the nav, if
+the book has one, or the NCX), how many entries it has and how many levels
+they go to, a checksum of the entries (`epub/toc_digest.h`), and what
+reading it cost, which is counted by itself as the package's is. It is
+read a piece at a time, as the entries are. After that come how many
+entries point into no document, if any do, and whether the file was cut
+short. A book with no table of contents says `contents: none.`, and one
+with a file that could not be read as one says why (`contents: NOT READ:
+not a table of contents.`); neither makes the book a failure.
+
 `bn-zip check` reads a file the same way, read for read. So the same book
 on the desktop should come to the same entries, the same bytes and the same
 reads (`sd_reads` and `sd_read_bytes`, in the last line `bn-zip check`
@@ -445,7 +460,10 @@ prints) as it does on the device. `bn-xml book` parses the same documents,
 and its last line has the count and the checksum of everything found in
 them, which should be the book's on the device too. `bn-epub info` opens
 the book and reads its package the same way, and prints the checksum, the
-memory and the reads that the package's lines should have.
+memory and the reads that the package's lines should have. `bn-epub toc`
+goes on to read the table of contents, and prints its kind, its entries
+and their checksum; the reads it reports are the package's and the
+table's together.
 
 The outcome is also in the metrics (`book_check=1` if every book was sound,
 `book_check_books`, `inflate_kb_per_s`, `checksum_kb_per_s`,
@@ -485,10 +503,10 @@ chapters. The parsing is done by [expat](https://libexpat.github.io);
   several kilobytes long, since a whole tag has to be held at once, or
   with elements nested hundreds deep. Text can be any length. On an X4, no
   document in 30 books (1,392 documents) used more than 9.1 KB.
-- **Speed**: on an X4, over the same documents, it took in 830 to 910 KB a
-  second with every event counted and checksummed, in two runs of two
-  builds of the firmware: from 530 to 650 for chapters thick with markup,
-  and 1,060 to 1,090 for plain prose.
+- **Speed**: on an X4, over the same documents, it took in 830 to 950 KB a
+  second with every event counted and checksummed, in three runs of three
+  builds of the firmware: from 530 to 720 for chapters thick with markup,
+  and 1,060 to 1,150 for plain prose.
 - **Bad input**: the document is not trusted. Whatever bytes it holds,
   parsing ends with an answer, and one that is not XML is refused with
   expat's error number and the line it is on. What was found before the
@@ -689,6 +707,13 @@ file; `TocReader` reads it.
 - **In pieces.** `Begin()` and then `Step()`, which reads 1 KB of the file
   each time, so that a long table of contents can be read a little a turn;
   or `Read()` for all of it at once.
+- **Speed**: on an X4, reading the table of contents took 4 to 362 ms for
+  each of 30 books, 36 ms at the median, for tables of 5 to 525 entries:
+  about 0.8 ms an entry over all of them. Little of it is the card, which
+  gave most tables in one read or two; the rest, inflating and parsing
+  the file and placing each entry, went at about 310 KB of the file a
+  second. Counted from opening the book, with its package read first,
+  the contents were in hand after 29 to 390 ms, 118 ms at the median.
 - **Bad input**: the file is not trusted. Whatever bytes it holds, reading
   ends with an answer: `kNoToc` for a book with none, `kNotToc` for a file
   with no table of contents in it, `kNoMemory`, `kUnreadable`. A file that
@@ -721,14 +746,17 @@ toc: ncx
 1	10	-	Chapter 10: The Tale & Its Telling
 1	11	-	Chapter 11: The Tale & Its Telling
 entries: 14
+checksum: 5d9afae8
 cost: packages_read=1 packages_failed=0 xml_documents=3 xml_failures=0 zip_finds=2 zip_records=21 sd_reads=2 sd_read_bytes=7338 sd_writes=0 sd_write_bytes=0 sd_syncs=0 sd_seeks=0 xml_memory=10144[8752..10144]
 ```
 
 The first line says which kind was read. Then a line an entry, with tabs
 between: how far in it is, from 0; the document it points into, by its
 place in the spine from 0, or `-` for none; the place within the document,
-or `-` for its start; and what it is called. Then how many there were, and
-the counters after reading the package and the table. `--nav` and `--ncx`
+or `-` for its start; and what it is called. Then how many there were, a
+checksum of them (`epub/toc_digest.h`), which is what a device's book
+check reports for the same book, and the counters after reading the
+package and the table. `--nav` and `--ncx`
 ask for that kind; it exits with 1, and says why, if there is none to read.
 
 The unit tests say what should be made of tables of contents written for

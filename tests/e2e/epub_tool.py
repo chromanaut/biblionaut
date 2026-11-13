@@ -235,7 +235,9 @@ def toc_reference(path: Path, kind: str | None) -> list[str] | str:
                     lists(item, depth + 1)
 
         lists(tocs[0], 0)
-    return [f"toc: {kind}", *lines, f"entries: {len(lines)}"]
+    # The checksum is of the entries' lines as they are (epub/toc_digest.h).
+    checksum = zlib.crc32("".join(line + "\n" for line in lines).encode("utf-8"))
+    return [f"toc: {kind}", *lines, f"entries: {len(lines)}", f"checksum: {checksum:08x}"]
 
 
 def kind_of_file(item: ET.Element) -> str:
@@ -431,7 +433,7 @@ def main() -> int:
                 expect(len(got_toc) == len(expected_toc),
                        f"{what}: {len(got_toc)} lines, a reading by Python has {len(expected_toc)}")
                 tables_read += 1
-                entries += len(expected_toc) - 2
+                entries += len(expected_toc) - 3
 
         # What it costs: a book of 600 chapters, its files in no order, is
         # found with two lookups by name and one reading of the directory,

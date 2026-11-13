@@ -8,7 +8,7 @@ a desktop.
 
 | Directory | Contents |
 |---|---|
-| `core/` | Shared foundation: arenas, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display, buttons) |
+| `core/` | Shared foundation: arenas, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the inflater, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display, buttons) |
 | `hw/` | Hardware abstraction layer. `hw/include` is the interface. `hw/desktop` implements it for the host; on a device, `hw/esp32c3` holds what the chip provides and `hw/x4` what is specific to the X4 |
 | `epub/` | Book parsing: zip, XML, OPF / TOC, CSS, the importer and the intermediate format |
 | `draw/` | Fonts and drawing: glyphs, metrics, the display-list format, the band renderer, images |
@@ -46,7 +46,8 @@ clang-tidy enforces this.
 ## Host build
 
 Needs CMake 3.25 or later, Ninja and a C++20 compiler. GoogleTest is
-downloaded when CMake configures.
+downloaded when CMake configures. The tests also link zlib, to check the
+inflater against: macOS has it, and on Linux it is the `zlib1g-dev` package.
 
 ```
 cmake --preset host
@@ -275,6 +276,33 @@ tools/idf -DBN_STORAGE_CHECK=OFF build flash     # back to the normal firmware
 It can be combined with `-DBN_PLANE_CHECK=ON`, to see whether using the
 card disturbs what the panel holds.
 
+## Decompression
+
+`core/inflate.h` undoes DEFLATE (RFC 1951), the compression inside a ZIP
+file and so inside an EPUB. `Inflater` is a `ByteSource` that reads another:
+it draws compressed bytes from its source as it needs them and gives the
+plain bytes out in pieces of whatever size is asked for, so a file is never
+whole in memory in either form. It is our own code, the same on the desktop
+and the device.
+
+- **Memory**: the caller provides the 32 KB window the format needs. The
+  object itself is 2.6 KB on the device. It allocates nothing.
+- **Flash**: 3.7 KB, as compiled for the device.
+- **Bad input**: whatever bytes it is given, it either produces the data
+  they stand for or stops, saying why (`kBadData`, `kTruncated`,
+  `kSourceFailed`). It does not check that the data is the right data: that
+  is for the checksum a ZIP file carries.
+- **Reading ahead**: it may take up to 260 bytes from its source that come
+  after the end of the stream, so the source should end where the stream
+  does.
+
+Its tests build streams by hand for each rule of the format and each way of
+breaking it, and compare it with zlib on streams zlib compresses: 800 of
+them across kinds of data, sizes, compression levels and strategies, and
+again with the input and output cut into pieces of many sizes. They also
+turn over every bit of a stream, one at a time, and cut it short at every
+length, to see that the inflater always stops.
+
 ## Device build
 
 The firmware builds with ESP-IDF. A setup script installs the pinned version
@@ -364,6 +392,12 @@ The Linux run is worth doing before pushing changes to how memory is
 handled. Its compiler and C library catch faults the macOS build cannot see,
 such as a null pointer passed to `memset` with a length of zero, and under
 the sanitizers a finding fails the test.
+
+On an arm64 computer, such as a Mac with Apple silicon, the Linux run leaves
+out one of AddressSanitizer's checks: for use of a function's stack after
+it has returned. GCC's runtime for arm64 Linux is slow enough at it to turn
+seconds of tests into minutes (`tests/CMakeLists.txt` has the figures). CI's
+Linux job runs on x86-64, where it is not slow, and makes that check.
 
 ## Licence
 

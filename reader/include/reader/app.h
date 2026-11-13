@@ -13,10 +13,13 @@
 #include "core/storage.h"
 #include "core/trace.h"
 #include "core/trace_stream.h"
+#include "reader/device_check.h"
 #include "reader/pattern_viewer.h"
 #include "reader/storage_check.h"
 
 namespace bn::reader {
+
+class BookCheck;
 
 // Everything the application needs from the device, as interfaces. Tests
 // pass fakes; the real set comes from DefaultServices().
@@ -87,18 +90,35 @@ class App {
   // The check, if CheckStorage() was called; null otherwise.
   const StorageCheck* StorageChecker() const noexcept { return storageCheck_; }
 
+  // Has every book on the card read from end to end
+  // (reader/book_check.h): once at start, and again whenever the Power
+  // button is pressed, which also looks for a card again if none was found
+  // before. Call before Start(). Not together with CheckStorage(): the two
+  // would get in each other's way on the card.
+  void CheckBooks() noexcept;
+  // The check, if CheckBooks() was called; null otherwise.
+  const BookCheck* BookChecker() const noexcept { return bookCheck_; }
+
  private:
   void SampleMemory() noexcept;
   void SendCrashReport() noexcept;
   void StartStorage() noexcept;
+  void BeginChecks() noexcept;
 
   Services services_;
   std::array<core::TraceRecord, kTraceRecordCount> traceStorage_{};
   core::Tracer tracer_;
   core::TraceStream stream_;
   PatternViewer viewer_;
-  // On the heap, and only when asked for: it is 9 KB.
+  // The checks, each on the heap and only when asked for: the storage
+  // check is 9 KB and the book check 48 KB. They are kept twice. These
+  // two are for telling callers about them,
   StorageCheck* storageCheck_ = nullptr;
+  BookCheck* bookCheck_ = nullptr;
+  // and these are the same two as the application uses them: it reaches
+  // a check's code only through DeviceCheck, so that a build which asks
+  // for neither has neither in it.
+  std::array<DeviceCheck*, 2> checks_{};
   bool storageReady_ = false;
   std::uint64_t startedAtUs_ = 0;
   std::uint64_t nextHeartbeatUs_ = 0;

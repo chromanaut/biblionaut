@@ -26,6 +26,30 @@ const char* StorageStatusName(StorageStatus status) noexcept {
   return "unknown";
 }
 
+namespace {
+
+// Whether `ch` may be in the name of a file or a directory.
+bool IsNameByte(char ch) noexcept {
+  constexpr std::string_view kNotInNames = "/\\:*?\"<>|";
+  const auto byte = static_cast<unsigned char>(ch);
+  return byte >= 0x20 && byte != 0x7F && kNotInNames.find(ch) == std::string_view::npos;
+}
+
+}  // namespace
+
+bool IsStorageName(std::string_view name) noexcept {
+  // A path holding it has a '/' in front of it at the least.
+  if (name.empty() || name.size() > Storage::kMaxPath - 1 || name.back() == '.' || name.back() == ' ') {
+    return false;
+  }
+  for (const char ch : name) {
+    if (!IsNameByte(ch)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool IsStoragePath(std::string_view path) noexcept {
   if (path.empty() || path.size() > Storage::kMaxPath || path.front() != '/') {
     return false;
@@ -33,7 +57,6 @@ bool IsStoragePath(std::string_view path) noexcept {
   if (path.size() == 1) {
     return true;  // The top directory.
   }
-  constexpr std::string_view kNotInNames = "\\:*?\"<>|";
   std::size_t partLength = 0;
   for (std::size_t i = 1; i < path.size(); ++i) {
     const char ch = path[i];
@@ -46,8 +69,7 @@ bool IsStoragePath(std::string_view path) noexcept {
       partLength = 0;
       continue;
     }
-    const auto byte = static_cast<unsigned char>(ch);
-    if (byte < 0x20 || byte == 0x7F || kNotInNames.find(ch) != std::string_view::npos) {
+    if (!IsNameByte(ch)) {
       return false;
     }
     ++partLength;

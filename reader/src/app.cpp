@@ -4,6 +4,7 @@
 
 #include "core/metrics.h"
 #include "hw/platform.h"
+#include "reader/book_check.h"
 #include "reader/trace_ids.h"
 
 namespace bn::reader {
@@ -60,7 +61,9 @@ App::App(const Services& services) noexcept
       viewer_(services_.display, services_.clock) {}
 
 App::~App() {
-  delete storageCheck_;
+  for (const DeviceCheck* check : checks_) {
+    delete check;
+  }
   if (core::ActiveTracer() == &tracer_) {
     core::SetActiveTracer(nullptr);
   }
@@ -69,6 +72,14 @@ App::~App() {
 void App::CheckStorage() noexcept {
   if (storageCheck_ == nullptr) {
     storageCheck_ = new (std::nothrow) StorageCheck(services_.storage);
+    checks_[0] = storageCheck_;
+  }
+}
+
+void App::CheckBooks() noexcept {
+  if (bookCheck_ == nullptr) {
+    bookCheck_ = new (std::nothrow) BookCheck(services_.storage, services_.clock, stream_);
+    checks_[1] = bookCheck_;
   }
 }
 
@@ -100,8 +111,16 @@ void App::Start() noexcept {
   // After the panel has been given its first picture, which it takes
   // seconds over: finding the card then delays nothing anyone can see.
   StartStorage();
-  if (storageCheck_ != nullptr && storageReady_) {
-    storageCheck_->Begin();
+  if (storageReady_) {
+    BeginChecks();
+  }
+}
+
+void App::BeginChecks() noexcept {
+  for (DeviceCheck* check : checks_) {
+    if (check != nullptr) {
+      check->Begin();
+    }
   }
 }
 
@@ -121,20 +140,22 @@ void App::Tick() noexcept {
 
   core::InputEvent event{};
   for (int taken = 0; taken < kMaxInputEventsPerTick && services_.input.Next(event); ++taken) {
-    if (storageCheck_ != nullptr && event.kind == core::InputEventKind::kPress &&
-        event.button == core::Button::kPower) {
+    const bool hasChecks = checks_[0] != nullptr || checks_[1] != nullptr;
+    if (hasChecks && event.kind == core::InputEventKind::kPress && event.button == core::Button::kPower) {
       // The viewer has no use for this button. A card may have been put in
       // since the last look.
       if (!storageReady_) {
         StartStorage();
       }
-      storageCheck_->Begin();
+      BeginChecks();
     }
     viewer_.OnInput(event);
   }
   viewer_.Tick();
-  if (storageCheck_ != nullptr) {
-    storageCheck_->Tick();
+  for (DeviceCheck* check : checks_) {
+    if (check != nullptr) {
+      check->Tick();
+    }
   }
 
   const bool metricsDue = now >= nextMetricsUs_;

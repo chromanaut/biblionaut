@@ -41,6 +41,11 @@ enum class OpenMode : std::uint8_t {
 using FileHandle = std::int32_t;
 inline constexpr FileHandle kNoFile = -1;
 
+// A directory that is being listed. Only meaningful to the Storage that
+// gave it out.
+using DirectoryHandle = std::int32_t;
+inline constexpr DirectoryHandle kNoDirectory = -1;
+
 struct FileInfo {
   std::uint32_t size = 0;  // Bytes; 0 for a directory.
   bool isDirectory = false;
@@ -60,6 +65,10 @@ struct FileInfo {
 // them as the same: do not rely on either.
 bool IsStoragePath(std::string_view path) noexcept;
 
+// Whether `name` could be one part of such a path: the name of a file or a
+// directory, without the path to it.
+bool IsStorageName(std::string_view name) noexcept;
+
 // One place files are kept. Implemented by each hardware port.
 //
 // Calls may come from more than one task at once, except that any one open
@@ -74,8 +83,14 @@ class Storage {
   // has returned kAbsent. May take some hundreds of milliseconds.
   [[nodiscard]] virtual StorageStatus Start() noexcept = 0;
 
+  // How many files can be open at once, counting each directory that is
+  // being listed as one.
+  static constexpr std::size_t kMaxOpen = 4;
+  // How many of those can be directories.
+  static constexpr std::size_t kMaxListed = 2;
+
   // Opens a file. On success `file` is its handle, to be given back to
-  // Close(). Only a few files can be open at once (kTooManyOpen).
+  // Close(). Only kMaxOpen files can be open at once (kTooManyOpen).
   [[nodiscard]] virtual StorageStatus Open(std::string_view path, OpenMode mode, FileHandle& file) noexcept = 0;
 
   // Closes a file. What was written to it is not safely on the card until
@@ -115,6 +130,30 @@ class Storage {
 
   // Makes a directory. The one it is made in must exist (kNotFound).
   [[nodiscard]] virtual StorageStatus MakeDirectory(std::string_view path) noexcept = 0;
+
+  // Starts listing the directory at `path`. On success `directory` is its
+  // handle, to be given back to CloseDirectory(). kNotFound if there is no
+  // such directory. kTooManyOpen if kMaxListed are being listed already,
+  // or if with the open files that would make more than kMaxOpen.
+  [[nodiscard]] virtual StorageStatus OpenDirectory(std::string_view path, DirectoryHandle& directory) noexcept = 0;
+
+  // Gives the next thing in the directory: its name, without the path to
+  // it, in the first `length` bytes of `name`, and what it is in `info`.
+  // `length` is 0 once everything has been given. Things come in no order
+  // that can be relied on.
+  //
+  // Left out: anything with a name that could not be part of a path here
+  // (IsStorageName()) or that is longer than `name`, and anything that is
+  // neither a file that could be opened nor a directory. Give `name`
+  // kMaxPath bytes to be sure of missing nothing for want of room.
+  //
+  // What is made or removed in a directory while it is being listed may
+  // or may not show.
+  [[nodiscard]] virtual StorageStatus NextInDirectory(DirectoryHandle directory, std::span<char> name,
+                                                      std::size_t& length, FileInfo& info) noexcept = 0;
+
+  // Ends a listing.
+  virtual void CloseDirectory(DirectoryHandle directory) noexcept = 0;
 
  protected:
   ~Storage() = default;  // Never destroyed through the interface.

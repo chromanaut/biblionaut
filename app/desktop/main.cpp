@@ -24,7 +24,9 @@ void PrintUsage(const char* program) {
                "whenever it comes to rest.\n"
                "Set BN_STORAGE to a folder to stand for the SD card, and BN_STORAGE_CHECK\n"
                "to have it put through its paces at start and at each (scripted) press\n"
-               "of Power.\n",
+               "of Power.\n"
+               "Set BN_BOOK_CHECK instead to have every EPUB in that folder's books folder\n"
+               "read from end to end, at the same moments.\n",
                program);
 }
 
@@ -54,8 +56,18 @@ int main(int argc, char** argv) {
     app.CheckPanelPlanes();
   }
   // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
-  if (std::getenv("BN_STORAGE_CHECK") != nullptr) {
+  const bool checkStorage = std::getenv("BN_STORAGE_CHECK") != nullptr;
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
+  const bool checkBooks = std::getenv("BN_BOOK_CHECK") != nullptr;
+  if (checkStorage && checkBooks) {
+    std::fprintf(stderr, "BN_STORAGE_CHECK and BN_BOOK_CHECK would get in each other's way: set one of them.\n");
+    return 2;
+  }
+  if (checkStorage) {
     app.CheckStorage();
+  }
+  if (checkBooks) {
+    app.CheckBooks();
   }
   app.Start();
   std::printf("Biblionaut %s (%s)\n", bn::reader::Version(), bn::hw::PortName());

@@ -3,3 +3,4 @@
 #
 # Still to come: importer CLI, font builder, perf harness.
 add_subdirectory(trace)
+add_subdirectory(zip)

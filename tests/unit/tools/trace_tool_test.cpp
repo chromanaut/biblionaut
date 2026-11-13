@@ -18,6 +18,7 @@
 #include "core/metrics.h"
 #include "core/trace_stream.h"
 #include "crash_fakes.h"
+#include "epub/trace_ids.h"
 #include "hw/trace_ids.h"
 #include "reader/trace_ids.h"
 #include "stream_fakes.h"
@@ -658,6 +659,12 @@ TEST(Names, DescribesKnownIdsAndNumbersUnknownOnes) {
   EXPECT_EQ(bn::trace_tool::Describe(bn::hw::kSpanButtonPress).name, "button_press");
   EXPECT_EQ(bn::trace_tool::Describe(bn::reader::kSpanPressToRefresh).name, "press_to_refresh");
   EXPECT_EQ(bn::trace_tool::Describe(bn::reader::kSpanPressToRefresh).argument, "button");
+  const bn::trace_tool::SpanInfo findFiles = bn::trace_tool::Describe(bn::epub::kSpanPackageFindFiles);
+  EXPECT_TRUE(findFiles.known);
+  EXPECT_EQ(findFiles.part, "epub");
+  EXPECT_EQ(findFiles.name, "package_find_files");
+  EXPECT_EQ(findFiles.argument, "files");
+  EXPECT_EQ(bn::trace_tool::Describe(bn::epub::kSpanPackageRead).argument, "status");
 
   EXPECT_GE(bn::trace_tool::KnownSpanCount(), 12u);
 }
@@ -691,9 +698,10 @@ TEST(FormatEvent, WritesOneReadableLinePerEvent) {
   event.arg = 5;
   EXPECT_EQ(FormatEvent(event), "[     5.017809] interrupts  reader/heartbeat uptime_s=5");
 
-  event.id = MakeSpanId(TracePart::kEpub, 4);
+  // An id the tool has no name for: its part and its number.
+  event.id = MakeSpanId(TracePart::kEpub, 204);
   event.task = 2;
-  EXPECT_EQ(FormatEvent(event), "[     5.017809] task 2  epub/#4 arg=5");
+  EXPECT_EQ(FormatEvent(event), "[     5.017809] task 2  epub/#204 arg=5");
 
   event.kind = EventKind::kText;
   event.text = "hello";

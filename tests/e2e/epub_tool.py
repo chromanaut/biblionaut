@@ -20,6 +20,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -52,9 +53,19 @@ def tidy(element: ET.Element | None) -> str:
 
 
 def reference(path: Path) -> list[str]:
-    """What bn-epub info should print for the book at `path`, but for its last two lines."""
+    """What bn-epub info should print for the book at `path`, but for its last two lines.
+
+    The line before those is the checksum, which is worked out here from
+    lines of its own: the same things, with each file given not by its name
+    but by where zipfile says its entry is, how long it is and what its
+    contents' checksum is (epub/package_digest.h).
+    """
     with zipfile.ZipFile(path) as archive:
         names = {info.orig_filename for info in archive.infolist()}
+        # The first entry of each name, as three numbers.
+        entries: dict[str, str] = {}
+        for info in archive.infolist():
+            entries.setdefault(info.orig_filename, f"{info.header_offset} {info.file_size} {info.CRC:08x}")
         container = ET.fromstring(archive.read("META-INF/container.xml"))
         package_path = next(e.get("full-path") for e in container.iter() if local(e.tag) == "rootfile")
         # The one entity of HTML's that turns up in titles is told to the
@@ -86,6 +97,10 @@ def reference(path: Path) -> list[str]:
             by_id.setdefault(item.get("id"), item)
     lines = [f"title: {tidy(first('title')) or '-'}", f"author: {tidy(first('creator')) or '-'}",
              f"language: {tidy(first('language')) or '-'}", f"package: {package_path}", f"manifest: {len(items)}"]
+    summed = list(lines)
+
+    def entry(item: ET.Element | None) -> str | None:
+        return entries[where(item)] if where(item) else None
 
     cover = next((e for e in items if "cover-image" in (e.get("properties") or "").split()), None)
     if cover is None:
@@ -95,22 +110,30 @@ def reference(path: Path) -> list[str]:
         if named is not None and kind(named.get("media-type")) in ("jpeg", "png", "gif", "svg"):
             cover = named
     lines.append(f"cover: {kind(cover.get('media-type'))} {where(cover)}" if where(cover) else "cover: -")
+    summed.append(f"cover: {kind(cover.get('media-type'))} {entry(cover)}" if where(cover) else "cover: -")
     nav = next((e for e in items if "nav" in (e.get("properties") or "").split()), None)
     lines.append(f"nav: {where(nav) or '-'}")
+    summed.append(f"nav: {entry(nav) or '-'}")
     spine = next(e for e in package if local(e.tag) == "spine")
     ncx = by_id.get(spine.get("toc")) if spine.get("toc") else None
     if ncx is None:
         ncx = next((e for e in items if kind(e.get("media-type")) == "ncx"), None)
     lines.append(f"ncx: {where(ncx) or '-'}")
+    summed.append(f"ncx: {entry(ncx) or '-'}")
     documents = [e for e in spine if local(e.tag) == "itemref" and e.get("idref") in by_id]
     lines.append(f"spine: {len(documents)}")
+    summed.append(lines[-1])
     for document in documents:
         item = by_id[document.get("idref")]
-        lines.append(f"{'-' if document.get('linear') == 'no' else '+'} {kind(item.get('media-type'))} "
-                     f"{where(item) or '?'}")
+        start = f"{'-' if document.get('linear') == 'no' else '+'} {kind(item.get('media-type'))} "
+        lines.append(start + (where(item) or "?"))
+        summed.append(start + (entry(item) or "?"))
     unknown = sum(1 for e in spine if local(e.tag) == "itemref" and e.get("idref") and e.get("idref") not in by_id)
     if unknown:
         lines.append(f"unknown: {unknown}")
+    # None of the books made here has a package that is cut short.
+    summed += [f"unknown: {unknown}", "cut short: 0"]
+    lines.append(f"checksum: {zlib.crc32(''.join(line + chr(10) for line in summed).encode()):08x}")
     return lines
 
 

@@ -4,14 +4,15 @@
 The book check (reader/book_check.h) is what a device runs to find out
 whether it can read books off its card. Here the desktop application runs
 it over a folder standing for the card, and what it reports is compared
-with things that share none of its code path: `bn-zip check` and `bn-xml
-book` on each of the same files, and Python's zipfile module. A book
-should come to the same entries, the same bytes and the same number of
-reads of storage in the application as it does in bn-zip, and its XML to
-the same events as in bn-xml, which is how a run on a device is compared
-with the desktop.
+with things that share none of its code path: `bn-zip check`, `bn-xml
+book` and `bn-epub info` on each of the same files, and Python's zipfile
+module. A book should come to the same entries, the same bytes and the
+same number of reads of storage in the application as it does in bn-zip,
+its XML to the same events as in bn-xml, and its package to the same
+checksum in the same number of reads as in bn-epub, which is how a run on
+a device is compared with the desktop.
 
-usage: book_check.py APP BN_TRACE BN_ZIP BN_XML WORK_DIR
+usage: book_check.py APP BN_TRACE BN_ZIP BN_XML BN_EPUB WORK_DIR
 """
 
 from __future__ import annotations
@@ -58,11 +59,24 @@ def xhtml(size: int, seed: int) -> bytes:
 
 
 def make_book(path: Path, seed: int, chapters: int) -> None:
-    """Laid out as an EPUB is: its XML is XML, but for one file."""
+    """An EPUB: its package lists what is in it, and its XML is XML, but for one file."""
+    manifest = "".join(f'<item id="c{chapter}" href="chapter{chapter:02d}.xhtml" media-type="application/xhtml+xml"/>'
+                       for chapter in range(chapters))
+    manifest += ('<item id="kept" href="kept-as-it-is.xhtml" media-type="application/xhtml+xml"/>'
+                 '<item id="odd" href="not-xml.xhtml" media-type="application/xhtml+xml"/>'
+                 '<item id="cover" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>'
+                 '<item id="css" href="empty.css" media-type="text/css"/>')
+    spine = "".join(f'<itemref idref="c{chapter}"/>' for chapter in range(chapters))
+    package = ('<?xml version="1.0" encoding="utf-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+               '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+               f"<dc:title>Book {seed} &amp; Its {chapters} Chapters</dc:title><dc:creator>Writer {seed}</dc:creator>"
+               f"<dc:language>en</dc:language></metadata>\n<manifest>{manifest}</manifest>\n"
+               f'<spine>{spine}<itemref idref="kept" linear="no"/></spine></package>\n')
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip")
-        archive.writestr("META-INF/container.xml", '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/>'
-                         "</rootfiles></container>", zipfile.ZIP_DEFLATED)
+        archive.writestr("META-INF/container.xml", '<container><rootfiles><rootfile full-path="OEBPS/content.opf" '
+                         'media-type="application/oebps-package+xml"/></rootfiles></container>', zipfile.ZIP_DEFLATED)
+        archive.writestr("OEBPS/content.opf", package, zipfile.ZIP_DEFLATED)
         for chapter in range(chapters):
             archive.writestr(f"OEBPS/chapter{chapter:02d}.xhtml", xhtml(6_000 + 900 * chapter, seed + chapter),
                              zipfile.ZIP_DEFLATED, compresslevel=1 + chapter % 9)
@@ -114,6 +128,20 @@ def xml_check(xml_tool: str, path: Path) -> dict[str, int]:
             "checksum": int(totals[4], 16)}
 
 
+def epub_info(epub_tool: str, path: Path) -> dict:
+    """What `bn-epub info` says of a book's package, and what reading it cost."""
+    result = subprocess.run([epub_tool, "info", str(path)], capture_output=True, check=False)
+    out = result.stdout.decode("utf-8", "replace")
+    expect(result.returncode == 0, f"bn-epub info {path.name} ended with {result.returncode}: {result.stderr!r}")
+    said = dict(line.split(": ", 1) for line in out.splitlines() if ": " in line)
+    reads = re.search(r"sd_reads=(\d+) sd_read_bytes=(\d+)", said.get("cost", ""))
+    expect(reads is not None and "checksum" in said, f"bn-epub info {path.name} said {out[-400:]!r}")
+    return {"title": said["title"], "author": said["author"], "language": said["language"],
+            "files": int(said["manifest"]), "documents": int(said["spine"]), "cover": said["cover"].split()[0],
+            "nav": said["nav"] != "-", "ncx": said["ncx"] != "-", "checksum": int(said["checksum"], 16),
+            "memory": int(said["memory"]), "reads": int(reads[1]), "read_bytes": int(reads[2])}
+
+
 def reported(lines: list[str]) -> dict[str, dict]:
     """What the book check said of each book, by the book's path."""
     books: dict[int, dict] = {}
@@ -143,17 +171,29 @@ def reported(lines: list[str]) -> dict[str, dict]:
                         xml_refused=int(xml[7] or 0))
         elif unread := re.match(r"FAILED\. It cannot be read: (.*)$", rest):
             book.update(ok=False, unreadable=unread[1])
+        elif names := re.match(r"package: (title \".*\"|no title), (author \".*\"|no author), "
+                               r"(language \".*\"|no language)\.$", rest):
+            book.update(package_names=names[0])
+        elif package := re.match(r"package: (\d+) files?, (\d+) documents?, (?:cover (\w+)|no cover), (no nav|nav), "
+                                 r"(no ncx|ncx); memory (\d+); checksum ([0-9a-f]{8})\.(.*)$", rest):
+            book.update(package_files=int(package[1]), package_documents=int(package[2]), package_cover=package[3] or "-",
+                        package_nav=package[4] == "nav", package_ncx=package[5] == "ncx",
+                        package_memory=int(package[6]), package_checksum=int(package[7], 16), package_amiss=package[8])
+        elif cost := re.match(r"package: \d+ ms: card \d+ ms for (\d+) reads? of (\d+) bytes\.$", rest):
+            book.update(package_reads=int(cost[1]), package_read_bytes=int(cost[2]))
+        elif unread := re.match(r"package: NOT READ: (.*)\. \d+ ms: card \d+ ms for \d+ reads? of \d+ bytes\.$", rest):
+            book.update(package_not_read=unread[1])
         else:
             raise Failure(f"a line about book {number} that is not understood: {line!r}")
     return {book["path"]: book for book in books.values()}
 
 
 def main() -> int:
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 7:
         print(__doc__, file=sys.stderr)
         return 2
-    app, trace_tool, zip_tool, xml_tool = (str(Path(argument).resolve()) for argument in sys.argv[1:5])
-    work = Path(sys.argv[5]).resolve()
+    app, trace_tool, zip_tool, xml_tool, epub_tool = (str(Path(argument).resolve()) for argument in sys.argv[1:6])
+    work = Path(sys.argv[6]).resolve()
     shutil.rmtree(work, ignore_errors=True)
     card = work / "card"
     books = card / "books"
@@ -207,6 +247,7 @@ def main() -> int:
 
         total = {"entries": 0, "failed": 0, "out": 0, "in": 0, "reads": 0, "read_bytes": 0}
         xml_total = {"documents": 0, "events": 0, "not": 0}
+        package_total = {"reads": 0, "read_bytes": 0, "memory": 0}
         for name in sorted(names - {"/books/not-a-book.epub"}):
             path = card / name[1:]
             book = found[name]
@@ -240,6 +281,28 @@ def main() -> int:
                        f"{name}: the book check found {book['xml_events']} events, checksum "
                        f"{book['xml_checksum']:08x}; bn-xml {theirs_xml['events']}, {theirs_xml['checksum']:08x}:\n{said}")
                 expect(book["xml_not"] == theirs_xml["failed"] == 1, f"{name}: one file is not XML:\n{said}")
+            # Its package against bn-epub, which opens the book and reads
+            # it the same way. (The damaged book's package is whole.)
+            theirs_package = epub_info(epub_tool, path)
+            expect("package_not_read" not in book and "package_checksum" in book and "package_reads" in book,
+                   f"{name}: its package should have been read:\n{said}")
+            mine = {"files": book["package_files"], "documents": book["package_documents"],
+                    "cover": book["package_cover"], "nav": book["package_nav"], "ncx": book["package_ncx"],
+                    "checksum": book["package_checksum"], "memory": book["package_memory"],
+                    "reads": book["package_reads"], "read_bytes": book["package_read_bytes"]}
+            for key, value in mine.items():
+                expect(value == theirs_package[key],
+                       f"{name}: the book check has the package's {key} = {value!r}, bn-epub has "
+                       f"{theirs_package[key]!r}:\n{said}")
+            expect(book["package_names"] == f'package: title "{theirs_package["title"]}", author '
+                   f'"{theirs_package["author"]}", language "{theirs_package["language"]}".',
+                   f"{name}: the book check has {book['package_names']!r}, bn-epub has {theirs_package!r}")
+            expect(book["package_amiss"] == "" and theirs_package["documents"] == len(infos) - 6
+                   and theirs_package["files"] == len(infos) - 3 and theirs_package["cover"] == "jpeg",
+                   f"{name}: the package should list every file but itself, the container and the mimetype:\n{said}")
+            package_total["reads"] += book["package_reads"]
+            package_total["read_bytes"] += book["package_read_bytes"]
+            package_total["memory"] = max(package_total["memory"], book["package_memory"])
             if name != "/books/damaged.epub":
                 expect(book["ok"] and book["failed"] == 0, f"{name} should have passed:\n{said}")
                 expect(book["out"] == sum(info.file_size for info in infos), f"{name}: bytes out")
@@ -250,6 +313,8 @@ def main() -> int:
         expect(hurt["failure"] in ("bad checksum", "damaged"), f"the damaged entry failed as {hurt['failure']!r}")
         expect(found["/books/not-a-book.epub"].get("unreadable") == "not a zip file",
                f"the file that is no book:\n{said}")
+        expect(not any(key.startswith("package") for key in found["/books/not-a-book.epub"]),
+               f"the file that is no book has no package to speak of:\n{said}")
 
         # All of them together.
         last = (f"book check: FAILED. 2 of 5 books, 1 of {total['entries']} entries, "
@@ -265,6 +330,10 @@ def main() -> int:
         expect(any(re.match(r"book check: XML memory: the most a document used \d+ bytes; documents over 8 KB: \d+, "
                             r"over 12 KB: 0, over 16 KB: 0\.$", line) for line in lines),
                f"the line about the parser's memory:\n{said}")
+        expect(any(line.startswith("book check: packages: 4 read; ") and
+                   f" ms for {package_total['reads']} reads of {package_total['read_bytes']} bytes; the longest "
+                   in line and line.endswith(f" ms; the most memory {package_total['memory']}.") for line in lines),
+               f"the packages of all the books together should be {package_total}:\n{said}")
         expect("top.epub" not in said and "too-deep" not in said,
                f"only /books and the folders in it are read:\n{said}")
         expect("book check: 1 folder inside a folder not looked in: only one level down is." in lines,
@@ -284,8 +353,9 @@ def main() -> int:
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
-    print(f"the book check agrees with bn-zip, bn-xml and zipfile about 4 books: {total['entries']} entries, "
-          f"{total['reads']} reads, {xml_total['documents']} XML documents, {xml_total['events']} events")
+    print(f"the book check agrees with bn-zip, bn-xml, bn-epub and zipfile about 4 books: {total['entries']} entries, "
+          f"{total['reads']} reads, {xml_total['documents']} XML documents, {xml_total['events']} events, "
+          f"4 packages in {package_total['reads']} reads")
     return 0
 
 

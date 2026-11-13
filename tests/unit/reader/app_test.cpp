@@ -372,7 +372,8 @@ TEST(App, CanHaveTheBooksOnTheCardReadAtStartAndAtEachPressOfPower) {
 
   // Power runs it again.
   const int opensInOneRun = fixture.storage.opens;
-  EXPECT_EQ(opensInOneRun, 2) << "the book is open twice, for its directory and for its entries";
+  EXPECT_EQ(opensInOneRun, 4) << "the book is open twice, for its directory and for its entries, to look for its "
+                                 "package, and twice again to be read";
   fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
   fixture.RunFor(200'000);
   EXPECT_EQ(fixture.app.BookChecker()->CurrentState(), BookState::kPassed);

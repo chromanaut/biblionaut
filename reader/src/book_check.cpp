@@ -4,8 +4,10 @@
 #include <cstring>
 
 #include "core/checksum.h"
+#include "core/fixed_text.h"
 #include "core/metrics.h"
 #include "core/trace.h"
+#include "epub/package_digest.h"
 #include "reader/trace_ids.h"
 
 namespace bn::reader {
@@ -70,6 +72,8 @@ class Line {
     return Number(value).Text(value == 1 ? one : many);
   }
   std::string_view View() const noexcept { return {text_.data(), length_}; }
+  // Starts another line in the same place.
+  void Clear() noexcept { length_ = 0; }
 
  private:
   void Put(char ch) noexcept {
@@ -183,6 +187,32 @@ void AddXmlMemory(Line& line, const BookCheck::Figures& figures) noexcept {
       .Text(".");
 }
 
+// "... ms: card ... ms for ... reads of ... bytes", what reading one
+// package cost, or all of them, added to `line`.
+void AddPackageCost(Line& line, const BookCheck::Figures& figures) noexcept {
+  line.Number(figures.packageUs / 1000)
+      .Text(" ms: card ")
+      .Number(figures.packageStorageUs / 1000)
+      .Text(" ms for ")
+      .Count(figures.packageReads, " read of ", " reads of ")
+      .Number(figures.packageReadBytes)
+      .Text(" bytes");
+}
+
+// One of the names a book gives itself, as it is shown: in quotation
+// marks, and cut to `Room` bytes at a character with "..." after it if it
+// is longer; or that the book has none.
+template <std::size_t Room>
+void AddName(Line& line, std::string_view what, std::string_view name) noexcept {
+  if (name.empty()) {
+    line.Text("no ").Text(what);
+    return;
+  }
+  core::FixedText<Room> shown;
+  shown.Append(name);
+  line.Text(what).Text(" \"").Text(shown.View()).Text(shown.Truncated() ? "...\"" : "\"");
+}
+
 void Add(BookCheck::Figures& total, const BookCheck::Figures& book) noexcept {
   total.entries += book.entries;
   total.failedEntries += book.failedEntries;
@@ -206,6 +236,14 @@ void Add(BookCheck::Figures& total, const BookCheck::Figures& book) noexcept {
   total.xmlOver8K += book.xmlOver8K;
   total.xmlOver12K += book.xmlOver12K;
   total.xmlOver16K += book.xmlOver16K;
+  total.packagesRead += book.packagesRead;
+  total.packagesNotRead += book.packagesNotRead;
+  total.packageReads += book.packageReads;
+  total.packageReadBytes += book.packageReadBytes;
+  total.packageStorageUs += book.packageStorageUs;
+  total.packageUs += book.packageUs;
+  total.packageLongestUs = std::max(total.packageLongestUs, book.packageLongestUs);
+  total.packageMostMemory = std::max(total.packageMostMemory, book.packageMostMemory);
 }
 
 }  // namespace
@@ -294,7 +332,7 @@ void BookCheck::Meter::CloseDirectory(core::DirectoryHandle directory) noexcept 
 // ---- The check ----
 
 // Its size is what a build that runs it takes from the heap.
-static_assert(sizeof(BookCheck) < 86016, "the book check has grown past 84 KB");
+static_assert(sizeof(BookCheck) < 112640, "the book check has grown past 110 KB");
 
 // ---- What feeds the parser ----
 
@@ -337,7 +375,8 @@ BookCheck::BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStre
       entriesFile_(entriesBuffer_),
       entryReader_(window_),
       xml_(xmlMemory_),
-      feeder_(*this) {}
+      feeder_(*this),
+      package_(packageMemory_) {}
 
 BookCheck::~BookCheck() {
   CloseBook();
@@ -419,6 +458,9 @@ void BookCheck::DoStep() noexcept {
       break;
     case Step::kNextBook:
       NextBook();
+      break;
+    case Step::kReadPackage:
+      ReadPackage();
       break;
     case Step::kOpenBook:
       OpenBook();
@@ -572,11 +614,12 @@ void BookCheck::NextBook() noexcept {
   firstFailedEntry_ = 0;
   firstFailure_ = ZipStatus::kOk;
   digest_.Reset();
+  packageChecksum_ = 0;
   bookBeganTrace_ = BN_TRACE_NOW();
   Line line;
   line.Text("book ").Number(books_).Text(": ").Number(bookSize_).Text(" bytes, ").Text(Path());
   (void)stream_.SendText(line.View());
-  MoveTo(Step::kOpenBook);
+  MoveTo(Step::kReadPackage);
 }
 
 void BookCheck::LookInTopDirectoryOrFinish() noexcept {
@@ -627,7 +670,118 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
     AddXmlMemory(memory, totals_);
     (void)stream_.SendText(memory.View());
   }
+  if (totals_.packagesRead + totals_.packagesNotRead != 0) {
+    Line packages;
+    packages.Text("book check: packages: ").Number(totals_.packagesRead).Text(" read; ");
+    AddPackageCost(packages, totals_);
+    packages.Text("; the longest ")
+        .Number(totals_.packageLongestUs / 1000)
+        .Text(" ms; the most memory ")
+        .Number(totals_.packageMostMemory)
+        .Text(".");
+    if (totals_.packagesNotRead != 0) {
+      packages.Text(" Not read: ").Number(totals_.packagesNotRead).Text(".");
+    }
+    (void)stream_.SendText(packages.View());
+  }
   Finish(failedBooks_ == 0);
+}
+
+void BookCheck::ReadPackage() noexcept {
+  // What a reader opening the book would do, and all in one go as it
+  // would be: the file opened, its directory found, its package read.
+  // Then the book is closed again, so that the reading of its entries
+  // starts as it would have without this.
+  const Meter::Counts before = meter_.Now();
+  const std::uint64_t began = clock_.NowUs();
+  StorageStatus status = directoryFile_.Open(meter_, Path(), core::OpenMode::kRead);
+  if (status == StorageStatus::kOk) {
+    status = entriesFile_.Open(meter_, Path(), core::OpenMode::kRead);
+  }
+  if (status != StorageStatus::kOk || archive_.Open(directoryFile_) != ZipStatus::kOk) {
+    // Not a file that can be opened as a book at all, which the next step
+    // finds and says.
+    CloseBook();
+    MoveTo(Step::kOpenBook);
+    return;
+  }
+  const epub::PackageStatus read = package_.Read(archive_, entriesFile_, entryReader_, xml_);
+  const std::uint64_t took = clock_.NowUs() - began;
+  CloseBook();
+  MoveTo(Step::kOpenBook);
+
+  const Meter::Counts& counts = meter_.Now();
+  book_.packageReads = counts.reads - before.reads;
+  book_.packageReadBytes = counts.readBytes - before.readBytes;
+  book_.packageStorageUs = counts.timeUs - before.timeUs;
+  book_.packageUs = took;
+  book_.packageLongestUs = took;
+  // One line is used for all that is said, one after another: this
+  // function's own place on the stack is under everything the reading of
+  // the package put there.
+  Line line;
+  if (read != epub::PackageStatus::kOk) {
+    book_.packagesNotRead = 1;
+    line.Text("book ").Number(books_).Text(": package: NOT READ: ").Text(epub::PackageStatusName(read)).Text(". ");
+    AddPackageCost(line, book_);
+    line.Text(".");
+    (void)stream_.SendText(line.View());
+    return;
+  }
+  book_.packagesRead = 1;
+  book_.packageMostMemory = static_cast<std::uint32_t>(package_.MemoryUsed());
+  packageChecksum_ = epub::PackageChecksum(package_);
+
+  // What the book calls itself.
+  line.Text("book ").Number(books_).Text(": package: ");
+  AddName<80>(line, "title", package_.Title());
+  line.Text(", ");
+  AddName<40>(line, "author", package_.Author());
+  line.Text(", ");
+  AddName<16>(line, "language", package_.Language());
+  line.Text(".");
+  (void)stream_.SendText(line.View());
+
+  // What its package lists.
+  std::uint32_t notInTheBook = 0;
+  for (const epub::SpineItem& item : package_.Spine()) {
+    notInTheBook += item.present ? 0 : 1;
+  }
+  line.Clear();
+  line.Text("book ")
+      .Number(books_)
+      .Text(": package: ")
+      .Count(package_.ManifestItems(), " file, ", " files, ")
+      .Count(package_.Spine().size(), " document, ", " documents, ");
+  if (package_.Cover() != nullptr) {
+    line.Text("cover ").Text(epub::MediaTypeName(package_.CoverType()));
+  } else {
+    line.Text("no cover");
+  }
+  line.Text(package_.Nav() != nullptr ? ", nav" : ", no nav")
+      .Text(package_.Ncx() != nullptr ? ", ncx" : ", no ncx")
+      .Text("; memory ")
+      .Number(book_.packageMostMemory)
+      .Text("; checksum ")
+      .Hex8(packageChecksum_)
+      .Text(".");
+  if (notInTheBook != 0) {
+    line.Text(" Not in the book: ").Number(notInTheBook).Text(".");
+  }
+  if (package_.UnknownSpineItems() != 0) {
+    line.Text(" Not in the manifest: ").Number(package_.UnknownSpineItems()).Text(".");
+  }
+  if (package_.CutShort()) {
+    line.Text(" Cut short.");
+  }
+  (void)stream_.SendText(line.View());
+
+  // What finding that out cost.
+  line.Clear();
+  line.Text("book ").Number(books_).Text(": package: ");
+  AddPackageCost(line, book_);
+  line.Text(".");
+  (void)stream_.SendText(line.View());
 }
 
 void BookCheck::OpenBook() noexcept {

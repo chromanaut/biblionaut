@@ -5,6 +5,8 @@
 #include <new>
 
 #include "core/metrics.h"
+#include "core/trace.h"
+#include "epub/trace_ids.h"
 
 namespace bn::epub {
 
@@ -584,6 +586,14 @@ PackageStatus Package::FindFiles(ZipArchive& archive) noexcept {
 
 PackageStatus Package::Read(ZipArchive& archive, core::BlockFile& entries, ZipEntryReader& reader,
                             XmlParser& xml) noexcept {
+  const std::uint32_t began = BN_TRACE_NOW();
+  const PackageStatus status = ReadParts(archive, entries, reader, xml);
+  BN_TRACE_TOP_SPAN_SINCE(kSpanPackageRead, began, static_cast<std::uint32_t>(status));
+  return status;
+}
+
+PackageStatus Package::ReadParts(ZipArchive& archive, core::BlockFile& entries, ZipEntryReader& reader,
+                                 XmlParser& xml) noexcept {
   Clear();
   packagesRead.Add();
   if (spine_ == nullptr) {
@@ -591,8 +601,13 @@ PackageStatus Package::Read(ZipArchive& archive, core::BlockFile& entries, ZipEn
   }
 
   // Where the package file is.
-  ContainerHandler container(packagePath_);
-  switch (ParseEntry(archive, entries, reader, xml, kContainerName, container)) {
+  Parsed parsed = Parsed::kMissing;
+  {
+    BN_TRACE_SCOPE(kSpanPackageContainer);
+    ContainerHandler container(packagePath_);
+    parsed = ParseEntry(archive, entries, reader, xml, kContainerName, container);
+  }
+  switch (parsed) {
     case Parsed::kUnreadable:
       return Fail(PackageStatus::kUnreadable);
     case Parsed::kNoMemory:
@@ -606,19 +621,22 @@ PackageStatus Package::Read(ZipArchive& archive, core::BlockFile& entries, ZipEn
 
   // The package file. Its path is taken as written; if no entry has that
   // name, as a reference would be read, with its %XX turned into bytes.
-  PackageHandler handler(*this, xml);
-  Parsed parsed = ParseEntry(archive, entries, reader, xml, PackagePath(), handler);
-  if (parsed == Parsed::kMissing) {
-    std::array<char, kMaxBookPath> decoded{};
-    const std::size_t length = ResolveBookPath("", PackagePath(), decoded);
-    const std::string_view other(decoded.data(), length);
-    if (length == 0 || other == PackagePath()) {
-      return Fail(PackageStatus::kNoPackage);
+  {
+    BN_TRACE_SCOPE(kSpanPackageFile);
+    PackageHandler handler(*this, xml);
+    parsed = ParseEntry(archive, entries, reader, xml, PackagePath(), handler);
+    if (parsed == Parsed::kMissing) {
+      std::array<char, kMaxBookPath> decoded{};
+      const std::size_t length = ResolveBookPath("", PackagePath(), decoded);
+      const std::string_view other(decoded.data(), length);
+      if (length == 0 || other == PackagePath()) {
+        return Fail(PackageStatus::kNoPackage);
+      }
+      packagePath_.Clear();
+      packagePath_.Append(other);
+      PackageHandler again(*this, xml);
+      parsed = ParseEntry(archive, entries, reader, xml, PackagePath(), again);
     }
-    packagePath_.Clear();
-    packagePath_.Append(other);
-    PackageHandler again(*this, xml);
-    parsed = ParseEntry(archive, entries, reader, xml, PackagePath(), again);
   }
   if (outOfMemory_ || parsed == Parsed::kNoMemory) {
     return Fail(PackageStatus::kNoMemory);
@@ -637,11 +655,19 @@ PackageStatus Package::Read(ZipArchive& archive, core::BlockFile& entries, ZipEn
       break;
   }
 
-  Resolve();
+  {
+    BN_TRACE_SCOPE_ARG(kSpanPackageResolve, static_cast<std::uint32_t>(spineCount_));
+    Resolve();
+  }
   if (spineCount_ == 0) {
     return Fail(PackageStatus::kNotPackage);
   }
-  if (const PackageStatus found = FindFiles(archive); found != PackageStatus::kOk) {
+  PackageStatus found = PackageStatus::kOk;
+  {
+    BN_TRACE_SCOPE_ARG(kSpanPackageFindFiles, itemCount_);
+    found = FindFiles(archive);
+  }
+  if (found != PackageStatus::kOk) {
     return Fail(found);
   }
   status_ = PackageStatus::kOk;

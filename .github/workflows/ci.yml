@@ -84,6 +84,20 @@ jobs:
       - name: Test
         run: ctest --preset host
 
+      # The same tests again in the optimised build without sanitizers,
+      # which is nearer to how the firmware is compiled. Code that behaves
+      # one way with a sanitizer's help and another without it shows here:
+      # the heap inside a block (core/region_heap.h) is laid out
+      # differently in the two.
+      - name: Configure (release)
+        run: cmake --preset host-release
+
+      - name: Build (release)
+        run: cmake --build --preset host-release
+
+      - name: Test (release)
+        run: ctest --preset host-release
+
   firmware:
     name: Firmware build
     runs-on: ubuntu-24.04

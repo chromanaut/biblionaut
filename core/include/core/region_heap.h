@@ -32,6 +32,15 @@ namespace bn::core {
 // the tens or hundreds of pieces a parser keeps, and not meant for many
 // more. A piece given back joins any free space beside it at once.
 //
+// Giving a piece back, or resizing one, is a walk over the pieces as well,
+// up to the one named: that is how the heap knows it has been handed a
+// piece. Nothing in the bytes at a place can say so, since a piece that
+// joined free space has left its old record inside it, and whoever holds a
+// piece may write anything there. So a library's mistake with a pointer
+// (given back twice, or kept across a reset, or pointing into the middle
+// of something) is turned away and counted, in every build, and cannot
+// make the heap give out memory it does not have.
+//
 // The counters are there so that the chosen size can be checked:
 // HighWater() says how close its user came to the limit, and
 // FailureCount() whether it was ever refused.
@@ -69,7 +78,9 @@ class RegionHeap {
   [[nodiscard]] void* Allocate(std::size_t size) noexcept;
 
   // Gives a piece back. Nothing happens for nullptr, or for anything that
-  // is not a piece in use (which is counted: MisuseCount()).
+  // is not a piece in use (which is counted: MisuseCount()). One mistake
+  // cannot be told from none: a piece given back, whose place has since
+  // been given out again, is a piece in use.
   void Free(void* piece) noexcept;
 
   // Makes a piece `size` bytes long, keeping what it holds up to the
@@ -111,8 +122,9 @@ class RegionHeap {
 
   Header Read(std::uint32_t offset) const noexcept;
   void Write(std::uint32_t offset, Header header) noexcept;
-  // The offset of the header of the piece `piece` points into, or
-  // kNowhere if it is not a piece in use.
+  // The offset of the header of the piece that starts at `piece`, or
+  // kNowhere if no piece in use starts there. Found by going along the
+  // pieces from the first.
   std::uint32_t OffsetOf(const void* piece) const noexcept;
   // Leaves the piece at `offset` exactly `needed` bytes, in use, making a
   // free piece of what is over if that is big enough to be one. The piece

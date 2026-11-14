@@ -49,6 +49,8 @@ The format check and clang-tidy need the LLVM major version in `tools/llvm-versi
 
 Firmware: `tools/setup-idf.sh` once installs the pinned ESP-IDF into `.esp/`; `tools/idf` runs `idf.py` on `app/firmware` with it and passes its arguments through, so build options go first: `tools/idf -DBN_BOOK_CHECK=ON build`. Flashing replaces what is on the device, bootloader included: do not flash unless asked.
 
+The firmware is compiled at `-O2` (`app/firmware/sdkconfig.defaults`), and a timing from a device is only worth recording from such a build: ESP-IDF's default is `-Og`, at which the inflater runs a third slower. ESP-IDF writes a build's settings to `app/firmware/sdkconfig` the first time and keeps them, so after a change to `sdkconfig.defaults` that file has to be deleted before the change is taken up (`grep OPTIMIZATION app/firmware/sdkconfig` says what a build is using).
+
 ## Architecture
 
 ### Parts and what they may use

@@ -27,7 +27,7 @@ ctest --preset host -R e2e.BookCheck
 
 The test programs are `core_tests`, `draw_tests`, `epub_tests`, `hw_tests`, `reader_tests` and `tools_tests`, in `build/host/tests/`. The end-to-end tests are named `e2e.*`; most are Python scripts in `tests/e2e/` and are only registered if Python 3 is found.
 
-`host-release` is the optimised preset without sanitizers (`build/host-release`): use it for timing anything and for running the tools over many files.
+`host-release` is the optimised preset without sanitizers (`build/host-release`): use it for timing anything and for running the tools over many files. Its tests are run as well (`ctest --preset host-release`): a few things are built differently when a sanitizer is there, the heap inside a block among them, and the firmware has none.
 
 `tools/check-books.py FOLDER` runs `bn-zip`, `bn-xml` and `bn-epub` over every EPUB under a folder and compares each with a reading of the same book by Python. CTest runs it over `corpus/` as `e2e.Corpus`; run it over any larger collection of books a change could affect, with the `host-release` tools.
 
@@ -41,9 +41,10 @@ The other checks. CI runs all of them (`.github/workflows/ci.yml`), and all of t
 | Firmware build | `tools/idf build` |
 | Nothing in the portable parts can throw | `tools/check-firmware-symbols.sh` (after a firmware build) |
 | clang-tidy on what the firmware compiles | `tools/check-firmware-tidy.py` (after a firmware build) |
-| CI's Linux job: GCC 14, sanitizers | `tools/linux-check.sh` (needs Docker running; arguments go to `ctest`) |
+| The tests again, optimised and without sanitizers | `cmake --build --preset host-release && ctest --preset host-release` |
+| CI's Linux job: GCC 14, with sanitizers and then without | `tools/linux-check.sh` (needs Docker running; arguments go to `ctest`) |
 
-CI does not build `host-release`, nor a firmware with one of the device checks switched on (below). Build and test those here when a change touches them.
+CI does not build a firmware with one of the device checks switched on (below). Build and test that here when a change touches it.
 
 The format check and clang-tidy need the LLVM major version in `tools/llvm-version`. The Linux check catches what a macOS build does not, such as a header that libc++ pulls in by itself and libstdc++ does not, or code that only GCC parses differently. If Docker is not running, say that the check was not run.
 

@@ -257,6 +257,85 @@ TEST(RegionHeap, IgnoresWhatIsNotAPieceInUseAndCountsIt) {
   EXPECT_TRUE(fixture.heap.IsConsistent());
 }
 
+TEST(RegionHeap, CountsAPieceGivenBackTwiceThoughItsOldRecordStillSaysInUse) {
+  // A piece given back next to free space before it joins that space, and
+  // its own record is left where it was, inside the larger free piece,
+  // still saying "in use". The heap's memory here is the first half of the
+  // test's, so that anything written past its end shows.
+  alignas(8) std::array<std::uint8_t, 8192> memory{};
+  std::memset(memory.data() + 4096, 0xEE, 4096);
+  RegionHeap heap{std::span(memory).first(4096)};
+  void* first = heap.Allocate(64);
+  void* second = heap.Allocate(64);
+  heap.Free(first);
+  heap.Free(second);
+  ASSERT_EQ(heap.Used(), 0u);
+  ASSERT_EQ(heap.MisuseCount(), 0u);
+
+  heap.Free(second);
+  EXPECT_EQ(heap.MisuseCount(), 1u);
+  EXPECT_EQ(heap.Resize(second, 32), nullptr);
+  EXPECT_EQ(heap.MisuseCount(), 2u);
+  EXPECT_EQ(heap.Used(), 0u);
+  EXPECT_EQ(heap.LivePieces(), 0u);
+  EXPECT_EQ(heap.LargestFree(), heap.Capacity() - kOverhead);
+  EXPECT_TRUE(heap.IsConsistent());
+
+  // What it gives out afterwards is inside its memory, and no more than it has.
+  auto* large = static_cast<std::uint8_t*>(heap.Allocate(4000));
+  ASSERT_NE(large, nullptr);
+  EXPECT_EQ(heap.Allocate(2000), nullptr);
+  EXPECT_GE(large, memory.data());
+  EXPECT_LE(large + 4000, memory.data() + 4096);
+  EXPECT_TRUE(Holds(memory.data() + 4096, 4096, 0xEE));
+}
+
+TEST(RegionHeap, CountsAPieceFromBeforeAResetAsNotInUse) {
+  HeapFixture fixture;
+  void* first = fixture.heap.Allocate(64);
+  void* second = fixture.heap.Allocate(64);
+  void* third = fixture.heap.Allocate(200);
+  fixture.heap.Reset();
+
+  // Their records are still in the memory, as they were.
+  fixture.heap.Free(third);
+  fixture.heap.Free(second);
+  fixture.heap.Free(first);
+  EXPECT_EQ(fixture.heap.Resize(second, 8), nullptr);
+  EXPECT_EQ(fixture.heap.MisuseCount(), 4u);
+  EXPECT_EQ(fixture.heap.Used(), 0u);
+  EXPECT_EQ(fixture.heap.LivePieces(), 0u);
+  EXPECT_EQ(fixture.heap.LargestFree(), fixture.heap.Capacity() - kOverhead);
+  EXPECT_TRUE(fixture.heap.IsConsistent());
+}
+
+TEST(RegionHeap, IsNotFooledByBytesInsideAPieceThatLookLikeAPiece) {
+  // Whoever holds a piece may write anything in it, and this is what a
+  // piece in use of 16 bytes, coming after one of 24, has in front of it.
+  const std::array<std::uint32_t, 2> looksInUse = {static_cast<std::uint32_t>(Cost(16)) | 1U, 24U};
+  HeapFixture fixture;
+  std::uint8_t* piece = fixture.Get(256, 0x00);
+  std::uint8_t* other = fixture.Get(64, 0x02);
+  for (std::size_t at = 16; at + sizeof(looksInUse) <= 256; at += 8) {
+    std::memcpy(piece + at, looksInUse.data(), sizeof(looksInUse));
+  }
+
+  for (std::size_t at = 24; at < 256; at += 8) {
+    fixture.heap.Free(piece + at);
+    EXPECT_EQ(fixture.heap.Resize(piece + at, 8), nullptr) << at;
+  }
+  EXPECT_EQ(fixture.heap.MisuseCount(), 2u * 29u);
+  EXPECT_EQ(fixture.heap.Used(), Cost(256) + Cost(64));
+  EXPECT_EQ(fixture.heap.LivePieces(), 2u);
+  EXPECT_TRUE(Holds(other, 64, 0x02));
+  EXPECT_TRUE(fixture.heap.IsConsistent());
+
+  fixture.heap.Free(piece);
+  fixture.heap.Free(other);
+  EXPECT_EQ(fixture.heap.Used(), 0u);
+  EXPECT_TRUE(fixture.heap.IsConsistent());
+}
+
 TEST(RegionHeap, IsNotFooledByBytesThatLookLikeAPieceOutsideItOrOffTheAlignment) {
   // What a piece in use of 16 bytes has in front of it.
   const std::array<std::uint32_t, 2> looksInUse = {16U | 1U, 0U};
@@ -362,6 +441,65 @@ void WriteHeader(std::span<std::uint8_t> memory, std::size_t offset, std::size_t
   std::memcpy(memory.data() + offset, header.data(), sizeof(header));
 }
 
+TEST(RegionHeap, TurnsAwayAPieceItCannotReachWhenARecordBeforeItHasBeenWrittenOver) {
+  // The way to a piece is along the records of the pieces before it. With
+  // one of those written over, the way ends early, or leads nowhere, or
+  // goes past the piece, and the piece is not taken for one.
+  const std::array<std::uint32_t, 6> wrongSizes = {
+      0U,
+      4U,
+      12U,
+      0x7FFF'FFF8U,                                       // Too small to be a piece, or larger than the heap.
+      static_cast<std::uint32_t>(Cost(100) + 8),          // Ends inside the second piece.
+      static_cast<std::uint32_t>(Cost(100) + Cost(40))};  // Ends where the third begins.
+  for (const std::uint32_t wrong : wrongSizes) {
+    HeapFixture fixture;
+    ASSERT_NE(fixture.heap.Allocate(100), nullptr);
+    void* second = fixture.heap.Allocate(40);
+    ASSERT_NE(fixture.heap.Allocate(40), nullptr);
+    // The first piece's record of its own size, with the mark that it is in use.
+    const std::uint32_t written = wrong | 1U;
+    std::memcpy(fixture.memory.data(), &written, sizeof(written));
+
+    fixture.heap.Free(second);
+    EXPECT_EQ(fixture.heap.Resize(second, 8), nullptr) << wrong;
+    EXPECT_EQ(fixture.heap.MisuseCount(), 2u) << wrong;
+    EXPECT_EQ(fixture.heap.LivePieces(), 3u) << wrong;
+    EXPECT_FALSE(fixture.heap.IsConsistent()) << wrong;
+  }
+
+  // A record that sends the way back to the start, where it would go round
+  // for ever: the second piece's size written as one that, added to where
+  // the piece is, comes to nothing.
+  {
+    HeapFixture fixture;
+    ASSERT_NE(fixture.heap.Allocate(100), nullptr);
+    ASSERT_NE(fixture.heap.Allocate(40), nullptr);
+    void* third = fixture.heap.Allocate(40);
+    const std::uint32_t written = (0U - static_cast<std::uint32_t>(Cost(100))) | 1U;
+    std::memcpy(fixture.memory.data() + Cost(100), &written, sizeof(written));
+    fixture.heap.Free(third);
+    EXPECT_EQ(fixture.heap.MisuseCount(), 1u);
+    EXPECT_FALSE(fixture.heap.IsConsistent());
+  }
+
+  // And one that sends it into the middle of free space, where there is no
+  // record to read.
+  {
+    HeapFixture fixture;
+    ASSERT_NE(fixture.heap.Allocate(100), nullptr);
+    void* second = fixture.heap.Allocate(200);
+    void* third = fixture.heap.Allocate(40);
+    fixture.heap.Free(second);
+    const std::uint32_t written = static_cast<std::uint32_t>(Cost(100) + 64) | 1U;
+    std::memcpy(fixture.memory.data(), &written, sizeof(written));
+    fixture.heap.Free(third);
+    EXPECT_EQ(fixture.heap.MisuseCount(), 1u);
+    EXPECT_EQ(fixture.heap.LivePieces(), 2u);
+    EXPECT_FALSE(fixture.heap.IsConsistent());
+  }
+}
+
 TEST(RegionHeap, NoticesRecordsThatAgreeWithEachOtherButNotWithItsCounts) {
   // Three pieces in use, one after another from the start of the region.
   // The damage below leaves every piece's record in step with its
@@ -457,6 +595,78 @@ TEST(RegionHeap, SurvivesALongRunOfRequestsOfEveryKind) {
   EXPECT_GT(refused, 10u) << "the run should have filled the heap now and then";
   EXPECT_EQ(heap.FailureCount(), refused);
   EXPECT_EQ(heap.MisuseCount(), 0u);
+  for (const Piece& piece : pieces) {
+    ASSERT_TRUE(Holds(piece.at, piece.size, piece.fill));
+    heap.Free(piece.at);
+  }
+  EXPECT_EQ(heap.Used(), 0u);
+  EXPECT_EQ(heap.LargestFree(), heap.Capacity() - kOverhead);
+  EXPECT_TRUE(heap.IsConsistent());
+}
+
+TEST(RegionHeap, SurvivesALongRunInWhichWhatIsGivenBackIsOftenNotAPieceInUse) {
+  // The same kind of run, with a caller that makes mistakes: it gives back
+  // and resizes pieces it gave back long ago, and places inside pieces it
+  // still holds. Each mistake is to be counted and to change nothing.
+  alignas(8) static std::array<std::uint8_t, 16'384> memory{};
+  RegionHeap heap{memory};
+  struct Piece {
+    std::uint8_t* at;
+    std::size_t size;
+    std::uint8_t fill;
+  };
+  std::vector<Piece> pieces;
+  std::vector<std::uint8_t*> givenBack;
+  std::mt19937 rng(20261114);  // NOLINT(bugprone-random-generator-seed): the same run every time.
+  const auto below = [&rng](std::size_t limit) -> std::size_t { return rng() % limit; };
+  const auto inUse = [&pieces](const std::uint8_t* at) {
+    return std::any_of(pieces.begin(), pieces.end(), [at](const Piece& piece) { return piece.at == at; });
+  };
+  std::uint32_t mistakes = 0;
+  for (int step = 0; step < 20'000; ++step) {
+    const std::size_t choice = below(12);
+    if (pieces.empty() || choice < 4) {
+      const std::size_t size = below(10) == 0 ? below(2000) : below(120);
+      auto* at = static_cast<std::uint8_t*>(heap.Allocate(size));
+      if (at != nullptr) {
+        const auto fill = static_cast<std::uint8_t>(step);
+        std::memset(at, fill, size);
+        pieces.push_back({at, size, fill});
+      }
+    } else if (choice < 7) {
+      const std::size_t which = below(pieces.size());
+      ASSERT_TRUE(Holds(pieces[which].at, pieces[which].size, pieces[which].fill)) << step;
+      heap.Free(pieces[which].at);
+      givenBack.push_back(pieces[which].at);
+      pieces[which] = pieces.back();
+      pieces.pop_back();
+    } else if (choice < 10 && !givenBack.empty()) {
+      // A piece given back before. Where it was may be a piece again by
+      // now, which would make this no mistake, so those are passed over.
+      std::uint8_t* old = givenBack[below(givenBack.size())];
+      if (!inUse(old)) {
+        if (below(2) == 0) {
+          heap.Free(old);
+        } else {
+          ASSERT_EQ(heap.Resize(old, below(200)), nullptr) << step;
+        }
+        ++mistakes;
+      }
+    } else {
+      // Somewhere inside a piece that is in use.
+      const Piece& piece = pieces[below(pieces.size())];
+      if (piece.size >= 16) {
+        heap.Free(piece.at + 8 * (1 + below(piece.size / 8 - 1)));
+        ++mistakes;
+      }
+    }
+    ASSERT_EQ(heap.MisuseCount(), mistakes) << step;
+    if (step % 16 == 0) {
+      ASSERT_TRUE(heap.IsConsistent()) << step;
+      ASSERT_EQ(heap.LivePieces(), pieces.size()) << step;
+    }
+  }
+  EXPECT_GT(mistakes, 5'000u);
   for (const Piece& piece : pieces) {
     ASSERT_TRUE(Holds(piece.at, piece.size, piece.fill));
     heap.Free(piece.at);

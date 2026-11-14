@@ -62,7 +62,9 @@ ctest --preset host
 ```
 
 The `host` preset is a debug build with AddressSanitizer and
-UndefinedBehaviorSanitizer. `host-release` is optimised, without sanitizers.
+UndefinedBehaviorSanitizer. `host-release` is optimised, without
+sanitizers, and has the same tests (`cmake --preset host-release`, and so
+on): it is the nearer of the two to how the firmware is compiled.
 
 How much timing trace is compiled in is set with `BN_TRACE_LEVEL`: `0` for
 none, `1` for top-level spans only, `2` (the default) for everything. Pass it
@@ -504,7 +506,15 @@ chapters. The parsing is done by [expat](https://libexpat.github.io);
 - **Memory**: the parser is given a block of memory when it is made, and
   everything expat needs comes out of that, through a small heap of our
   own that lives inside the block (`core/region_heap.h`). Nothing comes
-  from the general heap. A document that needs more than the block is
+  from the general heap. That heap checks every piece it is handed back
+  by going along its own records to it, so a mistake of the library's
+  with a pointer (one given back twice, or kept from an earlier
+  document, or pointing into the middle of something) is turned away
+  and counted, and cannot make the heap give out memory outside the
+  block. A check goes past 17 pieces on average, and the parser asks
+  for one about once in every 12 to 25 things it reports, which on the
+  desktop is under 1% of its time. A document that needs more than the
+  block is
   refused (`kNoMemory`), which in practice means one with a single tag
   or comment several kilobytes long, since a whole one has to be held at
   once, or with elements nested hundreds deep. Text can be any length. On
@@ -925,7 +935,8 @@ CI runs all of these on every push to `main` and every pull request
 | Check | Command |
 |---|---|
 | Unit tests, with AddressSanitizer and UndefinedBehaviorSanitizer | `cmake --build --preset host && ctest --preset host` |
-| The same tests as CI's Linux job runs them: GCC 14 on Ubuntu, in Docker | `tools/linux-check.sh` (arguments go to `ctest`) |
+| The same tests in the optimised build, without sanitizers | `cmake --build --preset host-release && ctest --preset host-release` |
+| Both as CI's Linux job runs them: GCC 14 on Ubuntu, in Docker | `tools/linux-check.sh` (arguments go to `ctest`) |
 | Formatting | `tools/check-format.sh` (`--fix` to rewrite files) |
 | Constructs the portable parts may not use (`std::string`, `std::vector`, `std::function`, `std::shared_ptr`, iostreams, C stdio streams) | `tools/check-banned.py` |
 | clang-tidy (rules in `.clang-tidy`) on everything the host build compiles | `cmake --preset tidy && cmake --build --preset tidy` |

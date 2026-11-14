@@ -34,8 +34,8 @@ void Unguard([[maybe_unused]] const std::uint8_t* from, [[maybe_unused]] std::si
 
 // Whether the bytes at `at` could be a piece's header. In a guarded build
 // they could not if any of them is marked as not to be touched: a header
-// never is. Asked before reading a header from a place that has not been
-// arrived at by way of the headers before it.
+// never is. Asked before each header is read on the way along the pieces,
+// in case something has written over one and the way leads astray.
 bool MayBeHeader([[maybe_unused]] const std::uint8_t* at) noexcept {
 #if defined(BN_REGION_HEAP_GUARDS)
   return __asan_region_is_poisoned(const_cast<std::uint8_t*>(at), kHeaderBytes) == nullptr;  // NOLINT(*-const-cast)
@@ -163,7 +163,28 @@ std::uint32_t RegionHeap::OffsetOf(const void* piece) const noexcept {
     return kNowhere;
   }
   const auto offset = static_cast<std::uint32_t>(distance);
-  if (offset % kAlignment != 0 || !MayBeHeader(base_ + offset)) {
+  if (offset % kAlignment != 0) {
+    return kNowhere;
+  }
+  // Whether a piece starts there cannot be told from the bytes there. A
+  // piece that joined the free space before it has left its header behind
+  // inside that space, still saying "in use"; so has every piece from
+  // before a reset; and whoever holds a piece may write in it what looks
+  // like a header. What can be trusted is the headers as they follow one
+  // another from the start of the region, so those are gone along until
+  // they arrive at the place or pass it.
+  std::uint32_t at = 0;
+  while (at < offset) {
+    if (!MayBeHeader(base_ + at)) {
+      return kNowhere;  // Not a heap any more; IsConsistent() says so.
+    }
+    const std::uint32_t size = SizeOf(Read(at).size);
+    if (size < kSmallestPiece || size > capacity_ - at) {
+      return kNowhere;
+    }
+    at += size;
+  }
+  if (at != offset || !MayBeHeader(base_ + offset)) {
     return kNowhere;
   }
   const Header header = Read(offset);

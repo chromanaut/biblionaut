@@ -6,6 +6,19 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # Console over the chip's built-in USB Serial/JTAG port.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
+# Compiled for speed (-O2). ESP-IDF's own default is its level for
+# debugging (-Og), which is what a firmware gets if this line is lost, and
+# no timing taken on a device means much at that level. Measured on an X4
+# reading 34 books: at -O2 the inflater is half as fast again as at -Og and
+# XML is parsed a seventh faster, for 22 KB more flash; at -Os, for size,
+# both are hardly faster than at -Og, and a test pattern takes nearly twice
+# as long to draw.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# ESP-IDF's assertions stay on, with their messages. One that fails ends in
+# the panic handler, and so in a crash report that says where. This is the
+# default; stated so a change in defaults cannot go unnoticed.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y
+
 # C++ without exceptions or RTTI. These are the ESP-IDF
 # defaults; stated so a change in defaults cannot go unnoticed.
 CONFIG_COMPILER_CXX_EXCEPTIONS=n

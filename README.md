@@ -294,11 +294,11 @@ and the device.
 
 - **Memory**: the caller provides the 32 KB window the format needs. The
   object itself is 2.6 KB on the device. It allocates nothing.
-- **Flash**: 3.7 KB, as compiled for the device.
-- **Speed**: not yet tuned. On an X4, over 30 books, it gave out about
-  970 KB a second with the ZIP checksum included (which is about a
-  seventh of that time), taking in about 620 KB a second, where the SD
-  card delivered about 880.
+- **Flash**: 4.2 KB, as compiled for the device.
+- **Speed**: not yet tuned. On an X4, over 34 books, it gave out about
+  1,530 KB a second with the ZIP checksum included (which is about a
+  fifth of that time), taking in about 760 KB a second, where the SD
+  card delivered about 960.
 - **Bad input**: whatever bytes it is given, it either produces the data
   they stand for or stops, saying why (`kBadData`, `kTruncated`,
   `kSourceFailed`). It does not check that the data is the right data: that
@@ -506,13 +506,15 @@ chapters. The parsing is done by [expat](https://libexpat.github.io);
   own that lives inside the block (`core/region_heap.h`). Nothing comes
   from the general heap. A document that needs more than the block is
   refused (`kNoMemory`), which in practice means one with a single tag
-  several kilobytes long, since a whole tag has to be held at once, or
-  with elements nested hundreds deep. Text can be any length. On an X4, no
-  document in 30 books (1,392 documents) used more than 9.1 KB.
-- **Speed**: on an X4, over the same documents, it took in 830 to 950 KB a
-  second with every event counted and checksummed, in three runs of three
-  builds of the firmware: from 530 to 720 for chapters thick with markup,
-  and 1,060 to 1,150 for plain prose.
+  or comment several kilobytes long, since a whole one has to be held at
+  once, or with elements nested hundreds deep. Text can be any length. On
+  an X4, of the 2,072 documents of 34 books chosen to differ from one
+  another, all but 8 used less than 12 KB. The most was 17.1 KB, for a
+  document that begins with a comment of 5.5 KB.
+- **Speed**: on an X4, over the same documents, it took in about 960 KB a
+  second with every event counted and checksummed. Book by book that was
+  from 640, for one thick with markup, to 1,890, for Chinese prose with
+  few tags, and 940 at the median.
 - **Bad input**: the document is not trusted. Whatever bytes it holds,
   parsing ends with an answer, and one that is not XML is refused with
   expat's error number and the line it is on. What was found before the
@@ -536,7 +538,7 @@ expat is not in this repository: CMake downloads the release named in
 the settings in `third_party/expat/expat_config.h`, the same for the
 desktop and the device. The settings leave out what an EPUB does not need:
 entity expansion, parameter entities and external DTDs, and namespace
-processing. It is 72 KB of flash once something in the firmware uses it.
+processing. It is 71 KB of flash once something in the firmware uses it.
 
 `bn-xml` runs the same code on the desktop:
 
@@ -603,11 +605,13 @@ How it does that:
   general heap. A book that needs more than the block is refused
   (`kNoMemory`). The parser's memory is the caller's as well
   (`XmlParser`).
-- **Speed**: on an X4, opening a book and reading its package took 24 to
-  135 ms for each of 30 books, 80 ms at the median; the largest lists 199
-  files. A little over half of that is the card, at 4 ms a read, and most
-  of the rest is parsing the package file. Matching the names is 8 ms at
-  the most. None of those books used more than 5.2 KB of the block.
+- **Speed**: on an X4, opening a book and reading its package took 26 to
+  274 ms for each of 33 books, 41 ms at the median; the largest lists 745
+  files, and used 22.4 KB of the 24 KB it was given. Nearly half of the
+  time is the card, at 4 to 5 ms a read, and most of the rest is parsing
+  the package file. Matching the spine to the manifest is 4 ms at the
+  most. A thirty-fourth book, which lists 2,384 files, was refused for
+  want of memory after 0.5 s.
 - **Two names with one number.** Nothing checks a name against the text
   it came from, so two different names in one book that came to the same
   number would be taken for each other. With 48 bits, that is one book in
@@ -713,13 +717,14 @@ file; `TocReader` reads it.
 - **In pieces.** `Begin()` and then `Step()`, which reads 1 KB of the file
   each time, so that a long table of contents can be read a little a turn;
   or `Read()` for all of it at once.
-- **Speed**: on an X4, reading the table of contents took 4 to 362 ms for
-  each of 30 books, 36 ms at the median, for tables of 5 to 525 entries:
-  about 0.8 ms an entry over all of them. Little of it is the card, which
-  gave most tables in one read or two; the rest, inflating and parsing
-  the file and placing each entry, went at about 310 KB of the file a
-  second. Counted from opening the book, with its package read first,
-  the contents were in hand after 29 to 390 ms, 118 ms at the median.
+- **Speed**: on an X4, reading the table of contents took 4 to 159 ms for
+  each of 33 books, 18 ms at the median, for tables of 1 to 385 entries:
+  about 0.5 ms an entry over all of them. Under a fifth of it is the
+  card, which gave most tables in one read or two; the rest, inflating
+  and parsing the file and placing each entry, went at about 450 KB of
+  the file a second. Counted from opening the book, with its package read
+  first, the contents were in hand after 36 to 433 ms, 64 ms at the
+  median.
 - **Bad input**: the file is not trusted. Whatever bytes it holds, reading
   ends with an answer: `kNoToc` for a book with none, `kNotToc` for a file
   with no table of contents in it, `kNoMemory`, `kUnreadable`. A file that
@@ -852,6 +857,21 @@ tools/idf flash monitor
 
 `tools/idf` runs `idf.py` on `app/firmware` with that local install, and
 passes its arguments through.
+
+The firmware is compiled for speed (`-O2`), with ESP-IDF's assertions left
+on: `app/firmware/sdkconfig.defaults` sets both. Every figure in this
+document that was measured on a device is from such a build, and the
+level matters. On an X4 reading the same 34 books, a firmware at ESP-IDF's
+own default (`-Og`, for debugging) inflated at two thirds of the speed
+and parsed XML an eighth slower; one compiled for size (`-Os`) was hardly
+faster than that, and took three and a half times as long to draw a test
+pattern. The `-O2` firmware is 22 KB larger than the first and 74 KB
+larger than the second, of the megabyte it has.
+
+ESP-IDF keeps the settings a build was first made with in
+`app/firmware/sdkconfig`, which it writes itself. After a change to
+`sdkconfig.defaults`, delete that file and build again, or the change is
+not taken up.
 
 Flashing replaces whatever firmware is on the device, including its
 bootloader and partition table.

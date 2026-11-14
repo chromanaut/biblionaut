@@ -29,6 +29,8 @@ The test programs are `core_tests`, `draw_tests`, `epub_tests`, `hw_tests`, `rea
 
 `host-release` is the optimised preset without sanitizers (`build/host-release`): use it for timing anything and for running the tools over many files.
 
+`tools/check-books.py FOLDER` runs `bn-zip`, `bn-xml` and `bn-epub` over every EPUB under a folder and compares each with a reading of the same book by Python. CTest runs it over `corpus/` as `e2e.Corpus`; run it over any larger collection of books a change could affect, with the `host-release` tools.
+
 The other checks. CI runs all of them (`.github/workflows/ci.yml`), and all of them are run before work is handed over:
 
 | Check | Command |
@@ -101,9 +103,9 @@ Each layer of the book pipeline also has a host tool that runs the same code on 
 
 - **Naming** (clang-tidy enforces it): namespaces `snake_case`; types and functions `PascalCase`; variables, parameters and members `camelCase`, with a trailing `_` on private members; constants `kPascalCase`.
 - **Comments and the README** say what the code does and why, in plain sentences. They describe the repository as it is: no references to plans, phases or decisions recorded anywhere else.
-- **Tests** are named as sentences about behaviour (`TEST(Package, FindsTheCoverTheWayTheBookNamesIt)`). End-to-end tests compare a tool with something that shares none of its code (Python's `zipfile`, its expat, ElementTree) on books the test makes itself.
+- **Tests** are named as sentences about behaviour (`TEST(Package, FindsTheCoverTheWayTheBookNamesIt)`). End-to-end tests compare a tool with something that shares none of its code (Python's `zipfile`, its expat, ElementTree) on books the test makes itself, and `e2e.Corpus` does the same on the real books in `corpus/`.
 - **End-to-end tests of the desktop application must not count turns.** A CI machine gives the application far fewer turns a second than a developer's does. Script them against the clock, and give a run longer if it has not finished.
 - **Output shown in the README is real output** of the tools, regenerated when it changes, not written by hand. Only a name that would be a real book's is replaced with a made-up one.
 - **Third-party code** is not copied into the repository. A dependency is fetched when a build is configured, pinned by hash (see `third_party/expat/`), and gets a row in `THIRD_PARTY.md`, with its licence checked against its own licence file, before it lands. Where a method or a set of values came from somewhere else, a comment and `THIRD_PARTY.md` say so.
-- **No real books in the repository**, and no captures from a device: a capture names the books on its owner's card.
+- **The only real books in the repository are those in `corpus/`**, kept byte for byte as they were fetched, each listed in `corpus/README.md` with its authors, where it came from and its terms, and in `corpus/SHA256SUMS`. A book is added there only with both, and only on one of two grounds: it is in the public domain and everyone who wrote, translated or illustrated it died more than seventy years ago (the books from Project Gutenberg and Standard Ebooks); or the file itself states a licence that lets unchanged copies be passed on, such as CC BY-SA (the IDPF samples). Read the terms in the file, not only where it was downloaded from, and look at the fonts inside: a file that carries a font which may not be passed on stays out. No book from anyone's own library goes into the repository, and no captures from a device: a capture names the books on its owner's card.
 - clang-tidy treats its findings as errors. Two that come up often: write a size as a literal (`32768`, not `32 * 1024`), and search for a character as a character (`find('.')`).

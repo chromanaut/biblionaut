@@ -50,6 +50,16 @@ def kind(media_type: str | None) -> str:
     return "font" if any(word in name for word in ("font", "opentype", "truetype")) else "other"
 
 
+def entry_name(info: zipfile.ZipInfo) -> str:
+    """An entry's name as a book means it: the bytes in the ZIP file, read as UTF-8.
+
+    zipfile reads a name as UTF-8 only where the ZIP file says that it is,
+    and as code page 437 where it does not. Books are made whose names are
+    UTF-8 and whose ZIP files do not say so.
+    """
+    return info.orig_filename.encode("utf-8" if info.flag_bits & 0x800 else "cp437").decode("utf-8", "surrogateescape")
+
+
 def tidy(element: ET.Element | None) -> str:
     return " ".join("".join(element.itertext()).split()) if element is not None else ""
 
@@ -63,11 +73,11 @@ def reference(path: Path) -> list[str]:
     contents' checksum is (epub/package_digest.h).
     """
     with zipfile.ZipFile(path) as archive:
-        names = {info.orig_filename for info in archive.infolist()}
+        names = {entry_name(info) for info in archive.infolist()}
         # The first entry of each name, as three numbers.
         entries: dict[str, str] = {}
         for info in archive.infolist():
-            entries.setdefault(info.orig_filename, f"{info.header_offset} {info.file_size} {info.CRC:08x}")
+            entries.setdefault(entry_name(info), f"{info.header_offset} {info.file_size} {info.CRC:08x}")
         container = ET.fromstring(archive.read("META-INF/container.xml"))
         package_path = next(e.get("full-path") for e in container.iter() if local(e.tag) == "rootfile")
         # The one entity of HTML's that turns up in titles is told to the
@@ -154,7 +164,10 @@ def toc_reference(path: Path, kind: str | None) -> list[str] | str:
     nav if it has one, its NCX if not.
     """
     with zipfile.ZipFile(path) as archive:
-        names = {info.orig_filename for info in archive.infolist()}
+        # The first entry of each name.
+        names: dict[str, zipfile.ZipInfo] = {}
+        for info in archive.infolist():
+            names.setdefault(entry_name(info), info)
         root = ET.fromstring(archive.read("META-INF/container.xml"))
         package_path = next(e.get("full-path") for e in root.iter() if local(e.tag) == "rootfile")
         parser = ET.XMLParser()
@@ -187,7 +200,7 @@ def toc_reference(path: Path, kind: str | None) -> list[str] | str:
             return "no table of contents"
         own = files[kind]
         try:
-            table = ET.fromstring(archive.read(own))
+            table = ET.fromstring(archive.read(names[own]))
         except ET.ParseError:
             return "not a table of contents"
 
@@ -261,6 +274,20 @@ def write_book(path: Path, package_path: str, package: str, files: dict[str, byt
         archive.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip")
         for name, data in entries:
             archive.writestr(name, data, zipfile.ZIP_DEFLATED if len(name) % 3 else zipfile.ZIP_STORED)
+
+
+def unmark_names(path: Path) -> None:
+    """Clears, in every header of the ZIP file at `path`, the bit that says its names are UTF-8."""
+    data = bytearray(path.read_bytes())
+    with zipfile.ZipFile(path) as archive:
+        at = archive.start_dir
+        for info in archive.infolist():
+            data[info.header_offset + 7] &= 0xF7  # Bit 11 of the flags, in the entry's own header...
+            assert data[at:at + 4] == b"PK\x01\x02"
+            data[at + 9] &= 0xF7  # ...and in its record in the directory.
+            at += 46 + int.from_bytes(data[at + 28:at + 30], "little") + int.from_bytes(data[at + 30:at + 32], "little") \
+                + int.from_bytes(data[at + 32:at + 34], "little")
+    path.write_bytes(data)
 
 
 def tables(names: list[str], with_nav: bool) -> dict[str, bytes]:
@@ -380,6 +407,26 @@ def books(work: Path) -> list[Path]:
                '<itemref idref="nothing"/><itemref idref="page" linear="no"/>\n</spine></package>\n')
     add("untidy.epub", "deep/er/package.opf", package,
         {"deep/er/cover.xhtml": b"c", "deep/er/one.xhtml": b"1", "deep/er/two.xhtml": b"2", "deep/er/toc.ncx": b"n"})
+
+    # Names that are not ASCII, in a ZIP file that does not say they are
+    # UTF-8, as some books come. The package and the table of contents name
+    # one document as it is and the other with its bytes written out.
+    escaped = "%E6%9C%AC%E6%96%87/%E3%83%A9%E3%82%A4%E3%82%BB%E3%83%B3%E3%82%B9.xhtml"
+    package = ('<package xmlns="http://www.idpf.org/2007/opf" version="2.0">'
+               '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>名前</dc:title>'
+               "<dc:language>ja</dc:language></metadata>\n<manifest>\n"
+               '<item id="one" href="本文/第一章.xhtml" media-type="application/xhtml+xml"/>\n'
+               f'<item id="two" href="{escaped}" media-type="application/xhtml+xml"/>\n'
+               '<item id="toc" href="目次.ncx" media-type="application/x-dtbncx+xml"/>\n'
+               '</manifest>\n<spine toc="toc"><itemref idref="one"/><itemref idref="two"/></spine></package>\n')
+    contents = ('<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>'
+                '<navPoint><navLabel><text>第一章</text></navLabel><content src="本文/第一章.xhtml"/></navPoint>'
+                f'<navPoint><navLabel><text>ライセンス</text></navLabel><content src="{escaped}#top"/></navPoint>'
+                "</navMap></ncx>")
+    add("unmarked-names.epub", "OEBPS/content.opf", package,
+        {"OEBPS/本文/第一章.xhtml": b"<html/>", "OEBPS/本文/ライセンス.xhtml": b"<html/>",
+         "OEBPS/目次.ncx": contents.encode()})
+    unmark_names(made[-1])
     return made
 
 
@@ -467,11 +514,12 @@ def main() -> int:
             result = info(tool, work / name)
             expect(result.returncode == 1 and why in result.stderr and result.stdout == b"",
                    f"{name}: bn-epub ended with {result.returncode}: {result.stderr!r}")
-        # Ten readings: each novel's table by default and by its kind, and
-        # the EPUB 3 novels have two kinds, which differ. The books of
-        # other kinds have files in place of theirs that are not tables of
-        # contents at all.
-        expect(tables_read == 10 and entries > 2_000,
+        # Twelve readings: each novel's table by default and by its kind,
+        # and the EPUB 3 novels have two kinds, which differ; and the two
+        # of the book whose names are not marked. The books of other kinds
+        # have files in place of theirs that are not tables of contents at
+        # all.
+        expect(tables_read == 12 and entries > 2_000,
                f"{tables_read} tables of contents were read, with {entries} entries")
         both = [toc_reference(work / "novel-3.0.epub", option) for option in ("nav", "ncx")]
         expect(both[0][1] == "0\t-\t-\tPart 1" and both[1][1] == "0\t0\t-\tPart 1"

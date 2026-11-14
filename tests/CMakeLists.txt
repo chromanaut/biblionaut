@@ -177,4 +177,14 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-trace> $<TARGET_FILE:bn-zip> $<TARGET_FILE:bn-xml>
       $<TARGET_FILE:bn-epub> ${CMAKE_CURRENT_BINARY_DIR}/book_check)
   set_tests_properties(e2e.BookCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-zip, bn-xml and bn-epub over the real books in corpus/, each against
+  # a reading of the same book by Python; and the books themselves against
+  # the list of what they should be.
+  add_test(
+    NAME e2e.Corpus
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check-books.py
+      --zip $<TARGET_FILE:bn-zip> --xml $<TARGET_FILE:bn-xml> --epub $<TARGET_FILE:bn-epub>
+      ${PROJECT_SOURCE_DIR}/corpus)
+  set_tests_properties(e2e.Corpus PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

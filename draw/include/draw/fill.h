@@ -99,6 +99,13 @@ class Filler final : public LineSink {
   // `gray`. With an `opacity` under 255, what was there shows through.
   void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity = 255) noexcept;
 
+  // The strip that was set: how many pixels wide it is, which row of the
+  // picture its first row is, and how many rows it has. No rows, if
+  // Begin() refused it.
+  std::int32_t Width() const noexcept { return width_; }
+  std::int32_t Top() const noexcept { return top_ / 256; }
+  std::int32_t Rows() const noexcept { return rows_; }
+
   // How many times a cell has been added to, and a pixel looked at, since
   // Begin(): what the work so far has come to.
   std::uint32_t CellsTouched() const noexcept { return cellsTouched_; }

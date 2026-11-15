@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which reads the outlines of a drawing and fills them as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -50,7 +50,7 @@ Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Two
 things are downloaded when CMake configures, each checked against a hash:
 expat, the XML parser, which is C and is why a C compiler is needed, and
 GoogleTest. The tests also link zlib, to check the inflater against: macOS
-has it, and on Linux it is the `zlib1g-dev` package. Seven of the end-to-end
+has it, and on Linux it is the `zlib1g-dev` package. Eight of the end-to-end
 tests are run only if Python 3 is found, and one of them makes more of its
 test files if there is a `zip` command.
 
@@ -969,13 +969,19 @@ paragraphs are made to be awkward, with boxes of no width, boxes wider than
 any line, spaces of no width and breaks at every price, in 32 to 300
 nodes, half of them with a caller that asks for lines early.
 
-## Outlines of drawings
+## Drawings
 
-A book can hold a drawing as SVG, and the first two steps of drawing one
-are done: `draw/` reads the outline of a shape, which SVG writes as path
-data (the `d` of a `<path>`), turns it into straight lines in pixels, and
-fills what they enclose with a gray. Nothing reads a whole SVG file yet,
-and nothing draws a line of some width along an outline.
+A book can hold a drawing as SVG, and `draw/` draws one. It reads the
+file's tags, works out where each shape goes, reads the shape's outline,
+which SVG writes as path data (the `d` of a `<path>`), turns that into
+straight lines in pixels, and fills what they enclose with a gray, a strip
+of the picture at a time. That is shapes and what they are filled with. A
+line of some width along an outline, text, a picture inside a drawing, and
+anything a file defines in one place and uses in another are not drawn
+yet: a drawing comes out without them, and with a report of what it had.
+
+This section takes the parts from the inside out: outlines, then filling
+one, then a whole file.
 
 The device's processor has no floating point, so all of it is done in whole
 numbers (`draw/fixed.h`). A position counts 4096ths of a unit of the
@@ -1164,6 +1170,126 @@ end-to-end test fills shapes of lines, curves and arcs made up at random,
 and sets `bn-svg`'s pictures beside a second way of filling them, in
 Python: the outline traced finely, and lines run through each row of pixels
 to see where they are inside it.
+
+### A whole file
+
+`SvgRenderer` (`draw/svg_render.h`) draws an SVG file into a strip of a
+picture. It is given the file's bytes a piece at a time, and a `Filler` set
+to the strip. The file is read from its start to its end once for each
+strip, and nothing of it is kept from one strip to the next.
+
+- **Tags**: `SvgTagReader` (`draw/svg_tags.h`) reads as much of XML as a
+  drawing needs. expat, which reads a book's other XML, holds a whole tag
+  at once, and a drawing can have a tag of megabytes: the outline of an
+  engraving is one attribute, and so is a picture inside a cover. So this
+  reader gives an attribute's value out in pieces as it arrives and keeps
+  none of it. It reads elements and attributes, the five entities,
+  characters by number and text marked as CDATA, and passes over comments,
+  processing instructions and a document type. It does not check that an
+  element is closed by its own name, and an entity that a file declares
+  for itself stands for nothing.
+- **What an attribute says** (`draw/svg_values.h`): a length in any of
+  SVG's units, a colour (`#rgb`, `#rrggbb`, `rgb()` and twenty names), a
+  paint, an opacity, a view box, and how a view box is fitted. A colour is
+  drawn as the gray it looks: 0.299 of its red, 0.587 of its green and
+  0.114 of its blue.
+- **What it draws**: `svg`, `g`, `a` and `switch` as groups, each with a
+  `transform` and with paint that what is inside it takes unless it has
+  its own. `path`, `rect` with rounded corners, `circle`, `ellipse`,
+  `polygon` and `polyline` as shapes, filled as `fill`, `fill-rule`,
+  `fill-opacity` and `opacity` say, each written as an attribute or in
+  `style`. `display` and `visibility` hide things. An `svg` inside another
+  has its own place, size and view box. The whole drawing is fitted to the
+  picture by its `viewBox` and `preserveAspectRatio`.
+- **What it leaves out**, each of which the report names (`SvgReport`):
+  strokes, text, pictures, `use`, style sheets, gradients and patterns,
+  clip paths, masks, filters and markers. Two things are drawn nearly:
+  `opacity` on a group is given to each shape in it, which differs where
+  they overlap, and an `svg` inside another is not cut off at its edges.
+- **The order of attributes** is free, with one limit. An outline is drawn
+  as its data arrives, so a `transform` written after a shape's own path
+  data would come too late. Data of up to 512 bytes is therefore held
+  until its tag ends. In the public books a transform follows its path
+  data on 33 paths, the longest of them 403 bytes. If longer data is
+  followed by a transform, the shape is left out and reported.
+- **Size**: a drawing's first tag says how large it is, and `Size()` has
+  that as soon as the tag has been read, so whoever shows the drawing can
+  choose the picture's size before any of it is drawn.
+- **How fine**: curves are cut to a sixteenth of a pixel, not the
+  flattener's own quarter, because the edges are gray ("How exact",
+  above).
+- **Memory**: the renderer is 2,840 bytes on the device, with the reader
+  of tags, 76 bytes, inside it. Half is what each of up to 32 open groups
+  hands on to what is inside it, and a fifth the path data it can hold.
+  Nothing is allocated, and nothing grows with the file.
+- **Flash**: 22 KB, as compiled for the device, which makes 44 KB for all
+  of the drawing of SVG.
+- **Speed**: not yet measured on a device.
+- **What a call can cost**: `Step()` takes sixteen things from the tags at
+  the most, gives the outline in hand seventeen commands, and fills one
+  shape, whatever the file holds.
+- **Bad input**: the file is not trusted. Whatever its bytes, it ends in a
+  status (`ok`, `not svg`, `malformed`, `truncated`), and what came before
+  a fault has been drawn. Groups nested deeper than 32 are passed over
+  with what is in them, and reported.
+
+`bn-svg draw` draws a file into a picture, in strips of as many rows as it
+is told, and says what that took and what was left out:
+
+```
+./build/host/tools/svg/bn-svg draw drawing.svg --width 240 --rows 32 --out drawing.pgm
+```
+
+```
+a drawing of 60 by 40, as 240 by 160 in 5 strips of 32 rows: 6 elements, 3 shapes filled, 20 commands, 267 lines in all, 15488 bytes of cells
+left out, or not drawn as written: text
+```
+
+That is this file, in which a group moves and paints a rounded rectangle
+and a circle, a path has its paint in `style`, and there is a label:
+
+```
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40">
+  <g fill="#666" transform="translate(4 4)">
+    <rect width="24" height="16" rx="4"/>
+    <circle cx="40" cy="8" r="8" fill="black"/>
+  </g>
+  <path d="M6 30h48l-24 8z" style="fill: #999"/>
+  <text x="6" y="28">A label</text>
+</svg>
+```
+
+With `--width` or `--height` the picture keeps the drawing's shape, and
+with neither it is the size the drawing says it is. `--pieces` gives the
+file to the renderer a few bytes at a time.
+
+Every SVG file in the public books, 2,420 of them, ends in `ok`. Drawn 480
+pixels wide, 106 are drawn in full, two of them with an arc of enormous
+radius drawn as the line it nearly is. 2,273 are the formulas of one book,
+which place their letters with `use`. 20 are covers, each a picture with
+lettering laid over it by a style sheet. Of the other 21, 11 have a style
+sheet, 10 text, 5 a picture, 5 a stroke, 3 a clip path, 2 a gradient and
+markers, and 1 a filter. The 106 were also drawn at their own size, and
+28 of them at twice it, beside `rsvg-convert`: the worst pixel of a file
+is 24 parts in 255 from it at the median and under 31 for nine files in
+ten, which is about as far as `rsvg-convert` is from the same drawing
+drawn larger and averaged down. The one file much further out, by two
+pixels, has the arc.
+
+The unit tests draw files small enough that every pixel can be said by
+hand, or set beside another drawing that has to come out the same: a
+circle beside the four arcs that make one, a path beside the same data
+given straight to the flattener and the filler. They give the reader of
+tags and the renderer 26,000 files of the bytes that mean something to
+them put together at random, and hold each call to its bound. An
+end-to-end test (`tests/e2e/svg_draw.py`) makes drawings up at random,
+with groups inside groups, every shape, transforms, paint as attributes
+and as `style`, and things hidden, and writes each out as a file in one
+of the many ways it can be written. The picture it should make is worked
+out in Python from the drawing and not from the file: matrices multiplied
+out, outlines traced finely, and each shape laid over the last. `bn-svg`
+has to agree with it, in any strips and any pieces, and to say it left out
+what the drawing was given that it does not draw.
 
 ## Device build
 

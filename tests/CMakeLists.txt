@@ -72,7 +72,10 @@ bn_add_unit_test(draw_tests
     unit/draw/flatten_test.cpp
     unit/draw/svg_number_test.cpp
     unit/draw/svg_path_test.cpp
+    unit/draw/svg_render_test.cpp
+    unit/draw/svg_tags_test.cpp
     unit/draw/svg_transform_test.cpp
+    unit/draw/svg_values_test.cpp
     unit/draw/test_pattern_test.cpp
   LIBS bn_draw)
 
@@ -191,6 +194,15 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/svg_tool.py
       $<TARGET_FILE:bn-svg> ${CMAKE_CURRENT_BINARY_DIR}/svg_tool)
   set_tests_properties(e2e.SvgTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-svg again, drawing whole files: drawings made up at random and
+  # written out as SVG, against the picture each should make, worked out
+  # from the drawing and not from the file.
+  add_test(
+    NAME e2e.SvgDraw
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/svg_draw.py
+      $<TARGET_FILE:bn-svg> ${CMAKE_CURRENT_BINARY_DIR}/svg_draw)
+  set_tests_properties(e2e.SvgDraw PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
   # against bn-zip, bn-xml, bn-epub and zipfile on the same files.

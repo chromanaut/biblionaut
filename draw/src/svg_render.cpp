@@ -311,6 +311,7 @@ void SvgRenderer::Open(std::string_view name) noexcept {
   fit_ = SvgFit();
   own_ = Matrix();
   hasBox_ = false;
+  box_ = SvgBox();
   hasTransform_ = false;
   unreadable_ = false;
   displayNone_ = false;
@@ -895,7 +896,7 @@ Matrix SvgRenderer::ElementMatrix() noexcept {
 bool SvgRenderer::OpenRoot() noexcept {
   size_.known = true;
   size_.hasBox = hasBox_;
-  size_.box = box_;
+  size_.box = hasBox_ ? box_ : SvgBox();
   Fixed naturalWidth = 0;
   Fixed naturalHeight = 0;
   size_.Natural(naturalWidth, naturalHeight);

@@ -3,10 +3,11 @@
 
 A seed is an input that is known to take its target somewhere worth
 starting from: a sound stream, a sound book, a table of contents with
-entries in it, a language's hyphenation table and words for it. The fuzzing
-engine makes its new inputs by changing the ones it has, so what the seeds
-reach is where it begins. The program that goes through the kept inputs
-(see tests/fuzz/CMakeLists.txt) takes them too.
+entries in it, a language's hyphenation table and words for it, a drawing
+with something of everything. The fuzzing engine makes its new inputs by
+changing the ones it has, so what the seeds reach is where it begins. The
+program that goes through the kept inputs (see tests/fuzz/CMakeLists.txt)
+takes them too.
 
 Every seed is made here, out of text written for the purpose: nothing in
 them comes from a book. Each target's file says how its input is laid out;
@@ -665,6 +666,201 @@ def hyphenator_seeds() -> None:
              b"hyphenationally\nlonger\nab\n" + b"a" * 70)
 
 
+# ---- svg_tags: byte 0 (how the file is cut up and handed back), then a file ----
+
+DRAWING = b"""<?xml version="1.0" encoding="UTF-8"?>
+<!-- A drawing with something of everything the renderer draws. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 48" width="160" height="96">
+  <title>Shapes</title>
+  <rect width="100%" height="100%" fill="#eee"/>
+  <g transform="translate(4 4)" fill="#444">
+    <rect x="0" y="0" width="24" height="16" rx="3"/>
+    <circle cx="40" cy="8" r="8" fill="black"/>
+    <ellipse cx="60" cy="8" rx="10" ry="5" style="fill: rgb(50%, 50%, 50%); fill-opacity: .5"/>
+    <g transform="rotate(15 16 30)">
+      <polygon points="4,24 28,24 28,44 16,36 4,44" fill="#888" fill-rule="evenodd"/>
+      <polyline points="8 28 24 28 16 34" fill="white"/>
+    </g>
+  </g>
+  <path fill-rule="evenodd" d="M44 28h28v16h-28z M50 32v8h16v-8z" opacity="0.8"/>
+  <path d="M46 30c2-4 5 4 8 0s4 5 1 6z" transform="translate(1)" fill="#222"/>
+  <svg x="48" y="33" width="20" height="6" viewBox="0 0 100 100" preserveAspectRatio="none">
+    <circle cx="50" cy="50" r="50" fill="&#35;222"/>
+  </svg>
+  <g display="none"><rect width="80" height="48"/></g>
+</svg>
+"""
+
+# What the renderer leaves out, each of which it has to say.
+LEFT_OUT = b"""<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="24">
+<defs><linearGradient id="g"><stop offset="0" stop-color="#000"/></linearGradient>
+<clipPath id="c"><rect width="9" height="9"/></clipPath><path id="p" d="M0 0h5v5z"/></defs>
+<style>rect { fill: #333 } .a { stroke: red }</style>
+<use xlink:href="#p" x="3" y="3"/><image href="picture.png" width="9" height="9"/>
+<text x="2" y="20">Words <tspan>and more</tspan></text>
+<rect width="8" height="8" stroke="#000" stroke-width="2" fill="url(#g) #666" clip-path="url(#c)"/>
+<line x1="0" y1="0" x2="40" y2="24" stroke="black"/>
+<g opacity=".5" mask="url(#m)" filter="url(#f)"><path d="M10 10h8v8z" marker-end="url(#k)"/></g>
+<switch><foreignObject width="9" height="9"><p>Words</p></foreignObject><rect x="20" width="4" height="4"/></switch>
+<rect x="30" width="4" height="4"><animate attributeName="x" to="9"/></rect><blink/><rect width="four" height="4"/>
+</svg>
+"""
+
+LONG_DATA = b"M2 20" + b"l.3-.1 .05.2" * 120 + b"L38 22 2 22z"
+
+
+def svg_tags_seeds() -> None:
+    clear("svg_tags")
+
+    def seed(name: str, piece: int, taken: int, file: bytes) -> None:
+        write("svg_tags", name, bytes([piece | (taken << 3)]) + file)
+
+    seed("a-drawing", 0, 0, DRAWING)
+    seed("a-drawing-a-byte-at-a-time", 1, 0, DRAWING)
+    seed("a-drawing-with-its-values-handed-back", 5, 1, DRAWING)
+    seed("a-long-value-handed-back-three-bytes-at-a-time", 6, 2, b"<path d='" + LONG_DATA + b"' fill='#000'/>")
+    seed("entities-and-characters-by-number", 3, 0,
+         b"<a b='&lt;&gt;&amp;&quot;&apos;&#65;&#x20AC;&#x1F600;&ns_svg;&#0;&#xD800;'>x &amp; y &; R&D &amp z</a>")
+    seed("comments-instructions-and-a-document-type", 2, 0,
+         b"<?xml version='1.0'?><!DOCTYPE svg PUBLIC '-//W3C//DTD SVG 1.1//EN' \"svg11.dtd\" [\n"
+         b"  <!ENTITY ns_svg \"http://www.w3.org/2000/svg\">\n  <!ENTITY more '>>'>\n]>\n"
+         b"<!-- a comment -- with > and <tags/> in it ---><?php echo '?'; ?><svg/>")
+    seed("text-marked-as-text", 4, 3, b"<style><![CDATA[ .a > .b { fill: red } ]] ]]]></style><a><![CDATA[x]y]]z]]]]></a>")
+    seed("a-name-too-long", 0, 0, b"<" + b"n" * 60 + b" " + b"a" * 60 + b"='1'></" + b"n" * 60 + b">")
+    seed("either-quote-and-space-anywhere", 4, 0, b"<a\n  b = \"it's\"\tc\r\n=\n'say \"x > y\"' d e=''  >\n</a  >")
+    seed("not-closed", 0, 0, b"<svg><g><rect/>")
+    seed("closed-twice", 0, 0, b"<svg></svg></svg>")
+    seed("cut-short-inside-a-value", 7, 0, DRAWING[: DRAWING.index(b"rotate(15") + 6])
+    seed("not-tags", 0, 0, b"<a>< b/><1/></><!-x-->")
+    seed("nothing", 0, 0, b"")
+
+
+# ---- svg_values: byte 0 (what the text is read as), eight bytes of a box and a space, then the text ----
+
+
+def svg_values_seeds() -> None:
+    clear("svg_values")
+    # A box of 100 by 50 units beginning at (75, -37.5), into a space of 600 by 300 pixels beginning at (6, 9).
+    numbers = struct.pack("<bbBBbbBB", 2, -1, 99, 49, 2, 3, 199, 99)
+
+    # A box of another shape than its space, so that where it is put shows: 40 steps by 120 into 200 by 50.
+    tall = struct.pack("<bbBBbbBB", -3, 4, 39, 119, -2, 1, 199, 49)
+
+    def seed(name: str, reading: int, text: str, box: bytes = numbers) -> None:
+        write("svg_values", name, bytes([reading]) + box + text.encode())
+
+    for index, text in enumerate(["12", "1.5px", "50%", "2em", "1e2pt", "-4.25mm", "3PC", "9999999in"]):
+        seed(f"a-length-{index}", 0, text)
+    for index, text in enumerate(["#abc", "#A1b2C3", "#ff000080", "rgb(255, 0, 0)", "rgba(10% 20% 30% / 50%)", "Black",
+                                  "transparent", "rgb(300,-5,1e1)"]):
+        seed(f"a-colour-{index}", 1, text)
+    for index, text in enumerate(["none", "currentColor", "inherit", "url(#gradient) #fff", "url(#gradient)",
+                                  "url( '#a' ) none", " grey ", "url(#gradient) bogus", "url(#gradient"]):
+        seed(f"a-paint-{index}", 2, text)
+    for index, text in enumerate(["0.5", "50%", "2", "-1"]):
+        seed(f"an-opacity-{index}", 3, text)
+    for index, text in enumerate(["0 0 100 50", "-1.5,2 , 3.25\n4e1", "0 0 10-5"]):
+        seed(f"a-view-box-{index}", 4, text)
+    for index, text in enumerate(["xMidYMid meet", "xMinYMax slice", "none", "defer xMaxYMin", "xMaxYMid"]):
+        seed(f"a-fitting-{index}", 5, text)
+        seed(f"a-fitting-of-a-tall-box-{index}", 5, text, tall)
+    seed("a-fitting-of-a-tall-box-to-cover-its-space", 5, "xMidYMid slice", tall)
+    for index, text in enumerate(["translate(10 20) scale(2) rotate(30 5 5)", "skewX(10),skewY(-5) matrix(1 0 0 1 3 4)",
+                                  "scale(2047) translate(9e9)", "", "rotate(bad)"]):
+        seed(f"a-transform-{index}", 6, text)
+    for index, text in enumerate(["12", "none", "#fff", "xMidYMid", "0 0 1 1", "scale(2)", " "]):
+        seed(f"read-every-way-{index}", 7, text)
+
+
+# ---- svg_path: bytes 0 and 1 (how the data and the picture are cut up, and how it is drawn), then path data ----
+
+
+def svg_path_seeds() -> None:
+    clear("svg_path")
+
+    def seed(name: str, data: bytes, piece: int = 0, commands: int = 0, matrix: int = 0, even_odd: bool = False,
+             tolerance: int = 0, rows: int = 0, keep: bool = False) -> None:
+        first = piece | (commands << 3) | (matrix << 5) | (0x80 if even_odd else 0)
+        second = tolerance | (rows << 2) | (0x20 if keep else 0)
+        write("svg_path", name, bytes([first, second]) + data)
+
+    every = (b"M10 4h20v8H10zm4 2l3 3 3-3q2 4 4 0t4 0c1 2 3 2 4 0s3-2 4 0a5 3 30 1 0 3 3A2 2 0 0 1 20 22"
+             b"Q8 26 6 18T12 10C14 2 30 2 34 12S20 30 8 20V8H4z")
+    seed("every-command", every)
+    seed("every-command-a-byte-and-a-command-at-a-time", every, piece=1, commands=1, rows=1, keep=True)
+    seed("every-command-through-a-matrix", every, piece=4, commands=2, matrix=2, tolerance=1, rows=4)
+    seed("every-command-as-large-as-can-be", every, piece=3, commands=3, matrix=3, rows=3, keep=True)
+    seed("numbers-run-together", b"M1.5.5L10-5 .5.5e1,2E-1 1e1 9", piece=2)
+    seed("an-arc's-flags-run-together", b"M4 4a6 6 0 0112 12 6 6 0 10-12-12z", rows=2, keep=True)
+    seed("a-circle", b"M36 14A12 12 0 0 1 24 26A12 12 0 0 1 12 14A12 12 0 0 1 24 2A12 12 0 0 1 36 14Z", tolerance=3, rows=5)
+    seed("a-star-that-crosses-itself", b"M20 2L31 26 4 10H36L9 26Z", even_odd=True, rows=6, keep=True)
+    seed("one-outline-inside-another", b"M2 2h36v24h-36zM8 8v12h24v-12zM14 12h12v4h-12z", even_odd=True, matrix=1, rows=1)
+    seed("drawn-on-after-it-was-closed", b"M5 5L15 15zl20 0 0 8zZ m3 3 h4", piece=5, commands=1)
+    seed("an-arc-of-enormous-radius", b"M2 2a17394593339182234 17394593339182234 0 0 0 30 20L2 22z", rows=7)
+    seed("arcs-that-cannot-be-as-asked", b"M5 5a1 1 0 0 0 30 0a0 5 0 0 1 0 10A-9-4 400 1 1 5 5z", tolerance=2, rows=2)
+    seed("far-outside-the-picture", b"M-500000-500000L500000 500000 20 9e9C-9e9 0 9e9 0 20 14z", matrix=1, rows=3, keep=True)
+    seed("many-small-steps", b"M2 2" + b"l.1.05" * 200 + b"H2z", piece=6, commands=3, rows=4, keep=True)
+    seed("a-mistake-part-of-the-way", b"M2 2h20v20 L1 1 L2,,2 h9", piece=2, commands=2)
+    seed("not-path-data", b"L1 2 K 3")
+    seed("nothing", b"")
+
+
+# ---- svg: bytes 0 and 1 (how the file and the picture are cut up), then a file ----
+
+
+def svg_seeds() -> None:
+    clear("svg")
+
+    def seed(name: str, file: bytes, piece: int = 0, rows: int = 0, size: int = 0, tolerance: int = 0) -> None:
+        write("svg", name, bytes([piece | (rows << 3) | (size << 6), tolerance]) + file)
+
+    def drawing(body: bytes, attributes: bytes = b"width='40' height='24'") -> bytes:
+        return b"<svg xmlns='http://www.w3.org/2000/svg' " + attributes + b">" + body + b"</svg>"
+
+    seed("a-drawing", DRAWING)
+    seed("a-drawing-a-byte-at-a-time-in-strips-of-one-row", DRAWING, piece=1, rows=1)
+    seed("a-drawing-in-a-tall-picture", DRAWING, piece=4, rows=4, size=1, tolerance=1)
+    seed("a-drawing-in-a-picture-of-seven-by-five", DRAWING, piece=5, rows=2, size=2, tolerance=2)
+    seed("a-drawing-in-a-large-picture", DRAWING, piece=6, rows=6, size=3, tolerance=3)
+    seed("what-is-left-out", LEFT_OUT, piece=3, rows=3)
+    seed("long-path-data", drawing(b"<path fill='#333' d='" + LONG_DATA + b"'/>"), piece=5, rows=2)
+    seed("long-path-data-with-its-transform-after-it",
+         drawing(b"<path d='" + LONG_DATA + b"' transform='translate(2 -3)'/><rect width='4' height='4'/>"), piece=6, rows=5)
+    seed("short-path-data-with-its-transform-after-it",
+         drawing(b"<path d='M0 0h8v8h-8z' fill='#555' transform='translate(12 6) rotate(20)'/>"), piece=2, rows=1)
+    seed("long-points", drawing(b"<polygon points='" + b"1,1 30,2 16,20 " * 60 + b"' fill-rule='evenodd'/>"), piece=4, rows=7)
+    seed("groups-nested-too-deep", drawing(b"<g>" * 40 + b"<rect width='9' height='9'/>" + b"</g>" * 40 + b"<circle r='6'/>"), rows=4)
+    seed("an-svg-inside-another",
+         drawing(b"<svg x='4' y='3' width='30' height='16' viewBox='-5 0 20 10' preserveAspectRatio='xMaxYMin slice'>"
+                 b"<rect width='50%' height='100%'/><svg width='5' height='5'><circle cx='50%' cy='50%' r='40%'/></svg></svg>"),
+         piece=3, rows=2)
+    seed("lengths-in-every-unit",
+         drawing(b"<rect x='1mm' y='.1cm' width='.25in' height='9pt' rx='1pc' ry='.2em'/><circle cx='50%' cy='3ex' r='10%'/>",
+                 b"width='1in' height='48pt' viewBox='0 0 96 64' preserveAspectRatio='xMinYMax meet'"), piece=4, size=3)
+    seed("paint-every-way",
+         drawing(b"<g fill='#888' color='#333' fill-opacity='.5' style='fill-rule:evenodd;opacity:.8'>"
+                 b"<path d='M2 2h20v20h-20zM6 6h12v12h-12z' fill='currentColor'/>"
+                 b"<rect x='20' width='16' height='16' style=' fill : rgba(0,0,0,.5) !important ; fill-opacity: 75% ;'/>"
+                 b"<circle cx='30' cy='12' r='8' fill='inherit' visibility='hidden'/></g>"), piece=2, rows=5)
+    seed("no-view-box-and-no-size", drawing(b"<rect width='150' height='75'/>", b""), rows=3)
+    seed("a-view-box-of-no-size", drawing(b"<rect width='9' height='9'/>", b"viewBox='0 0 0 10'"))
+    seed("numbers-too-large", drawing(b"<path d='M0 0h99999999v9e9H-9e9z' transform='scale(2047)'/>"
+                                      b"<rect x='-9e9' y='9e9' width='9e9' height='9e9' rx='9e9'/><circle r='9e9'/>",
+                                      b"viewBox='-9e9 9e9 9e9 9e9'"), piece=4, rows=1)
+    seed("not-a-drawing", b"<html><body><svg><rect width='9' height='9'/></svg></body></html>")
+    seed("cut-short-inside-an-outline", DRAWING[: DRAWING.index(b"h28v16") + 3], piece=3, rows=3)
+    # Cut short where the renderer is in the middle of something: path data
+    # too long to hold, which is in the filler by then, and elements it is
+    # passing over.
+    seed("cut-short-inside-long-path-data",
+         drawing(b"<rect width='4' height='4'/><path fill='#333' d='" + LONG_DATA)[:900], piece=5, rows=2)
+    seed("cut-short-inside-what-is-passed-over",
+         drawing(b"<rect width='9' height='9'/><defs><g><symbol><path d='M0 0h9v9z'/>")[:-6], piece=2, rows=2)
+    seed("tags-that-go-wrong", drawing(b"<rect width='9' height='9'/><<<"), piece=1)
+    seed("more-after-the-drawing", drawing(b"<rect width='9' height='9'/>") + b"<rect width='40' height='24'/><svg/>")
+    seed("nothing", b"")
+
+
 def main() -> None:
     inflate_seeds()
     zip_seeds()
@@ -673,6 +869,10 @@ def main() -> None:
     toc_seeds()
     region_heap_seeds()
     hyphenator_seeds()
+    svg_tags_seeds()
+    svg_values_seeds()
+    svg_path_seeds()
+    svg_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

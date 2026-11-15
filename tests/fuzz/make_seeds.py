@@ -3,9 +3,11 @@
 
 A seed is an input that is known to take its target somewhere worth
 starting from: a sound stream, a sound book, a table of contents with
-entries in it, a drawing with something of everything. The fuzzing engine makes its new inputs by changing the ones
-it has, so what the seeds reach is where it begins. The program that goes
-through the kept inputs (see tests/fuzz/CMakeLists.txt) takes them too.
+entries in it, a language's hyphenation table and words for it, a drawing
+with something of everything. The fuzzing engine makes its new inputs by
+changing the ones it has, so what the seeds reach is where it begins. The
+program that goes through the kept inputs (see tests/fuzz/CMakeLists.txt)
+takes them too.
 
 Every seed is made here, out of text written for the purpose: nothing in
 them comes from a book. Each target's file says how its input is laid out;
@@ -447,6 +449,223 @@ def region_heap_seeds() -> None:
     seed("the-largest-block", 4, 0, some([0, 0, 1, 3], 60))
 
 
+# ---- hyphenator: byte 0 (how the language is given, room for places), a table or patterns, then words ----
+
+# A language made up for the purpose: its patterns, as TeX writes them, and
+# words for them to meet.
+PATTERNS = [
+    "1a", "1e", "1i", "1o", "1u", "hy3ph", ".un1", "4m1p", "n2at", "he2n", "hena4", "1na", "2io", "o2n", "1tio",
+    "2ph.", "a1b2c", "l1l", "t2h", ".ha2", "e4d.", "1b", "1d", "2bb", "r1b",
+]
+WORDS = ["hyphenation", "Unhappy", "lamp", "HARBOUR", "evening", "the", "nobody", "lighted", "a", "", "millennium"]
+
+
+class HyphenTable:
+    """A hyphenation table (layout/hyphenator.h) written the plain way: the
+    tree of the patterns as it stands, a state for every branching, nothing
+    kept once that occurs twice. Its pieces can be changed before it is put
+    together, for a seed whose table is to be wrong somewhere.
+
+    `alphabet` is the language's small letters. Each is a letter of the
+    table, and so is its capital where it has one."""
+
+    def __init__(self, patterns: list[str], left: int, right: int, alphabet: str = "abcdefghijklmnopqrstuvwxyz") -> None:
+        number = {letter: at + 1 for at, letter in enumerate(alphabet)}
+        # The tree: where each letter leads from each node, and the numbers
+        # of the pattern that ends at it, as they go into the table.
+        children: list[dict[int, int]] = [{}]
+        numbers_at = [b""]
+        self.deepest = 1
+        for text in patterns:
+            letters: list[int] = []
+            numbers = [0]
+            for character in text:
+                if character.isdigit():
+                    numbers[-1] = int(character)
+                else:
+                    letters.append(0 if character == "." else number[character])
+                    numbers.append(0)
+            node = 0
+            for letter in letters:
+                if letter not in children[node]:
+                    children[node][letter] = len(children)
+                    children.append({})
+                    numbers_at.append(b"")
+                node = children[node][letter]
+            # Each number that is not nothing, with how far back from the
+            # pattern's end its place is.
+            pairs = sorted((len(letters) - place, value) for place, value in enumerate(numbers) if value)
+            numbers_at[node] = bytes([len(pairs)]) + bytes(byte for pair in pairs for byte in pair) if pairs else b""
+            self.deepest = max(self.deepest, len(letters))
+
+        # Each node that branches is a state. Where each begins, the first
+        # node's first. (The list grows as it is gone through.)
+        start = {0: 0} if children[0] else {}
+        order = list(start)
+        count = len(children[0])
+        for node in order:
+            for letter in sorted(children[node]):
+                child = children[node][letter]
+                if children[child]:
+                    start[child] = count
+                    count += len(children[child])
+                    order.append(child)
+        self.edges: list[list[int]] = []  # Each: the letter, the next state, the value.
+        self.values = b""
+        for node in order:
+            for letter in sorted(children[node]):
+                child = children[node][letter]
+                value = 0
+                if numbers_at[child]:
+                    value = len(self.values) + 1
+                    self.values += numbers_at[child]
+                if letter == max(children[node]):
+                    value |= 0x8000
+                self.edges.append([letter, start.get(child, 0xFFFF), value])
+
+        listed = {}
+        for letter, which in number.items():
+            listed[ord(letter)] = which
+            if len(letter.upper()) == 1:
+                listed[ord(letter.upper())] = which
+        self.listed = sorted(listed.items())  # Each: the code point, which letter.
+        self.version = 1
+        self.left = left
+        self.right = right
+        self.widest = max([len(leading) for leading in children if leading], default=1)
+
+    def data(self) -> bytes:
+        header = b"BNHY" + bytes([self.version, self.left, self.right, self.deepest])
+        header += struct.pack("<HHH", len(self.listed), len(self.edges), len(self.values)) + bytes([self.widest, 0])
+        listed = b"".join(struct.pack("<I", code_point)[:3] + bytes([which]) for code_point, which in self.listed)
+        edges = b"".join(struct.pack("<BHH", *edge) for edge in self.edges)
+        return header + listed + edges + self.values
+
+
+def hyphenator_seeds() -> None:
+    clear("hyphenator")
+    words = "\n".join(WORDS).encode()
+
+    def table(name: str, room: int, language: HyphenTable, asked: bytes = words) -> None:
+        write("hyphenator", name, bytes([room << 1]) + language.data() + asked)
+
+    def patterns(name: str, room: int, left: int, right: int, written: str, asked: bytes = words) -> None:
+        fewest = (left - 1) | ((right - 1) << 3)
+        write("hyphenator", name, bytes([1 | (room << 1), fewest]) + written.encode() + b"\n" + asked)
+
+    table("a-language", 7, HyphenTable(PATTERNS, 2, 3))
+    table("little-room-for-places", 1, HyphenTable(PATTERNS, 1, 1))
+    table("no-patterns", 7, HyphenTable([], 2, 2))
+
+    # Letters of two, three and four bytes, some with capitals, and one
+    # (the sharp s) with none.
+    wider = HyphenTable(["1é", "é1t", "λ1λ", "1𐐨", "s2ß", "д1д", "1a", ".r2", "ß1e"], 1, 1, "aeilmnrstéßλд𐐨")
+    table("letters-of-several-bytes", 7, wider,
+          "résumé\nÉTÉ\nλλλλ\nΛΛλλ\nStraße\n𐐨𐐨𐐨𐐀\nдддаДД\nété-λλλ".encode())
+
+    # Words with things in them that are not letters, and with bytes that
+    # are not UTF-8: a character written in more bytes than it needs (a
+    # stroke, and then a letter, where a break would otherwise come), a
+    # byte that only continues one, half of a pair, a first byte that
+    # begins nothing, a code point past the last, and a character cut short
+    # by the word's end.
+    table("words-with-other-things-in-them", 7, HyphenTable(PATTERNS, 2, 2),
+          b"well-known\ndon't\ne-mail\n3rd\nhalf/way\nlamp.\n(harbour)\nna\xc3\xafve")
+    table("words-that-are-not-utf-8", 7, HyphenTable(PATTERNS, 2, 2), b"\n".join([
+        b"lamp\xc0\xaflight", b"ev\xc1\xa5ning", b"even\x80ing", b"harb\xed\xa0\x80our", b"hyph\xf5\x80\x80\x80enation", b"\xff",
+        b"noth\xf4\x90\x80\x80ing", b"nob\xe0\x80\xafody", b"lighted\xe2\x82",
+    ]))
+
+    # As long as a word may be, one letter longer, and far longer.
+    table("words-too-long", 7, HyphenTable(PATTERNS, 2, 2),
+          ("ab" * 31 + "a" + "\n" + "ab" * 32 + "\n" + "hyphenation" * 30).encode())
+
+    # Tables that open, and are wrong further in. Numbers that are not
+    # their pattern's: a place further back than the pattern is long, more
+    # of them than there are bytes for, and an edge that says its numbers
+    # are past the end of them all.
+    wrong = HyphenTable(PATTERNS, 2, 2)
+    values = bytearray(wrong.values)
+    values[1] = 200
+    values[3] = 0x40
+    wrong.values = bytes(values)
+    wrong.edges[4][2] |= 0x7FFF
+    table("numbers-that-are-not-their-patterns", 7, wrong)
+
+    # No edge is marked as the last of its state, and the table says a
+    # state may have 255: a state is read on into the ones after it, and
+    # the last of them to the end of the edges.
+    endless = HyphenTable(PATTERNS, 2, 2)
+    for edge in endless.edges:
+        edge[2] &= 0x7FFF
+    endless.widest = 255
+    table("states-with-no-last-edge", 7, endless)
+
+    astray = HyphenTable(PATTERNS, 2, 2)
+    astray.edges[0][1] = 0xFFFE
+    astray.edges[2][1] = len(astray.edges)
+    astray.edges[5][1] = len(astray.edges) - 1
+    table("edges-that-lead-past-the-last", 7, astray)
+
+    # A tree that is none: each edge leads back to the first state, so
+    # that every run of these two letters is a pattern, as long as the
+    # table says a pattern may be.
+    around = HyphenTable(["a1", "1b"], 1, 1, "ab")
+    for edge in around.edges:
+        edge[1] = 0
+    around.deepest = 65
+    around.widest = 255
+    table("a-table-that-goes-round", 7, around, ("a" * 63 + "\n" + "ab" * 31 + "\nABBA\n" + "b" * 64).encode())
+
+    most = HyphenTable(PATTERNS, 2, 3)
+    most.deepest = 65
+    most.widest = 255
+    table("as-much-work-as-a-table-may-ask-for", 7, most)
+
+    # Tables that hold more than they say, where the work a word may take
+    # is so little that going by what a table holds, and not by what it
+    # says, is at once too much: patterns longer than the longest is said
+    # to be, states with more edges than the widest is said to have, and a
+    # pattern with more numbers than it has places.
+    longer = HyphenTable(["a1", "1b"], 1, 1, "ab")
+    for edge in longer.edges:
+        edge[1] = 0
+    longer.deepest = 2
+    longer.widest = 1
+    table("patterns-longer-than-the-table-says", 7, longer, ("a" * 63 + "\n" + "ab" * 20 + "\nabba").encode())
+    wide = HyphenTable(PATTERNS, 2, 3)
+    wide.deepest = 1
+    wide.widest = 1
+    table("states-wider-than-the-table-says", 7, wide)
+    crowded = HyphenTable(["a1"], 1, 1, "ab")
+    crowded.values = bytes([200]) + bytes([1, 1]) * 200
+    table("more-numbers-than-a-pattern-has-places", 7, crowded, ("a" * 40 + "\nabab\na").encode())
+
+    # Tables that are refused.
+    unordered = HyphenTable(PATTERNS, 2, 3)
+    unordered.listed[3], unordered.listed[4] = unordered.listed[4], unordered.listed[3]
+    table("letters-out-of-order", 7, unordered)
+    other = HyphenTable(PATTERNS, 2, 3)
+    other.version = 2
+    table("another-version", 7, other)
+    none_before = HyphenTable(PATTERNS, 2, 3)
+    none_before.left = 0
+    table("no-letters-before-a-break", 7, none_before)
+    end_listed = HyphenTable(PATTERNS, 2, 3)
+    end_listed.listed[0] = (end_listed.listed[0][0], 0)
+    table("a-letter-that-is-a-words-end", 7, end_listed)
+    write("hyphenator", "cut-short", bytes([7 << 1]) + HyphenTable(PATTERNS, 2, 3).data()[:-7])
+    write("hyphenator", "nothing", b"")
+
+    patterns("patterns", 7, 2, 3, " ".join(PATTERNS))
+    patterns("patterns-and-little-room", 2, 1, 1, " ".join(PATTERNS))
+    patterns("patterns-that-disagree", 7, 1, 1, "1a 2a a1 a2 1a1 3a4 a3b b4a .a5 5a. .1b b1. 1ab1 a6b",
+             b"abba\nbaobab\nAb\nba\na\nabababababab\nbbbbaaaa")
+    patterns("no-patterns-in-text", 7, 2, 2, "")
+    patterns("patterns-that-are-not", 7, 2, 2, "123 . .. a..b 4 hy3phenationally9longer {}~ 1é",
+             b"hyphenationally\nlonger\nab\n" + b"a" * 70)
+
+
 # ---- svg_tags: byte 0 (how the file is cut up and handed back), then a file ----
 
 DRAWING = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -649,6 +868,7 @@ def main() -> None:
     package_seeds()
     toc_seeds()
     region_heap_seeds()
+    hyphenator_seeds()
     svg_tags_seeds()
     svg_values_seeds()
     svg_path_seeds()

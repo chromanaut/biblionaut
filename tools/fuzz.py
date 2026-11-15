@@ -76,6 +76,7 @@ TARGETS = {
     "package": 16384,
     "toc": 16384,
     "region_heap": 3072,
+    "hyphenator": 4096,
     "svg_tags": 4096,
     "svg_values": 256,
     "svg_path": 2048,

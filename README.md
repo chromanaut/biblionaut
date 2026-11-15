@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -914,9 +914,10 @@ whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
 
 Each reader of a book's own files, from the inflater to the table of
 contents, has a fuzz target in `tests/fuzz`, and so have the heap the XML
-parser's memory comes from and each reader of a drawing: one function that
-is given some bytes, puts them through the reader, and ends the program if
-the reader does anything it should not.
+parser's memory comes from, the hyphenator, which is given a book's words,
+and each reader of a drawing: one function that is given some bytes, puts
+them through the reader, and ends the program if the reader does anything
+it should not.
 Going outside its memory, or into undefined behaviour, is seen by the
 sanitizers. The rest a target checks for itself: what the reader's header
 promises of it, and that no single call does more than the header says a
@@ -930,6 +931,7 @@ call may.
 | `package` | `epub::Package`, a step at a time, twice | No step reads more than five blocks from storage. Nothing is said of the book until the reading is over. A book that was read has documents, each found again by its entry's name. A second reading says what the first said |
 | `toc` | `epub::TocReader`, a step at a time, twice, with a handler that may ask for no more | No step reads more than five blocks. Every label is whole characters with its spaces collapsed, within its length; every entry points at a document of the book or at none. A stopped reading says so |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
+| `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
 | `svg_tags` | `draw::SvgTagReader`, twice: whole, and cut up, with the ends of the pieces it gives handed back to it | A call takes a byte or tells something. Things are told in an order tags can have, and `Depth()` is how many elements were opened and not closed. No more bytes are told of than were taken, and what an entity stands for is one character. Once reading has failed nothing more is told. Both readings tell the same things |
 | `svg_values` | Each reader of what an attribute says (`draw/svg_values.h`), and `ParseSvgTransform` | A reading that refuses the text leaves what it was to fill as it was. Space round the text changes nothing, nor capitals a colour. A view box is fitted where SVG says it goes, worked out again in floating point |
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
@@ -948,6 +950,12 @@ The targets that draw have a picture of 64 pixels by 48 at the most, and
 leave a drawing off once it has come to 200,000 lines, which a few bytes
 of arcs can ask for: its pictures are then not compared.
 
+The hyphenator's bound is one figure for a whole word, and most tables
+leave room to spare under it: work done past what a table says of itself
+would not show. So some of its seeds are tables that say the least a table
+can (patterns of one letter, states of one edge) and hold more, where
+going by what the table holds is over the bound at once.
+
 A target is built two ways.
 
 - **In every ordinary build** it is a program that goes through the inputs
@@ -957,9 +965,9 @@ A target is built two ways.
   once found stays found. The kept inputs are the seeds, which
   `tests/fuzz/make_seeds.py` makes out of text written for the purpose
   (a stream of each kind, a book of each kind, a table of contents with
-  entries in it, a drawing with something of everything), and any input
-  that ever found a fault, cut down to the least that shows it and named
-  `found-` and what it found.
+  entries in it, a language's table and words for it, a drawing with
+  something of everything), and any input that ever found a fault, cut
+  down to the least that shows it and named `found-` and what it found.
 - **For fuzzing** it is linked with LLVM's fuzzing engine, libFuzzer,
   which makes up new inputs by changing the ones it has, keeps each one
   that reaches code none reached before, and goes on from those.
@@ -976,29 +984,31 @@ A target is built two ways.
   ```
   $ tools/fuzz.py --time 300
   Building the fuzz targets with /opt/homebrew/opt/llvm@23/bin/clang ...
-  Fuzzing 10 targets in 2 builds, 300 s each, 8 at once ...
+  Fuzzing 11 targets in 2 builds, 300 s each, 8 at once ...
 
   target       build         inputs tried   kept  result
-  inflate      fuzz               647,004   1190  nothing found
-  inflate      fuzz-noasan        883,716   1534  nothing found
-  zip          fuzz             2,174,912    724  nothing found
-  zip          fuzz-noasan      6,618,614   1321  nothing found
-  xml          fuzz             3,545,017  27033  nothing found
-  xml          fuzz-noasan      5,182,813  32924  nothing found
-  package      fuzz               698,623   9195  nothing found
-  package      fuzz-noasan      1,445,222  13988  nothing found
-  toc          fuzz               618,958   9102  nothing found
-  toc          fuzz-noasan      1,115,997  13129  nothing found
-  region_heap  fuzz             1,355,077   2498  nothing found
-  region_heap  fuzz-noasan      2,318,962   2561  nothing found
-  svg_tags     fuzz             9,660,591   2774  nothing found
-  svg_tags     fuzz-noasan     11,684,514   3349  nothing found
-  svg_values   fuzz            46,470,531    452  nothing found
-  svg_values   fuzz-noasan     62,574,010    534  nothing found
-  svg_path     fuzz               481,093    679  nothing found
-  svg_path     fuzz-noasan        583,459    761  nothing found
-  svg          fuzz               577,006   2800  nothing found
-  svg          fuzz-noasan        747,866   3676  nothing found
+  inflate      fuzz               581,032    258  nothing found
+  inflate      fuzz-noasan        672,084    262  nothing found
+  zip          fuzz             2,169,668    147  nothing found
+  zip          fuzz-noasan      6,762,738    269  nothing found
+  xml          fuzz             2,730,644   5918  nothing found
+  xml          fuzz-noasan      4,091,601   8139  nothing found
+  package      fuzz               732,579   2536  nothing found
+  package      fuzz-noasan      1,550,742   4598  nothing found
+  toc          fuzz               612,083   2851  nothing found
+  toc          fuzz-noasan      1,114,446   4635  nothing found
+  region_heap  fuzz             1,648,854    829  nothing found
+  region_heap  fuzz-noasan      2,294,609    950  nothing found
+  hyphenator   fuzz               974,051   4127  nothing found
+  hyphenator   fuzz-noasan      1,932,260   5593  nothing found
+  svg_tags     fuzz            21,118,385   1162  nothing found
+  svg_tags     fuzz-noasan     26,408,850   1313  nothing found
+  svg_values   fuzz            44,971,282    123  nothing found
+  svg_values   fuzz-noasan     59,773,214    163  nothing found
+  svg_path     fuzz               428,618    275  nothing found
+  svg_path     fuzz-noasan        503,697    330  nothing found
+  svg          fuzz               488,536   1625  nothing found
+  svg          fuzz-noasan        653,077   2113  nothing found
 
   Nothing found. The inputs kept are in .fuzz/corpus/.
   ```
@@ -1037,6 +1047,80 @@ What it does not find:
 - **A drawing of any size.** The pictures are small, and path data long
   enough to be drawn as it arrives is a good part of the longest input
   the engine makes.
+
+## Where a word may be broken
+
+`layout/hyphenator.h` finds the places a word may be broken across two
+lines, by the method TeX uses (Franklin Mark Liang, 1983). A language is a
+set of patterns: short runs of letters with a number at each place between
+them, such as `hy3ph` or `1tio`. Every pattern that occurs in a word is
+laid over it, each place takes the largest number any pattern puts there,
+and the word may be broken where that number is odd. So one pattern can
+allow a break and a longer one forbid it again.
+
+- **A table for each language**, made from its patterns by `bn-hyphen` and
+  read where its bytes lie: in the firmware itself, or wherever else it is
+  kept. Nothing is copied out of it and nothing is allocated. The patterns
+  are a tree, read a letter at a time, and branches that are alike are
+  kept once.
+- **No patterns are in this repository**, and no table is in the firmware
+  yet. Made from the patterns TeX has for American English (4,938 of
+  them, and 14 words written out), a table is 38,049 bytes; from those for
+  German (36,709), 234,154 bytes.
+- **A word** is given as UTF-8, and the places come back as how many bytes
+  of it come before each break. Capitals count as their small letters. A
+  character the language has no letter for divides the word, and each side
+  is looked at by itself; so do bytes that are not UTF-8. A word of more
+  than 63 characters is given no places.
+- **Words written out** with their breaks, as a language's exceptions are,
+  go into the table as patterns of their own that no other pattern can
+  change.
+- **A table is not trusted.** Whatever its bytes are, nothing outside it
+  is read, and a word is answered within the work the table's own header
+  allows: no more starts than the word has letters, no further from each
+  than the longest pattern, no more edges at a step than the widest state
+  has (`Hyphenator::MostWorkFor`). With the American English table that is
+  81,915 edges and numbers for a word of 63 letters. Over the 235,976
+  words of a dictionary, the most any one took was 940, and they took 325
+  each on average.
+- **Flash**: 1.6 KB, as compiled for the device, without a table.
+
+`bn-hyphen` makes a table and breaks words with one:
+
+```
+./build/host/tools/hyphen/bn-hyphen pack patterns.txt --out table.bnhy
+./build/host/tools/hyphen/bn-hyphen words table.bnhy words.txt
+./build/host/tools/hyphen/bn-hyphen info table.bnhy
+```
+
+`pack` takes patterns as they are written for TeX, with spaces or line
+ends between them, and optionally the language's exceptions
+(`--exceptions`), a list of its letters' other forms such as their capitals
+(`--letters`), and the fewest letters it leaves before and after a break
+(`--left`, `--right`: 2 and 3 unless told). For the nine patterns of TeX's
+that the word "hyphenation" meets, it says:
+
+```
+patterns 9, exceptions 0
+letters 9, as 18 characters
+states 13, edges 18 (18 before like branches were kept once), widest 5
+longest pattern 5, values 21 bytes
+table 199 bytes
+```
+
+`words` prints each word of a file, or of what it is given to read, with
+a `-` at every place it may be broken: `hy-phen-ation`.
+
+Its tests write tables of their own, the plain way and with nothing
+shared, and compare the places found with laying every pattern over every
+place: 300 made-up sets of patterns, 60 words each. A table with any one
+byte changed, and tables of bytes that are no table at all, have to be
+answered within the work they state and without a read outside them. The
+tables `bn-hyphen` makes are checked the same way, against the plain ones
+too. And an end-to-end test (`tests/e2e/hyphen_tool.py`) sets `bn-hyphen`
+beside a second way of breaking the same words that shares none of its
+code, on 150 made-up languages with letters of one byte to four. Tables
+and words that nobody wrote are the fuzz target's (see Fuzzing).
 
 ## Breaking paragraphs into lines
 

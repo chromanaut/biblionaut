@@ -26,15 +26,40 @@ namespace bn::core {
 // it a source that ends where the stream does.
 //
 // It trusts nothing about its input. Whatever bytes it is given, it either
-// produces the data they stand for or stops with an error; it never reads
-// or writes outside its own memory, and never loops without making
-// progress.
+// produces the data they stand for or stops with an error, and it never
+// reads or writes outside its own memory.
+//
+// Nor can its input make one call long. A stream can be written so that
+// every byte of output costs a block of its own, or so that block after
+// block produces nothing at all, and either would keep a call that waited
+// to fill its destination going for as long as the stream's writer liked.
+// So a call starts only so many blocks (kMaxBlocksPerRead) before it comes
+// back with what it has, and a stream with more blocks in a row that
+// produce nothing than any compressor writes (kMaxEmptyBlocksInARow) is
+// refused as bad data. That bounds what a call takes from its source:
+// MostInputFor().
 //
 // Used by one task at a time.
 class Inflater final : public ByteSource {
  public:
   // The window it needs: exactly this much, or more.
   static constexpr std::size_t kWindowBytes = 32768;
+
+  // The most blocks in a row that may produce nothing. A compressor writes
+  // such a block where it was told to flush, and a few together at most
+  // (pigz, three, to end on a whole byte): never a run like this.
+  static constexpr unsigned kMaxEmptyBlocksInARow = 16;
+  // The most blocks one call starts: those, and the one after them that
+  // has something in it.
+  static constexpr unsigned kMaxBlocksPerRead = kMaxEmptyBlocksInARow + 1;
+
+  // The most bytes one call takes from its source when asked for `wanted`,
+  // whatever the stream. A byte of output costs two bytes of input at the
+  // most (a literal with the longest pattern, or the shortest repeat with
+  // every extra bit); a block's start costs 286 bytes at the most, for the
+  // longest codes a block can bring, and there are kMaxBlocksPerRead of
+  // them; and 260 bytes are read ahead.
+  static constexpr std::size_t MostInputFor(std::size_t wanted) noexcept { return (2 * wanted) + 5632; }
 
   enum class Status : std::uint8_t {
     kRunning,       // There is, or may be, more to come.
@@ -54,11 +79,12 @@ class Inflater final : public ByteSource {
   // Starts again on another stream, read from `source`.
   void Reset(ByteSource& source) noexcept;
 
-  // The next plain bytes. Fills `dst` unless the stream ends first. Returns
-  // how many bytes were read, 0 at the end of the stream, and kError if the
-  // stream cannot be followed any further (CurrentStatus() says why). Bytes
-  // that came before the fault are returned first: the error comes from
-  // the call after.
+  // The next plain bytes: as many as `dst` holds, or fewer if the stream
+  // ends first or the call has started as many blocks as one call may.
+  // Returns how many bytes were read, 0 only at the end of the stream (or
+  // for an empty `dst`), and kError if the stream cannot be followed any
+  // further (CurrentStatus() says why). Bytes that came before the fault
+  // are returned first: the error comes from the call after.
   [[nodiscard]] std::ptrdiff_t Read(std::span<std::uint8_t> dst) noexcept override;
 
   Status CurrentStatus() const noexcept { return status_; }
@@ -95,6 +121,8 @@ class Inflater final : public ByteSource {
   int Decode(const Code& code) noexcept;
 
   void StartBlock() noexcept;
+  // The block being read has ended: counts it if it produced nothing.
+  void EndBlock() noexcept;
   bool StartStored() noexcept;
   void UseFixedCodes() noexcept;
   bool ReadCodes() noexcept;
@@ -106,9 +134,11 @@ class Inflater final : public ByteSource {
   std::span<std::uint8_t> window_;
   Status status_ = Status::kRunning;
   Stage stage_ = Stage::kBlockStart;
-  bool lastBlock_ = false;    // The block being read is the stream's last.
-  bool fixedBuilt_ = false;   // The codes now built are the fixed ones.
-  bool sourceEnded_ = false;  // The source has no more to give.
+  bool lastBlock_ = false;      // The block being read is the stream's last.
+  bool fixedBuilt_ = false;     // The codes now built are the fixed ones.
+  bool sourceEnded_ = false;    // The source has no more to give.
+  bool blockProduced_ = false;  // The block being read has produced something.
+  unsigned emptyRun_ = 0;       // How many blocks in a row, up to now, have produced nothing.
 
   std::uint32_t bitBuffer_ = 0;  // Input not yet used, the next bit lowest.
   unsigned bitCount_ = 0;        // How many bits of it are real.

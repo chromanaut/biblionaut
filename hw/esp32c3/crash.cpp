@@ -32,6 +32,9 @@
 // NOLINTBEGIN(bugprone-reserved-identifier,readability-identifier-naming)
 extern "C" void __real_esp_panic_handler(panic_info_t* info);
 extern "C" void __wrap_esp_panic_handler(panic_info_t* info);
+// ESP-IDF calls this, if the firmware has one, from the interrupt that finds
+// a watched task has not reported in time, before it does anything else.
+extern "C" void esp_task_wdt_isr_user_handler(void);
 // NOLINTEND(bugprone-reserved-identifier,readability-identifier-naming)
 
 namespace bn::hw {
@@ -48,6 +51,12 @@ constexpr std::size_t kFrameRegisters = 36;
 static_assert(kFrameRegisters <= core::kCrashMaxRegisters);
 static_assert(offsetof(RvExcFrame, mepc) == 0);
 static_assert(offsetof(RvExcFrame, mtval) == (kFrameRegisters - 1) * sizeof(std::uint32_t));
+// What a frame holds that an interrupt saved, and not a fault: the program
+// counter and the 31 registers a task is switched with, as far as t6. The
+// four after them (mstatus, mtvec, mcause, mtval) are only written by the
+// entry that a fault comes in by.
+constexpr std::size_t kInterruptFrameRegisters = 32;
+static_assert(offsetof(RvExcFrame, mstatus) == kInterruptFrameRegisters * sizeof(std::uint32_t));
 
 struct SavedCrash {
   std::uint32_t magic;
@@ -65,6 +74,11 @@ RTC_NOINIT_ATTR SavedCrash saved;
 
 // The firmware's name for itself, from SetVersion().
 const char* firmwareVersion = nullptr;
+
+// The watchdog has found a task that did not report in time. When that is
+// set to end in the panic handler, ESP-IDF gets there by the way abort()
+// does, with no reason given: this is how the report knows better.
+volatile bool watchdogTimedOut = false;
 
 std::uint32_t ReportChecksum() noexcept {
   return core::Crc32({reinterpret_cast<const std::uint8_t*>(&saved.report), sizeof(saved.report)});
@@ -84,7 +98,11 @@ void SaveCrash(const panic_info_t& info) noexcept {
   // abort() and failed assertions arrive as a deliberate fault with the real
   // cause in a side variable; ESP-IDF's handler makes the same substitution.
   const char* reason = g_panic_abort ? g_panic_abort_details : info.reason;
-  if (reason == nullptr) {
+  if (watchdogTimedOut) {
+    // The task, the registers and the stack below are those of whatever
+    // was running when the time ran out: the call that did not come back.
+    reason = "watchdog: a watched task did not report in time";
+  } else if (reason == nullptr) {
     reason = g_panic_abort ? "abort() was called" : "unknown";
   }
   core::SetCrashText(report.reason, reason);
@@ -100,7 +118,12 @@ void SaveCrash(const panic_info_t& info) noexcept {
   core::SetCrashText(report.buildId, esp_app_get_elf_sha256_str());
 
   if (const auto* frame = static_cast<const RvExcFrame*>(info.frame)) {
-    std::memcpy(report.registers.data(), frame, kFrameRegisters * sizeof(std::uint32_t));
+    // The watchdog hands over the frame of the task its interrupt broke in
+    // on, which is the shorter kind: read to its full length, the last
+    // four "registers" would be the first four words of that task's stack.
+    // They are left as nothing, which is what is known of them.
+    const std::size_t held = watchdogTimedOut ? kInterruptFrameRegisters : kFrameRegisters;
+    std::memcpy(report.registers.data(), frame, held * sizeof(std::uint32_t));
     report.registerCount = kFrameRegisters;
 
     // The stack, upwards from the stack pointer: return addresses and local
@@ -158,6 +181,8 @@ core::CrashStore& SystemCrashStore() noexcept {
 }
 
 }  // namespace bn::hw
+
+extern "C" void esp_task_wdt_isr_user_handler(void) { bn::hw::watchdogTimedOut = true; }
 
 extern "C" void __wrap_esp_panic_handler(panic_info_t* info) {
   // Only the first entry saves a report. If saving faults, or something

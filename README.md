@@ -305,6 +305,18 @@ and the device.
   they stand for or stops, saying why (`kBadData`, `kTruncated`,
   `kSourceFailed`). It does not check that the data is the right data: that
   is for the checksum a ZIP file carries.
+- **One call's work**: a stream cannot make one `Read()` long. DEFLATE
+  lets a stream be written so that every byte of output costs a block of
+  its own, with its own codes to read and build, or so that block after
+  block holds nothing at all; a megabyte of either would keep a call that
+  waited to fill its destination busy for as long as the megabyte lasted.
+  So a call starts 17 blocks at the most and then comes back with what it
+  has, which may be fewer bytes than it was asked for, and a stream with
+  more than 16 blocks in a row that produce nothing is refused as bad
+  data (a compressor writes such a block where it was told to flush:
+  three together at the most). A call asked for `n` bytes therefore takes
+  no more than `2n + 5,632` bytes from its source, whatever the stream
+  (`Inflater::MostInputFor`).
 - **Reading ahead**: it may take up to 260 bytes from its source that come
   after the end of the stream, so the source should end where the stream
   does.
@@ -314,7 +326,11 @@ breaking it, and compare it with zlib on streams zlib compresses: 800 of
 them across kinds of data, sizes, compression levels and strategies, and
 again with the input and output cut into pieces of many sizes. They also
 turn over every bit of a stream, one at a time, and cut it short at every
-length, to see that the inflater always stops.
+length, to see that the inflater always stops. Every call in every one of
+those tests is held to what one call may take from its source; and there
+are streams made for that alone: a megabyte of blocks with nothing in
+them, and blocks of one byte each whose codes are written the longest way
+the format has, which bring a call to within a tenth of the bound.
 
 ## ZIP files
 
@@ -385,38 +401,43 @@ in each folder in `/books`, one level down and no further. If there is no
 instead (`reader/book_check.h`). With each book it does two things. First
 it opens the book as a reader would: finds the ZIP directory and reads the
 book's package, which says what the book is called and where its documents
-are (see "What a book says of itself" below), all in one go; and then, with
-the book still open, reads its table of contents ("The table of contents"
-below). Then it closes the book, opens it afresh, reads every entry to its
+are (see "What a book says of itself" below); and then, with the book
+still open, reads its table of contents ("The table of contents" below). Then it closes the book, opens it afresh, reads every entry to its
 end, which checks the entry's size and checksum, and looks each entry up
 by name.
 Every entry with an XML file's name (one ending in `.xhtml`, `.html`,
-`.htm`, `.xml`, `.opf` or `.ncx`) is also parsed as it is read. But for the
-package, it works for about 20 ms a turn, so the panel and the buttons
-carry on around it, and a run takes longer by the clock than the times it
-reports.
+`.htm`, `.xml`, `.opf` or `.ncx`) is also parsed as it is read. It works
+for about 20 ms a turn, so the panel and the buttons carry on around it,
+and a run takes longer by the clock than the times it reports. All of it
+is done in steps, each one call into what is being checked: a read from
+an entry, a piece of a document parsed, a piece of a package or a table
+of contents read. A turn runs over its 20 ms by however long its last
+step takes, so the last line of a run says which step took longest, and
+how long: on a device, that is whether those calls are as short as an
+application that has a panel and buttons to see to needs them to be.
 
 What it finds goes out as log text: a line when a book is begun, three for
-its package, one for its table of contents, three when it ends, and six at
-the end for all of them.
+its package, one for its table of contents, three when it ends, and seven
+at the end for all of them.
 
 ```
-book check: the checksum alone, 262144 bytes in 1256 us (203821 KB/s).
-book 1: 1498334 bytes, /books/A Series/1 The First Book.epub
-book 1: package: title "The First Book", author "A. Writer", language "eng".
-book 1: package: 119 files, 105 documents, cover jpeg, nav, ncx; memory 4844; checksum 3ee7ef89.
-book 1: package: 1 ms: card 0 ms for 9 reads of 35260 bytes.
-book 1: contents: nav, 103 entries, 2 levels; checksum 6c3bbc09; 1 ms: card 0 ms for 2 reads of 8192 bytes.
-book 1: ok. 122 entries, 3022700 bytes out of 1477560. Directory found in 1 read, 0 ms.
-book 1: card 0 ms for 372 reads of 1521306 bytes (1533178 KB/s); inflating 33 ms: 1477540 bytes in (42491 KB/s), 3022680 out (86926 KB/s); all 53 ms.
-book 1: XML: 109 documents, 2042449 bytes, 78209 events, checksum 10acf92b; parsing 18 ms (108142 KB/s); most memory 10928.
+book check: the checksum alone, 262144 bytes in 1783 us (143578 KB/s).
+book 1: 1832425 bytes, /books/core/The First Book.epub
+book 1: package: title "The First Book", author "A. Writer", language "en".
+book 1: package: 374 files, 368 documents, cover jpeg, nav, ncx; memory 16288; checksum 7b162ac4.
+book 1: package: 2 ms: card 0 ms for 24 reads of 90555 bytes.
+book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 1 ms: card 0 ms for 2 reads of 8192 bytes.
+book 1: ok. 377 entries, 4353104 bytes out of 1769871. Directory found in 1 read, 0 ms.
+book 1: card 1 ms for 468 reads of 1909179 bytes (1594895 KB/s); inflating 56 ms: 1661195 bytes in (28518 KB/s), 4244428 out (72865 KB/s); all 101 ms.
+book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 42 ms (97069 KB/s); most memory 11632.
 ...
-book check: passed. 31 books, 4310 entries, 181650944 bytes out of 85181353.
-book check: card 50 ms for 21188 reads of 86632380 bytes (1659024 KB/s); inflating 1842 ms: 75728235 bytes in (40128 KB/s), 172197826 out (91247 KB/s); all 2491 ms.
-book check: XML: 2587 documents, 66166529 bytes, 1823978 events; parsing 547 ms (117963 KB/s); 66286144 bytes of events checksummed.
-book check: XML memory: the most a document used 11648 bytes; documents over 8 KB: 2587, over 12 KB: 0, over 16 KB: 0.
-book check: packages: 31 read; 43 ms: card 33 ms for 368 reads of 1380309 bytes; the longest 2 ms; the most memory 10628.
-book check: contents: 31 read (6 nav), 2400 entries; 14 ms: card 3 ms for 54 reads of 221184 bytes; the longest 1 ms.
+book check: passed. 34 books, 5152 entries, 63899132 bytes out of 39526769.
+book check: card 27 ms for 10091 reads of 41148789 bytes (1482380 KB/s); inflating 612 ms: 24130522 bytes in (38452 KB/s), 48502885 out (77290 KB/s); all 1053 ms.
+book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 323 ms (95224 KB/s); 32821373 bytes of events checksummed.
+book check: XML memory: the most a document used 18952 bytes; documents over 8 KB: 2072, over 12 KB: 24, over 16 KB: 5.
+book check: packages: 33 read; 30 ms: card 17 ms for 258 reads of 901750 bytes; the longest 3 ms; the most memory 22448. Not read: 1.
+book check: contents: 33 read (25 nav), 2666 entries; 9 ms: card 0 ms for 49 reads of 195690 bytes; the longest 1 ms.
+book check: the longest step: 665 us, listing a directory.
 ```
 
 (Those figures are a desktop's, and the book's names are made up.) There
@@ -577,7 +598,9 @@ every event of every document has to agree.
 `epub/package.h` reads the two files an EPUB describes itself with:
 `META-INF/container.xml`, which says where the package file is, and the
 package file (the OPF), which lists every file of the book and the order
-its documents are read in. `Package::Read` gives back:
+its documents are read in. It is read a piece at a time, `Package::Begin`
+and then `Package::Step` until there is no more (`Package::Read` is both,
+for a tool or a test), and gives back:
 
 - the title, the author and the language: the first of each that has
   anything in it, with its spaces tidied;
@@ -604,6 +627,19 @@ How it does that:
   tables of contents. It stops when it has them all. Looking each file up
   by name instead would read the directory again for every one, since a
   ZIP file's order is seldom the package's.
+- **A piece at a time.** How long the whole reading takes is the book's
+  to decide, and a book can be made to make it long: a package file of
+  megabytes, a ZIP file of tens of thousands of entries, one listed file
+  that is not there. How long a step takes is not the book's to decide. A
+  step looks at 16 entries of the ZIP directory, or as many as lie in
+  4 KB of it; or parses 1 KB of a file; or makes about 16,000
+  comparisons among the files of the manifest. With files read 4 KB at a
+  time, that is five reads of storage at the most, and usually one or
+  none. `container.xml` and the package file are found by going through
+  the directory in such steps too, the second from where the first was,
+  and not by the ZIP reader's `Find`, which goes on until it has an
+  answer. Until the last step the book's documents, cover and tables of
+  contents are not to be had: the spine is empty.
 - **Paths** in the package are worked out the way a link is
   (`ResolveBookPath`): from the folder the package file is in, with `..`
   and `.` followed (never to above the top of the book), `%20` and the
@@ -616,12 +652,17 @@ How it does that:
   (`kNoMemory`). The parser's memory is the caller's as well
   (`XmlParser`).
 - **Speed**: on an X4, opening a book and reading its package took 26 to
-  274 ms for each of 33 books, 41 ms at the median; the largest lists 745
+  301 ms for each of 33 books, 43 ms at the median; the largest lists 745
   files, and used 22.4 KB of the 24 KB it was given. Nearly half of the
-  time is the card, at 4 to 5 ms a read, and most of the rest is parsing
-  the package file. Matching the spine to the manifest is 4 ms at the
-  most. A thirty-fourth book, which lists 2,384 files, was refused for
-  want of memory after 0.5 s.
+  time is the card, at about 5 ms a read, and most of the rest is parsing
+  the package file. Matching the spine to the manifest is a few
+  milliseconds at the most. A thirty-fourth book, which lists 2,384
+  files, was refused for want of memory after 0.5 s. None of that is one
+  long call: over those 34 books the longest single step of the whole
+  book check was 24.6 ms, and it was opening a file, which is the card's
+  file system finding a name in its folder. Read in one go, as it used to
+  be, the same packages took 8% less time in all and up to 463 ms in one
+  call.
 - **Two names with one number.** Nothing checks a name against the text
   it came from, so two different names in one book that came to the same
   number would be taken for each other. With 48 bits, that is one book in
@@ -640,7 +681,10 @@ How it does that:
   reading ends with an answer: `kNoContainer`, `kNoPackage`,
   `kNotPackage` for one with no documents in its spine, `kUnreadable` for
   a ZIP file damaged where it had to be read, or `kNoMemory`. After any
-  of those the spine is empty.
+  of those the spine is empty. Its tests read every book in steps and
+  hold each step to five reads of storage: the books made to be awkward
+  (five thousand entries, a megabyte of package file, a directory whose
+  records lie 40 KB apart) and the damaged ones alike.
 
 `bn-epub` runs the same code on the desktop:
 
@@ -668,7 +712,7 @@ spine: 4
 unknown: 2
 checksum: cd21187e
 memory: 248
-cost: packages_read=1 packages_failed=0 xml_documents=2 xml_failures=0 zip_finds=2 zip_records=16 sd_reads=2 sd_read_bytes=2504 sd_writes=0 sd_write_bytes=0 sd_syncs=0 sd_seeks=0 xml_memory=9536[8752..9536]
+cost: packages_read=1 packages_failed=0 xml_documents=2 xml_failures=0 zip_finds=0 zip_records=16 sd_reads=2 sd_read_bytes=2504 sd_writes=0 sd_write_bytes=0 sd_syncs=0 sd_seeks=0 xml_memory=9536[8752..9536]
 ```
 
 A `-` for the author, the cover or any of the first lines means the book has
@@ -680,8 +724,10 @@ has not got. `checksum` is of everything above it (`epub/package_digest.h`),
 with each file given by where its entry is and not by its name: it is what a
 device's book check reports for the same book, so the two can be compared.
 `memory` is how many bytes of the block were used, and `cost` is the
-counters after the reading: here two lookups by name (the container and the
-package file), 16 records of the directory, and two reads of the file.
+counters after the reading: here 16 records of the directory and two reads
+of the file. (`zip_finds` counts searches by the ZIP reader's `Find`, which
+reading a package does not use: it looks for its two files itself, a piece
+at a time.)
 `--memory` holds it to a block of that many bytes, as a device would; it
 exits with 1, and says why, for a file it cannot read as a book.
 
@@ -768,7 +814,7 @@ toc: ncx
 1	11	-	Chapter 11: The Tale & Its Telling
 entries: 14
 checksum: 5d9afae8
-cost: packages_read=1 packages_failed=0 xml_documents=3 xml_failures=0 zip_finds=2 zip_records=21 sd_reads=2 sd_read_bytes=7338 sd_writes=0 sd_write_bytes=0 sd_syncs=0 sd_seeks=0 xml_memory=10144[8752..10144]
+cost: packages_read=1 packages_failed=0 xml_documents=3 xml_failures=0 zip_finds=0 zip_records=21 sd_reads=2 sd_read_bytes=7338 sd_writes=0 sd_write_bytes=0 sd_syncs=0 sd_seeks=0 xml_memory=10144[8752..10144]
 ```
 
 The first line says which kind was read. Then a line an entry, with tabs
@@ -889,8 +935,8 @@ bootloader and partition table.
 ## Crash reports
 
 When the firmware stops unexpectedly (a processor fault, `abort()`, a failed
-assertion, running out of memory, a stack overflow), ESP-IDF prints what it
-knows on the console and restarts the device. Before that happens the
+assertion, running out of memory, a stack overflow, the watchdog), ESP-IDF
+prints what it knows on the console and restarts the device. Before that happens the
 firmware saves a report of its own: the reason, the task, the registers, the
 top of the stack and the last 32 trace records. The report sits in memory
 that survives a restart, and every later start sends it on the diagnostic
@@ -914,16 +960,30 @@ start of that hash, and `bn-symbolize` uses it to pick the right file. If a
 report comes from a build that is not in the archive, its addresses are left
 alone; `--elf FILE` names a file to use regardless.
 
+The watchdog is what turns a hang into a crash. The application is one
+loop, and each turn of it reports to ESP-IDF's task watchdog. If no turn
+does for five seconds, because something a turn called has not come back,
+the firmware stops as it does for any other fatal error, and the report
+says `watchdog: a watched task did not report in time`, with the
+registers and the stack of whatever was running: the call that did not
+come back. (The last four registers of such a report, `mstatus` to
+`mtval`, are zero: they are of the machine's state at a fault, and
+nothing saves them when the watchdog breaks in.) (Left as ESP-IDF sets it up, the watchdog watches only the idle
+task, and prints a warning on the console every five seconds while the
+device stays hung.) The settings are in `app/firmware/sdkconfig.defaults`.
+
 To see a report without waiting for a bug, build a firmware that crashes on
 purpose ten seconds after it starts:
 
 ```
-tools/idf -DBN_CRASH_TEST=fault build flash     # or abort, oom, stack
+tools/idf -DBN_CRASH_TEST=fault build flash     # or abort, oom, stack, hang
 ./build/host/tools/trace/bn-trace | tools/bn-symbolize
 tools/idf -DBN_CRASH_TEST= build flash          # back to the normal firmware
 ```
 
-It does not crash again on the restart that follows a crash. On the desktop,
+`hang` does not crash by itself: its loop stops coming round, and the
+watchdog ends it five seconds later. None of them crashes again on the
+restart that follows a crash. On the desktop,
 `BN_FAKE_CRASH=1` makes the application start with an invented report, which
 exercises everything after the crash itself.
 

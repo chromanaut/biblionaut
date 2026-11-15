@@ -15,7 +15,7 @@ namespace bn::firmware {
 namespace {
 
 // In the order the build's list of kinds is in.
-enum class CrashTest : std::uint8_t { kFault = 0, kAbort = 1, kOutOfMemory = 2, kStackOverflow = 3 };
+enum class CrashTest : std::uint8_t { kFault = 0, kAbort = 1, kOutOfMemory = 2, kStackOverflow = 3, kHang = 4 };
 
 constexpr std::uint64_t kDelayUs = 10'000'000;
 
@@ -23,6 +23,7 @@ constexpr std::uint64_t kDelayUs = 10'000'000;
 volatile std::uintptr_t testAddress = 0x10;
 volatile std::size_t testSize = 0x7000'0000;
 volatile bool keepRecursing = true;
+volatile bool keepWaiting = true;
 
 // NOLINTNEXTLINE(misc-no-recursion): recursing until the stack runs out is what it is for.
 std::uint32_t RecurseForever(std::uint32_t depth) noexcept {
@@ -55,6 +56,14 @@ void CrashOnPurpose() noexcept {
     case CrashTest::kStackOverflow:
       testAddress = RecurseForever(0);
       break;
+    case CrashTest::kHang:
+      // What a call that never comes back does to the loop: nothing lets
+      // go of the processor, and nothing reports to the watchdog, which is
+      // what ends it.
+      while (keepWaiting) {
+        testAddress = testAddress + 1;
+      }
+      break;
   }
 }
 
@@ -83,6 +92,10 @@ void AnnounceCrashTest() noexcept {
   esp_rom_printf(armed ? "Crash test build: this run will crash (%s) in ten seconds.\n"
                        : "Crash test build (%s): this run follows a crash, so it will not crash again.\n",
                  BN_CRASH_TEST_NAME);
+  if (armed && static_cast<CrashTest>(BN_CRASH_TEST) == CrashTest::kHang) {
+    esp_rom_printf("It will stop there and wait: the watchdog ends it %d seconds later.\n",
+                   CONFIG_ESP_TASK_WDT_TIMEOUT_S);
+  }
 }
 
 void RunCrashTest(const reader::App& app) noexcept {

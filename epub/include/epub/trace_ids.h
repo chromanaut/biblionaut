@@ -14,7 +14,9 @@
 // The names are only compiled into the trace tool, never into the firmware.
 #define BN_EPUB_TRACE_IDS(X)                                                \
   /* Reading a book's package (epub/package.h), and how that ended, a    */ \
-  /* PackageStatus: 0 is read.                                           */ \
+  /* PackageStatus: 0 is read. It is read a piece at a time, and this is */ \
+  /* from its beginning to its end, whatever else was done between the   */ \
+  /* pieces. The same goes for its parts.                                */ \
   X(0, kSpanPackageRead, "package_read", "status")                          \
   /* The four parts of that, in the order they come. Finding and reading */ \
   /* container.xml, which names the package file.                        */ \

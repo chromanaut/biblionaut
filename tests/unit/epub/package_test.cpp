@@ -95,9 +95,42 @@ struct PackageFixture {
     EXPECT_EQ(archive.Open(directory), bn::epub::ZipStatus::kOk);
     memory.assign(memoryBytes, 0xEE);
     package = std::make_unique<Package>(memory);
-    const PackageStatus status = package->Read(archive, entries, reader, xml);
-    EXPECT_EQ(status, package->Status());
-    return status;
+    return ReadInSteps();
+  }
+
+  // Reads the package of the book that is open, a piece at a time, as the
+  // device does. Every piece of every reading in these tests is held to
+  // what one step may read from storage, whatever the book is.
+  PackageStatus ReadInSteps() {
+    steps = 0;
+    mostReadByAStep = 0;
+    mostRecordsByAStep = 0;
+    bool more = package->Begin(archive, entries, reader, xml) == PackageStatus::kOk;
+    while (more) {
+      const std::size_t readsBefore = storage.reads.size();
+      const std::uint32_t recordsBefore = countRecords ? CounterNow("zip_records") : 0;
+      more = package->Step();
+      ++steps;
+      std::size_t read = 0;
+      for (std::size_t i = readsBefore; i < storage.reads.size(); ++i) {
+        read += storage.reads[i].size;
+      }
+      mostReadByAStep = std::max(mostReadByAStep, read);
+      if (countRecords) {
+        mostRecordsByAStep = std::max(mostRecordsByAStep, CounterNow("zip_records") - recordsBefore);
+      }
+      if (more) {
+        // Nothing is said of a book until its reading is over.
+        EXPECT_EQ(package->Status(), PackageStatus::kOk);
+        EXPECT_TRUE(package->Spine().empty());
+      }
+      if (steps > 1'000'000) {
+        ADD_FAILURE() << "a reading that does not end";
+        break;
+      }
+    }
+    EXPECT_LE(mostReadByAStep, kMostReadByAStep) << "of " << steps << " steps";
+    return package->Status();
   }
 
   // The path of an entry, read back from the file; "-" for none.
@@ -121,6 +154,15 @@ struct PackageFixture {
     }
     return lines;
   }
+
+  // What one step may read from storage: five of the 4 KB blocks the
+  // files here are read by.
+  static constexpr std::size_t kMostReadByAStep = 20480;
+
+  std::size_t steps = 0;                 // How many steps the last reading took,
+  std::size_t mostReadByAStep = 0;       // the most bytes any of them read from storage,
+  std::uint32_t mostRecordsByAStep = 0;  // and the most records of the directory, if they are being counted:
+  bool countRecords = false;             // which is slow, so only where it is asked for.
 
   FakeStorage storage;
   std::array<std::uint8_t, 4096> directoryBuffer{};
@@ -243,10 +285,12 @@ TEST(Package, FindsItsFilesInOnePassWhateverOrderTheZipHasThemIn) {
     EXPECT_EQ(f.Spine(), reference.Spine());
     EXPECT_EQ(f.PathOf(f.package->Cover()), "OEBPS/images/cover.jpg");
     EXPECT_EQ(f.PathOf(f.package->Ncx()), "OEBPS/toc.ncx");
-    // Two files are looked up by name, container.xml and the package, and
-    // then the directory is read through once: never more than three
-    // times over, however the files lie.
-    EXPECT_EQ(CounterNow("zip_finds") - finds, 2u);
+    // Two files are looked for by name, container.xml and then the
+    // package from where that was, and then the directory is read through
+    // once: never more than three times over, however the files lie. The
+    // looking is the package's own, a piece at a time, and not the ZIP
+    // reader's Find(), which goes on until it has an answer.
+    EXPECT_EQ(CounterNow("zip_finds") - finds, 0u);
     EXPECT_LE(CounterNow("zip_records") - records, 3 * files.size());
   }
 }
@@ -1103,6 +1147,172 @@ TEST(PackageChecksum, ChangesWithAnythingThePackageHolds) {
   }
   // And with a document's contents, which its entry's checksum is of.
   EXPECT_NE(checksumOf(Opf(kMetadata, item, spine), "A"), book);
+}
+
+// ---- A piece at a time ----
+
+TEST(Package, IsReadAPieceAtATimeAndSaysNothingOfTheBookUntilItIsOver) {
+  PackageFixture f;
+  ASSERT_EQ(f.Read(Epub2Book()), PackageStatus::kOk);
+  const std::uint32_t whole = bn::epub::PackageChecksum(*f.package);
+  // Finding two files, parsing each, matching, and finding the rest: no
+  // fewer pieces than that.
+  EXPECT_GE(f.steps, 6u);
+
+  // Again by hand, asking after the book at every piece.
+  ASSERT_EQ(f.package->Begin(f.archive, f.entries, f.reader, f.xml), PackageStatus::kOk);
+  std::size_t steps = 0;
+  bool more = true;
+  while (more) {
+    EXPECT_EQ(f.package->Status(), PackageStatus::kOk);
+    EXPECT_TRUE(f.package->Spine().empty());
+    EXPECT_EQ(f.package->Cover(), nullptr);
+    EXPECT_EQ(f.package->Nav(), nullptr);
+    EXPECT_EQ(f.package->Ncx(), nullptr);
+    EXPECT_EQ(f.package->SpineIndexOf("OEBPS/text/chapter1.xhtml"), Package::kNotInSpine);
+    more = f.package->Step();
+    ++steps;
+  }
+  EXPECT_EQ(steps, f.steps);
+  EXPECT_EQ(f.package->Status(), PackageStatus::kOk);
+  EXPECT_EQ(f.package->Spine().size(), 4u);
+  EXPECT_EQ(f.package->SpineIndexOf("OEBPS/text/chapter1.xhtml"), 1u);
+  EXPECT_EQ(bn::epub::PackageChecksum(*f.package), whole);
+
+  // There is no more to do once it is over, and asking changes nothing.
+  EXPECT_FALSE(f.package->Step());
+  EXPECT_EQ(bn::epub::PackageChecksum(*f.package), whole);
+
+  // The whole of it in one call comes to the same.
+  EXPECT_EQ(f.package->Read(f.archive, f.entries, f.reader, f.xml), PackageStatus::kOk);
+  EXPECT_EQ(bn::epub::PackageChecksum(*f.package), whole);
+}
+
+TEST(Package, CanBeBegunAgainPartWayThroughAReading) {
+  PackageFixture f;
+  ASSERT_EQ(f.Read(Epub2Book()), PackageStatus::kOk);
+  const std::uint32_t whole = bn::epub::PackageChecksum(*f.package);
+  // Dropped after each number of steps it can be dropped after, and begun
+  // again: what the dropped reading had done is not in the answer.
+  for (std::size_t dropAfter = 0; dropAfter < f.steps; ++dropAfter) {
+    ASSERT_EQ(f.package->Begin(f.archive, f.entries, f.reader, f.xml), PackageStatus::kOk);
+    for (std::size_t step = 0; step < dropAfter; ++step) {
+      ASSERT_TRUE(f.package->Step()) << dropAfter;
+    }
+    ASSERT_EQ(f.ReadInSteps(), PackageStatus::kOk) << dropAfter;
+    ASSERT_EQ(bn::epub::PackageChecksum(*f.package), whole) << dropAfter;
+  }
+}
+
+TEST(Package, TakesShortStepsThroughAZipFileOfThousandsOfEntries) {
+  // A book that lists a file its ZIP file has not got, in a ZIP file with
+  // five thousand others: the directory has to be gone through to its end
+  // to know the file is not there. However many entries there are, a step
+  // looks at only so many of them.
+  Files files = Epub2Book();
+  files[2].second = Opf(kMetadata,
+                        "<item id=\"ch1\" href=\"text/chapter1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+                        "<item id=\"gone\" href=\"text/gone.xhtml\" media-type=\"application/xhtml+xml\"/>\n",
+                        "<itemref idref=\"ch1\"/><itemref idref=\"gone\"/>");
+  ZipBuilder builder;
+  for (const auto& [path, contents] : files) {
+    builder.Add(path, BytesOf(contents), {.deflate = true});
+  }
+  for (int i = 0; i < 5'000; ++i) {
+    builder.Add("OEBPS/images/picture-" + std::to_string(i) + ".jpg", BytesOf("p"));
+  }
+  PackageFixture f;
+  f.countRecords = true;
+  ASSERT_EQ(f.ReadZip(builder.Finish()), PackageStatus::kOk);
+  ASSERT_EQ(f.package->Spine().size(), 2u);
+  EXPECT_TRUE(f.package->Spine()[0].present);
+  EXPECT_FALSE(f.package->Spine()[1].present);
+  EXPECT_LE(f.mostRecordsByAStep, Package::kEntriesPerStep);
+  EXPECT_GE(f.steps, 5'000 / Package::kEntriesPerStep);
+  // The names here are short: a step that looks at sixteen entries reads
+  // one block of the directory, or none.
+  EXPECT_LE(f.mostReadByAStep, 2u * 4096u);
+}
+
+TEST(Package, TakesShortStepsThroughADirectoryWhoseRecordsLieFarApart) {
+  // Every record of the directory followed by 40 KB that belongs to it
+  // and says nothing, so that each is in a block of the file of its own.
+  // A step that looked at sixteen of these would read sixteen blocks; it
+  // stops when it has gone 4 KB through the directory.
+  const Files files = Epub2Book();
+  ZipBuilder builder;
+  for (int i = 0; i < 20; ++i) {
+    builder.Add("padding/before-" + std::to_string(i), BytesOf("p"), {.recordExtra = Bytes(40'000, 0)});
+  }
+  for (const auto& [path, contents] : files) {
+    builder.Add(path, BytesOf(contents), {.deflate = true, .recordExtra = Bytes(40'000, 0)});
+  }
+  PackageFixture reference;
+  ASSERT_EQ(reference.Read(files), PackageStatus::kOk);
+  PackageFixture f;
+  f.countRecords = true;
+  ASSERT_EQ(f.ReadZip(builder.Finish()), PackageStatus::kOk);
+  EXPECT_EQ(f.Spine(), reference.Spine());
+  EXPECT_EQ(f.PathOf(f.package->Cover()), "OEBPS/images/cover.jpg");
+  EXPECT_EQ(f.PathOf(f.package->Ncx()), "OEBPS/toc.ncx");
+  EXPECT_LE(f.mostRecordsByAStep, 2u);
+  EXPECT_LE(f.mostReadByAStep, 3u * 4096u);
+}
+
+TEST(Package, MatchesALongSpineToALongManifestInManySteps) {
+  // Fifteen hundred documents, each of whose ids is looked for through a
+  // manifest of fifteen hundred files: over two million comparisons, of
+  // which a step makes only so many. That matching reads nothing, so what
+  // shows it is the number of steps: at least those the matching needs,
+  // on top of the fewest the rest can take, which is one for each
+  // kilobyte of the package file and one for each sixteen entries of the
+  // directory.
+  constexpr std::size_t kFiles = 1'500;
+  const Files files = BigBook(static_cast<int>(kFiles), static_cast<int>(kFiles));
+  PackageFixture f;
+  ASSERT_EQ(f.Read(files, 131'072), PackageStatus::kOk);
+  EXPECT_EQ(f.package->Spine().size(), kFiles);
+  EXPECT_EQ(f.package->UnknownSpineItems(), 0u);
+  const std::size_t parsing = files[1].second.size() / 1024;
+  const std::size_t finding = files.size() / Package::kEntriesPerStep;
+  const std::size_t matching = kFiles * kFiles / Package::kComparesPerStep;
+  EXPECT_GT(matching, 100u);
+  EXPECT_GE(f.steps, parsing + finding + matching);
+}
+
+TEST(Package, TakesShortStepsThroughAPackageFileOfAMegabyte) {
+  // A megabyte of comment inside the metadata, which costs the parser no
+  // memory and so is never refused for that. Once of text that compresses
+  // to almost nothing, so that the megabyte is the inflater's and the
+  // parser's work and not storage's; and once of text that does not.
+  std::string sameThing;
+  std::string noise;
+  std::uint32_t state = 12345;
+  while (sameThing.size() < (1U << 20U)) {
+    sameThing += "<!-- nothing to see here, nothing to see here, nothing to see here -->\n";
+    noise += "<!-- ";
+    for (int i = 0; i < 60; ++i) {
+      state = (state * 1664525U) + 1013904223U;
+      noise += static_cast<char>('a' + ((state >> 24U) % 26));
+    }
+    noise += " -->\n";
+  }
+  for (const std::string& padding : {sameThing, noise}) {
+    Files files = Epub2Book();
+    const std::string plain = files[2].second;
+    const std::size_t at = plain.find("</metadata>");
+    ASSERT_NE(at, std::string::npos);
+    files[2].second = plain.substr(0, at) + padding + plain.substr(at);
+    PackageFixture reference;
+    ASSERT_EQ(reference.Read(Epub2Book()), PackageStatus::kOk);
+    PackageFixture f;
+    ASSERT_EQ(f.Read(files), PackageStatus::kOk);
+    EXPECT_EQ(f.Spine(), reference.Spine());
+    EXPECT_EQ(f.package->Title(), "The Book");
+    // A step parses 1 KB of the file.
+    EXPECT_GE(f.steps, 1'000u);
+    EXPECT_LE(f.mostReadByAStep, 3u * 4096u);
+  }
 }
 
 // What the trace holds, in order: each record's id and its number.

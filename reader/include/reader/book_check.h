@@ -54,12 +54,17 @@ namespace bn::reader {
 // which is the processor inflating and checksumming; parsing XML, with the
 // reading and inflating of it taken off; and all of it. Reading the
 // package and reading the table of contents are each counted by
-// themselves, in time and in reads, and are in none of those. The package
-// is read in one go, however long it takes, as it would be for a reader.
+// themselves, in time and in reads, and are in none of those.
 //
-// Otherwise it works for about 20 ms each Tick() and then lets the
-// application carry on, so a run takes longer by the clock than the times
-// it reports, which count its own work only.
+// It works for about 20 ms each Tick() and then lets the application
+// carry on, so a run takes longer by the clock than the times it reports,
+// which count its own work only. Everything it does is done in steps, a
+// step being one call into what is being checked: a read of an entry, a
+// piece of a document parsed, a piece of a package or of a table of
+// contents read. A Tick() runs over its 20 ms by as long as its last
+// step takes, so the last thing it says is which step took longest and
+// how long that was: on a device, that is whether each of those calls is
+// as short as the application needs it to be.
 //
 // Used by one task. It is about 109 KB, most of that the inflater's
 // window, the XML parser's memory and the package reader's: too big for a
@@ -164,6 +169,10 @@ class BookCheck final : public DeviceCheck {
   const Figures& Totals() const noexcept { return totals_; }
   // How long checksumming kChecksumBytes took.
   std::uint64_t ChecksumUs() const noexcept { return checksumUs_; }
+  // How long the longest step took, and what it was doing: "reading a
+  // package", "parsing an entry", ...
+  std::uint64_t LongestStepUs() const noexcept { return longestStepUs_; }
+  const char* LongestStepName() const noexcept;
   // The checksum of everything the parser found in the XML of the book
   // last finished, its documents taken one after another.
   std::uint32_t XmlChecksum() const noexcept { return xmlChecksum_; }
@@ -298,7 +307,9 @@ class BookCheck final : public DeviceCheck {
 
   State state_ = State::kIdle;
   Step step_ = Step::kNone;
-  std::size_t count_ = 0;  // Pieces done within the step.
+  std::size_t count_ = 0;            // Pieces done within the step.
+  std::uint64_t longestStepUs_ = 0;  // The longest any step has taken,
+  Step longestStep_ = Step::kNone;   // and which it was.
   std::uint32_t beganTrace_ = 0;
   std::uint32_t bookBeganTrace_ = 0;
   std::uint32_t checksum_ = 0;

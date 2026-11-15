@@ -958,6 +958,41 @@ TEST(ZipEntryReader, ReportsCompressedDataThatIsDamaged) {
   EXPECT_LT(harmless, 16);
 }
 
+TEST(ZipEntryReader, RefusesAnEntryOfBlocksThatProduceNothingHavingReadLittleOfIt) {
+  // An entry whose compressed data has been made a megabyte of blocks with
+  // nothing in them. The directory says what it always said, so the entry
+  // is opened and read from; and each read comes back soon, without the
+  // megabyte having been gone through to find that it gives nothing.
+  ZipBuilder builder;
+  builder.Add("before", Text(300, 1), {.deflate = true});
+  builder.Add("it", Noise(1U << 20U, 23), {.deflate = true});
+  builder.Add("after", Text(300, 2), {.deflate = true});
+  Bytes zip = builder.Finish();
+  const ZipBuilder::Placed& placed = builder.At(1);
+  ASSERT_GT(placed.dataSize, 1'000'000u);
+  for (std::size_t at = 0; at + 5 <= placed.dataSize; at += 5) {
+    const std::array<std::uint8_t, 5> empty = {0x00, 0x00, 0x00, 0xFF, 0xFF};
+    std::copy(empty.begin(), empty.end(), zip.begin() + static_cast<std::ptrdiff_t>(placed.data + at));
+  }
+  ZipFixture f(zip);
+  ASSERT_EQ(f.archive.Open(f.file), ZipStatus::kOk);
+  const std::size_t readsBefore = f.storage.reads.size();
+  const ZipFixture::Result result = f.ReadNamed("it");
+  EXPECT_TRUE(result.out.empty());
+  EXPECT_FALSE(result.finished);
+  EXPECT_EQ(result.status, ZipStatus::kDamaged) << bn::epub::ZipStatusName(result.status);
+  // Finding it, its own header, and the start of its data: a few blocks of
+  // the file, of the 257 the entry lies in.
+  std::size_t read = 0;
+  for (std::size_t i = readsBefore; i < f.storage.reads.size(); ++i) {
+    read += f.storage.reads[i].size;
+  }
+  EXPECT_LE(read, 4u * 4096u);
+  // The entries around it are none the worse.
+  EXPECT_TRUE(f.ReadNamed("before").finished);
+  EXPECT_TRUE(f.ReadNamed("after").finished);
+}
+
 TEST(ZipEntryName, IsReadBackFromTheEntrysOwnHeader) {
   const Sample sample;
   ZipFixture f(sample.zip);

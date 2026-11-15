@@ -5,11 +5,12 @@
 // The crash test: a firmware built to crash on purpose, for checking crash
 // reports on a device. It is chosen when configuring the build,
 //
-//   tools/idf -DBN_CRASH_TEST=fault build flash     (or abort, oom, stack)
+//   tools/idf -DBN_CRASH_TEST=fault build flash     (or abort, oom, stack, hang)
 //
-// and crashes in the way named ten seconds after starting. It does not crash
-// again on the start that follows a crash, so the report can be read and the
-// firmware cannot loop.
+// and crashes in the way named ten seconds after starting. `hang` does not
+// crash by itself: it stops the loop from coming round, and the watchdog
+// ends it some seconds later. It does not crash again on the start that
+// follows a crash, so the report can be read and the firmware cannot loop.
 //
 // In a normal build these functions do nothing and crash_test.cpp is not
 // compiled, so the entry point calls them unconditionally.

@@ -210,7 +210,9 @@ inline void TraceSpanSince(SpanId id, std::uint32_t startUs, std::uint32_t arg =
 // TOP_SCOPE is for the few spans that make up the outline of an interaction
 // (lay out a page, refresh the panel); SCOPE is for the detail inside them.
 // INSTANT marks a moment. TOP_SPAN_SINCE ends a top-level span that began at
-// a time taken earlier with BN_TRACE_NOW(), possibly somewhere else.
+// a time taken earlier with BN_TRACE_NOW(), possibly somewhere else, and
+// SPAN_SINCE does the same for a span of the detail: work done a piece at
+// a time has no scope to give one to.
 #if BN_TRACE_LEVEL >= 1
 #define BN_TRACE_TOP_SCOPE(id) BN_TRACE_SCOPE_IMPL(id, 0)
 #define BN_TRACE_TOP_SCOPE_ARG(id, arg) BN_TRACE_SCOPE_IMPL(id, arg)
@@ -233,7 +235,14 @@ inline void TraceSpanSince(SpanId id, std::uint32_t startUs, std::uint32_t arg =
 #if BN_TRACE_LEVEL >= 2
 #define BN_TRACE_SCOPE(id) BN_TRACE_SCOPE_IMPL(id, 0)
 #define BN_TRACE_SCOPE_ARG(id, arg) BN_TRACE_SCOPE_IMPL(id, arg)
+#define BN_TRACE_SPAN_SINCE(id, startUs, arg) ::bn::core::TraceSpanSince((id), (startUs), (arg))
 #else
 #define BN_TRACE_SCOPE(id) BN_TRACE_IGNORE(id)
 #define BN_TRACE_SCOPE_ARG(id, arg) BN_TRACE_IGNORE_ARG(id, arg)
+#define BN_TRACE_SPAN_SINCE(id, startUs, arg) \
+  static_cast<void>([&] {                     \
+    static_cast<void>(id);                    \
+    static_cast<void>(startUs);               \
+    static_cast<void>(arg);                   \
+  })
 #endif

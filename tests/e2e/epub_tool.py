@@ -483,13 +483,15 @@ def main() -> int:
                 entries += len(expected_toc) - 3
 
         # What it costs: a book of 600 chapters, its files in no order, is
-        # found with two lookups by name and one reading of the directory,
-        # in 16 bytes a file and 28 a document.
+        # found in at most three readings of the directory (two files looked
+        # for by name, a piece at a time, and one pass for the rest) and with
+        # no call to the ZIP reader's own search, in 16 bytes a file and 28 a
+        # document.
         lines = info(tool, work / "many-chapters.epub").stdout.decode("utf-8").splitlines()
         expect("manifest: 604" in lines and "spine: 600" in lines, f"many-chapters.epub: {lines[:12]!r}")
         expect(lines[-2] == f"memory: {604 * 16 + 600 * 28}", f"many-chapters.epub: {lines[-2]!r}")
         cost = dict(item.split("=") for item in lines[-1].split()[1:] if "=" in item)
-        expect(cost["zip_finds"] == "2" and int(cost["zip_records"]) <= 3 * 607,
+        expect(cost["zip_finds"] == "0" and int(cost["zip_records"]) <= 3 * 607,
                f"many-chapters.epub: the cost was {lines[-1]!r}")
 
         # With less memory than that the book is refused, and with exactly that it is not.

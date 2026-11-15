@@ -16,9 +16,11 @@ list(APPEND CMAKE_MODULE_PATH "${BN_ROOT}/cmake")
 #   tools/idf -DBN_CRASH_TEST=fault build flash     (back to normal: -DBN_CRASH_TEST=)
 #
 # It crashes ten seconds after starting, in the way named, and does not crash
-# again on the start that follows a crash, so it cannot loop.
-set(BN_CRASH_TEST "" CACHE STRING "Crash on purpose after ten seconds: fault, abort, oom or stack. Empty: never.")
-set_property(CACHE BN_CRASH_TEST PROPERTY STRINGS "" fault abort oom stack)
+# again on the start that follows a crash, so it cannot loop. `hang` stops
+# the application's loop from coming round, for the watchdog to end.
+set(BN_CRASH_TEST "" CACHE STRING
+    "Crash on purpose after ten seconds: fault, abort, oom, stack or hang. Empty: never.")
+set_property(CACHE BN_CRASH_TEST PROPERTY STRINGS "" fault abort oom stack hang)
 
 # For checking, on a device, that the panel's two planes hold what the code
 # driving them believes (reader/pattern_viewer.h says what is checked):

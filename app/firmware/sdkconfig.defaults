@@ -43,6 +43,22 @@ CONFIG_FATFS_PER_FILE_CACHE=n
 CONFIG_FATFS_USE_DYN_BUFFERS=n
 CONFIG_WL_SECTOR_SIZE_512=y
 
+# The watchdog. The task the application's loop runs on is watched
+# (app_main.cpp subscribes it and reports once a turn of the loop), and so
+# is the idle task, which only runs if nothing else keeps the processor. If
+# either goes this many seconds without reporting, the firmware stops in
+# the panic handler, which leaves a crash report saying where it was, and
+# restarts. ESP-IDF's default is to print a warning and carry on, which a
+# device with nobody watching its console cannot use. Five seconds is far
+# longer than any turn of the loop should take (a turn works for about
+# 20 ms), and longer than the longest wait a turn can make, which is two
+# seconds for a panel that does not answer.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+
 # Stack for the task the application runs on. FatFS keeps a long file name
 # on the stack while it works on one, which the default (3584) has no room
 # for.

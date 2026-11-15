@@ -25,7 +25,7 @@ One test: run the test program directly, or name it to CTest.
 ctest --preset host -R e2e.BookCheck
 ```
 
-The test programs are `core_tests`, `draw_tests`, `epub_tests`, `hw_tests`, `reader_tests` and `tools_tests`, in `build/host/tests/`. The end-to-end tests are named `e2e.*`; most are Python scripts in `tests/e2e/` and are only registered if Python 3 is found.
+The test programs are `core_tests`, `draw_tests`, `epub_tests`, `layout_tests`, `hw_tests`, `reader_tests` and `tools_tests`, in `build/host/tests/`. The end-to-end tests are named `e2e.*`; most are Python scripts in `tests/e2e/` and are only registered if Python 3 is found.
 
 `host-release` is the optimised preset without sanitizers (`build/host-release`): use it for timing anything and for running the tools over many files. Its tests are run as well (`ctest --preset host-release`): a few things are built differently when a sanitizer is there, the heap inside a block among them, and the firmware has none.
 

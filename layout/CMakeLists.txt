@@ -4,8 +4,9 @@
 #
 # Depends on core, on draw (font metrics and display-list types only) and on
 # epub (intermediate-format reader only).
-#
-# No sources yet. When the first one lands this becomes a STATIC
-# library with its own include/ directory, like core.
-add_library(bn_layout INTERFACE)
-target_link_libraries(bn_layout INTERFACE bn_core bn_draw bn_epub)
+add_library(bn_layout STATIC
+  src/line_breaker.cpp)
+target_include_directories(bn_layout PUBLIC include)
+target_link_libraries(bn_layout
+  PUBLIC bn_core bn_draw bn_epub
+  PRIVATE bn_options)

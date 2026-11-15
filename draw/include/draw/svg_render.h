@@ -122,7 +122,7 @@ struct SvgSize {
 // Step() does a bounded amount of work, so that whoever calls it can keep
 // doing other things between calls: at the most it takes kTokensPerStep
 // things from the file's tags, gives the outline in hand
-// kCommandsPerStep commands and one more, and fills one shape.
+// kMostCommandsPerStep commands, and fills one shape.
 //
 // The file is not trusted. Whatever its bytes, it ends in a status and a
 // report. Used by one task. The object is 2,840 bytes on the device, half
@@ -138,7 +138,12 @@ class SvgRenderer {
   static constexpr Fixed kDefaultTolerance = 256;
   static constexpr std::size_t kHeldPathData = 512;
   static constexpr std::uint32_t kTokensPerStep = 16;
+  // How many commands of an outline's data one call asks the path reader
+  // for. And the most one call can give an outline: those and one more,
+  // which is the path reader's own allowance, and two that the end of a
+  // tag can complete, the last of a polygon's points and its closing.
   static constexpr std::uint32_t kCommandsPerStep = 16;
+  static constexpr std::uint32_t kMostCommandsPerStep = kCommandsPerStep + 3;
 
   SvgRenderer() noexcept;
   ~SvgRenderer() = default;

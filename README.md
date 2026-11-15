@@ -1099,9 +1099,10 @@ whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
 
 Each reader of a book's own files, from the inflater to the table of
 contents, has a fuzz target in `tests/fuzz`, and so have the heap the XML
-parser's memory comes from and the hyphenator, which is given a book's
-words: one function that is given some bytes, puts them through the
-reader, and ends the program if the reader does anything it should not.
+parser's memory comes from, the hyphenator, which is given a book's words,
+and each reader of a drawing: one function that is given some bytes, puts
+them through the reader, and ends the program if the reader does anything
+it should not.
 Going outside its memory, or into undefined behaviour, is seen by the
 sanitizers. The rest a target checks for itself: what the reader's header
 promises of it, and that no single call does more than the header says a
@@ -1117,6 +1118,10 @@ call may.
 | `css` | `epub::CssReader`, twice, with the sheet cut up two ways; and the same bytes as a `style` attribute | A step asks its source once, for 1 KB. A rule is told whole and in order. A selector has no more parts or classes than there is room for, and a rank its parts account for. A number is within its bounds, and not below zero where the property cannot be. The reader's counts are the counts of what it told. Both readings tell the same |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
 | `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
+| `svg_tags` | `draw::SvgTagReader`, twice: whole, and cut up, with the ends of the pieces it gives handed back to it | A call takes a byte or tells something. Things are told in an order tags can have, and `Depth()` is how many elements were opened and not closed. No more bytes are told of than were taken, and what an entity stands for is one character. Once reading has failed nothing more is told. Both readings tell the same things |
+| `svg_values` | Each reader of what an attribute says (`draw/svg_values.h`), and `ParseSvgTransform` | A reading that refuses the text leaves what it was to fill as it was. Space round the text changes nothing, nor capitals a colour. A view box is fitted where SVG says it goes, worked out again in floating point |
+| `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
+| `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands or fills more than one shape. No more than 32 groups are open. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, and the two pictures are the same, byte for byte |
 
 The `package` and `toc` targets do not take a ZIP file as their input:
 nearly every change to one would be stopped at an entry's checksum, and
@@ -1124,7 +1129,12 @@ the reader behind it never reached. They take the text of the files, and
 make a sound ZIP file round them each time (`package` can also be given
 the ZIP file itself). Each target's source says how its input is laid out.
 The first byte or two are its choices: how much memory the reader has,
-how big a piece is asked for at a time, when the handler stops.
+how big a piece is asked for at a time, when the handler stops, how many
+rows a strip of a picture has.
+
+The targets that draw have a picture of 64 pixels by 48 at the most, and
+leave a drawing off once it has come to 200,000 lines, which a few bytes
+of arcs can ask for: its pictures are then not compared.
 
 The hyphenator's bound is one figure for a whole word, and most tables
 leave room to spare under it: work done past what a table says of itself
@@ -1141,9 +1151,9 @@ A target is built two ways.
   once found stays found. The kept inputs are the seeds, which
   `tests/fuzz/make_seeds.py` makes out of text written for the purpose
   (a stream of each kind, a book of each kind, a table of contents with
-  entries in it, a language's table and words for it), and any input that
-  ever found a fault, cut down to the least that shows it and named
-  `found-` and what it found.
+  entries in it, a language's table and words for it, a drawing with
+  something of everything), and any input that ever found a fault, cut
+  down to the least that shows it and named `found-` and what it found.
 - **For fuzzing** it is linked with LLVM's fuzzing engine, libFuzzer,
   which makes up new inputs by changing the ones it has, keeps each one
   that reaches code none reached before, and goes on from those.
@@ -1160,25 +1170,33 @@ A target is built two ways.
   ```
   $ tools/fuzz.py --time 300
   Building the fuzz targets with /opt/homebrew/opt/llvm@23/bin/clang ...
-  Fuzzing 8 targets in 2 builds, 300 s each, 8 at once ...
+  Fuzzing 12 targets in 2 builds, 300 s each, 8 at once ...
 
   target       build         inputs tried   kept  result
-  inflate      fuzz               300,789     19  nothing found
-  inflate      fuzz-noasan        356,206     33  nothing found
-  zip          fuzz               606,104     25  nothing found
-  zip          fuzz-noasan      1,722,280     35  nothing found
-  xml          fuzz               512,926    454  nothing found
-  xml          fuzz-noasan        836,428    786  nothing found
-  package      fuzz               180,739    258  nothing found
-  package      fuzz-noasan        388,258    558  nothing found
-  toc          fuzz               150,456    325  nothing found
-  toc          fuzz-noasan        293,389    686  nothing found
-  css          fuzz               765,124   2635  nothing found
-  css          fuzz-noasan        912,088   3233  nothing found
-  region_heap  fuzz               914,976     50  nothing found
-  region_heap  fuzz-noasan      1,196,846     71  nothing found
-  hyphenator   fuzz               280,065   2337  nothing found
-  hyphenator   fuzz-noasan        511,602   3008  nothing found
+  inflate      fuzz               415,866     39  nothing found
+  inflate      fuzz-noasan        341,436     25  nothing found
+  zip          fuzz               892,025     22  nothing found
+  zip          fuzz-noasan      2,719,830     41  nothing found
+  xml          fuzz               802,357    652  nothing found
+  xml          fuzz-noasan      1,268,685    976  nothing found
+  package      fuzz               265,607    373  nothing found
+  package      fuzz-noasan        581,856    798  nothing found
+  toc          fuzz               137,134    259  nothing found
+  toc          fuzz-noasan        267,073    546  nothing found
+  css          fuzz               627,251   1562  nothing found
+  css          fuzz-noasan        753,742   1994  nothing found
+  region_heap  fuzz               756,351     21  nothing found
+  region_heap  fuzz-noasan      1,073,684     54  nothing found
+  hyphenator   fuzz               378,987   1036  nothing found
+  hyphenator   fuzz-noasan        684,571   1453  nothing found
+  svg_tags     fuzz             2,772,529   9065  nothing found
+  svg_tags     fuzz-noasan      3,628,011  10468  nothing found
+  svg_values   fuzz            13,834,975   5042  nothing found
+  svg_values   fuzz-noasan     19,003,463   5714  nothing found
+  svg_path     fuzz               332,478   3393  nothing found
+  svg_path     fuzz-noasan        455,823   4251  nothing found
+  svg          fuzz               145,270   3400  nothing found
+  svg          fuzz-noasan        190,343   4169  nothing found
 
   Nothing found. The inputs kept are in .fuzz/corpus/.
   ```
@@ -1210,8 +1228,13 @@ What it does not find:
   bounds over them.
 - `ZipArchive::Find`, which reads as much of a directory as it has to,
   and is not held to anything here.
-- **Anything in a drawing.** The readers of SVG in `draw/` (path data,
-  tags, values) take bytes from a book as well, and have no target yet.
+- **Whether a drawing is drawn rightly.** The targets for SVG hold a
+  picture to being the same however it is cut up, not to being the
+  picture the file describes. That is for the unit tests and the
+  end-to-end tests, which have something to set it beside.
+- **A drawing of any size.** The pictures are small, and path data long
+  enough to be drawn as it arrives is a good part of the longest input
+  the engine makes.
 
 ## Where a word may be broken
 
@@ -1675,7 +1698,7 @@ strip, and nothing of it is kept from one strip to the next.
   of the drawing of SVG.
 - **Speed**: not yet measured on a device.
 - **What a call can cost**: `Step()` takes sixteen things from the tags at
-  the most, gives the outline in hand seventeen commands, and fills one
+  the most, gives the outline in hand nineteen commands, and fills one
   shape, whatever the file holds.
 - **Bad input**: the file is not trusted. Whatever its bytes, it ends in a
   status (`ok`, `not svg`, `malformed`, `truncated`), and what came before
@@ -1738,7 +1761,9 @@ of the many ways it can be written. The picture it should make is worked
 out in Python from the drawing and not from the file: matrices multiplied
 out, outlines traced finely, and each shape laid over the last. `bn-svg`
 has to agree with it, in any strips and any pieces, and to say it left out
-what the drawing was given that it does not draw.
+what the drawing was given that it does not draw. The reader of tags, the
+readers of what attributes say, path data and the renderer each have a
+fuzz target ("Fuzzing", above).
 
 ## Device build
 

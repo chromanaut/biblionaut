@@ -19,6 +19,12 @@ For each path, made up at random in every way SVG lets one be written:
 It also checks a few paths against what they are known to mean, written out
 by hand, and that what is not path data is refused where it goes wrong.
 
+Then the pictures `bn-svg fill` draws are set beside a second way of filling
+the same shapes: no cover is added up, the outline is traced finely and
+lines are run through each row of pixels to see where they are inside it.
+The two have to agree on how much of every pixel is covered, and the picture
+has to come out the same byte for byte however it is cut into strips.
+
 usage: svg_tool.py BN_SVG WORK_DIR
 """
 
@@ -475,6 +481,199 @@ def check_path(tool: str, work: Path, data: str, transform: str, matrix: tuple, 
     return len(got)
 
 
+# ---- A second way of filling ----
+
+ROWS_A_PIXEL = 32  # How many lines the second way runs through each row of pixels.
+
+
+def outlines_of(data: str, matrix: tuple) -> list[list[Point]]:
+    """The outlines path data draws, in pixels, with every curve traced finely."""
+    outlines: list[list[Point]] = []
+    current = (0.0, 0.0)
+    for command in reference_commands(data):
+        if command[0] == "M":
+            current = command[1:3]
+            outlines.append([(matrix[0] * current[0] + matrix[2] * current[1] + matrix[4],
+                              matrix[1] * current[0] + matrix[3] * current[1] + matrix[5])])
+        elif command[0] != "Z":
+            curve = curve_of(command, current)
+            if curve is not None:
+                outlines[-1].extend(traced(curve, matrix)[1:])
+            current = command[-2:]
+    return outlines
+
+
+def counted(outlines: list[list[Point]], width: int, height: int, rule: str):
+    """How much of each pixel a shape covers, from nothing to one, and which pixels are plain.
+
+    Lines are run across each row of pixels. Along a line, the outline goes
+    round every point between two crossings the same number of times, which
+    says whether those points are inside; how much of each pixel's width is
+    inside is then exact, and its height is counted in lines.
+
+    A pixel is plain if the outline goes round all of it the same number of
+    times, or one more in some parts than in others. That is every pixel but
+    those where the outline crosses itself or lies twice over, which bn-svg
+    says it only draws nearly.
+    """
+    edges: list[list[tuple[Point, Point]]] = [[] for _ in range(height)]
+    for outline in outlines:
+        for a, b in zip(outline, outline[1:] + outline[:1]):
+            if a[1] != b[1]:
+                top, bottom = min(a[1], b[1]), max(a[1], b[1])
+                for row in range(max(0, math.floor(top)), min(height - 1, math.floor(bottom)) + 1):
+                    edges[row].append((a, b))
+    cover = [[0.0] * width for _ in range(height)]
+    plain = [[True] * width for _ in range(height)]
+    for row in range(height):
+        fewest: list[int | None] = [None] * width
+        most: list[int | None] = [None] * width
+        for line in range(ROWS_A_PIXEL):
+            y = row + (line + 0.5) / ROWS_A_PIXEL
+            crossings = sorted((a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]), 1 if b[1] > a[1] else -1)
+                               for a, b in edges[row] if (a[1] <= y) != (b[1] <= y))
+            times, at = 0, -math.inf
+            for x, way in crossings + [(math.inf, 0)]:
+                left, right = max(at, 0.0), min(x, float(width))
+                if left < right:
+                    inside = times != 0 if rule == "nonzero" else times % 2 != 0
+                    for pixel in range(int(left), min(width - 1, int(right)) + 1):
+                        share = min(right, pixel + 1.0) - max(left, float(pixel))
+                        if share > 0:
+                            if inside:
+                                cover[row][pixel] += share / ROWS_A_PIXEL
+                            fewest[pixel] = times if fewest[pixel] is None else min(fewest[pixel], times)
+                            most[pixel] = times if most[pixel] is None else max(most[pixel], times)
+                times, at = times + way, x
+        for pixel in range(width):
+            plain[row][pixel] = most[pixel] - fewest[pixel] <= 1
+    return cover, plain
+
+
+def a_shape(rng: random.Random, width: int, height: int) -> str:
+    """Path data for a few outlines that lie over a picture of this size and some way beyond it."""
+    def place() -> str:
+        return f"{rng.randrange(-32, (width + 8) * 4) / 4} {rng.randrange(-32, (height + 8) * 4) / 4}"
+
+    text = ""
+    for _ in range(rng.randrange(1, 4)):
+        text += "M" + place()
+        for _ in range(rng.randrange(2, 6)):
+            kind = rng.choice("LLLCCQSTA")
+            if kind == "A":
+                text += (f"A{rng.randrange(4, 160) / 4} {rng.randrange(4, 160) / 4} {rng.choice([0, 30, 90, -45])} "
+                         f"{rng.randrange(2)} {rng.randrange(2)} {place()}")
+            else:
+                text += kind + " ".join(place() for _ in range(NUMBERS_OF[kind.lower()] // 2))
+        text += rng.choice(["Z", ""])
+    return text
+
+
+def fill(tool: str, work: Path, data: str, width: int, height: int, *options: str):
+    """Has bn-svg draw path data. What it ended with and said, and the picture's pixels, or None if it wrote none."""
+    (work / "path.d").write_bytes(data.encode("utf-8"))
+    out = work / "picture.pgm"
+    out.unlink(missing_ok=True)
+    result = subprocess.run([tool, "fill", str(work / "path.d"), "--size", f"{width}x{height}", "--out", str(out),
+                             *options], capture_output=True, check=False)
+    if not out.exists():
+        return result, None
+    written = out.read_bytes()
+    header = b"P5\n%d %d\n255\n" % (width, height)
+    expect(written.startswith(header) and len(written) == len(header) + width * height,
+           f"{data!r}: what bn-svg wrote is not a picture of {width} by {height}")
+    return result, written[len(header):]
+
+
+FILL_TRANSFORMS = [
+    ("", (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)),
+    ("scale(1.5)", (1.5, 0.0, 0.0, 1.5, 0.0, 0.0)),
+    ("translate(-6 4.5)", (1.0, 0.0, 0.0, 1.0, -6.0, 4.5)),
+    ("matrix(0.75 0.25 -0.5 1 9 -3)", (0.75, 0.25, -0.5, 1.0, 9.0, -3.0)),
+]
+
+
+def check_fill(tool: str, work: Path, rng: random.Random, number: int) -> tuple[int, int, float]:
+    """Checks one picture. Returns how many of its pixels were compared, how many were not plain, and the worst."""
+    width, height = rng.randrange(30, 49), rng.randrange(20, 37)
+    data = a_shape(rng, width, height)
+    transform, matrix = FILL_TRANSFORMS[number % len(FILL_TRANSFORMS)]
+    rule = "evenodd" if number % 2 else "nonzero"
+    what = f"{data!r} through {transform!r} by {rule} at {width}x{height}"
+    # Curves are cut finely, so that what is compared is the filling.
+    options = ["--transform", transform, "--rule", rule, "--tolerance", "0.02"]
+    result, drawn = fill(tool, work, data, width, height, *options)
+    expect(result.returncode == 0 and drawn is not None, f"{what}: bn-svg ended with {result.returncode}: {result.stderr!r}")
+    expect(f"{width} by {height} in 1 strip of {height} rows".encode() in result.stderr, f"{what}: {result.stderr!r}")
+    for rows in ("1", "7"):
+        cut, strips = fill(tool, work, data, width, height, *options, "--rows", rows)
+        expect(cut.returncode == 0 and strips == drawn, f"{what}: drawn differently in strips of {rows} rows")
+        expect(f"in {math.ceil(height / int(rows))} strips of {rows} rows".encode() in cut.stderr, f"{what}: {cut.stderr!r}")
+
+    cover, plain = counted(outlines_of(data, matrix), width, height, rule)
+    compared, skipped, worst, total = 0, 0, 0.0, 0.0
+    for row in range(height):
+        for pixel in range(width):
+            if not plain[row][pixel]:
+                skipped += 1
+                continue
+            apart = abs((255 - drawn[row * width + pixel]) / 255 - cover[row][pixel])
+            expect(apart <= 0.05, f"{what}: the pixel at {pixel},{row} is {255 - drawn[row * width + pixel]} parts in "
+                                  f"255 covered, and should be {cover[row][pixel] * 255:.1f}")
+            compared += 1
+            worst = max(worst, apart)
+            total += apart
+    expect(total / max(compared, 1) <= 0.003, f"{what}: {total / max(compared, 1):.4f} of a pixel out on average")
+    return compared, skipped, worst
+
+
+def check_filling(tool: str, work: Path) -> str:
+    """Everything about `bn-svg fill`. Returns a sentence saying what was found."""
+    rng = random.Random(20261115)
+    pictures, compared, skipped, worst = 0, 0, 0, 0.0
+    for number in range(32):
+        one, left_out, apart = check_fill(tool, work, rng, number)
+        pictures, compared, skipped, worst = pictures + 1, compared + one, skipped + left_out, max(worst, apart)
+    expect(skipped * 10 < compared, f"{skipped} pixels of {compared + skipped} were left out: the test is at fault")
+
+    # A rectangle whose edges fall part of the way across pixels, by hand: three quarters of the pixel at its left
+    # edge, half of the one at its right, half of each along its top and three quarters along its bottom.
+    result, drawn = fill(tool, work, "M2.25 1.5H6.5V4.75H2.25Z", 10, 8)
+    expect(result.returncode == 0 and drawn is not None, f"a rectangle: {result.stderr!r}")
+    for (x, y), gray in {(4, 3): 0, (0, 0): 255, (7, 3): 255, (2, 3): 64, (6, 3): 128, (4, 1): 128, (4, 4): 64,
+                         (2, 1): 159, (6, 4): 159}.items():
+        expect(abs(drawn[y * 10 + x] - gray) <= 1, f"a rectangle: the pixel at {x},{y} is {drawn[y * 10 + x]}, not {gray}")
+
+    # A gray, and a gray that lets half of the white under it show.
+    result, drawn = fill(tool, work, "M2 2H8V6H2Z", 10, 8, "--gray", "100")
+    expect(result.returncode == 0 and drawn[3 * 10 + 5] == 100 and drawn[0] == 255, f"a gray: {result.stderr!r}")
+    result, drawn = fill(tool, work, "M2 2H8V6H2Z", 10, 8, "--gray", "100", "--opacity", "128")
+    expect(result.returncode == 0 and abs(drawn[3 * 10 + 5] - 177) <= 1, f"a thin gray: {drawn[3 * 10 + 5]}")
+
+    # What comes before a mistake in the data is still drawn.
+    result, drawn = fill(tool, work, "M2 2H8V6H2Z K", 10, 8)
+    expect(result.returncode == 1 and b"at byte 12" in result.stderr and drawn is not None and drawn[3 * 10 + 5] == 0,
+           f"a mistake after a shape: ended with {result.returncode}: {result.stderr!r}")
+
+    # What it will not do.
+    (work / "path.d").write_bytes(b"M2 2H8V6H2Z")
+    for options in ([], ["--size", "0x8"], ["--size", "10"], ["--size", "10x8", "--rule", "sideways"],
+                    ["--size", "10x8", "--gray", "256"], ["--size", "10x8", "--rows", "0"],
+                    ["--size", "10x8", "--count"], ["--size", "99999x8"]):
+        result = subprocess.run([tool, "fill", str(work / "path.d"), *options], capture_output=True, check=False)
+        expect(result.returncode == 2 and b"usage:" in result.stderr, f"fill {options}: ended with {result.returncode}")
+    result = subprocess.run([tool, "path", str(work / "path.d"), "--rows", "4"], capture_output=True, check=False)
+    expect(result.returncode == 2, f"path --rows: ended with {result.returncode}")
+    result = subprocess.run([tool, "fill", str(work / "path.d"), "--size", "10x8", "--out", str(work / "no" / "p.pgm")],
+                            capture_output=True, check=False)
+    expect(result.returncode == 1 and b"cannot write" in result.stderr, f"nowhere to write: {result.stderr!r}")
+    result = subprocess.run([tool, "fill", str(work / "not-there"), "--size", "10x8"], capture_output=True, check=False)
+    expect(result.returncode == 1 and b"cannot read" in result.stderr, f"a missing file: {result.stderr!r}")
+
+    return (f"{pictures} pictures, {compared} pixels: what bn-svg fills agrees with a second way of filling to within "
+            f"{worst:.3f} of a pixel, and is the same in strips of any height")
+
+
 KNOWN = [
     # What is written, and what it means, by hand.
     ("M10 20", ["M 10 20"]),
@@ -553,12 +752,15 @@ def main() -> int:
         expect(result.returncode == 1 and b"cannot read" in result.stderr, f"a missing file: {result.stderr!r}")
         result = run(tool, work, "M0 0", "--transform", "wobble(3)")
         expect(result.returncode == 2 and b"not a transform" in result.stderr, f"a bad transform: {result.stderr!r}")
+
+        filling = check_filling(tool, work)
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"{paths} paths, {commands} commands: bn-svg agrees with a second reading of every one, "
           f"and its lines stay within {TOLERANCE} pixels of the true curves; {len(BROKEN)} that go wrong refused "
           f"where they do")
+    print(filling)
     return 0
 
 

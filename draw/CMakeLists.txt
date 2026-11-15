@@ -3,6 +3,7 @@
 # format, the band renderer, image decode / scale / dither. Knows nothing
 # about books. Depends on core only.
 add_library(bn_draw STATIC
+  src/fill.cpp
   src/fixed.cpp
   src/flatten.cpp
   src/svg_number.cpp

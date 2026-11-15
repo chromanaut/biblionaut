@@ -665,6 +665,58 @@ def hyphenator_seeds() -> None:
              b"hyphenationally\nlonger\nab\n" + b"a" * 70)
 
 
+# ---- css: byte 0 (how the source gives), then a style sheet ----
+
+SHEET = b"""@charset "utf-8";
+@import url("more.css");
+/* The body, and what is in it. */
+body { margin: 0 5%; font: 1em/1.4 Georgia, "Times New Roman", serif; text-align: justify }
+h1, h2, h3.sub { font-weight: bold; text-align: center; page-break-before: always; margin: 2em 0 1em }
+p { text-indent: 1.5em; margin: 0; widows: 2 }
+p.first, h1 + p, blockquote > p:first-child { text-indent: 0 }
+p.first::first-letter { float: left; font-size: 3em; line-height: 1; padding: 0 0.1em 0 0 }
+div#cover img, .full { width: 100%; height: auto }
+a:link, a:visited { text-decoration: none; color: #036 }
+.sc { font-variant: small-caps } sup { vertical-align: super; font-size: 75% }
+table td[colspan], li::before { display: none }
+"""
+
+MEDIA_SHEET = b"""@media not amzn-mobi { .k { margin-left: 12pt } }
+@media amzn-kf8 { .k { margin-left: 0 } }
+@media screen and (max-width: 420px) { body { margin: 0 } }
+@media all { @media print { p { display: none } } i { font-style: normal !important } }
+@font-face { font-family: "A Face"; src: url(data:font/ttf;base64,AAAA;BBBB) }
+@page { margin: 1em; @bottom-center { content: counter(page) } }
+@import 'late.css' screen;
+.after { float: right; margin: 1px 2px 3px 4px; break-inside: avoid-page }
+"""
+
+MISTAKES_SHEET = (b"\xef\xbb\xbf<!--\n} p { margin-top: 1em margin-bottom: 2em; text-indent: 0 }\n"
+                  b"p { b { margin: 0 } float: left } i { width: calc(1em; float: left }\n"
+                  b"@import url(a.css; q { } u { font-family: \"open;\n margin: 1 em; margin-top: 1em }\n"
+                  b"s, , t,, { padding: 1px -1px; height: 5vh; width: 99999999999999px; line-height: 1e3 }\n"
+                  b".\\31 0, .a\\:b, DIV.Up#Id, .\\0, .x\\0z, #a#b, p..q { line-height: 1.2.3; line-height: 120% }\n"
+                  b"-->\n.end { font: bold 2em; font: caption; font: italic 700 x-large/normal a , \"B  c\" ")
+
+
+def css_seeds() -> None:
+    clear("css")
+
+    def seed(name: str, source: int, sheet: bytes) -> None:
+        write("css", name, bytes([source]) + sheet)
+
+    seed("a-sheet", 0, SHEET)
+    seed("a-sheet-a-byte-at-a-time", 1, SHEET)
+    seed("media-and-other-at-rules", 3, MEDIA_SHEET)
+    seed("mistakes", 5, MISTAKES_SHEET)
+    seed("a-style-attribute", 0, b"margin-left: 2em; font-weight: 700 !important; color: red; font-family: \"a;b\", serif")
+    seed("a-media-query", 0, b"only screen and (max-width: 420px), not amzn-mobi")
+    seed("longer-than-there-is-room-for", 6,
+         b", ".join(b"p.class-number-%d" % n for n in range(80)) + b" { margin: 0 }\nq { font-family: " + b"x" * 600 +
+         b"; float: left }\n" + b" > ".join(b"a" for _ in range(9)) + b" {}\np" + b".c" * 13 + b" {}\n")
+    seed("nothing", 0, b"")
+
+
 def main() -> None:
     inflate_seeds()
     zip_seeds()
@@ -673,6 +725,7 @@ def main() -> None:
     toc_seeds()
     region_heap_seeds()
     hyphenator_seeds()
+    css_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

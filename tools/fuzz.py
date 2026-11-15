@@ -74,14 +74,20 @@ TARGETS = {
     "xml": 16384,
     "package": 16384,
     "toc": 16384,
+    "css": 16384,
     "region_heap": 3072,
     "hyphenator": 4096,
 }
 
-# Pieces of XML that the readers look for, which the engine would be a long
-# time coming to by changing bytes. For the targets that read XML.
-DICTIONARY = ROOT / "tests" / "fuzz" / "xml.dict"
-USES_DICTIONARY = {"xml", "package", "toc"}
+# Pieces of XML and of CSS that the readers look for, which the engine
+# would be a long time coming to by changing bytes: which targets are
+# given which.
+DICTIONARIES = {
+    "xml": "xml.dict",
+    "package": "xml.dict",
+    "toc": "xml.dict",
+    "css": "css.dict",
+}
 
 BUILDS = ("fuzz", "fuzz-noasan")
 
@@ -152,8 +158,8 @@ def run_one(preset: str, target: str, seconds: int) -> dict:
         f"-artifact_prefix={found}/",
         "-print_final_stats=1",
     ]
-    if target in USES_DICTIONARY:
-        command.append(f"-dict={DICTIONARY}")
+    if target in DICTIONARIES:
+        command.append(f"-dict={ROOT / 'tests' / 'fuzz' / DICTIONARIES[target]}")
     # What the engine keeps goes into the first directory. The repository's
     # inputs are read and left as they are.
     command += [str(corpus), str(INPUTS / target)]

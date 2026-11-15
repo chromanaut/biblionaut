@@ -29,7 +29,7 @@ The test programs are `core_tests`, `draw_tests`, `epub_tests`, `layout_tests`, 
 
 `host-release` is the optimised preset without sanitizers (`build/host-release`): use it for timing anything and for running the tools over many files. Its tests are run as well (`ctest --preset host-release`): a few things are built differently when a sanitizer is there, the heap inside a block among them, and the firmware has none.
 
-`tools/check-books.py FOLDER` runs `bn-zip`, `bn-xml` and `bn-epub` over every EPUB under a folder and compares each with a reading of the same book by Python. CTest runs it over `corpus/` as `e2e.Corpus`; run it over any larger collection of books a change could affect, with the `host-release` tools.
+`tools/check-books.py FOLDER` runs `bn-zip`, `bn-xml`, `bn-epub` and `bn-css` over every EPUB under a folder and compares each with a reading of the same book by Python. CTest runs it over `corpus/` as `e2e.Corpus`; run it over any larger collection of books a change could affect, with the `host-release` tools.
 
 The other checks. CI runs all of them (`.github/workflows/ci.yml`), and all of them are run before work is handed over:
 
@@ -86,11 +86,13 @@ Reading is pulled through a chain of small buffers, never a whole file in memory
 
 `core::Storage` (at most four files open) → `core::BlockFile` (one 4 KB buffer over a file) → `epub::ZipArchive` (finds entries) and `epub::ZipEntryReader` (a `ByteSource` over one entry, inflating through `core::Inflater` with a 32 KB window) → `epub::XmlParser` (expat, fed 1 KB a `Step()`, telling an `XmlHandler`) → `epub::Package` and whatever comes after it.
 
+A style sheet comes through the same chain as far as the entry: `epub::CssReader` reads it from a `ByteSource`, 1 KB a `Step()`, and tells a `CssHandler` of its rules and of what it passed over. Nothing matches rules to elements yet.
+
 A book is opened twice, with one `BlockFile` for the ZIP directory and one for the entry being read; sharing one costs a re-read at every switch between them. Looking entries up one by one with `ZipArchive::Find` reads the directory again each time, so anything that wants many entries goes through the directory once with `Next` (as `Package::FindFiles` does).
 
 ### One loop, in slices
 
-The application is a single loop calling `App::Tick()`. Work that takes long is written to be done a piece at a time (`XmlParser::Step()`, `Package::Step()`, `TocReader::Step()`, the checks' `Tick()` working about 20 ms and returning), so the panel and the buttons carry on around it. A piece has a stated bound on its work that no input can stretch, and a test that holds it to that (`Inflater::MostInputFor()`, `Package::kEntriesPerStep`, `LineBreaker::MostWorkFor()`). On the device the loop is watched: if no turn comes round for five seconds, the watchdog ends the firmware in a crash report.
+The application is a single loop calling `App::Tick()`. Work that takes long is written to be done a piece at a time (`XmlParser::Step()`, `Package::Step()`, `TocReader::Step()`, `CssReader::Step()`, the checks' `Tick()` working about 20 ms and returning), so the panel and the buttons carry on around it. A piece has a stated bound on its work that no input can stretch, and a test that holds it to that (`Inflater::MostInputFor()`, `Package::kEntriesPerStep`, `LineBreaker::MostWorkFor()`). On the device the loop is watched: if no turn comes round for five seconds, the watchdog ends the firmware in a crash report.
 
 ### Diagnostics
 
@@ -102,7 +104,7 @@ The application is a single loop calling `App::Tick()`. Work that takes long is 
 
 A firmware can be built to check one thing on real hardware: `-DBN_BOOK_CHECK=ON`, `-DBN_STORAGE_CHECK=ON` (these two are `reader::DeviceCheck`s, cannot be combined, and are in no normal firmware) or `-DBN_PLANE_CHECK=ON`. The desktop application runs the same checks when the environment variable of the same name is set, with `BN_STORAGE` naming a folder that stands for the card and `BN_SERIAL_OUT` a file to capture the stream in.
 
-Each layer of the book pipeline also has a host tool that runs the same code on one file: `bn-zip`, `bn-xml`, `bn-epub`. The book check reports counts, reads of storage and checksums in the same terms those tools print, so that what a device found can be set beside what the desktop finds for the same book. When a check gains a figure, the matching tool should print it too.
+Each layer of the book pipeline also has a host tool that runs the same code on one file: `bn-zip`, `bn-xml`, `bn-epub`, `bn-css`. The book check reports counts, reads of storage and checksums in the same terms those tools print, so that what a device found can be set beside what the desktop finds for the same book. When a check gains a figure, the matching tool should print it too.
 
 ## Conventions
 

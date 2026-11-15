@@ -2,6 +2,7 @@
 # device build and run the checks; each program has its own subdirectory.
 #
 # Still to come: importer CLI, font builder, perf harness.
+add_subdirectory(css)
 add_subdirectory(epub)
 add_subdirectory(hyphen)
 add_subdirectory(svg)

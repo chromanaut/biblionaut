@@ -105,6 +105,7 @@ bn_add_unit_test(draw_tests
 bn_add_unit_test(epub_tests
   SOURCES
     unit/epub/book_path_test.cpp
+    unit/epub/css_test.cpp
     unit/epub/package_test.cpp
     unit/epub/toc_test.cpp
     unit/epub/xml_test.cpp
@@ -212,6 +213,14 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-xml> ${CMAKE_CURRENT_BINARY_DIR}/xml_tool)
   set_tests_properties(e2e.XmlTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
+  # bn-css, and through it the reader of CSS, against a second reading of
+  # the same sheets written in the test, line for line.
+  add_test(
+    NAME e2e.CssTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/css_tool.py
+      $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/css_tool)
+  set_tests_properties(e2e.CssTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
   # bn-svg, and through it the reading and flattening of SVG path data,
   # against a second reading of the same paths, with the curves they
   # describe worked out in floating point; and the pictures it fills
@@ -249,13 +258,14 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-epub> ${CMAKE_CURRENT_BINARY_DIR}/book_check)
   set_tests_properties(e2e.BookCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
-  # bn-zip, bn-xml and bn-epub over the real books in corpus/, each against
+  # bn-zip, bn-xml, bn-epub and bn-css over the real books in corpus/, each against
   # a reading of the same book by Python; and the books themselves against
   # the list of what they should be.
   add_test(
     NAME e2e.Corpus
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check-books.py
       --zip $<TARGET_FILE:bn-zip> --xml $<TARGET_FILE:bn-xml> --epub $<TARGET_FILE:bn-epub>
+      --css $<TARGET_FILE:bn-css>
       ${PROJECT_SOURCE_DIR}/corpus)
   set_tests_properties(e2e.Corpus PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

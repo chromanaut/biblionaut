@@ -92,10 +92,13 @@ bn_add_unit_test(epub_tests
 target_link_libraries(epub_tests PRIVATE ZLIB::ZLIB)
 
 # The line breaker is given paragraphs the tests make up, and checked
-# against trying every way of breaking them.
+# against trying every way of breaking them. The page chooser is given runs
+# of lines the tests make up, and checked against adding their heights up
+# over the whole run.
 bn_add_unit_test(layout_tests
   SOURCES
     unit/layout/line_breaker_test.cpp
+    unit/layout/page_chooser_test.cpp
   LIBS bn_layout)
 
 # The desktop port, which the other host programs run on. Its own headers

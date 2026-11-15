@@ -82,6 +82,13 @@ bn_add_unit_test(epub_tests
   LIBS bn_epub)
 target_link_libraries(epub_tests PRIVATE ZLIB::ZLIB)
 
+# The line breaker is given paragraphs the tests make up, and checked
+# against trying every way of breaking them.
+bn_add_unit_test(layout_tests
+  SOURCES
+    unit/layout/line_breaker_test.cpp
+  LIBS bn_layout)
+
 # The desktop port, which the other host programs run on. Its own headers
 # are reached the way its sources reach them, as "desktop/...".
 bn_add_unit_test(hw_tests

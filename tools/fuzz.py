@@ -66,8 +66,9 @@ INPUTS = ROOT / "tests" / "fuzz" / "inputs"
 
 # Each target, and the longest input the engine is to make for it, in
 # bytes. Long enough to hold what the target is for (a ZIP file with a few
-# entries, a document of several of the parser's pieces); the longer the
-# inputs, the fewer of them a run gets through.
+# entries, a document of several of the parser's pieces, a drawing with
+# path data too long to be held); the longer the inputs, the fewer of them
+# a run gets through.
 TARGETS = {
     "inflate": 8192,
     "zip": 16384,
@@ -75,12 +76,26 @@ TARGETS = {
     "package": 16384,
     "toc": 16384,
     "region_heap": 3072,
+    "svg_tags": 4096,
+    "svg_values": 256,
+    "svg_path": 2048,
+    "svg": 8192,
 }
 
-# Pieces of XML that the readers look for, which the engine would be a long
-# time coming to by changing bytes. For the targets that read XML.
-DICTIONARY = ROOT / "tests" / "fuzz" / "xml.dict"
-USES_DICTIONARY = {"xml", "package", "toc"}
+# Pieces of XML, and of SVG, that the readers look for, which the engine
+# would be a long time coming to by changing bytes. For the targets that
+# read each.
+XML_PIECES = ROOT / "tests" / "fuzz" / "xml.dict"
+SVG_PIECES = ROOT / "tests" / "fuzz" / "svg.dict"
+DICTIONARIES = {
+    "xml": XML_PIECES,
+    "package": XML_PIECES,
+    "toc": XML_PIECES,
+    "svg_tags": SVG_PIECES,
+    "svg_values": SVG_PIECES,
+    "svg_path": SVG_PIECES,
+    "svg": SVG_PIECES,
+}
 
 BUILDS = ("fuzz", "fuzz-noasan")
 
@@ -151,8 +166,8 @@ def run_one(preset: str, target: str, seconds: int) -> dict:
         f"-artifact_prefix={found}/",
         "-print_final_stats=1",
     ]
-    if target in USES_DICTIONARY:
-        command.append(f"-dict={DICTIONARY}")
+    if target in DICTIONARIES:
+        command.append(f"-dict={DICTIONARIES[target]}")
     # What the engine keeps goes into the first directory. The repository's
     # inputs are read and left as they are.
     command += [str(corpus), str(INPUTS / target)]

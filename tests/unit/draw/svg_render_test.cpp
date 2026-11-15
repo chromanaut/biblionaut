@@ -766,6 +766,52 @@ TEST(SvgRender, KnowsTheSizeAsSoonAsTheFirstTagHasBeenRead) {
   EXPECT_EQ(height, Pixels(20));
 }
 
+TEST(SvgRender, UsedAgainItRemembersNothingOfTheFileBefore) {
+  // A file whose last view box is an inner one, with everything else an
+  // element can leave behind; and then, with the same renderer, a file
+  // that says nothing of itself at all.
+  SvgRenderer renderer;
+  renderer.Begin(nullptr, 0, 0);
+  std::string_view bytes =
+      "<svg width='30' height='20' viewBox='0 0 3 2' preserveAspectRatio='none'><svg x='1' y='2' "
+      "viewBox='-5 0 20 10' transform='scale(2)' opacity='.5' style='fill:none'><text/></svg></svg>";
+  while (!bytes.empty()) {
+    bytes.remove_prefix(renderer.Step(bytes));
+  }
+  ASSERT_EQ(renderer.Finish(), SvgStatus::kOk);
+  ASSERT_TRUE(renderer.Size().hasBox);
+  ASSERT_NE(renderer.Report().leftOut, 0u);
+
+  renderer.Begin(nullptr, 0, 0);
+  bytes = "<svg><rect width='4' height='4'/></svg>";
+  while (!bytes.empty()) {
+    bytes.remove_prefix(renderer.Step(bytes));
+  }
+  ASSERT_EQ(renderer.Finish(), SvgStatus::kOk);
+  const SvgSize& size = renderer.Size();
+  EXPECT_TRUE(size.known);
+  EXPECT_FALSE(size.hasWidth);
+  EXPECT_FALSE(size.hasHeight);
+  EXPECT_FALSE(size.hasBox);
+  EXPECT_EQ(size.box, bn::draw::SvgBox());
+  EXPECT_EQ(renderer.Report().leftOut, 0u);
+  EXPECT_EQ(renderer.Report().elements, 2u);
+
+  // And drawn with it, the second file comes out as it does from a
+  // renderer that has drawn nothing before.
+  std::vector<std::uint8_t> gray(std::size_t{40} * 20, kWhite);
+  std::vector<std::int16_t> cells(Filler::CellsFor(40, 20));
+  Filler filler;
+  ASSERT_TRUE(filler.Begin(gray, 40, 0, cells));
+  renderer.Begin(&filler, Pixels(40), Pixels(20));
+  bytes = "<svg width='40' height='20'><rect width='4' height='4'/></svg>";
+  while (!bytes.empty()) {
+    bytes.remove_prefix(renderer.Step(bytes));
+  }
+  ASSERT_EQ(renderer.Finish(), SvgStatus::kOk);
+  EXPECT_EQ(gray, Draw("<svg width='40' height='20'><rect width='4' height='4'/></svg>", 40, 20).gray);
+}
+
 TEST(SvgRender, WithNothingToDrawIntoItOnlyReads) {
   std::string data = "M0 0";
   for (int step = 0; step < 400; ++step) {
@@ -913,12 +959,12 @@ TEST(SvgRender, ACallDoesNoMoreThanItsBound) {
     mostBytes = std::max(mostBytes, taken);
     // A curve is at the most kMostLinesPerCurve lines and an arc
     // kMostLinesPerArc, so the commands bound the lines.
-    ASSERT_LE(after.lines - before.lines, (SvgRenderer::kCommandsPerStep + 1) * PathFlattener::kMostLinesPerArc);
+    ASSERT_LE(after.lines - before.lines, SvgRenderer::kMostCommandsPerStep * PathFlattener::kMostLinesPerArc);
     bytes.remove_prefix(taken);
     ++calls;
   }
   EXPECT_EQ(renderer.Finish(), SvgStatus::kOk);
-  EXPECT_LE(mostCommands, SvgRenderer::kCommandsPerStep + 1);
+  EXPECT_LE(mostCommands, SvgRenderer::kMostCommandsPerStep);
   EXPECT_GE(mostCommands, SvgRenderer::kCommandsPerStep);
   EXPECT_EQ(mostShapes, 1u);
   // It takes no more bytes than the tags it handles are made of, and the

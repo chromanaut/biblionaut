@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A drawing with something of everything the renderer draws. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 48" width="160" height="96">
+  <title>Shapes</title>
+  <rect width="100%" height="100%" fill="#eee"/>
+  <g transform="translate(4 4)" fill="#444">
+    <rect x="0" y="0" width="24" height="16" rx="3"/>
+    <circle cx="40" cy="8" r="8" fill="black"/>
+    <ellipse cx="60" cy="8" rx="10" ry="5" style="fill: rgb(50%, 50%, 50%); fill-opacity: .5"/>
+    <g transform="rotate

@@ -67,6 +67,11 @@ target_link_libraries(core_tests PRIVATE ZLIB::ZLIB)
 
 bn_add_unit_test(draw_tests
   SOURCES
+    unit/draw/fixed_test.cpp
+    unit/draw/flatten_test.cpp
+    unit/draw/svg_number_test.cpp
+    unit/draw/svg_path_test.cpp
+    unit/draw/svg_transform_test.cpp
     unit/draw/test_pattern_test.cpp
   LIBS bn_draw)
 
@@ -175,6 +180,15 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/xml_tool.py
       $<TARGET_FILE:bn-xml> ${CMAKE_CURRENT_BINARY_DIR}/xml_tool)
   set_tests_properties(e2e.XmlTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-svg, and through it the reading and flattening of SVG path data,
+  # against a second reading of the same paths, with the curves they
+  # describe worked out in floating point.
+  add_test(
+    NAME e2e.SvgTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/svg_tool.py
+      $<TARGET_FILE:bn-svg> ${CMAKE_CURRENT_BINARY_DIR}/svg_tool)
+  set_tests_properties(e2e.SvgTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
   # against bn-zip, bn-xml, bn-epub and zipfile on the same files.

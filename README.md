@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which reads the outlines of a drawing as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -50,7 +50,7 @@ Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Two
 things are downloaded when CMake configures, each checked against a hash:
 expat, the XML parser, which is C and is why a C compiler is needed, and
 GoogleTest. The tests also link zlib, to check the inflater against: macOS
-has it, and on Linux it is the `zlib1g-dev` package. Five of the end-to-end
+has it, and on Linux it is the `zlib1g-dev` package. Seven of the end-to-end
 tests are run only if Python 3 is found, and one of them makes more of its
 test files if there is a `zip` command.
 
@@ -949,6 +949,113 @@ for that. The other works forwards through the whole paragraph, keeping
 everything, on paragraphs of up to 60,000 words. With the fewest nodes it
 accepts, and with a caller that asks for lines early, the lines still have
 to fit and to hold every item once.
+
+## Outlines of drawings
+
+A book can hold a drawing as SVG, and the first step of drawing one is
+done: `draw/` reads the outline of a shape, which SVG writes as path data
+(the `d` of a `<path>`), and turns it into straight lines in pixels.
+Nothing fills an outline yet.
+
+The device's processor has no floating point, so all of it is done in whole
+numbers (`draw/fixed.h`). A position counts 4096ths of a unit of the
+drawing or of a pixel, a factor of scale 1,048,576ths, a sine 2^30ths, and
+an angle a part of a turn. Sines, cosines and the angle of a point are
+found by shifts and additions. Nothing can overflow: a number too large for
+its kind is held at the largest that fits, and whoever asked is told.
+
+- `SvgPathReader` (`draw/svg_path.h`) reads path data and tells a
+  `PathSink` what it draws. The data is given in pieces of any size, cut
+  anywhere, so a path never has to be whole in memory: one in a book is
+  over 3 MB. What the sink hears is simpler than what was written. Every
+  distance has become a place, a command followed by several sets of
+  numbers has become several commands, and the short forms of a curve have
+  been given the control point they leave out.
+- `ParseSvgTransform` (`draw/svg_transform.h`) reads a `transform`: a list
+  of `matrix`, `translate`, `scale`, `rotate`, `skewX` and `skewY`, as one
+  matrix.
+- `PathFlattener` (`draw/flatten.h`) is a `PathSink` that puts each point
+  through a matrix and cuts each curve into lines, as many as it takes for
+  none to stand further from the curve than a tolerance, which is a
+  quarter of a pixel unless it is told otherwise. It gives each line to a
+  `LineSink` as it is made and keeps none.
+- **Arcs** are drawn as SVG defines them, whatever the matrix does to
+  them: radii too short to reach from one end to the other are made just
+  long enough, and with no radius an arc is a line. One so shallow that it
+  stays within the tolerance of a straight line is drawn as that line,
+  which is what makes a radius of any size harmless: two public books
+  have arcs whose radius is seventeen digits long.
+- **Memory**: the reader is 168 bytes and the flattener 88, on the device,
+  and cutting a curve takes about half a kilobyte of stack. Nothing is
+  allocated, and nothing grows with the path.
+- **Flash**: 17 KB, as compiled for the device.
+- **Speed**: not yet measured on a device.
+- **Bad input**: the data is not trusted. Whatever bytes it holds, reading
+  ends with a status. Where path data goes wrong, everything before the
+  command with the mistake in it has been drawn and nothing after it is,
+  which is what SVG asks for; `ErrorOffset()` says where.
+- **What a call can cost**: the data cannot make a call long. The reader
+  looks at each byte once, and its `Step()` comes back once it has told the
+  sink as many commands as it was asked for, or one more. One command is
+  one line, or a curve of 1,024 lines at the most, or an arc of 32,768,
+  whatever its numbers. So whoever reads a path a piece at a time decides
+  how much one piece may draw.
+- **Limits**: a position is held to a 4096th and to 524,287 either side of
+  nothing, and a factor of scale to 2,047.
+- **How exact**: a line is within the tolerance of its curve. A matrix's
+  factors are exact to a part in a million, so the far edge of a drawing
+  32,000 units wide lands within a fiftieth of a pixel. Where a path is
+  written as distances from one point to the next, they are added up far
+  more finely than a position is held, so thousands of small steps still
+  end where they should.
+
+`bn-svg` runs the same code on the desktop. For path data in a file, it
+prints each command with its numbers as places, and under each the lines it
+became, in pixels:
+
+```
+./build/host/tools/svg/bn-svg path outline.d --transform 'scale(2)'
+```
+
+```
+M 10.0000 20.0000
+ m 20.0000 40.0000
+L 40.0000 20.0000
+ l 80.0000 40.0000
+A 15.0000 15.0000 0.0000 0 1 10.0000 20.0000
+ l 79.4180 45.8796
+ l 77.7161 51.4802
+ l 74.9592 56.6436
+ l 71.2129 61.2129
+ l 66.6436 64.9592
+ l 61.4800 67.7161
+ l 55.8792 69.4177
+ l 49.9990 69.9995
+ l 44.1191 69.4175
+ l 38.5188 67.7156
+ l 33.3552 64.9587
+ l 28.7861 61.2124
+ l 25.0396 56.6431
+ l 22.2830 51.4797
+ l 20.5811 45.8794
+ l 20.0000 40.0000
+Z
+ z
+4 commands, 17 lines, 27 bytes
+```
+
+That is `M10 20h30a15 15 0 0 1-30 0z`, a line and half a circle. `--tolerance`
+sets how far a line may stand from its curve, `--pieces` gives the reader
+the data a few bytes at a time, and `--count` prints only the last line.
+
+The unit tests set the whole-number working beside floating point: sines
+and angles against the C library's, and the lines drawn for curves and for
+arcs of every shape against the curve itself, worked out from the formula
+that defines it. An end-to-end test (`tests/e2e/svg_tool.py`) sets `bn-svg`
+beside a second reading of path data that shares none of its code, written
+in Python with regular expressions: over paths made up at random in every
+way SVG lets one be written, the commands have to be the same and the lines
+within the tolerance of the true curves.
 
 ## Device build
 

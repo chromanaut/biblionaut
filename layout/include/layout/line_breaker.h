@@ -42,6 +42,12 @@
 // for are. Those lines are given out, and the rest is worked out again from
 // where they end. A paragraph that fits is broken the cheapest way there
 // is; a longer one, the cheapest way within a stretch that moves along it.
+//
+// Nor can a paragraph make one call long. Nearly every call does a small
+// amount that depends on how many places a line could end at within one
+// line's width. The calls that do more are the ones that settle lines, and
+// what they do is bounded by the number of nodes and by nothing in the
+// paragraph: MostWorkFor().
 
 namespace bn::layout {
 
@@ -141,6 +147,8 @@ class LineBreaker final {
   // fewer than one line's worth, lines are ended before they are full.
   static constexpr std::size_t kMinNodes = 32;
   static constexpr std::size_t kUsualNodes = 256;
+  // The most it uses, however many it is given.
+  static constexpr std::size_t kMaxNodes = 65535;
   // The most first lines that may have widths of their own.
   static constexpr std::size_t kMaxFirstLines = 8;
   // The widest a line may be.
@@ -150,6 +158,21 @@ class LineBreaker final {
   // What a line that is too wide costs before its excess is counted: more
   // than any line that fits can cost.
   static constexpr std::uint32_t kOverfullCost = 1U << 30U;
+
+  // The most work one call does with `nodes` nodes to work in, whatever the
+  // paragraph. Work is counted in nodes gone over: weighed as the place a
+  // line might begin, or passed in finding lines and giving them out.
+  //
+  // The call that does most is one that finds the nodes used up. It settles
+  // some lines, and then works out again the cheapest way to every place
+  // after them, each place looking back over the nodes before it: half the
+  // square of the nodes at the most. Everything else it does goes over the
+  // nodes a few times, twenty at the outside. A call gives out fewer lines
+  // than there are nodes.
+  static constexpr std::uint32_t MostWorkFor(std::size_t nodes) noexcept {
+    const std::uint64_t used = nodes < kMaxNodes ? nodes : kMaxNodes;
+    return static_cast<std::uint32_t>((used * (used + 40)) / 2);
+  }
 
   // `nodes` is the breaker's working memory, and the caller's to provide.
   explicit LineBreaker(std::span<Node> nodes) noexcept;
@@ -208,6 +231,9 @@ class LineBreaker final {
   std::uint32_t SettledEarly() const noexcept { return settledEarly_; }
   // The most nodes this paragraph has had in use at once.
   std::size_t MostNodes() const noexcept { return mostNodes_; }
+  // The most work one call has done on this paragraph, counted as
+  // MostWorkFor() counts it, and never more than that says.
+  std::uint32_t MostWork() const noexcept { return mostWork_; }
 
  private:
   // A space or a break that has been added and not yet acted on: whether a
@@ -232,12 +258,14 @@ class LineBreaker final {
   void PlaceWaiting() noexcept;
   // Sees that there is room for the nodes of one more place.
   void MakeRoom() noexcept;
+  // There is not room for them, or widths have been counted too far.
+  bool OutOfRoom() const noexcept;
   // The cheapest of the nodes at the latest place.
-  std::size_t CheapestAtLatestPlace() const noexcept;
+  std::size_t CheapestAtLatestPlace() noexcept;
   // The node the last line would begin at, the cheapest way, if the
   // paragraph ended with what has been added so far. The first node only if
   // there is no other.
-  std::size_t CheapestOpenEnd() const noexcept;
+  std::size_t CheapestOpenEnd() noexcept;
   // Turns the chain of parents from `leaf` back to the first node round, so
   // that `parent` leads from each node on it to the next towards `leaf`.
   void TurnChainRound(std::size_t leaf) noexcept;
@@ -246,12 +274,16 @@ class LineBreaker final {
   // cheapest way to every place after it.
   void SettleTo(std::size_t root) noexcept;
   void GiveOut(const Node& from, const Node& to) noexcept;
+  // A call that did work is over: its work is set beside the most so far.
+  void CallDone() noexcept;
 
   std::span<Node> nodes_;
   std::size_t count_ = 0;      // Nodes in use. The first is where the lines not yet given out begin.
   std::size_t barrier_ = 0;    // No line can begin before this node: a forced break is there.
   std::size_t lastPlace_ = 0;  // The first node of the latest place a line could end.
   std::size_t mostNodes_ = 0;
+  std::uint32_t work_ = 0;  // Nodes gone over by the call under way.
+  std::uint32_t mostWork_ = 0;
 
   LineSink* sink_ = nullptr;
   BreakStatus status_ = BreakStatus::kNotStarted;

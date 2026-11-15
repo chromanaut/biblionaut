@@ -91,8 +91,10 @@ const char* BreakStatusName(BreakStatus status) noexcept {
 }
 
 // A node is named by a 16-bit number, with one value kept for "none".
+static_assert(LineBreaker::kMaxNodes <= kNone);
+
 LineBreaker::LineBreaker(std::span<Node> nodes) noexcept
-    : nodes_(nodes.first(std::min<std::size_t>(nodes.size(), kNone))) {}
+    : nodes_(nodes.first(std::min<std::size_t>(nodes.size(), kMaxNodes))) {}
 
 BreakStatus LineBreaker::Begin(const LineWidths& widths, LineSink& sink) noexcept {
   if (nodes_.size() < kMinNodes) {
@@ -125,6 +127,8 @@ BreakStatus LineBreaker::Begin(const LineWidths& widths, LineSink& sink) noexcep
   barrier_ = 0;
   lastPlace_ = 0;
   mostNodes_ = 1;
+  work_ = 0;
+  mostWork_ = 0;
   total_ = 0;
   items_ = 0;
   boxSincePlace_ = false;
@@ -149,13 +153,20 @@ std::uint16_t LineBreaker::WidthOf(std::uint8_t line) const noexcept {
 // Whether a line can end at a space or a break depends on what follows it:
 // only a box makes it a place worth ending a line. So each waits until the
 // next item says, and nothing is made of one that a box does not follow.
+//
+// Each call that goes over nodes counts them from nothing, and says when it
+// is done.
+
+void LineBreaker::CallDone() noexcept { mostWork_ = std::max(mostWork_, work_); }
 
 void LineBreaker::AddBox(std::uint16_t width) noexcept {
   if (status_ != BreakStatus::kOk) {
     return;
   }
   if (waiting_ != Waiting::kNothing) {
+    work_ = 0;
     PlaceWaiting();
+    CallDone();
   }
   total_ += std::min<std::uint32_t>(width, kWidthCeiling - total_);
   boxSincePlace_ = true;
@@ -172,6 +183,8 @@ void LineBreaker::AddSpace(std::uint16_t width) noexcept {
     for (std::size_t n = lastPlace_; n < count_; ++n) {
       nodes_[n].nextItem = items_ + 1;
     }
+    work_ = static_cast<std::uint32_t>(count_ - lastPlace_);
+    CallDone();
     ++items_;
     return;
   }
@@ -206,6 +219,7 @@ void LineBreaker::AddForcedBreak() noexcept {
   if (status_ != BreakStatus::kOk) {
     return;
   }
+  work_ = 0;
   MakeRoom();
   // A space straight before it is not on the line; a break straight before
   // it comes to nothing.
@@ -222,6 +236,7 @@ void LineBreaker::AddForcedBreak() noexcept {
   barrier_ = lastPlace_;
   boxSincePlace_ = false;
   ++items_;
+  CallDone();
 }
 
 void LineBreaker::PlaceWaiting() noexcept {
@@ -244,6 +259,7 @@ BreakStatus LineBreaker::Finish() noexcept {
   if (status_ != BreakStatus::kOk) {
     return BreakStatus::kNotStarted;
   }
+  work_ = 0;
   if (boxSincePlace_) {
     // The last line: what has come since the latest place a line could end.
     MakeRoom();
@@ -266,6 +282,7 @@ BreakStatus LineBreaker::Finish() noexcept {
     GiveOut(nodes_[at], nodes_[next]);
     at = next;
   }
+  CallDone();
   status_ = BreakStatus::kNotStarted;
   return BreakStatus::kOk;
 }
@@ -283,7 +300,9 @@ void LineBreaker::AddPlace(const Place& place, std::size_t room) noexcept {
   std::array<Best, kMaxFirstLines + 1> best{};
   const bool last = Has(place.flags, kLast);
   bool any = false;
+  std::uint32_t looks = 0;
   for (std::size_t n = count_; n-- > barrier_;) {
+    ++looks;
     const Node& from = nodes_[n];
     const std::uint32_t width = place.end - from.start + place.extra;
     if (width > widest_) {
@@ -304,6 +323,7 @@ void LineBreaker::AddPlace(const Place& place, std::size_t room) noexcept {
     // Nothing fits, so the line is what has come since the latest place one
     // could end, however wide that is.
     flags = With(flags, kOverfull);
+    looks += static_cast<std::uint32_t>(count_ - lastPlace_);
     for (std::size_t n = lastPlace_; n < count_; ++n) {
       const Node& from = nodes_[n];
       const std::uint32_t width = place.end - from.start + place.extra;
@@ -353,9 +373,10 @@ void LineBreaker::AddPlace(const Place& place, std::size_t room) noexcept {
   }
   lastPlace_ = firstNew;
   mostNodes_ = std::max(mostNodes_, count_);
+  work_ += looks;
 }
 
-std::size_t LineBreaker::CheapestAtLatestPlace() const noexcept {
+std::size_t LineBreaker::CheapestAtLatestPlace() noexcept {
   // Of equals, the one with the fewest lines before it, which is the first.
   std::size_t cheapest = lastPlace_;
   for (std::size_t n = lastPlace_ + 1; n < count_; ++n) {
@@ -363,6 +384,7 @@ std::size_t LineBreaker::CheapestAtLatestPlace() const noexcept {
       cheapest = n;
     }
   }
+  work_ += static_cast<std::uint32_t>(count_ - lastPlace_);
   return cheapest;
 }
 
@@ -378,6 +400,7 @@ void LineBreaker::GiveOut(const Node& from, const Node& to) noexcept {
   line.last = Has(to.flags, kLast);
   line.overfull = Has(to.flags, kOverfull);
   ++lines_;
+  ++work_;
   linesBroken.Add();
   if (line.overfull) {
     ++overfull_;
@@ -389,6 +412,7 @@ void LineBreaker::GiveOut(const Node& from, const Node& to) noexcept {
 void LineBreaker::TurnChainRound(std::size_t leaf) noexcept {
   std::uint16_t towards = kNone;
   for (std::size_t at = leaf;;) {
+    ++work_;
     const std::uint16_t up = nodes_[at].parent;
     nodes_[at].parent = towards;
     if (up == kNone) {
@@ -399,13 +423,15 @@ void LineBreaker::TurnChainRound(std::size_t leaf) noexcept {
   }
 }
 
-std::size_t LineBreaker::CheapestOpenEnd() const noexcept {
+std::size_t LineBreaker::CheapestOpenEnd() noexcept {
   // As if the paragraph ended with what has been added: its last line
   // would run from some node to there, and costs nothing if it fits. The
   // first node is left out, since no line ends at it to settle.
   const std::uint32_t end = waiting_ == Waiting::kNothing ? total_ : waitingEnd_;
   std::size_t cheapest = 0;
+  std::uint32_t looks = 0;
   for (std::size_t n = count_; n-- > std::max<std::size_t>(barrier_, 1);) {
+    ++looks;
     const Node& from = nodes_[n];
     const std::uint32_t width = end - from.start;
     if (width > widest_) {
@@ -415,28 +441,53 @@ std::size_t LineBreaker::CheapestOpenEnd() const noexcept {
       cheapest = n;
     }
   }
+  work_ += looks;
   // Where what has come since the latest place fits on no line, that place
   // is where the last line would have to begin.
   return cheapest != 0 ? cheapest : CheapestAtLatestPlace();
 }
 
+bool LineBreaker::OutOfRoom() const noexcept {
+  return count_ + firstCount_ + 1U > nodes_.size() || total_ > kFarEnough;
+}
+
 void LineBreaker::MakeRoom() noexcept {
-  // When the nodes run out, the lines of the earlier half of them are
-  // settled, and one line at the least. The same is done if the widths have
-  // been counted a very long way. If the only node is the first there is no
-  // line to settle, and room enough.
+  // When the nodes run out, lines are settled. The same is done if the
+  // widths have been counted a very long way. If the only node is the first
+  // there is no line to settle, and room enough.
+  if (!OutOfRoom()) {
+    return;
+  }
+  const std::size_t leaf = CheapestOpenEnd();
+  if (leaf == 0) {
+    return;
+  }
+  // The lines settled are those of the earlier half of the nodes: up to the
+  // last node, on the way to `leaf`, that is no further on than half way.
+  // If there is none, or settling to it would free fewer nodes than a place
+  // can need, they are settled up to the node after it. Going back from
+  // `leaf`, that is the first node met in the earlier half, if it is far
+  // enough on, and otherwise the one met before it.
   const std::size_t need = firstCount_ + 1U;
-  while (count_ + need > nodes_.size() || total_ > kFarEnough) {
-    const std::size_t leaf = CheapestOpenEnd();
-    if (leaf == 0) {
+  std::size_t root = leaf;
+  for (std::size_t at = leaf; at != 0 && at >= need; at = nodes_[at].parent) {
+    ++work_;
+    root = at;
+    if (at <= count_ / 2) {
       break;
     }
-    TurnChainRound(leaf);
-    std::size_t root = nodes_[0].parent;
-    while (root != leaf && nodes_[root].parent <= count_ / 2) {
-      root = nodes_[root].parent;
-    }
-    SettleTo(root);
+  }
+  TurnChainRound(root);
+  SettleTo(root);
+  // That leaves room unless the last line itself would begin among the very
+  // first nodes, with nearly every place there is inside it: more places in
+  // the width of one line than there are nodes. Then a line is made to end
+  // at the latest place, and nothing is left but the node that begins the
+  // next.
+  if (OutOfRoom() && lastPlace_ != 0) {
+    const std::size_t latest = CheapestAtLatestPlace();
+    TurnChainRound(latest);
+    SettleTo(latest);
   }
 }
 
@@ -451,16 +502,18 @@ void LineBreaker::Settle(std::uint32_t item) noexcept {
   if (barrier_ == 0 && end <= WidthOf(nodes_[0].line)) {
     return;
   }
+  work_ = 0;
   const std::size_t leaf = CheapestOpenEnd();
-  if (leaf == 0) {
-    return;
+  if (leaf != 0) {
+    TurnChainRound(leaf);
+    std::size_t root = nodes_[0].parent;
+    while (root != leaf && nodes_[root].nextItem < item) {
+      ++work_;
+      root = nodes_[root].parent;
+    }
+    SettleTo(root);
   }
-  TurnChainRound(leaf);
-  std::size_t root = nodes_[0].parent;
-  while (root != leaf && nodes_[root].nextItem < item) {
-    root = nodes_[root].parent;
-  }
-  SettleTo(root);
+  CallDone();
 }
 
 void LineBreaker::SettleTo(std::size_t root) noexcept {
@@ -478,6 +531,7 @@ void LineBreaker::SettleTo(std::size_t root) noexcept {
   // no longer so.
   const Node base = nodes_[root];
   const std::size_t had = count_;
+  work_ += static_cast<std::uint32_t>(had - root);  // The nodes after it, each read once below.
   std::size_t read = root + 1;
   while (read < had && !Has(nodes_[read].flags, kStartsPlace)) {
     ++read;
@@ -496,8 +550,10 @@ void LineBreaker::SettleTo(std::size_t root) noexcept {
   // Every place after it is gone through again, in order. The cheapest way
   // to each had been found among all the ways from the old first node, and
   // now has to be one that comes by way of the new. A place's new nodes go
-  // where nodes already gone through were, so they are never more than
-  // there is room for before the next place's.
+  // where nodes already gone through were, and no nearer to the next
+  // place's than `root` was to the first node: so there is always room for
+  // one, and when all are done there are `root` nodes fewer in use, or
+  // fewer still.
   while (read < had) {
     const Node old = nodes_[read];
     ++read;
@@ -512,7 +568,7 @@ void LineBreaker::SettleTo(std::size_t root) noexcept {
     place.penalty = old.penalty;
     place.extra = old.extra;
     place.flags = Only(old.flags, kOfThePlace);
-    AddPlace(place, read - count_);
+    AddPlace(place, read - root - count_);
     if (Has(place.flags, kLast)) {
       barrier_ = lastPlace_;
     }

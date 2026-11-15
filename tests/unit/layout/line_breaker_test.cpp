@@ -91,6 +91,7 @@ struct Broken {
   std::uint32_t settledEarly = 0;
   std::uint32_t overfullLines = 0;
   std::size_t mostNodes = 0;
+  std::uint32_t mostWork = 0;        // The most nodes one call went over.
   std::uint32_t furthestBehind = 0;  // The most items there ever were that were not yet on a line given out.
   bool pendingInOrder = true;        // Pending() never went back, and never passed the items given.
 };
@@ -112,7 +113,13 @@ void Add(LineBreaker& breaker, const Item& item) {
   }
 }
 
-Broken BreakWith(const Items& items, const Widths& first, std::uint16_t rest, std::size_t nodeCount = 16384) {
+// Breaks a paragraph in `nodeCount` nodes. If `held` is not 0 the caller is
+// one with room for only so many items: whenever more than that are not yet
+// on a line given out, it asks for lines until half as many are.
+//
+// Every call is held to the work the breaker says one call may do.
+Broken BreakWith(const Items& items, const Widths& first, std::uint16_t rest, std::size_t nodeCount = 16384,
+                 std::uint32_t held = 0) {
   std::vector<LineBreaker::Node> nodes(nodeCount);
   LineBreaker breaker(nodes);
   Collector collector;
@@ -121,6 +128,9 @@ Broken BreakWith(const Items& items, const Widths& first, std::uint16_t rest, st
   std::uint32_t pendingBefore = 0;
   for (const Item& item : items) {
     Add(breaker, item);
+    if (held != 0 && breaker.Items() - breaker.Pending() > held) {
+      breaker.Settle(breaker.Items() - (held / 2));
+    }
     const std::uint32_t pending = breaker.Pending();
     broken.pendingInOrder = broken.pendingInOrder && pending >= pendingBefore && pending <= breaker.Items();
     broken.furthestBehind = std::max(broken.furthestBehind, breaker.Items() - pending);
@@ -132,6 +142,8 @@ Broken BreakWith(const Items& items, const Widths& first, std::uint16_t rest, st
   broken.settledEarly = breaker.SettledEarly();
   broken.overfullLines = breaker.OverfullLines();
   broken.mostNodes = breaker.MostNodes();
+  broken.mostWork = breaker.MostWork();
+  EXPECT_LE(broken.mostWork, LineBreaker::MostWorkFor(nodeCount)) << "in one call, with " << nodeCount << " nodes";
   return broken;
 }
 
@@ -1032,6 +1044,125 @@ TEST(LineBreaker, LetsACallerHoldOnlySoManyItems) {
   const std::uint64_t cost = CostOf(items, collector.lines, first, kRest);
   EXPECT_GE(cost, cheapest);
   EXPECT_LE(cost, cheapest + (cheapest / 4));
+}
+
+// ---- One call's work ----
+
+// The paragraph that costs one call the most. Its first line is exactly
+// full, so that is where a last line would begin when the nodes run out,
+// and it is the only line settled. After it come more places a line could
+// end at than there are nodes, all within the width of one line, so each
+// of them is worked out again and looks back over every one before it.
+Items DearestToSettle(std::size_t places) {
+  Items items = {Box(LineBreaker::kMaxWidth), Space(1)};
+  for (std::size_t place = 0; place < places; ++place) {
+    items.push_back(Box(1));
+    items.push_back(Break(0, 0));
+  }
+  items.push_back(Box(1));
+  return items;
+}
+
+TEST(LineBreaker, DoesNoMoreInOneCallThanItSaysItWill) {
+  for (const std::size_t nodeCount :
+       {LineBreaker::kMinNodes, std::size_t{100}, LineBreaker::kUsualNodes, std::size_t{1000}}) {
+    const Items items = DearestToSettle(3 * nodeCount);
+    const Broken broken = BreakWith(items, {}, LineBreaker::kMaxWidth, nodeCount);
+
+    ASSERT_EQ(broken.finished, BreakStatus::kOk);
+    ExpectSound(items, broken.lines, {}, LineBreaker::kMaxWidth);
+    EXPECT_EQ(broken.overfullLines, 0U);
+    EXPECT_LE(broken.mostNodes, nodeCount);
+    EXPECT_LE(broken.mostWork, LineBreaker::MostWorkFor(nodeCount)) << nodeCount;
+    // The bound is a close one: with the usual number of nodes, or more,
+    // this paragraph brings a call to within an eighth of it.
+    if (nodeCount >= LineBreaker::kUsualNodes) {
+      EXPECT_GT(broken.mostWork, LineBreaker::MostWorkFor(nodeCount) / 8 * 7) << nodeCount;
+    }
+  }
+}
+
+TEST(LineBreaker, EndsALineEarlyWhenOneLineHasMorePlacesThanThereAreNodes) {
+  // The first eight lines have widths of their own, so one place can want
+  // nine nodes. The first line is exactly full, and everything after it
+  // would go on the second, with somewhere to end a line after every box.
+  // When the nodes run out, the only line there is to settle is the first,
+  // and that frees one node. So the second line is made to end where it
+  // has got to.
+  const Widths first(LineBreaker::kMaxFirstLines, LineBreaker::kMaxWidth);
+  const Items items = DearestToSettle(500);
+  const Broken broken = BreakWith(items, first, LineBreaker::kMaxWidth, LineBreaker::kMinNodes);
+
+  ASSERT_EQ(broken.finished, BreakStatus::kOk);
+  ExpectSound(items, broken.lines, first, LineBreaker::kMaxWidth);
+  EXPECT_EQ(broken.overfullLines, 0U);
+  EXPECT_TRUE(broken.pendingInOrder);
+  EXPECT_LE(broken.mostNodes, LineBreaker::kMinNodes);
+  ASSERT_GT(broken.lines.size(), 2U);
+  EXPECT_EQ(broken.lines[0].width, LineBreaker::kMaxWidth);
+  EXPECT_LT(broken.lines[1].width, LineBreaker::kMinNodes);
+}
+
+// A paragraph made to be awkward, not likely: boxes of no width and boxes
+// wider than any line, spaces of no width, breaks that cost nothing and
+// breaks that cost the most a break can. In the plain form of the others.
+Items Awkward(Dice& dice, std::size_t words, std::uint32_t lineWidth) {
+  Items items;
+  for (std::size_t word = 0; word < words; ++word) {
+    if (word > 0) {
+      const std::uint32_t kind = dice.Below(12);
+      if (kind == 0) {
+        items.push_back(Forced());
+      } else if (kind < 6) {
+        const std::uint32_t price = dice.Below(3);
+        const std::uint32_t penalty = price == 0 ? 0 : (price == 1 ? dice.Between(1, 300) : LineBreaker::kMaxPenalty);
+        items.push_back(Break(static_cast<std::uint16_t>(dice.Below(3)), penalty));
+      } else {
+        items.push_back(Space(static_cast<std::uint16_t>(dice.Below(3))));
+      }
+    }
+    const std::uint32_t size = dice.Below(40);
+    std::uint32_t width = dice.Below(2);
+    if (size == 0) {
+      width = dice.Between(lineWidth + 1, (2 * lineWidth) + 5);
+    } else if (size >= 20) {
+      width = dice.Between(1, std::max<std::uint32_t>(1, lineWidth / 4));
+    }
+    items.push_back(Box(static_cast<std::uint16_t>(width)));
+  }
+  return items;
+}
+
+TEST(LineBreaker, IsHeldToThatByParagraphsMadeToBeAwkward) {
+  Dice dice(77);
+  std::uint32_t settledEarly = 0;
+  std::uint32_t overfull = 0;
+  for (int round = 0; round < 400; ++round) {
+    const std::size_t nodeCount = round % 3 == 0 ? LineBreaker::kMinNodes : dice.Between(LineBreaker::kMinNodes, 300);
+    const auto rest = static_cast<std::uint16_t>(dice.Below(3) == 0 ? dice.Between(1, 40) : dice.Between(40, 30000));
+    Widths first(dice.Below(LineBreaker::kMaxFirstLines + 1));
+    for (std::uint16_t& width : first) {
+      width = static_cast<std::uint16_t>(dice.Below(4) == 0 ? dice.Between(1, 30000) : dice.Between(1, rest));
+    }
+    const Items items = Awkward(dice, dice.Between(1, 1500), rest);
+    // One round in two, the caller is one that asks for lines early.
+    const std::uint32_t held = round % 2 == 0 ? 0 : dice.Between(2, 400);
+
+    const Broken broken = BreakWith(items, first, rest, nodeCount, held);
+    ASSERT_EQ(broken.finished, BreakStatus::kOk);
+    ExpectSound(items, broken.lines, first, rest);
+    EXPECT_TRUE(broken.pendingInOrder) << "round " << round;
+    EXPECT_LE(broken.mostNodes, nodeCount) << "round " << round;
+    EXPECT_LE(broken.mostWork, LineBreaker::MostWorkFor(nodeCount)) << "round " << round;
+    settledEarly += broken.settledEarly;
+    overfull += broken.overfullLines;
+    if (::testing::Test::HasFailure()) {
+      return;
+    }
+  }
+  // See that they were awkward.
+  EXPECT_GT(settledEarly, 0U);
+  EXPECT_GT(overfull, 0U);
 }
 
 }  // namespace

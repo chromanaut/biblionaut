@@ -17,7 +17,7 @@ a desktop.
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
 | `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which reads the outlines of a drawing as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
-| `tests/` | Host tests |
+| `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
 
 Dependency rules, enforced by the build (each part has its own include
@@ -49,8 +49,9 @@ clang-tidy enforces this.
 Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Two
 things are downloaded when CMake configures, each checked against a hash:
 expat, the XML parser, which is C and is why a C compiler is needed, and
-GoogleTest. The tests also link zlib, to check the inflater against: macOS
-has it, and on Linux it is the `zlib1g-dev` package. Seven of the end-to-end
+GoogleTest. The tests also link zlib, to check the inflater against and to
+make their ZIP files with: macOS has it, and on Linux it is the `zlib1g-dev`
+package. Seven of the end-to-end
 tests are run only if Python 3 is found, and one of them makes more of its
 test files if there is a `zip` command.
 
@@ -557,7 +558,17 @@ chapters. The parsing is done by [expat](https://libexpat.github.io);
   document that names none it is a mistake by XML's rules, and parsing
   stops there. An entity a document declares for itself comes out as the
   reference was written. So there is nothing a document can make expand
-  without end.
+  without end. In the value of an attribute, which is given whole, there
+  is nowhere to tell of a reference by name: one the document does not
+  declare is left out of the value, and nothing says so
+  (`alt="caf&eacute;"` arrives as `caf`).
+- **Stopping, and the handler's manners**: a handler may stop the parser
+  from inside one of its own calls, and is then told nothing more, not
+  even the end of an element written as one tag (`<br/>`) whose beginning
+  it was being told of; the parsing ends as `kStopped` whatever else was
+  wrong with the document at that place. A handler may not begin or step
+  the parser it is being called by: that is refused (`kInUse`), and the
+  document in hand goes on.
 - **Names** are given as written, prefix and all (`dc:title`). Namespaces
   are not worked out, which also means a book that uses a prefix it never
   declared can still be read.
@@ -899,6 +910,107 @@ rightly by the tools and wrongly by Python's `zipfile`, which takes such
 names for another encoding; the readings now take a name's bytes as UTF-8
 whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
 
+## Fuzzing
+
+Everything that reads bytes a book's maker chose has a fuzz target in
+`tests/fuzz`: one function that is given some bytes, puts them through the
+reader, and ends the program if the reader does anything it should not.
+Going outside its memory, or into undefined behaviour, is seen by the
+sanitizers. The rest a target checks for itself: what the reader's header
+promises of it, and that no single call does more than the header says a
+call may.
+
+| Target | What it reads its input with | What it holds the reader to, besides staying in its memory |
+|---|---|---|
+| `inflate` | `core::Inflater`, twice, with the stream and the output cut up two ways | No call takes more from its source than `MostInputFor()` allows. Both readings give the same bytes. They are the bytes zlib gives for the same stream, and a stream is whole only if zlib says so |
+| `zip` | `epub::ZipArchive` and `ZipEntryReader`: the directory from end to end, and the first few entries looked up and read | What each call may read from storage (19 reads to open a file, 2 for an entry of the directory, and for a call on an entry what the inflater's bound comes to in blocks). An entry called sound gave as many bytes as the directory says, with its checksum |
+| `xml` | `epub::XmlParser`, with more or less memory, and a handler that may stop it or try to use it from inside | A step asks its source once, for 1 KB. The parser's heap is in order after every step. Text comes in whole characters, and never more of it than twice the bytes read, which is the most a change of encoding makes of them. A handler that stops the parser is told nothing more. The parser reads a good document rightly afterwards |
+| `package` | `epub::Package`, a step at a time, twice | No step reads more than five blocks from storage. Nothing is said of the book until the reading is over. A book that was read has documents, each found again by its entry's name. A second reading says what the first said |
+| `toc` | `epub::TocReader`, a step at a time, twice, with a handler that may ask for no more | No step reads more than five blocks. Every label is whole characters with its spaces collapsed, within its length; every entry points at a document of the book or at none. A stopped reading says so |
+| `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
+
+The `package` and `toc` targets do not take a ZIP file as their input:
+nearly every change to one would be stopped at an entry's checksum, and
+the reader behind it never reached. They take the text of the files, and
+make a sound ZIP file round them each time (`package` can also be given
+the ZIP file itself). Each target's source says how its input is laid out.
+The first byte or two are its choices: how much memory the reader has,
+how big a piece is asked for at a time, when the handler stops.
+
+A target is built two ways.
+
+- **In every ordinary build** it is a program that goes through the inputs
+  kept for it in `tests/fuzz/inputs/<target>/`, once, and CTest runs it as
+  `fuzz.<Target>`. So the targets are built by both compilers and run with
+  the sanitizers and without, on every change, and a fault that an input
+  once found stays found. The kept inputs are the seeds, which
+  `tests/fuzz/make_seeds.py` makes out of text written for the purpose
+  (a stream of each kind, a book of each kind, a table of contents with
+  entries in it), and any input that ever found a fault, cut down to the
+  least that shows it and named `found-` and what it found.
+- **For fuzzing** it is linked with LLVM's fuzzing engine, libFuzzer,
+  which makes up new inputs by changing the ones it has, keeps each one
+  that reaches code none reached before, and goes on from those.
+  `tools/fuzz.py` builds the targets that way and runs them:
+
+  ```
+  tools/fuzz.py                  # every target, a minute each
+  tools/fuzz.py --time 3600      # an hour each
+  tools/fuzz.py xml zip          # only those two
+  ```
+
+  Five minutes a target, on a laptop with ten cores:
+
+  ```
+  $ tools/fuzz.py --time 300
+  Building the fuzz targets with /opt/homebrew/opt/llvm@23/bin/clang ...
+  Fuzzing 6 targets in 2 builds, 300 s each, 8 at once ...
+
+  target       build         inputs tried   kept  result
+  inflate      fuzz               617,735     68  nothing found
+  inflate      fuzz-noasan        758,019    105  nothing found
+  zip          fuzz             1,321,538     28  nothing found
+  zip          fuzz-noasan      4,247,681     76  nothing found
+  xml          fuzz             1,249,846   1565  nothing found
+  xml          fuzz-noasan      1,953,223   2337  nothing found
+  package      fuzz               410,532    883  nothing found
+  package      fuzz-noasan        871,156   1849  nothing found
+  toc          fuzz               444,863   1606  nothing found
+  toc          fuzz-noasan        802,730   2836  nothing found
+  region_heap  fuzz             2,111,634    349  nothing found
+  region_heap  fuzz-noasan      2,917,734    404  nothing found
+
+  Nothing found. The inputs kept are in .fuzz/corpus/.
+  ```
+
+  It runs each target in two builds at once: one with AddressSanitizer,
+  and one without, because the heap inside a block is laid out one way
+  with it and another way without, and the firmware has it the second
+  way. What the engine has kept is in `.fuzz/corpus/`, and the next run
+  starts from it, so a run gets further the more have gone before. An
+  input that makes a target fail is saved in `.fuzz/found/`, and the
+  summary says how to see it fail again and how to cut it down
+  (`tools/fuzz.py --shrink FILE TARGET`). It needs the LLVM named in
+  `tools/llvm-version`: Apple's compiler has no fuzzing engine.
+
+Fuzzing is not one of CI's checks. A minute a target finds only what lies
+near the seeds, and it is hours, from a set of inputs kept between runs,
+that find the rest. It is run on a developer's computer: for a few minutes
+after a change to any of the readers, and for an hour a target before a
+set of them is called finished.
+
+What it does not find:
+
+- **How long a call takes.** A target counts what a call reads, not its
+  time.
+- **A bound that only a large input can reach.** The engine's inputs are
+  16 KB at the most, and it takes a ZIP directory of more than five
+  blocks, or a megabyte of blocks that produce nothing, to tempt a step
+  past its bound. The unit tests make those files and hold the same
+  bounds over them.
+- `ZipArchive::Find`, which reads as much of a directory as it has to,
+  and is not held to anything here.
+
 ## Breaking paragraphs into lines
 
 `layout/line_breaker.h` chooses where the lines of a paragraph end. It is
@@ -1155,6 +1267,7 @@ CI runs all of these on every push to `main` and every pull request
 | Unit tests, with AddressSanitizer and UndefinedBehaviorSanitizer | `cmake --build --preset host && ctest --preset host` |
 | The same tests in the optimised build, without sanitizers | `cmake --build --preset host-release && ctest --preset host-release` |
 | Both as CI's Linux job runs them: GCC 14 on Ubuntu, in Docker | `tools/linux-check.sh` (arguments go to `ctest`) |
+| The fuzz targets, over the inputs kept for them | Part of each of the three above; `ctest --preset host -R '^fuzz'` for those alone |
 | Formatting | `tools/check-format.sh` (`--fix` to rewrite files) |
 | Constructs the portable parts may not use (`std::string`, `std::vector`, `std::function`, `std::shared_ptr`, iostreams, C stdio streams) | `tools/check-banned.py` |
 | clang-tidy (rules in `.clang-tidy`) on everything the host build compiles | `cmake --preset tidy && cmake --build --preset tidy` |
@@ -1164,6 +1277,10 @@ CI runs all of these on every push to `main` and every pull request
 
 The formatting check and both clang-tidy runs need the LLVM major version
 named in `tools/llvm-version` (`brew install llvm@<version>` on macOS).
+
+Fuzzing itself (`tools/fuzz.py`, under Fuzzing above) is not among them: it
+is run on a developer's computer, for minutes or hours, and CI only takes
+the targets through the inputs they have kept.
 
 Two clang-tidy runs, because no single build compiles everything. The host
 run sees the portable parts, the desktop port, the tools and the tests, and

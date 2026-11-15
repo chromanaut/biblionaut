@@ -1,0 +1,1 @@
+<!DOCTYPE a [<!ENTITY me "a long piece of text"><!ATTLIST a kind CDATA "plain"><!ELEMENT a (#PCDATA|b)*>]><a>it is &me;.<b kind='other'/>&nbsp;</a>

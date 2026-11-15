@@ -37,6 +37,28 @@
         "BN_SANITIZE": "OFF",
         "BN_CLANG_TIDY": "ON"
       }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "Fuzz targets with the fuzzing engine and sanitizers (needs LLVM's clang: tools/fuzz.py)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/fuzz",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BN_SANITIZE": "ON",
+        "BN_FUZZ": "ON"
+      }
+    },
+    {
+      "name": "fuzz-noasan",
+      "displayName": "Fuzz targets with the fuzzing engine, without AddressSanitizer (needs LLVM's clang: tools/fuzz.py)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/fuzz-noasan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BN_SANITIZE": "OFF",
+        "BN_FUZZ": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -51,6 +73,16 @@
     {
       "name": "tidy",
       "configurePreset": "tidy"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
+      "targets": ["fuzz_targets"]
+    },
+    {
+      "name": "fuzz-noasan",
+      "configurePreset": "fuzz-noasan",
+      "targets": ["fuzz_targets"]
     }
   ],
   "testPresets": [

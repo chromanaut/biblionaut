@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+<head><meta name="dtb:depth" content="3"/></head>
+<docTitle><text>A Made Book</text></docTitle>
+<navMap>
+<navPoint id="p1" playOrder="1"><navLabel><text>One</text></navLabel><content src="ch1.xhtml"/></navPoint>
+<navPoint id="p2" playOrder="2"><navLabel><text>Part the
+ Second</text></navLabel><content src="text/ch2.xhtml"/>
+<navPoint id="p3" playOrder="3"><navLabel><text>Two</text></navLabel><content src="text/ch2.xhtml#start"/></navPoint>
+<navPoint id="p4" playOrder="4"><navLabel><text>Three</text></navLabel><content src="ch%203.xhtml#a-place"/>
+<navPoint id="p5" playOrder="5"><navLabel><text>Deeper</text></navLabel><content src="ch%203.xhtml#deeper"/></navPoint>
+</navPoint></navPoint>
+<navPoint id="p6" playOrder="6"><navLabel><text>Notes</text></navLabel><content src="notes.xhtml"/></navPoint>
+</navMap>
+<pageList><pageTarget id="pg1" type="normal" value="1"><navLabel><text>1</text></navLabel><content src="ch1.xhtml#p1"/></pageTarget></pageList>
+</ncx>

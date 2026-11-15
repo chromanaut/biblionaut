@@ -40,6 +40,13 @@ struct XML_ParserStruct;
 //   - one the document declares for itself comes out as text, as the
 //     reference was written: "&me;". Since nothing is ever expanded, a
 //     document cannot be made that expands without end.
+//
+// That is for text. The value of an attribute is given whole, so there is
+// nowhere in it to report a reference by name: there, one the document
+// does not declare is left out, and nothing says that it was
+// (alt="caf&eacute;" in a page of XHTML arrives as "caf"). The rest is as
+// in text: a mistake where the document names no DTD, and a reference the
+// document declares for itself left as it was written.
 
 namespace bn::epub {
 
@@ -52,6 +59,7 @@ enum class XmlStatus : std::uint8_t {
   kNoMemory,             // It needs more memory than the parser was given.
   kSourceFailed,         // The source it was being read from failed.
   kStopped,              // Stop() was called.
+  kInUse,                // Begin() or Parse() was called from inside one of the parser's own handlers.
 };
 
 // The name of a status, for diagnostics: "ok", "not well-formed", ...
@@ -109,7 +117,8 @@ class XmlHandler {
 // go. Memory().HighWaterSinceReset() says how much the document in hand
 // has used, and Memory().HighWater() the most any has.
 //
-// Used by one task at a time.
+// Used by one task at a time, and not destroyed from inside one of its own
+// handlers.
 class XmlParser {
  public:
   // How much of the document is read, and parsed, at each Step().
@@ -131,18 +140,25 @@ class XmlParser {
   // Gets ready to read a document from `source` and tell `handler` of it,
   // dropping whatever document was being read. Both must stay alive until
   // the document is done with. Reads nothing yet.
+  //
+  // Not from inside one of the parser's own handlers, where the parser is
+  // part way through a document: that is refused with kInUse, and the
+  // document goes on as it was.
   [[nodiscard]] XmlStatus Begin(core::ByteSource& source, XmlHandler& handler) noexcept;
 
   // Reads the next piece of the document and tells the handler what is in
   // it. Returns true if there is more to do, false once the document has
-  // ended or parsing has failed: Status() says which.
+  // ended or parsing has failed: Status() says which. From inside one of
+  // the parser's own handlers it does nothing, and returns false.
   [[nodiscard]] bool Step() noexcept;
 
   // Begin(), and Step() until there is no more.
   [[nodiscard]] XmlStatus Parse(core::ByteSource& source, XmlHandler& handler) noexcept;
 
   // Ends the parsing, with kStopped. May be called from inside a handler,
-  // which is then the last to be called.
+  // which is then the last to be called: nothing more is told, not even
+  // the end of an element written as one tag whose beginning the handler
+  // was being told of.
   void Stop() noexcept;
 
   XmlStatus Status() const noexcept { return status_; }
@@ -176,7 +192,8 @@ class XmlParser {
   XmlHandler* handler_ = nullptr;
   XmlStatus status_ = XmlStatus::kNotStarted;
   bool finished_ = false;
-  bool inHandler_ = false;
+  bool inHandler_ = false;  // One of the handler's functions is running.
+  bool stopped_ = false;    // A handler has stopped the parser: no more is to be told.
   int errorCode_ = 0;
   std::uint32_t line_ = 0;
   std::uint32_t byteOffset_ = 0;

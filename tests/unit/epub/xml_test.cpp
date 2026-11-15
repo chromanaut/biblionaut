@@ -562,6 +562,140 @@ TEST(XmlParser, CanBeStoppedFromInsideAHandlerOrBetweenSteps) {
   EXPECT_EQ(f.status, XmlStatus::kOk);
 }
 
+TEST(XmlParser, TellsNothingMoreOnceAHandlerHasStoppedItEvenOfAnElementWithNothingInIt) {
+  XmlFixture f;
+  f.recorder = Recorder();
+  f.recorder.parser = &f.parser;
+  f.recorder.stopAt = "item";
+  // An element written as one tag begins and ends at the same place. Its
+  // end is not told to a handler that stopped the parser at its beginning.
+  bn::core::MemoryByteSource source(BytesOf(R"(<package><item id="a"/><item id="b"/></package>)"));
+  EXPECT_EQ(f.parser.Parse(source, f.recorder), XmlStatus::kStopped);
+  EXPECT_EQ(f.recorder.Events(), "(package\n(item\nAid a\n");
+  EXPECT_FALSE(f.parser.Finished());
+
+  // Nor is text that was being put together when an element's end stopped
+  // it, or anything else that follows.
+  struct StopsAtAnEnd final : bn::epub::XmlHandler {
+    void OnStartElement(std::string_view name, const XmlAttributes& /*attributes*/) noexcept override {
+      events += "(" + std::string(name) + "\n";
+    }
+    void OnEndElement(std::string_view name) noexcept override {
+      events += ")" + std::string(name) + "\n";
+      parser->Stop();
+    }
+    void OnText(std::string_view piece) noexcept override { events += "-" + std::string(piece) + "\n"; }
+    void OnEntity(std::string_view name) noexcept override { events += "&" + std::string(name) + "\n"; }
+    XmlParser* parser = nullptr;
+    std::string events;
+  };
+  StopsAtAnEnd stopper;
+  stopper.parser = &f.parser;
+  bn::core::MemoryByteSource second(BytesOf("<a><b/>text<c/></a>"));
+  EXPECT_EQ(f.parser.Parse(second, stopper), XmlStatus::kStopped);
+  EXPECT_EQ(stopper.events, "(a\n(b\n)b\n");
+}
+
+TEST(XmlParser, SaysItWasStoppedWhateverElseWasWrongWhereItWasStopped) {
+  // A document that ends, unfinished, on a carriage return. The parser
+  // holds that last character back until it knows no line feed follows,
+  // which is at the document's end: so the handler is told of it in the
+  // same breath as the document is found to be cut short. A handler that
+  // stops the parser there has stopped it; that the document was no good
+  // either is not what it is told.
+  struct StopsAtText final : bn::epub::XmlHandler {
+    void OnStartElement(std::string_view /*name*/, const XmlAttributes& /*attributes*/) noexcept override {}
+    void OnEndElement(std::string_view /*name*/) noexcept override {}
+    void OnText(std::string_view piece) noexcept override {
+      text += piece;
+      if (piece == stopAt) {
+        parser->Stop();
+      }
+    }
+    void OnEntity(std::string_view /*name*/) noexcept override {}
+    XmlParser* parser = nullptr;
+    std::string stopAt;
+    std::string text;
+  };
+  XmlFixture f;
+  StopsAtText stopper;
+  stopper.parser = &f.parser;
+  stopper.stopAt = "\n";  // What a carriage return is given as.
+  bn::core::MemoryByteSource source(BytesOf("<a>one\r"));
+  EXPECT_EQ(f.parser.Parse(source, stopper), XmlStatus::kStopped);
+  EXPECT_EQ(stopper.text, "one\n");
+  EXPECT_EQ(f.parser.ErrorCode(), 0);
+  EXPECT_FALSE(f.parser.Finished());
+
+  // Not stopped, the same document is what it is: cut short.
+  stopper.stopAt = "never";
+  stopper.text.clear();
+  bn::core::MemoryByteSource again(BytesOf("<a>one\r"));
+  EXPECT_EQ(f.parser.Parse(again, stopper), XmlStatus::kNotWellFormed);
+  EXPECT_EQ(stopper.text, "one\n");
+}
+
+TEST(XmlParser, RefusesToBeUsedFromInsideOneOfItsOwnHandlers) {
+  // A handler that tries to start its parser on another document, and to
+  // step it, while the parser is in the middle of telling it of this one.
+  struct Meddler final : bn::epub::XmlHandler {
+    void OnStartElement(std::string_view name, const XmlAttributes& /*attributes*/) noexcept override {
+      events += "(" + std::string(name) + "\n";
+      if (name == "b") {
+        begun = parser->Begin(*other, *this);
+        parsed = parser->Parse(*other, *this);
+        stepped = parser->Step();
+      }
+    }
+    void OnEndElement(std::string_view name) noexcept override { events += ")" + std::string(name) + "\n"; }
+    void OnText(std::string_view piece) noexcept override { events += "-" + std::string(piece) + "\n"; }
+    void OnEntity(std::string_view /*name*/) noexcept override {}
+    XmlParser* parser = nullptr;
+    bn::core::ByteSource* other = nullptr;
+    XmlStatus begun = XmlStatus::kOk;
+    XmlStatus parsed = XmlStatus::kOk;
+    bool stepped = true;
+    std::string events;
+  };
+  XmlFixture f;
+  Meddler meddler;
+  bn::core::MemoryByteSource other(BytesOf("<other/>"));
+  meddler.parser = &f.parser;
+  meddler.other = &other;
+  bn::core::MemoryByteSource source(BytesOf("<a><b>one</b><c>two</c></a>"));
+  // Each is refused, and the document in hand is read to its end as if
+  // nothing had been asked.
+  EXPECT_EQ(f.parser.Parse(source, meddler), XmlStatus::kOk);
+  EXPECT_EQ(meddler.begun, XmlStatus::kInUse);
+  EXPECT_EQ(meddler.parsed, XmlStatus::kInUse);
+  EXPECT_FALSE(meddler.stepped);
+  EXPECT_EQ(meddler.events, "(a\n(b\n-one\n)b\n(c\n-two\n)c\n)a\n");
+  EXPECT_TRUE(f.parser.Finished());
+  EXPECT_EQ(other.Remaining(), 8u) << "nothing was read of the other document";
+  EXPECT_TRUE(f.parser.Memory().IsConsistent());
+  EXPECT_EQ(f.parser.Memory().MisuseCount(), 0u);
+  EXPECT_STREQ(bn::epub::XmlStatusName(XmlStatus::kInUse), "in use");
+}
+
+TEST(XmlParser, LeavesOutOfAnAttributeAnEntityItDoesNotKnow) {
+  XmlFixture f;
+  // In text such a reference is reported. In the value of an attribute
+  // there is nowhere to report it: the value comes without it, and nothing
+  // says that anything was left out.
+  EXPECT_EQ(f.Parse(R"(<!DOCTYPE html PUBLIC "x" "y"><img alt="caf&eacute; au lait &amp; tea"/>)"),
+            "(img\nAalt caf au lait & tea\n)img\n");
+  EXPECT_EQ(f.status, XmlStatus::kOk);
+  // Where the document names no DTD, it is the same mistake as in text.
+  (void)f.Parse(R"(<img alt="caf&eacute;"/>)");
+  EXPECT_EQ(f.status, XmlStatus::kNotWellFormed);
+  EXPECT_EQ(f.parser.ErrorCode(), kUndefinedEntity);
+  // One the document declares for itself is as it is in text: not
+  // expanded, and left as it was written.
+  EXPECT_EQ(f.Parse(R"(<!DOCTYPE a [<!ENTITY me "a long piece of text">]><a b="it is &me;."/>)"),
+            "(a\nAb it is &me;.\n)a\n");
+  EXPECT_EQ(f.status, XmlStatus::kOk);
+}
+
 TEST(XmlParser, ReportsASourceThatFails) {
   XmlFixture f;
   const std::string document = "<a>" + std::string(3'000, 'x') + "</a>";

@@ -39,44 +39,6 @@ bool IsPicture(MediaType type) noexcept {
   return type == MediaType::kJpeg || type == MediaType::kPng || type == MediaType::kGif || type == MediaType::kSvg;
 }
 
-// How parsing one entry of the book went.
-enum class Parsed : std::uint8_t {
-  kWhole,       // To its end, and it is XML.
-  kMissing,     // There is no entry of that name.
-  kNotXml,      // The parser stopped in it.
-  kStopped,     // The handler stopped the parser.
-  kNoMemory,    // The parser ran out of memory.
-  kUnreadable,  // The ZIP file is damaged there, or storage failed.
-};
-
-// Parses the entry called `name`, telling `handler` what is in it.
-Parsed ParseEntry(ZipArchive& archive, core::BlockFile& entries, ZipEntryReader& reader, XmlParser& xml,
-                  std::string_view name, XmlHandler& handler) noexcept {
-  ZipEntry entry;
-  ZipStatus status = archive.Find(name, entry);
-  if (status == ZipStatus::kNotFound) {
-    return Parsed::kMissing;
-  }
-  if (status == ZipStatus::kOk) {
-    status = reader.Open(entries, entry);
-  }
-  if (status != ZipStatus::kOk) {
-    return Parsed::kUnreadable;
-  }
-  switch (xml.Parse(reader, handler)) {
-    case XmlStatus::kOk:
-      return Parsed::kWhole;
-    case XmlStatus::kNoMemory:
-      return Parsed::kNoMemory;
-    case XmlStatus::kStopped:
-      return Parsed::kStopped;
-    case XmlStatus::kSourceFailed:
-      return Parsed::kUnreadable;
-    default:
-      return Parsed::kNotXml;
-  }
-}
-
 }  // namespace
 
 const char* PackageStatusName(PackageStatus status) noexcept {
@@ -154,204 +116,175 @@ const char* MediaTypeName(MediaType type) noexcept {
   return "unknown";
 }
 
-// ---- What is listened for in container.xml ----
+// ---- What is listened for in container.xml and in the package file ----
 
-namespace {
-
-class ContainerHandler final : public XmlHandler {
- public:
-  explicit ContainerHandler(core::FixedText<kMaxBookPath>& path) noexcept : path_(path) {}
-
-  void OnStartElement(std::string_view name, const XmlAttributes& attributes) noexcept override {
-    if (XmlLocalName(name) != "rootfile") {
-      return;
-    }
-    std::string_view fullPath;
-    if (!attributes.Find("full-path", fullPath) || fullPath.empty()) {
-      return;
-    }
-    // The first one that says it is a package; failing that, the first.
-    std::string_view type;
-    const bool isPackage = attributes.Find("media-type", type) && SameButForCase(type, kPackageMediaType);
-    if (path_.Empty() || (isPackage && !foundPackage_)) {
-      path_.Clear();
-      path_.Append(fullPath);
-      foundPackage_ = isPackage;
-    }
+void Package::OnStartElement(std::string_view name, const XmlAttributes& attributes) noexcept {
+  const std::string_view local = XmlLocalName(name);
+  if (stage_ == Stage::kReadContainer) {
+    StartInContainer(local, attributes);
+    return;
   }
-  void OnEndElement(std::string_view /*name*/) noexcept override {}
-  void OnText(std::string_view /*text*/) noexcept override {}
-  void OnEntity(std::string_view /*name*/) noexcept override {}
-
- private:
-  core::FixedText<kMaxBookPath>& path_;
-  bool foundPackage_ = false;
-};
-
-}  // namespace
-
-// ---- What is listened for in the package file ----
-
-class Package::PackageHandler final : public XmlHandler {
- public:
-  PackageHandler(Package& package, XmlParser& xml) noexcept
-      : package_(package), xml_(xml), base_(BookDirectory(package.PackagePath())) {}
-
-  void OnStartElement(std::string_view name, const XmlAttributes& attributes) noexcept override {
-    ++depth_;
-    const std::string_view local = XmlLocalName(name);
-    if (depth_ == 2) {
-      // The parts of a package.
-      section_ = local == "metadata"   ? Section::kMetadata
-                 : local == "manifest" ? Section::kManifest
-                 : local == "spine"    ? Section::kSpine
-                                       : Section::kOther;
-      std::string_view toc;
-      if (section_ == Section::kSpine && attributes.Find("toc", toc) && !toc.empty()) {
-        package_.ncxId_ = NameHash(toc);
-        package_.hasNcxId_ = true;
+  ++depth_;
+  if (depth_ == 2) {
+    // The parts of a package.
+    section_ = local == "metadata"   ? Section::kMetadata
+               : local == "manifest" ? Section::kManifest
+               : local == "spine"    ? Section::kSpine
+                                     : Section::kOther;
+    std::string_view toc;
+    if (section_ == Section::kSpine && attributes.Find("toc", toc) && !toc.empty()) {
+      ncxId_ = NameHash(toc);
+      hasNcxId_ = true;
+    }
+    return;
+  }
+  if (depth_ < 3) {
+    return;
+  }
+  switch (section_) {
+    case Section::kMetadata:
+      StartInMetadata(local, attributes);
+      break;
+    case Section::kManifest:
+      if (depth_ == 3 && local == "item") {
+        ManifestItem(attributes);
       }
-      return;
-    }
-    if (depth_ < 3) {
-      return;
-    }
-    switch (section_) {
-      case Section::kMetadata:
-        StartInMetadata(local, attributes);
-        break;
-      case Section::kManifest:
-        if (depth_ == 3 && local == "item") {
-          Item(attributes);
-        }
-        break;
-      case Section::kSpine:
-        if (depth_ == 3 && local == "itemref") {
-          ItemRef(attributes);
-        }
-        break;
-      case Section::kOther:
-        break;
-    }
-  }
-
-  void OnEndElement(std::string_view /*name*/) noexcept override {
-    if (capture_ != Capture::kNone && depth_ == captureDepth_) {
-      package_.title_.RemoveTrailingSpace();
-      package_.author_.RemoveTrailingSpace();
-      package_.language_.RemoveTrailingSpace();
-      capture_ = Capture::kNone;
-    }
-    --depth_;
-  }
-
-  void OnText(std::string_view text) noexcept override {
-    switch (capture_) {
-      case Capture::kNone:
-        break;
-      case Capture::kTitle:
-        package_.title_.AppendCollapsed(text);
-        break;
-      case Capture::kAuthor:
-        package_.author_.AppendCollapsed(text);
-        break;
-      case Capture::kLanguage:
-        package_.language_.AppendCollapsed(text);
-        break;
-    }
-  }
-
-  // An entity the parser left alone. The one that turns up in titles is
-  // the space that does not break; anything else is passed over.
-  void OnEntity(std::string_view name) noexcept override {
-    if (name == "nbsp") {
-      OnText(" ");
-    }
-  }
-
- private:
-  enum class Section : std::uint8_t { kOther, kMetadata, kManifest, kSpine };
-  enum class Capture : std::uint8_t { kNone, kTitle, kAuthor, kLanguage };
-
-  void StartInMetadata(std::string_view local, const XmlAttributes& attributes) noexcept {
-    if (capture_ != Capture::kNone) {
-      return;  // Inside a title: whatever this is, its text is the title's.
-    }
-    // The first title, the first creator and the first language that have
-    // anything in them. Old books write these names with a capital.
-    if (SameButForCase(local, "title") && package_.title_.Empty()) {
-      capture_ = Capture::kTitle;
-    } else if (SameButForCase(local, "creator") && package_.author_.Empty()) {
-      capture_ = Capture::kAuthor;
-    } else if (SameButForCase(local, "language") && package_.language_.Empty()) {
-      capture_ = Capture::kLanguage;
-    } else if (local == "meta") {
-      // EPUB 2's way of naming the cover: <meta name="cover" content="the-id"/>.
-      std::string_view metaName;
-      std::string_view content;
-      if (!package_.hasCoverId_ && attributes.Find("name", metaName) && metaName == "cover" &&
-          attributes.Find("content", content) && !content.empty()) {
-        package_.coverId_ = NameHash(content);
-        package_.hasCoverId_ = true;
+      break;
+    case Section::kSpine:
+      if (depth_ == 3 && local == "itemref") {
+        SpineReference(attributes);
       }
-    }
-    captureDepth_ = depth_;
+      break;
+    case Section::kOther:
+      break;
   }
+}
 
-  void Item(const XmlAttributes& attributes) noexcept {
-    std::string_view href;
-    (void)attributes.Find("href", href);
-    std::array<char, kMaxBookPath> path{};
-    const std::size_t length = ResolveBookPath(base_, href, path);
-    if (length == 0) {
-      return;  // Not a file of the book: somewhere else, or nowhere at all.
-    }
-    std::string_view id;
-    std::string_view type;
-    std::string_view properties;
-    std::uint8_t flags = 0;
-    // An item with no id gets the number of an empty one, which nothing
-    // is ever looked up by.
-    (void)attributes.Find("id", id);
-    (void)attributes.Find("media-type", type);
-    if (attributes.Find("properties", properties)) {
-      if (HasWord(properties, "nav")) {
-        flags = With(flags, kIsNav);
-      }
-      if (HasWord(properties, "cover-image")) {
-        flags = With(flags, kIsCoverImage);
-      }
-    }
-    if (!package_.AddItem(NameHash(id), NameHash(std::string_view(path.data(), length)), MediaTypeOf(type), flags)) {
-      OutOfMemory();
+void Package::OnEndElement(std::string_view /*name*/) noexcept {
+  if (stage_ != Stage::kReadPackage) {
+    return;
+  }
+  if (capture_ != Capture::kNone && depth_ == captureDepth_) {
+    title_.RemoveTrailingSpace();
+    author_.RemoveTrailingSpace();
+    language_.RemoveTrailingSpace();
+    capture_ = Capture::kNone;
+  }
+  --depth_;
+}
+
+void Package::OnText(std::string_view text) noexcept {
+  switch (capture_) {
+    case Capture::kNone:
+      break;
+    case Capture::kTitle:
+      title_.AppendCollapsed(text);
+      break;
+    case Capture::kAuthor:
+      author_.AppendCollapsed(text);
+      break;
+    case Capture::kLanguage:
+      language_.AppendCollapsed(text);
+      break;
+  }
+}
+
+// An entity the parser left alone. The one that turns up in titles is the
+// space that does not break; anything else is passed over.
+void Package::OnEntity(std::string_view name) noexcept {
+  if (name == "nbsp") {
+    OnText(" ");
+  }
+}
+
+void Package::StartInContainer(std::string_view local, const XmlAttributes& attributes) noexcept {
+  if (local != "rootfile") {
+    return;
+  }
+  std::string_view fullPath;
+  if (!attributes.Find("full-path", fullPath) || fullPath.empty()) {
+    return;
+  }
+  // The first one that says it is a package; failing that, the first.
+  std::string_view type;
+  const bool isPackage = attributes.Find("media-type", type) && SameButForCase(type, kPackageMediaType);
+  if (packagePath_.Empty() || (isPackage && !foundPackage_)) {
+    packagePath_.Clear();
+    packagePath_.Append(fullPath);
+    foundPackage_ = isPackage;
+  }
+}
+
+void Package::StartInMetadata(std::string_view local, const XmlAttributes& attributes) noexcept {
+  if (capture_ != Capture::kNone) {
+    return;  // Inside a title: whatever this is, its text is the title's.
+  }
+  // The first title, the first creator and the first language that have
+  // anything in them. Old books write these names with a capital.
+  if (SameButForCase(local, "title") && title_.Empty()) {
+    capture_ = Capture::kTitle;
+  } else if (SameButForCase(local, "creator") && author_.Empty()) {
+    capture_ = Capture::kAuthor;
+  } else if (SameButForCase(local, "language") && language_.Empty()) {
+    capture_ = Capture::kLanguage;
+  } else if (local == "meta") {
+    // EPUB 2's way of naming the cover: <meta name="cover" content="the-id"/>.
+    std::string_view metaName;
+    std::string_view content;
+    if (!hasCoverId_ && attributes.Find("name", metaName) && metaName == "cover" &&
+        attributes.Find("content", content) && !content.empty()) {
+      coverId_ = NameHash(content);
+      hasCoverId_ = true;
     }
   }
+  captureDepth_ = depth_;
+}
 
-  void ItemRef(const XmlAttributes& attributes) noexcept {
-    std::string_view idref;
-    if (!attributes.Find("idref", idref) || idref.empty()) {
-      return;
+void Package::ManifestItem(const XmlAttributes& attributes) noexcept {
+  std::string_view href;
+  (void)attributes.Find("href", href);
+  std::array<char, kMaxBookPath> path{};
+  const std::size_t length = ResolveBookPath(base_, href, path);
+  if (length == 0) {
+    return;  // Not a file of the book: somewhere else, or nowhere at all.
+  }
+  std::string_view id;
+  std::string_view type;
+  std::string_view properties;
+  std::uint8_t flags = 0;
+  // An item with no id gets the number of an empty one, which nothing is
+  // ever looked up by.
+  (void)attributes.Find("id", id);
+  (void)attributes.Find("media-type", type);
+  if (attributes.Find("properties", properties)) {
+    if (HasWord(properties, "nav")) {
+      flags = With(flags, kIsNav);
     }
-    std::string_view linear;
-    const bool isLinear = !attributes.Find("linear", linear) || linear != "no";
-    if (!package_.AddSpine(NameHash(idref), isLinear)) {
-      OutOfMemory();
+    if (HasWord(properties, "cover-image")) {
+      flags = With(flags, kIsCoverImage);
     }
   }
-
-  void OutOfMemory() noexcept {
-    package_.outOfMemory_ = true;
-    xml_.Stop();
+  if (!AddItem(NameHash(id), NameHash(std::string_view(path.data(), length)), MediaTypeOf(type), flags)) {
+    OutOfMemory();
   }
+}
 
-  Package& package_;
-  XmlParser& xml_;
-  std::string_view base_;
-  int depth_ = 0;
-  Section section_ = Section::kOther;
-  Capture capture_ = Capture::kNone;
-  int captureDepth_ = 0;
-};
+void Package::SpineReference(const XmlAttributes& attributes) noexcept {
+  std::string_view idref;
+  if (!attributes.Find("idref", idref) || idref.empty()) {
+    return;
+  }
+  std::string_view linear;
+  const bool isLinear = !attributes.Find("linear", linear) || linear != "no";
+  if (!AddSpine(NameHash(idref), isLinear)) {
+    OutOfMemory();
+  }
+}
+
+void Package::OutOfMemory() noexcept {
+  outOfMemory_ = true;
+  xml_->Stop();
+}
 
 // ---- The package ----
 
@@ -389,17 +322,72 @@ void Package::Clear() noexcept {
   ncxId_ = 0;
   hasCoverId_ = false;
   hasNcxId_ = false;
+  cursor_ = {};
+  looked_ = 0;
+  triedDecoded_ = false;
+  resolved_ = 0;
+  kept_ = 0;
+  wanted_ = 0;
+  depth_ = 0;
+  section_ = Section::kOther;
+  capture_ = Capture::kNone;
+  captureDepth_ = 0;
+  base_ = {};
+  foundPackage_ = false;
 }
 
-PackageStatus Package::Fail(PackageStatus status) noexcept {
-  // Nothing half found is left to be mistaken for an answer.
-  spineCount_ = 0;
-  cover_ = {};
-  nav_ = {};
-  ncx_ = {};
+void Package::EndPart() noexcept {
+  // The part of the reading that has just ended goes into the trace.
+  // Finding a file and parsing it are one part; so are the two halves of
+  // the matching.
+  switch (stage_) {
+    case Stage::kIdle:
+      break;
+    case Stage::kFindContainer:
+    case Stage::kReadContainer:
+      BN_TRACE_SPAN_SINCE(kSpanPackageContainer, partBegan_, 0);
+      break;
+    case Stage::kFindPackage:
+    case Stage::kReadPackage:
+      BN_TRACE_SPAN_SINCE(kSpanPackageFile, partBegan_, 0);
+      break;
+    case Stage::kResolveSpine:
+    case Stage::kResolveRest:
+      // How many documents the spine named: those kept and those dropped.
+      BN_TRACE_SPAN_SINCE(kSpanPackageResolve, partBegan_,
+                          static_cast<std::uint32_t>(spineCount_) + unknownSpineItems_);
+      break;
+    case Stage::kFindFiles:
+      BN_TRACE_SPAN_SINCE(kSpanPackageFindFiles, partBegan_, itemCount_);
+      break;
+  }
+  partBegan_ = BN_TRACE_NOW();
+}
+
+PackageStatus Package::End(PackageStatus status) noexcept {
+  EndPart();
+  stage_ = Stage::kIdle;
+  if (status != PackageStatus::kOk) {
+    // Nothing half found is left to be mistaken for an answer.
+    spineCount_ = 0;
+    cover_ = {};
+    nav_ = {};
+    ncx_ = {};
+    packagesFailed.Add();
+  }
   status_ = status;
-  packagesFailed.Add();
+  BN_TRACE_TOP_SPAN_SINCE(kSpanPackageRead, began_, static_cast<std::uint32_t>(status));
   return status;
+}
+
+void Package::MoveTo(Stage stage) noexcept {
+  const bool samePart = (stage_ == Stage::kFindContainer && stage == Stage::kReadContainer) ||
+                        (stage_ == Stage::kFindPackage && stage == Stage::kReadPackage) ||
+                        (stage_ == Stage::kResolveSpine && stage == Stage::kResolveRest);
+  if (!samePart) {
+    EndPart();
+  }
+  stage_ = stage;
 }
 
 bool Package::AddItem(std::uint64_t idHash, std::uint64_t pathHash, MediaType type, std::uint8_t flags) noexcept {
@@ -449,8 +437,8 @@ std::uint32_t Package::ItemWithId(std::uint64_t idHash) const noexcept {
 }
 
 std::size_t Package::SpineIndexOf(std::string_view path) const noexcept {
-  if (spineCount_ == 0) {
-    return kNotInSpine;  // No book, or one that could not be read.
+  if (spineCount_ == 0 || Reading()) {
+    return kNotInSpine;  // No book, or one that could not be read, or one not yet read.
   }
   const std::uint64_t hash = NameHash(path);
   const auto low = static_cast<std::uint32_t>(hash);
@@ -465,12 +453,232 @@ std::size_t Package::SpineIndexOf(std::string_view path) const noexcept {
   return kNotInSpine;
 }
 
-void Package::Resolve() noexcept {
-  // The spine: each document's id becomes the item it names. One that
-  // names no item is dropped.
-  std::size_t kept = 0;
-  for (std::size_t i = 0; i < spineCount_; ++i) {
-    const std::uint64_t id = spine_[i].entry.headerOffset | (std::uint64_t{spine_[i].entry.compressedSize} << 32U);
+// ---- The reading, a piece at a time ----
+
+PackageStatus Package::Begin(ZipArchive& archive, core::BlockFile& entries, ZipEntryReader& reader,
+                             XmlParser& xml) noexcept {
+  Clear();
+  packagesRead.Add();
+  archive_ = &archive;
+  entries_ = &entries;
+  reader_ = &reader;
+  xml_ = &xml;
+  began_ = BN_TRACE_NOW();
+  partBegan_ = began_;
+  if (spine_ == nullptr) {
+    return End(PackageStatus::kNoMemory);
+  }
+  status_ = PackageStatus::kOk;
+  stage_ = Stage::kFindContainer;
+  return status_;
+}
+
+bool Package::Step() noexcept {
+  switch (stage_) {
+    case Stage::kIdle:
+      break;
+    case Stage::kFindContainer:
+      FindContainer();
+      break;
+    case Stage::kReadContainer:
+      ReadContainer();
+      break;
+    case Stage::kFindPackage:
+      FindPackage();
+      break;
+    case Stage::kReadPackage:
+      ReadPackageFile();
+      break;
+    case Stage::kResolveSpine:
+      ResolveSpine();
+      break;
+    case Stage::kResolveRest:
+      ResolveRest();
+      break;
+    case Stage::kFindFiles:
+      FindFiles();
+      break;
+  }
+  return Reading();
+}
+
+PackageStatus Package::Read(ZipArchive& archive, core::BlockFile& entries, ZipEntryReader& reader,
+                            XmlParser& xml) noexcept {
+  if (Begin(archive, entries, reader, xml) == PackageStatus::kOk) {
+    while (Step()) {
+    }
+  }
+  return status_;
+}
+
+ZipStatus Package::NextEntry(ZipEntry& entry, std::span<char> name, std::uint32_t& gone) noexcept {
+  const bool first = cursor_.index == 0;
+  const std::uint32_t before = cursor_.offset;
+  const ZipStatus status = archive_->Next(cursor_, entry, name);
+  if (status == ZipStatus::kOk || status == ZipStatus::kUnsupported) {
+    // Where the first entry is, only the archive knows: what is counted
+    // for it is the least a record of its name's length takes.
+    gone += first ? 46U + entry.nameLength : cursor_.offset - before;
+  }
+  return status;
+}
+
+Package::Looked Package::LookFor(std::string_view name, ZipEntry& entry) noexcept {
+  std::array<char, kMaxBookPath> found{};
+  std::uint32_t gone = 0;
+  for (std::uint32_t entries = 0; entries < kEntriesPerStep && gone < kDirectoryBytesPerStep; ++entries) {
+    if (looked_ >= archive_->EntryCount()) {
+      // Every entry has been looked at. (An archive that is not open has
+      // none, and says what it is when it is asked for one.)
+      return archive_->IsOpen() ? Looked::kMissing : Looked::kUnreadable;
+    }
+    ZipEntry candidate;
+    const ZipStatus status = NextEntry(candidate, found, gone);
+    if (status == ZipStatus::kEnd) {
+      // Round to the start, for the entries that come before where the
+      // search began. That is this step's work done: what is read next is
+      // somewhere else in the file.
+      cursor_ = {};
+      return Looked::kMore;
+    }
+    if (status != ZipStatus::kOk && status != ZipStatus::kUnsupported) {
+      return Looked::kUnreadable;
+    }
+    ++looked_;
+    if (candidate.nameLength == name.size() && std::string_view(found.data(), name.size()) == name) {
+      if (status == ZipStatus::kUnsupported) {
+        return Looked::kUnreadable;  // It is there, in a form that cannot be read.
+      }
+      entry = candidate;
+      return Looked::kFound;
+    }
+  }
+  return Looked::kMore;
+}
+
+bool Package::BeginParsing(const ZipEntry& entry) noexcept {
+  if (reader_->Open(*entries_, entry) != ZipStatus::kOk) {
+    (void)End(PackageStatus::kUnreadable);
+    return false;
+  }
+  if (xml_->Begin(*reader_, *this) != XmlStatus::kOk) {
+    (void)End(PackageStatus::kNoMemory);  // All that can stop a parser beginning.
+    return false;
+  }
+  return true;
+}
+
+// Where the package file is: container.xml says.
+void Package::FindContainer() noexcept {
+  ZipEntry entry;
+  switch (LookFor(kContainerName, entry)) {
+    case Looked::kMore:
+      break;
+    case Looked::kMissing:
+      (void)End(PackageStatus::kNoContainer);
+      break;
+    case Looked::kUnreadable:
+      (void)End(PackageStatus::kUnreadable);
+      break;
+    case Looked::kFound:
+      if (BeginParsing(entry)) {
+        MoveTo(Stage::kReadContainer);
+      }
+      break;
+  }
+}
+
+void Package::ReadContainer() noexcept {
+  if (xml_->Step()) {
+    return;
+  }
+  switch (xml_->Status()) {
+    case XmlStatus::kSourceFailed:
+      (void)End(PackageStatus::kUnreadable);
+      return;
+    case XmlStatus::kNoMemory:
+      (void)End(PackageStatus::kNoMemory);
+      return;
+    default:
+      break;  // What matters is whether it named a package before it ended, however it ended.
+  }
+  if (packagePath_.Empty() || packagePath_.Truncated()) {
+    (void)End(PackageStatus::kNoContainer);
+    return;
+  }
+  // The search carries on from where container.xml was, which is usually
+  // just before the package file.
+  looked_ = 0;
+  MoveTo(Stage::kFindPackage);
+}
+
+// The package file. Its path is taken as written; if no entry has that
+// name, as a reference would be read, with its %XX turned into bytes.
+void Package::FindPackage() noexcept {
+  ZipEntry entry;
+  switch (LookFor(PackagePath(), entry)) {
+    case Looked::kMore:
+      break;
+    case Looked::kUnreadable:
+      (void)End(PackageStatus::kUnreadable);
+      break;
+    case Looked::kMissing: {
+      std::array<char, kMaxBookPath> decoded{};
+      const std::size_t length = triedDecoded_ ? 0 : ResolveBookPath("", PackagePath(), decoded);
+      const std::string_view other(decoded.data(), length);
+      if (length == 0 || other == PackagePath()) {
+        (void)End(PackageStatus::kNoPackage);
+        break;
+      }
+      packagePath_.Clear();
+      packagePath_.Append(other);
+      triedDecoded_ = true;
+      looked_ = 0;
+      break;
+    }
+    case Looked::kFound:
+      if (BeginParsing(entry)) {
+        base_ = BookDirectory(PackagePath());
+        depth_ = 0;
+        section_ = Section::kOther;
+        capture_ = Capture::kNone;
+        MoveTo(Stage::kReadPackage);
+      }
+      break;
+  }
+}
+
+void Package::ReadPackageFile() noexcept {
+  if (xml_->Step()) {
+    return;
+  }
+  const XmlStatus ended = xml_->Status();
+  if (outOfMemory_ || ended == XmlStatus::kNoMemory) {
+    (void)End(PackageStatus::kNoMemory);
+    return;
+  }
+  if (ended == XmlStatus::kSourceFailed) {
+    (void)End(PackageStatus::kUnreadable);
+    return;
+  }
+  // A package that goes wrong after its spine has said all that is needed
+  // of it.
+  cutShort_ = ended != XmlStatus::kOk && ended != XmlStatus::kStopped;
+  capture_ = Capture::kNone;
+  resolved_ = 0;
+  kept_ = 0;
+  MoveTo(Stage::kResolveSpine);
+}
+
+void Package::ResolveSpine() noexcept {
+  // Each document's id becomes the item it names. One that names no item
+  // is dropped. Looking an id up goes through the manifest, so only so
+  // many are looked up in one step.
+  std::uint32_t compares = 0;
+  for (; resolved_ < spineCount_ && compares < kComparesPerStep; ++resolved_) {
+    compares += itemCount_ + 1;
+    const SpineItem& in = spine_[resolved_];
+    const std::uint64_t id = in.entry.headerOffset | (std::uint64_t{in.entry.compressedSize} << 32U);
     const std::uint32_t index = ItemWithId(id);
     if (index == kNoItem) {
       ++unknownSpineItems_;
@@ -478,18 +686,25 @@ void Package::Resolve() noexcept {
     }
     Item& item = ItemAt(index);
     item.flags = With(item.flags, kWanted);
-    if (item.spineIndex == kNoSpineIndex && kept < kNoSpineIndex) {
-      item.spineIndex = static_cast<std::uint16_t>(kept);
+    if (item.spineIndex == kNoSpineIndex && kept_ < kNoSpineIndex) {
+      item.spineIndex = static_cast<std::uint16_t>(kept_);
     }
-    SpineItem& out = spine_[kept++];
-    out.linear = spine_[i].linear;
+    const bool linear = in.linear;
+    SpineItem& out = spine_[kept_++];
+    out.linear = linear;
     out.entry = {};
     out.entry.headerOffset = index;
     out.present = false;
-    out.type = ItemAt(index).type;
+    out.type = item.type;
   }
-  spineCount_ = kept;
+  if (resolved_ < spineCount_) {
+    return;
+  }
+  spineCount_ = kept_;
+  MoveTo(Stage::kResolveRest);
+}
 
+void Package::ResolveRest() noexcept {
   // The cover: the item the package marks as the cover picture; failing
   // that, the one EPUB 2's <meta name="cover"> names, if it is a picture
   // (some books name the cover's page there, not its picture).
@@ -524,29 +739,44 @@ void Package::Resolve() noexcept {
       found->type = ItemAt(found->item).type;
     }
   }
+  // How many files the directory is to be gone through for.
+  wanted_ = 0;
+  for (std::uint32_t index = 0; index < itemCount_; ++index) {
+    wanted_ += Has(ItemAt(index).flags, kWanted) ? 1 : 0;
+  }
+  if (spineCount_ == 0) {
+    (void)End(PackageStatus::kNotPackage);
+    return;
+  }
+  cursor_ = {};
+  MoveTo(Stage::kFindFiles);
 }
 
-PackageStatus Package::FindFiles(ZipArchive& archive) noexcept {
-  std::uint32_t wanted = 0;
-  for (std::uint32_t index = 0; index < itemCount_; ++index) {
-    wanted += Has(ItemAt(index).flags, kWanted) ? 1 : 0;
-  }
-  // Once through the directory, in its own order. Each entry's name is
-  // turned into its number and looked for among the manifest's.
+void Package::FindFiles() noexcept {
+  // Once through the directory, in its own order, some entries at a step.
+  // Each entry's name is turned into its number and looked for among the
+  // manifest's.
   std::array<char, kMaxBookPath> name{};
-  ZipArchive::Cursor cursor;
-  while (wanted > 0) {
+  std::uint32_t gone = 0;
+  std::uint32_t compares = 0;
+  bool ended = false;
+  for (std::uint32_t entries = 0;
+       wanted_ > 0 && entries < kEntriesPerStep && gone < kDirectoryBytesPerStep && compares < kComparesPerStep;
+       ++entries) {
     ZipEntry entry;
-    const ZipStatus status = archive.Next(cursor, entry, name);
+    const ZipStatus status = NextEntry(entry, name, gone);
     if (status == ZipStatus::kEnd) {
+      ended = true;
       break;
     }
     if (status == ZipStatus::kUnsupported || (status == ZipStatus::kOk && entry.nameLength > name.size())) {
       continue;  // An entry that cannot be read, or with a name longer than any the manifest's were kept by.
     }
     if (status != ZipStatus::kOk) {
-      return PackageStatus::kUnreadable;
+      (void)End(PackageStatus::kUnreadable);
+      return;
     }
+    compares += itemCount_;
     const std::uint64_t hash = NameHash(std::string_view(name.data(), entry.nameLength));
     const auto low = static_cast<std::uint32_t>(hash);
     const auto high = static_cast<std::uint16_t>(hash >> 32U);
@@ -558,7 +788,7 @@ PackageStatus Package::FindFiles(ZipArchive& archive) noexcept {
       // Wanted, and not found before: if the ZIP file has the name twice,
       // the first is the one.
       item.flags = Without(item.flags, kWanted);
-      --wanted;
+      --wanted_;
       for (std::size_t i = 0; i < spineCount_; ++i) {
         if (!spine_[i].present && spine_[i].entry.headerOffset == index) {
           spine_[i].entry = entry;
@@ -573,103 +803,16 @@ PackageStatus Package::FindFiles(ZipArchive& archive) noexcept {
       }
     }
   }
+  if (wanted_ > 0 && !ended) {
+    return;
+  }
   // What was not found has no entry.
   for (std::size_t i = 0; i < spineCount_; ++i) {
     if (!spine_[i].present) {
       spine_[i].entry = {};
     }
   }
-  return PackageStatus::kOk;
-}
-
-PackageStatus Package::Read(ZipArchive& archive, core::BlockFile& entries, ZipEntryReader& reader,
-                            XmlParser& xml) noexcept {
-  const std::uint32_t began = BN_TRACE_NOW();
-  const PackageStatus status = ReadParts(archive, entries, reader, xml);
-  BN_TRACE_TOP_SPAN_SINCE(kSpanPackageRead, began, static_cast<std::uint32_t>(status));
-  return status;
-}
-
-PackageStatus Package::ReadParts(ZipArchive& archive, core::BlockFile& entries, ZipEntryReader& reader,
-                                 XmlParser& xml) noexcept {
-  Clear();
-  packagesRead.Add();
-  if (spine_ == nullptr) {
-    return Fail(PackageStatus::kNoMemory);
-  }
-
-  // Where the package file is.
-  Parsed parsed = Parsed::kMissing;
-  {
-    BN_TRACE_SCOPE(kSpanPackageContainer);
-    ContainerHandler container(packagePath_);
-    parsed = ParseEntry(archive, entries, reader, xml, kContainerName, container);
-  }
-  switch (parsed) {
-    case Parsed::kUnreadable:
-      return Fail(PackageStatus::kUnreadable);
-    case Parsed::kNoMemory:
-      return Fail(PackageStatus::kNoMemory);
-    default:
-      break;  // What matters is whether it named a package before it ended, however it ended.
-  }
-  if (packagePath_.Empty() || packagePath_.Truncated()) {
-    return Fail(PackageStatus::kNoContainer);
-  }
-
-  // The package file. Its path is taken as written; if no entry has that
-  // name, as a reference would be read, with its %XX turned into bytes.
-  {
-    BN_TRACE_SCOPE(kSpanPackageFile);
-    PackageHandler handler(*this, xml);
-    parsed = ParseEntry(archive, entries, reader, xml, PackagePath(), handler);
-    if (parsed == Parsed::kMissing) {
-      std::array<char, kMaxBookPath> decoded{};
-      const std::size_t length = ResolveBookPath("", PackagePath(), decoded);
-      const std::string_view other(decoded.data(), length);
-      if (length == 0 || other == PackagePath()) {
-        return Fail(PackageStatus::kNoPackage);
-      }
-      packagePath_.Clear();
-      packagePath_.Append(other);
-      PackageHandler again(*this, xml);
-      parsed = ParseEntry(archive, entries, reader, xml, PackagePath(), again);
-    }
-  }
-  if (outOfMemory_ || parsed == Parsed::kNoMemory) {
-    return Fail(PackageStatus::kNoMemory);
-  }
-  switch (parsed) {
-    case Parsed::kMissing:
-      return Fail(PackageStatus::kNoPackage);
-    case Parsed::kUnreadable:
-      return Fail(PackageStatus::kUnreadable);
-    case Parsed::kNotXml:
-      // A package that goes wrong after its spine has said all that is
-      // needed of it.
-      cutShort_ = true;
-      break;
-    default:
-      break;
-  }
-
-  {
-    BN_TRACE_SCOPE_ARG(kSpanPackageResolve, static_cast<std::uint32_t>(spineCount_));
-    Resolve();
-  }
-  if (spineCount_ == 0) {
-    return Fail(PackageStatus::kNotPackage);
-  }
-  PackageStatus found = PackageStatus::kOk;
-  {
-    BN_TRACE_SCOPE_ARG(kSpanPackageFindFiles, itemCount_);
-    found = FindFiles(archive);
-  }
-  if (found != PackageStatus::kOk) {
-    return Fail(found);
-  }
-  status_ = PackageStatus::kOk;
-  return status_;
+  (void)End(PackageStatus::kOk);
 }
 
 }  // namespace bn::epub

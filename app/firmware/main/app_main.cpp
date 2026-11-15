@@ -1,5 +1,6 @@
 #include <esp_rom_sys.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -80,9 +81,20 @@ extern "C" void app_main() {
 #endif
   app.Start();
 
+  // From here on the loop is watched. Each turn reports to the watchdog,
+  // and if none does for CONFIG_ESP_TASK_WDT_TIMEOUT_S seconds, because
+  // something a turn called has not come back, the firmware stops in the
+  // panic handler with a crash report that says where it was, and restarts
+  // (sdkconfig.defaults has the settings). Starting is not watched: the
+  // panel takes seconds over its first picture, and a card over being
+  // found.
+  if (esp_task_wdt_add(nullptr) != ESP_OK) {
+    esp_rom_printf("The watchdog would not take the application's task: a hang will not be noticed.\n");
+  }
   while (true) {
     vTaskDelay(kTickPeriod);
     app.Tick();
     bn::firmware::RunCrashTest(app);
+    (void)esp_task_wdt_reset();
   }
 }

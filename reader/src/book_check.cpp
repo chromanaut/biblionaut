@@ -416,8 +416,42 @@ void BookCheck::Begin() noexcept {
   checksumUs_ = 0;
   inTopDirectory_ = false;
   foldersPassedOver_ = 0;
+  longestStepUs_ = 0;
+  longestStep_ = Step::kNone;
   beganTrace_ = BN_TRACE_NOW();
   MoveTo(Step::kChecksum);
+}
+
+const char* BookCheck::LongestStepName() const noexcept {
+  switch (longestStep_) {
+    case Step::kNone:
+      return "none";
+    case Step::kChecksum:
+      return "timing the checksum";
+    case Step::kOpenDirectory:
+      return "opening the directory";
+    case Step::kOpenFolder:
+      return "opening a folder";
+    case Step::kNextBook:
+      return "listing a directory";
+    case Step::kReadPackage:
+      return "reading a package";
+    case Step::kReadToc:
+      return "reading a table of contents";
+    case Step::kOpenBook:
+      return "opening a book";
+    case Step::kNextEntry:
+      return "going to the next entry";
+    case Step::kParseEntry:
+      return "parsing an entry";
+    case Step::kReadEntry:
+      return "reading an entry";
+    case Step::kFindEntry:
+      return "finding an entry by name";
+    case Step::kEndBook:
+      return "ending a book";
+  }
+  return "unknown";
 }
 
 void BookCheck::Tick() noexcept {
@@ -432,6 +466,10 @@ void BookCheck::Tick() noexcept {
     const std::uint64_t inSourceBefore = feeder_.SourceUs();
     DoStep();
     const std::uint64_t after = clock_.NowUs();
+    if (after - now > longestStepUs_) {
+      longestStepUs_ = after - now;
+      longestStep_ = step;
+    }
     // The steps that are the reading of a book are counted to it.
     if (step == Step::kOpenBook || step == Step::kNextEntry || step == Step::kParseEntry || step == Step::kReadEntry ||
         step == Step::kFindEntry) {
@@ -727,37 +765,49 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
     }
     (void)stream_.SendText(contents.View());
   }
+  Line longest;
+  longest.Text("book check: the longest step: ").Number(longestStepUs_).Text(" us, ").Text(LongestStepName()).Text(".");
+  (void)stream_.SendText(longest.View());
   Finish(failedBooks_ == 0);
 }
 
 void BookCheck::ReadPackage() noexcept {
-  // What a reader opening the book would do, and all in one go as it
-  // would be: the file opened, its directory found, its package read. If
-  // that goes well the book stays open for its table of contents to be
-  // read next. Otherwise it is closed again, so that the reading of its
-  // entries starts as it would have without this.
+  // What a reader opening the book would do, and a piece at a time as it
+  // would be: the first piece opens the file, finds its directory and
+  // gets the reading of its package ready, and each one after is a step
+  // of that reading. If it goes well the book stays open for its table of
+  // contents to be read next. Otherwise it is closed again, so that the
+  // reading of its entries starts as it would have without this.
   const Meter::Counts before = meter_.Now();
   const std::uint64_t began = clock_.NowUs();
-  StorageStatus status = directoryFile_.Open(meter_, Path(), core::OpenMode::kRead);
-  if (status == StorageStatus::kOk) {
-    status = entriesFile_.Open(meter_, Path(), core::OpenMode::kRead);
+  bool more = false;
+  if (count_ == 0) {
+    StorageStatus status = directoryFile_.Open(meter_, Path(), core::OpenMode::kRead);
+    if (status == StorageStatus::kOk) {
+      status = entriesFile_.Open(meter_, Path(), core::OpenMode::kRead);
+    }
+    if (status != StorageStatus::kOk || archive_.Open(directoryFile_) != ZipStatus::kOk) {
+      // Not a file that can be opened as a book at all, which the next
+      // step finds and says.
+      CloseBook();
+      MoveTo(Step::kOpenBook);
+      return;
+    }
+    more = package_.Begin(archive_, entriesFile_, entryReader_, xml_) == epub::PackageStatus::kOk;
+  } else {
+    more = package_.Step();
   }
-  if (status != StorageStatus::kOk || archive_.Open(directoryFile_) != ZipStatus::kOk) {
-    // Not a file that can be opened as a book at all, which the next step
-    // finds and says.
-    CloseBook();
-    MoveTo(Step::kOpenBook);
+  ++count_;
+  const Meter::Counts& counts = meter_.Now();
+  book_.packageReads += counts.reads - before.reads;
+  book_.packageReadBytes += counts.readBytes - before.readBytes;
+  book_.packageStorageUs += counts.timeUs - before.timeUs;
+  book_.packageUs += clock_.NowUs() - began;
+  if (more) {
     return;
   }
-  const epub::PackageStatus read = package_.Read(archive_, entriesFile_, entryReader_, xml_);
-  const std::uint64_t took = clock_.NowUs() - began;
-
-  const Meter::Counts& counts = meter_.Now();
-  book_.packageReads = counts.reads - before.reads;
-  book_.packageReadBytes = counts.readBytes - before.readBytes;
-  book_.packageStorageUs = counts.timeUs - before.timeUs;
-  book_.packageUs = took;
-  book_.packageLongestUs = took;
+  const epub::PackageStatus read = package_.Status();
+  book_.packageLongestUs = book_.packageUs;
   // One line is used for all that is said, one after another: this
   // function's own place on the stack is under everything the reading of
   // the package put there.

@@ -40,6 +40,9 @@ class PiecewiseSource final : public ByteSource {
     return static_cast<std::ptrdiff_t>(count);
   }
 
+  // How many bytes have been taken from it so far.
+  std::size_t Taken() const noexcept { return position_; }
+
   std::size_t failAt = SIZE_MAX;  // Fails once this many bytes have been read.
   int calls = 0;
 
@@ -52,11 +55,16 @@ class PiecewiseSource final : public ByteSource {
 struct Result {
   Bytes out;
   Status status = Status::kRunning;
+  std::size_t taken = 0;             // Bytes taken from the source in all,
+  std::size_t mostTakenByACall = 0;  // and the most in any one call.
 };
 
 // Inflates `compressed`, the source giving `sourcePiece` bytes at a time
 // and the output being asked for `outputPiece` at a time. Stops at `limit`
 // bytes of output, so that damaged input cannot make a test run for ever.
+//
+// Every call is held to what the inflater says one call may take from its
+// source, whatever the stream is: right, damaged, or never a stream.
 Result Inflate(const Bytes& compressed, std::size_t sourcePiece = SIZE_MAX, std::size_t outputPiece = 4096,
                std::size_t limit = 8U << 20U) {
   PiecewiseSource source(compressed, sourcePiece);
@@ -74,7 +82,11 @@ Result Inflate(const Bytes& compressed, std::size_t sourcePiece = SIZE_MAX, std:
     if (result.out.size() - used < outputPiece) {
       result.out.resize(std::max({result.out.size() * 2, used + outputPiece, std::size_t{4096}}));
     }
+    const std::size_t takenBefore = source.Taken();
     const std::ptrdiff_t read = inflater.Read(std::span<std::uint8_t>(result.out.data() + used, outputPiece));
+    const std::size_t taken = source.Taken() - takenBefore;
+    EXPECT_LE(taken, Inflater::MostInputFor(outputPiece)) << "in one call, after " << used << " bytes of output";
+    result.mostTakenByACall = std::max(result.mostTakenByACall, taken);
     if (read <= 0) {
       break;
     }
@@ -82,6 +94,7 @@ Result Inflate(const Bytes& compressed, std::size_t sourcePiece = SIZE_MAX, std:
   }
   result.out.resize(used);
   result.status = inflater.CurrentStatus();
+  result.taken = source.Taken();
   EXPECT_EQ(inflater.BytesOut(), result.out.size());
   return result;
 }
@@ -584,6 +597,241 @@ TEST(Inflater, CanBeStartedAgainOnAnotherStream) {
   EXPECT_EQ(Bytes(out.begin(), out.begin() + 4), BytesOf("last"));
   EXPECT_EQ(inflater.Read(out), 0);
   EXPECT_EQ(inflater.CurrentStatus(), Status::kDone);
+}
+
+// ---- How much one call can be made to do ----
+
+// A block that brings its own codes and holds `text`, which must be one
+// letter repeated or nothing: the smallest such block there is. Its
+// code-length code has two symbols with patterns one bit long: "a length
+// of 1" and "so many lengths of 0".
+void TinyDynamicBlock(StreamWriter& writer, bool last, std::string_view text) {
+  writer.BlockHeader(last, 2).Bits(0, 5).Bits(0, 5).Bits(18 - 4, 4);
+  // In the format's order, the lengths for 16, 17, 18, 0, 8, ..., 1: symbol
+  // 18 is the third and symbol 1 the eighteenth.
+  for (unsigned i = 0; i < 18; ++i) {
+    writer.Bits(i == 2 || i == 17 ? 1 : 0, 3);
+  }
+  const auto zeros = [&writer](unsigned count) {
+    while (count > 0) {
+      // A run is of 11 to 138, so the last one must not be left too short.
+      unsigned run = std::min(count, 138U);
+      if (count - run > 0 && count - run < 11) {
+        run = count - 11;
+      }
+      EXPECT_GE(run, 11U);
+      writer.Pattern(1, 1).Bits(run - 11, 7);
+      count -= run;
+    }
+  };
+  const auto one = [&writer] { writer.Pattern(0, 1); };
+  if (text.empty()) {
+    zeros(256);
+  } else {
+    const auto letter = static_cast<unsigned char>(text.front());
+    zeros(letter);
+    one();
+    zeros(255U - letter);
+  }
+  one();  // The end of the block,
+  one();  // and one distance code, which nothing uses.
+  // With a letter, the letter's pattern is 0 and the end's is 1; without,
+  // the end's is 0.
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    writer.Pattern(0, 1);
+  }
+  writer.Pattern(text.empty() ? 0 : 1, 1);
+}
+
+// A block that brings its own codes written the longest way the format has:
+// every one of the 286 and 30 code lengths given by a pattern of seven
+// bits. It holds one byte, a zero, or nothing. 2,283 bits before its data
+// begins, which is the most the start of a block can cost.
+void FattestDynamicBlock(StreamWriter& writer, bool last, bool withByte) {
+  writer.BlockHeader(last, 2).Bits(286 - 257, 5).Bits(30 - 1, 5).Bits(19 - 4, 4);
+  // The code-length code: lengths 0, 1, 2, 3 and 6 have patterns of 1 to 5
+  // bits, which nothing here uses, and 4, 5, 8 and 9 the four of 7 bits.
+  constexpr std::array<unsigned, 19> kBitsOfSymbol = {1, 2, 3, 4, 7, 7, 5, 0, 7, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  constexpr std::array<unsigned, 19> kOrder = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+  for (const unsigned symbol : kOrder) {
+    writer.Bits(kBitsOfSymbol.at(symbol), 3);
+  }
+  const auto lengths = [&writer](unsigned count, unsigned length) {
+    // The patterns of 7 bits, in the order of their symbols: 4, 5, 8, 9.
+    const unsigned pattern = length == 4 ? 0x7C : length == 5 ? 0x7D : length == 8 ? 0x7E : 0x7F;
+    for (unsigned i = 0; i < count; ++i) {
+      writer.Pattern(pattern, 7);
+    }
+  };
+  // Literals and lengths: 226 patterns of 8 bits and 60 of 9 use every
+  // pattern there is. Distances: 2 of 4 bits and 28 of 5.
+  lengths(226, 8);
+  lengths(60, 9);
+  lengths(2, 4);
+  lengths(28, 5);
+  if (withByte) {
+    writer.Pattern(0, 8);  // The literal 0: the first pattern of 8 bits.
+  }
+  writer.Pattern((226U << 1U) + (256 - 226), 9);  // The end of the block: the thirty-first of 9 bits.
+}
+
+// One block that produces nothing, of each of the three kinds in turn.
+void EmptyBlock(StreamWriter& writer, unsigned kind) {
+  switch (kind % 3) {
+    case 0:
+      writer.BlockHeader(false, 0).StoredLength(0);
+      break;
+    case 1:
+      writer.BlockHeader(false, 1).Fixed(256);
+      break;
+    default:
+      TinyDynamicBlock(writer, false, "");
+      break;
+  }
+}
+
+TEST(Inflater, ReadsTheSmallestBlockThatBringsItsOwnCodes) {
+  // The blocks the tests below are made of, read right.
+  StreamWriter writer;
+  TinyDynamicBlock(writer, false, "aaa");
+  TinyDynamicBlock(writer, false, "");
+  TinyDynamicBlock(writer, true, "z");
+  const Result result = Inflate(writer.Done());
+  EXPECT_EQ(result.out, BytesOf("aaaz"));
+  EXPECT_EQ(result.status, Status::kDone);
+}
+
+TEST(Inflater, RefusesAStreamOfBlocksThatProduceNothing) {
+  // A megabyte of stored blocks with nothing in them, and a quarter of a
+  // megabyte of each other kind and of all three in turn. Nothing comes
+  // out, so a call has nothing to come back with: it must stop for
+  // another reason, and long before the stream has been read.
+  struct Case {
+    unsigned kind;  // 3 for all three in turn.
+    unsigned blocks;
+  };
+  for (const Case& made : {Case{0, 210'000}, Case{1, 210'000}, Case{2, 25'000}, Case{3, 60'000}}) {
+    StreamWriter writer;
+    for (unsigned block = 0; block < made.blocks; ++block) {
+      EmptyBlock(writer, made.kind == 3 ? block : made.kind);
+    }
+    const Bytes stream = writer.Done();
+    ASSERT_GT(stream.size(), 250'000u) << "kind " << made.kind;
+    const Result result = Inflate(stream);
+    EXPECT_EQ(result.status, Status::kBadData) << "kind " << made.kind;
+    EXPECT_TRUE(result.out.empty()) << "kind " << made.kind;
+    EXPECT_LT(result.taken, 1024u) << "kind " << made.kind;
+  }
+}
+
+TEST(Inflater, AllowsAFewBlocksInARowThatProduceNothing) {
+  // As many as it says it allows, between two blocks with something in
+  // them, and at the end of a stream; and one more than that is refused,
+  // after what came before has been given out.
+  for (const unsigned count : {1U, Inflater::kMaxEmptyBlocksInARow, Inflater::kMaxEmptyBlocksInARow + 1}) {
+    StreamWriter writer;
+    writer.BlockHeader(false, 1).FixedText("before").Fixed(256);
+    for (unsigned block = 0; block < count; ++block) {
+      EmptyBlock(writer, block);
+    }
+    writer.BlockHeader(false, 1).FixedText(" after").Fixed(256);
+    for (unsigned block = 1; block < count; ++block) {
+      EmptyBlock(writer, block);
+    }
+    writer.BlockHeader(true, 1).Fixed(256);
+    const Result result = Inflate(writer.Done());
+    if (count <= Inflater::kMaxEmptyBlocksInARow) {
+      EXPECT_EQ(result.out, BytesOf("before after")) << count;
+      EXPECT_EQ(result.status, Status::kDone) << count;
+    } else {
+      EXPECT_EQ(result.out, BytesOf("before")) << count;
+      EXPECT_EQ(result.status, Status::kBadData) << count;
+    }
+  }
+}
+
+TEST(Inflater, DoesOnlySoMuchInOneCallHoweverSmallTheBlocksAre) {
+  // A stream can make every byte of output cost a block of its own, with
+  // its own codes to read and build. A call that was asked for a great
+  // deal then comes back with a little, having started only so many
+  // blocks; and all of it comes out right in the end.
+  constexpr std::size_t kBlocks = 20'000;
+  for (const bool ownCodes : {false, true}) {
+    StreamWriter writer;
+    Bytes expected;
+    for (std::size_t block = 0; block < kBlocks; ++block) {
+      const char letter = static_cast<char>('a' + (block % 26));
+      if (ownCodes) {
+        TinyDynamicBlock(writer, false, std::string_view(&letter, 1));
+      } else {
+        writer.BlockHeader(false, 1).Fixed(static_cast<unsigned char>(letter)).Fixed(256);
+      }
+      expected.push_back(static_cast<std::uint8_t>(letter));
+    }
+    writer.BlockHeader(true, 1).Fixed(256);
+    const Bytes stream = writer.Done();
+
+    PiecewiseSource source(stream, SIZE_MAX);
+    Bytes window(Inflater::kWindowBytes);
+    Inflater inflater(source, window);
+    Bytes out(kBlocks + 100);
+    std::size_t used = 0;
+    std::size_t mostInACall = 0;
+    for (;;) {
+      const std::ptrdiff_t read = inflater.Read(std::span(out).subspan(used));
+      if (read <= 0) {
+        break;
+      }
+      mostInACall = std::max(mostInACall, static_cast<std::size_t>(read));
+      used += static_cast<std::size_t>(read);
+    }
+    out.resize(used);
+    EXPECT_EQ(inflater.CurrentStatus(), Status::kDone) << ownCodes;
+    EXPECT_TRUE(out == expected) << ownCodes;
+    // Each block gives one byte, so the bytes a call gives are the blocks
+    // it started.
+    EXPECT_LE(mostInACall, Inflater::kMaxBlocksPerRead) << ownCodes;
+    EXPECT_GE(mostInACall, 2u) << ownCodes;
+  }
+}
+
+TEST(Inflater, TakesNoMoreFromItsSourceInOneCallThanItSaysItWill) {
+  // The streams that cost most to read: blocks with their own codes, each
+  // holding one byte, with as many empty ones between as are allowed.
+  // First with the shortest such blocks, then with the longest, where
+  // every call that gives a byte has had to read seventeen blocks' codes.
+  // Asked for a byte at a time and for a great deal at once.
+  for (const bool fattest : {false, true}) {
+    StreamWriter writer;
+    Bytes expected;
+    for (unsigned block = 0; block < 60; ++block) {
+      const bool last = block == 59;
+      if (fattest) {
+        FattestDynamicBlock(writer, last, true);
+      } else {
+        TinyDynamicBlock(writer, last, std::string_view("\0", 1));
+      }
+      expected.push_back(0);
+      for (unsigned empty = 0; !last && empty < Inflater::kMaxEmptyBlocksInARow; ++empty) {
+        if (fattest) {
+          FattestDynamicBlock(writer, false, false);
+        } else {
+          TinyDynamicBlock(writer, false, "");
+        }
+      }
+    }
+    const Bytes stream = writer.Done();
+    for (const std::size_t outputPiece : {1U, 2U, 64U, 4096U}) {
+      const Result result = Inflate(stream, SIZE_MAX, outputPiece);
+      EXPECT_EQ(result.status, Status::kDone) << fattest << ", " << outputPiece;
+      EXPECT_TRUE(result.out == expected) << fattest << ", " << outputPiece;
+      // The bound is a close one: the longest blocks come within a tenth
+      // of what a call asked for one byte is allowed.
+      if (fattest) {
+        EXPECT_GT(result.mostTakenByACall, Inflater::MostInputFor(1) * 85 / 100) << outputPiece;
+      }
+    }
+  }
 }
 
 // ---- Against zlib ----

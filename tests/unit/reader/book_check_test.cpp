@@ -533,7 +533,8 @@ TEST(BookCheck, CountsTheTimeAPackageTakesByItself) {
   EXPECT_LT(totals.packageLongestUs, totals.packageUs);
 
   // A clock that moves five milliseconds each time it is read: the
-  // package is read in one go, however many turns that would have been.
+  // package is read a step at a time, over as many turns as that takes,
+  // and its time is that of all its steps together.
   CheckFixture slow;
   slow.storage.Put("/books/a.epub", RealBook().file);
   slow.clock.step = 5'000;
@@ -556,6 +557,40 @@ TEST(BookCheck, CountsTheTimeAPackageTakesByItself) {
                      std::to_string(slowTotals.packageUs / 1000) + " ms; the most memory 164.\n"),
             std::string::npos)
       << all;
+}
+
+TEST(BookCheck, ReadsAPackageAStepAtATimeAndSaysWhichStepTookLongest) {
+  // A book whose package lists four hundred chapters: the package file is
+  // tens of kilobytes, and nearly all of the chapters are not in the ZIP
+  // file, so its directory is gone through to the end for them. With a
+  // clock that moves a millisecond each time it is read, reading the
+  // package takes several times as long as a turn may; and no turn runs
+  // over its time by more than a step, which is short.
+  CheckFixture fixture;
+  fixture.storage.Put("/books/long.epub", RealBook("<dc:title>Long</dc:title>", 400).file);
+  fixture.clock.step = 1'000;
+  fixture.check->Begin();
+  int turns = 0;
+  while (fixture.check->CurrentState() == State::kRunning && turns < 100'000) {
+    const std::uint64_t before = fixture.clock.now;
+    fixture.check->Tick();
+    EXPECT_LT(fixture.clock.now - before, BookCheck::kSliceUs + 40'000) << turns;
+    ++turns;
+  }
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.packagesRead, 1u);
+  EXPECT_GT(totals.packageUs, 3 * BookCheck::kSliceUs);
+  EXPECT_NE(fixture.AllLines().find("package: 402 files, 400 documents, "), std::string::npos) << fixture.AllLines();
+
+  // The last thing said is the longest any one step took, and what it was
+  // doing. No step read the clock forty times.
+  EXPECT_GT(fixture.check->LongestStepUs(), 0u);
+  EXPECT_LT(fixture.check->LongestStepUs(), 40'000u);
+  const std::vector<std::string> lines = fixture.Lines();
+  ASSERT_FALSE(lines.empty());
+  EXPECT_EQ(lines.back(), "book check: the longest step: " + std::to_string(fixture.check->LongestStepUs()) + " us, " +
+                              fixture.check->LongestStepName() + ".");
 }
 
 TEST(BookCheck, ClosesTheBookAgainOnceItHasItsPackageAndItsTableOfContents) {

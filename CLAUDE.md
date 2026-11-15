@@ -87,7 +87,7 @@ A book is opened twice, with one `BlockFile` for the ZIP directory and one for t
 
 ### One loop, in slices
 
-The application is a single loop calling `App::Tick()`. Work that takes long is written to be done a piece at a time (`XmlParser::Step()`, the checks' `Tick()` working about 20 ms and returning), so the panel and the buttons carry on around it.
+The application is a single loop calling `App::Tick()`. Work that takes long is written to be done a piece at a time (`XmlParser::Step()`, `Package::Step()`, `TocReader::Step()`, the checks' `Tick()` working about 20 ms and returning), so the panel and the buttons carry on around it. A piece has a stated bound on its work that no input can stretch, and a test that holds it to that (`Inflater::MostInputFor()`, `Package::kEntriesPerStep`). On the device the loop is watched: if no turn comes round for five seconds, the watchdog ends the firmware in a crash report.
 
 ### Diagnostics
 

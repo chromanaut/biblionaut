@@ -63,6 +63,8 @@ void Inflater::Reset(ByteSource& source) noexcept {
   lastBlock_ = false;
   fixedBuilt_ = false;
   sourceEnded_ = false;
+  blockProduced_ = false;
+  emptyRun_ = 0;
   bitBuffer_ = 0;
   bitCount_ = 0;
   inputPosition_ = 0;
@@ -77,10 +79,19 @@ void Inflater::Reset(ByteSource& source) noexcept {
 
 std::ptrdiff_t Inflater::Read(std::span<std::uint8_t> dst) noexcept {
   std::size_t done = 0;
+  unsigned started = 0;  // Blocks begun in this call.
   while (done < dst.size() && status_ == Status::kRunning) {
     switch (stage_) {
       case Stage::kBlockStart:
+        // Enough for one call: it goes back with what it has, and the next
+        // carries on from here. With nothing to go back with it cannot,
+        // since that would say the stream had ended; but then every block
+        // so far has produced nothing, and EndBlock() puts an end to that.
+        if (started == kMaxBlocksPerRead && done > 0) {
+          return static_cast<std::ptrdiff_t>(done);
+        }
         StartBlock();
+        ++started;
         break;
       case Stage::kStored:
         done += CopyStored(dst.subspan(done));
@@ -274,6 +285,7 @@ void Inflater::StartBlock() noexcept {
     return;
   }
   lastBlock_ = last != 0;
+  blockProduced_ = false;
   switch (kind) {
     case 0:
       if (StartStored()) {
@@ -292,6 +304,17 @@ void Inflater::StartBlock() noexcept {
     default:
       Fail(Status::kBadData);
       break;
+  }
+}
+
+void Inflater::EndBlock() noexcept {
+  stage_ = Stage::kBlockStart;
+  if (blockProduced_) {
+    emptyRun_ = 0;
+  } else if (++emptyRun_ > kMaxEmptyBlocksInARow) {
+    // Nothing a compressor writes. Left alone, a stream of these would
+    // keep one call going until the source ran out.
+    Fail(Status::kBadData);
   }
 }
 
@@ -454,14 +477,16 @@ std::size_t Inflater::CopyStored(std::span<std::uint8_t> dst) noexcept {
   }
   history_ = static_cast<std::uint32_t>(std::min<std::size_t>(history_ + done, kWindowBytes));
   bytesOut_ += static_cast<std::uint32_t>(done);
+  blockProduced_ = blockProduced_ || done > 0;
   if (storedLeft_ == 0 && status_ == Status::kRunning) {
-    stage_ = Stage::kBlockStart;
+    EndBlock();
   }
   return done;
 }
 
 std::size_t Inflater::Decompress(std::span<std::uint8_t> dst) noexcept {
   std::size_t done = 0;
+  bool ended = false;
   const std::size_t mask = kWindowBytes - 1;
   const auto emit = [&](std::uint8_t byte) noexcept {
     window_[windowPosition_] = byte;
@@ -490,7 +515,7 @@ std::size_t Inflater::Decompress(std::span<std::uint8_t> dst) noexcept {
       continue;
     }
     if (symbol == kEndOfBlock) {
-      stage_ = Stage::kBlockStart;
+      ended = true;
       break;
     }
 
@@ -528,6 +553,10 @@ std::size_t Inflater::Decompress(std::span<std::uint8_t> dst) noexcept {
   }
   history_ = static_cast<std::uint32_t>(std::min<std::size_t>(history_ + done, kWindowBytes));
   bytesOut_ += static_cast<std::uint32_t>(done);
+  blockProduced_ = blockProduced_ || done > 0;
+  if (ended) {
+    EndBlock();
+  }
   return done;
 }
 

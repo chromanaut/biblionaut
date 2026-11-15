@@ -14,7 +14,7 @@ target_sources(${COMPONENT_LIB} PRIVATE $<TARGET_OBJECTS:bn_core_runtime>)
 # A firmware that crashes on purpose (see BN_CRASH_TEST in the project file).
 # The code for it, crash_test.cpp, is only part of such a build.
 if(BN_CRASH_TEST)
-  set(bn_crash_kinds fault abort oom stack)
+  set(bn_crash_kinds fault abort oom stack hang)
   list(FIND bn_crash_kinds "${BN_CRASH_TEST}" bn_crash_kind)
   if(bn_crash_kind EQUAL -1)
     message(FATAL_ERROR "BN_CRASH_TEST must be one of: ${bn_crash_kinds} (or empty), not '${BN_CRASH_TEST}'")

@@ -10,6 +10,7 @@ option(BN_BUILD_TESTS "Build the host test suite" ON)
 option(BN_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(BN_WERROR "Treat warnings as errors" ON)
 option(BN_CLANG_TIDY "Run clang-tidy on Biblionaut's own sources as they compile" OFF)
+option(BN_FUZZ "Build the fuzz targets with a fuzzing engine, to look for new inputs (tools/fuzz.py)" OFF)
 
 set(CMAKE_CXX_EXTENSIONS OFF)  # -std=c++20, not gnu++20
 
@@ -30,6 +31,30 @@ if(BN_SANITIZE)
   set(bn_sanitize_flags -fsanitize=address,undefined -fno-sanitize=vptr -fno-sanitize-recover=undefined)
   add_compile_options(${bn_sanitize_flags} -fno-omit-frame-pointer)
   add_link_options(${bn_sanitize_flags})
+endif()
+
+if(BN_FUZZ)
+  # The fuzz targets (tests/fuzz) are ordinary programs in every other
+  # build, where each goes through the inputs kept beside it and stops.
+  # Here they are linked with LLVM's fuzzing engine, libFuzzer, which makes
+  # up new inputs, and everything is compiled so that the engine can see
+  # which code an input reached. Apple's compiler does not come with the
+  # engine: this build wants the LLVM that the format and tidy checks use,
+  # and tools/fuzz.py finds it.
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    message(FATAL_ERROR
+      "BN_FUZZ needs LLVM's clang, which has the fuzzing engine; this is ${CMAKE_CXX_COMPILER_ID}. "
+      "tools/fuzz.py configures the build with the right one.")
+  endif()
+  add_compile_options(-fsanitize=fuzzer-no-link)
+  if(NOT BN_SANITIZE)
+    # Without AddressSanitizer, so that the heap inside a block is laid out
+    # as the firmware has it (core/region_heap.h). The undefined-behaviour
+    # sanitizer changes nothing of that kind and stays, set as it is above.
+    set(bn_fuzz_ubsan_flags -fsanitize=undefined -fno-sanitize=vptr -fno-sanitize-recover=undefined)
+    add_compile_options(${bn_fuzz_ubsan_flags} -fno-omit-frame-pointer)
+    add_link_options(${bn_fuzz_ubsan_flags})
+  endif()
 endif()
 
 if(BN_CLANG_TIDY)

@@ -1041,6 +1041,21 @@ TEST(Package, SaysWhichDocumentOfTheSpineAPathIs) {
   EXPECT_FALSE(f.package->Spine()[2].present);
   EXPECT_EQ(f.package->SpineIndexOf("OEBPS/text/cover.xhtml"), Package::kNotInSpine) << "the last book's";
 
+  // Where the spine uses both of two files with one path, the place is
+  // still the first the file has, whichever of the two is there.
+  const std::string twice =
+      "<item id=\"x1\" href=\"x.xhtml\" media-type=\"application/xhtml+xml\"/>"
+      "<item id=\"x2\" href=\"x.xhtml\" media-type=\"application/xhtml+xml\"/>"
+      "<item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>";
+  ASSERT_EQ(f.Read({{"META-INF/container.xml", Container("content.opf")},
+                    {"content.opf",
+                     Opf(kMetadata, twice, "<itemref idref=\"a\"/><itemref idref=\"x2\"/><itemref idref=\"x1\"/>")},
+                    {"a.xhtml", "a"},
+                    {"x.xhtml", "x"}}),
+            PackageStatus::kOk);
+  EXPECT_EQ(f.package->SpineIndexOf("x.xhtml"), 1u);
+  EXPECT_EQ(f.package->SpineIndexOf("a.xhtml"), 0u);
+
   // A book that could not be read has no spine to be in.
   ASSERT_EQ(
       f.Read({{"META-INF/container.xml", Container("content.opf")},

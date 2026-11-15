@@ -1,19 +1,6 @@
-# Host tests. Unit tests now; golden display-list, golden-image, corpus and
-# fuzz tests join them under this directory as the parts they cover arrive.
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  URL https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz
-  URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
-  SYSTEM)
-set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
-# clang-tidy checks our code, not GoogleTest's.
-set(_bn_clang_tidy "${CMAKE_CXX_CLANG_TIDY}")
-set(CMAKE_CXX_CLANG_TIDY "")
-FetchContent_MakeAvailable(googletest)
-set(CMAKE_CXX_CLANG_TIDY "${_bn_clang_tidy}")
-include(GoogleTest)
+# Host tests. Unit tests, end-to-end tests and the fuzz targets now; golden
+# display-list and golden-image tests join them under this directory as the
+# parts they cover arrive.
 
 # What the sanitizer runtime is told when a test runs. The heap tests ask
 # for impossible sizes on purpose; without this the runtime aborts instead
@@ -28,6 +15,41 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarc
    AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   string(APPEND bn_test_asan_options ":detect_stack_use_after_return=0")
 endif()
+
+# zlib, which only the tests use: what the inflater produces is checked
+# against it, and the tests' ZIP files are made with it.
+find_package(ZLIB REQUIRED)
+if(BN_FUZZ AND APPLE AND ZLIB_INCLUDE_DIRS MATCHES "\\.sdk/usr/include$")
+  # zlib's header was found in a macOS SDK, and LLVM's clang may be using
+  # another SDK than that one. Each has the header, and the compiler looks
+  # in its own unaided. Named on the compile line, the other's directory
+  # would put that SDK's C headers ahead of the C++ library's, which then
+  # does not compile. So CMake is told the compiler searches that directory
+  # already, which keeps it off the line.
+  list(APPEND CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES ${ZLIB_INCLUDE_DIRS})
+  list(APPEND CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES ${ZLIB_INCLUDE_DIRS})
+endif()
+
+add_subdirectory(fuzz)
+if(BN_FUZZ)
+  # A build for fuzzing has the fuzz targets and nothing else of the tests.
+  return()
+endif()
+
+include(FetchContent)
+FetchContent_Declare(
+  googletest
+  URL https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz
+  URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+  SYSTEM)
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+# clang-tidy checks our code, not GoogleTest's.
+set(_bn_clang_tidy "${CMAKE_CXX_CLANG_TIDY}")
+set(CMAKE_CXX_CLANG_TIDY "")
+FetchContent_MakeAvailable(googletest)
+set(CMAKE_CXX_CLANG_TIDY "${_bn_clang_tidy}")
+include(GoogleTest)
 
 # One executable per part, linked against that part only, so a test cannot
 # reach further than the code it tests.
@@ -61,8 +83,7 @@ bn_add_unit_test(core_tests
     unit/core/trace_test.cpp
   LIBS bn_core)
 
-# The inflater is checked against zlib, which only the tests use.
-find_package(ZLIB REQUIRED)
+# The inflater is checked against zlib.
 target_link_libraries(core_tests PRIVATE ZLIB::ZLIB)
 
 bn_add_unit_test(draw_tests

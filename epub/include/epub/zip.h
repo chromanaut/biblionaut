@@ -182,14 +182,16 @@ class ZipEntryReader final : public core::ByteSource {
   // Starts on `entry` of the ZIP file open as `file`, which must stay open
   // while the entry is read. It need not be the BlockFile the entry was
   // found through, only one open on the same file. Costs one read of
-  // storage, to see where the entry's data begins.
+  // storage, to see where the entry's data begins, or two where the
+  // entry's header lies across two of the file's blocks.
   [[nodiscard]] ZipStatus Open(core::BlockFile& file, const ZipEntry& entry) noexcept;
 
-  // The next bytes of the entry. Fills `dst` unless the entry ends first.
-  // Returns how many bytes were read, 0 at the end of an entry that proved
-  // sound, and kError if it did not or could not be read (Status() says
-  // which). Bytes that came before a fault are returned first: the error
-  // comes from the call after.
+  // The next bytes of the entry: as many as `dst` holds, or fewer, as any
+  // ByteSource may give (a compressed entry gives what one call of the
+  // inflater does). Returns how many bytes were read, 0 at the end of an
+  // entry that proved sound, and kError if it did not or could not be read
+  // (Status() says which). Bytes that came before a fault are returned
+  // first: the error comes from the call after.
   [[nodiscard]] std::ptrdiff_t Read(std::span<std::uint8_t> dst) noexcept override;
 
   // kOk while all is well, and what went wrong once something has.

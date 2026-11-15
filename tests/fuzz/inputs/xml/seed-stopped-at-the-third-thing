@@ -1,0 +1,12 @@
+`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en">
+<head><title>The Lamp</title><link rel="stylesheet" type="text/css" href="../style.css"/></head>
+<body>
+<h1 id="start" class="chapter">One</h1>
+<p class="first">The lamp was lit before anyone had asked for it,&nbsp;and the harbour went on &amp; on.</p>
+<!-- a remark that is not part of the text -->
+<p>Caf&#233; &#x2014; <em>nobody</em> <span epub:type="noteref">looked</span> up.<br/><img src="lamp.jpg" alt="A lamp"/></p>
+<?page 2?><![CDATA[text that is <not> markup]]>
+</body>
+</html>

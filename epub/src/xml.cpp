@@ -87,6 +87,8 @@ const char* XmlStatusName(XmlStatus status) noexcept {
       return "source failed";
     case XmlStatus::kStopped:
       return "stopped";
+    case XmlStatus::kInUse:
+      return "in use";
   }
   return "unknown";
 }
@@ -138,6 +140,12 @@ void XmlParser::End() noexcept {
 }
 
 XmlStatus XmlParser::Begin(core::ByteSource& source, XmlHandler& handler) noexcept {
+  if (inHandler_) {
+    // Asked by one of its own handlers, with the parser part way through
+    // telling it of a document. Starting again would take that document's
+    // memory from under it.
+    return XmlStatus::kInUse;
+  }
   End();
   // The last document's memory is all given back: each starts with the
   // whole of it, in one piece.
@@ -146,7 +154,7 @@ XmlStatus XmlParser::Begin(core::ByteSource& source, XmlHandler& handler) noexce
   handler_ = &handler;
   status_ = XmlStatus::kOk;
   finished_ = false;
-  inHandler_ = false;
+  stopped_ = false;
   errorCode_ = 0;
   line_ = 1;
   byteOffset_ = 0;
@@ -167,7 +175,7 @@ XmlStatus XmlParser::Begin(core::ByteSource& source, XmlHandler& handler) noexce
 }
 
 bool XmlParser::Step() noexcept {
-  if (parser_ == nullptr || finished_ || status_ != XmlStatus::kOk) {
+  if (inHandler_ || parser_ == nullptr || finished_ || status_ != XmlStatus::kOk) {
     return false;
   }
   const HeapScope scope(heap_);
@@ -183,6 +191,12 @@ bool XmlParser::Step() noexcept {
   const bool last = read == 0;
   const XML_Status parsed = XML_ParseBuffer(parser_, static_cast<int>(read), last ? XML_TRUE : XML_FALSE);
   xmlMemory.Set(Clamped(heap_.HighWater()));
+  if (stopped_) {
+    // A handler stopped it, and that is how it ended. expat nearly always
+    // says so itself. Stopped while telling of the last thing in a
+    // document that is cut short, it reports the document instead.
+    return Fail(XmlStatus::kStopped);
+  }
   if (parsed != XML_STATUS_OK) {
     const XML_Error error = XML_GetErrorCode(parser_);
     switch (error) {
@@ -209,9 +223,10 @@ bool XmlParser::Step() noexcept {
 }
 
 XmlStatus XmlParser::Parse(core::ByteSource& source, XmlHandler& handler) noexcept {
-  if (Begin(source, handler) == XmlStatus::kOk) {
-    while (Step()) {
-    }
+  if (const XmlStatus begun = Begin(source, handler); begun != XmlStatus::kOk) {
+    return begun;
+  }
+  while (Step()) {
   }
   return status_;
 }
@@ -221,8 +236,12 @@ void XmlParser::Stop() noexcept {
     return;
   }
   if (inHandler_) {
-    // expat ends the call it is in, and Step() sees why.
+    // expat ends the call it is in, and Step() sees why. On its way out it
+    // may still have something to tell: the end of an element written as
+    // one tag, when it was stopped at that element's beginning. From here
+    // on nothing it tells is passed on.
     XML_StopParser(parser_, XML_FALSE);
+    stopped_ = true;
   } else {
     Fail(XmlStatus::kStopped);
   }
@@ -253,10 +272,14 @@ std::uint32_t XmlParser::ByteOffset() const noexcept {
 }
 
 // While a handler runs, the heap at work is still this parser's, so that a
-// Stop() from inside it, which calls into expat, finds it there.
+// Stop() from inside it, which calls into expat, finds it there. Once a
+// handler has stopped the parser, none is called again.
 
 void XmlParser::HandleStart(void* self, const char* name, const char** attributes) noexcept {
   auto* parser = static_cast<XmlParser*>(self);
+  if (parser->stopped_) {
+    return;
+  }
   parser->inHandler_ = true;
   parser->handler_->OnStartElement(name, XmlAttributes(attributes));
   parser->inHandler_ = false;
@@ -264,6 +287,9 @@ void XmlParser::HandleStart(void* self, const char* name, const char** attribute
 
 void XmlParser::HandleEnd(void* self, const char* name) noexcept {
   auto* parser = static_cast<XmlParser*>(self);
+  if (parser->stopped_) {
+    return;
+  }
   parser->inHandler_ = true;
   parser->handler_->OnEndElement(name);
   parser->inHandler_ = false;
@@ -271,7 +297,7 @@ void XmlParser::HandleEnd(void* self, const char* name) noexcept {
 
 void XmlParser::HandleText(void* self, const char* text, int length) noexcept {
   auto* parser = static_cast<XmlParser*>(self);
-  if (length <= 0) {
+  if (length <= 0 || parser->stopped_) {
     return;
   }
   parser->inHandler_ = true;
@@ -281,7 +307,7 @@ void XmlParser::HandleText(void* self, const char* text, int length) noexcept {
 
 void XmlParser::HandleEntity(void* self, const char* name, int isParameterEntity) noexcept {
   auto* parser = static_cast<XmlParser*>(self);
-  if (isParameterEntity != 0) {
+  if (isParameterEntity != 0 || parser->stopped_) {
     return;  // Those belong to DTDs, which are not read.
   }
   parser->inHandler_ = true;

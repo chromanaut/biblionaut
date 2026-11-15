@@ -443,14 +443,16 @@ std::size_t Package::SpineIndexOf(std::string_view path) const noexcept {
   const std::uint64_t hash = NameHash(path);
   const auto low = static_cast<std::uint32_t>(hash);
   const auto high = static_cast<std::uint16_t>(hash >> 32U);
+  // Two items can have one path, and the spine may use either or both of
+  // them: the place is the first that any of them has.
+  std::size_t first = kNotInSpine;
   for (std::uint32_t index = 0; index < itemCount_; ++index) {
     const Item& item = ItemAt(index);
-    // Two items can have one path; the one the spine uses is the one.
     if (item.pathLow == low && item.pathHigh == high && item.spineIndex != kNoSpineIndex) {
-      return item.spineIndex;
+      first = std::min<std::size_t>(first, item.spineIndex);
     }
   }
-  return kNotInSpine;
+  return first;
 }
 
 // ---- The reading, a piece at a time ----

@@ -75,6 +75,7 @@ TARGETS = {
     "package": 16384,
     "toc": 16384,
     "region_heap": 3072,
+    "hyphenator": 4096,
 }
 
 # Pieces of XML that the readers look for, which the engine would be a long

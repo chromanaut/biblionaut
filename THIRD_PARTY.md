@@ -14,9 +14,17 @@ before a new dependency lands.
 | [libFuzzer](https://llvm.org/docs/LibFuzzer.html), part of LLVM | The fuzzing engine: `tools/fuzz.py` links the fuzz targets (`tests/fuzz`) with it, on a developer's computer, to look for inputs that make a reader of books go wrong. No other build has it | Apache-2.0 with LLVM Exceptions | The computer's own LLVM, of the major version in `tools/llvm-version`, which the format and tidy checks need too. Not in this repository | No |
 | [OpenX4 E-Paper Community SDK](https://github.com/open-x4-epaper/community-sdk) | What it worked out about the X4: for the panel, the set-up sequence, the values sent in it, and which refresh commands it takes; for the buttons, which pins they are on and the voltage each one gives | MIT | Nothing is downloaded or copied. The values are written into `hw/x4/display.cpp` and `hw/x4/input.cpp`, which are otherwise our own code | Yes (as those values) |
 
+| Liang's hyphenation method (Franklin Mark Liang, *Word Hy-phen-a-tion by Com-put-er*, Stanford University, 1983), as TeX uses it | How `layout/hyphenator.h` finds where a word may be broken: patterns laid over the word, the largest number at each place deciding | A published method. No code and no patterns were taken | Nothing is downloaded or copied. The hyphenator, the form of its table and `bn-hyphen` are our own code | Yes (as that method) |
+
 ESP-IDF bundles further components under their own licences; those that end
 up in the firmware image need their own entries here once the image contents
 settle.
+
+No hyphenation patterns are in this repository or in the firmware. A
+language's patterns are someone's work and come under terms of their own,
+which differ from one language to the next: each set needs an entry here,
+with its terms read from its own file, before a table made from it is
+shipped or kept here.
 
 ## Test books
 

@@ -29,7 +29,7 @@ class LineSink {
 // A flat curve takes few lines and a tight one many, up to 1,024.
 //
 // It keeps nothing of the outline: each line goes to the LineSink as it is
-// made. The object is under a hundred bytes, and cutting a curve takes
+// made. The object is 104 bytes on the device, and cutting a curve takes
 // about half a kilobyte of stack.
 //
 // An arc is first made into curves, each an eighth of a turn at most and
@@ -70,10 +70,23 @@ class PathFlattener final : public PathSink {
   // Lines given to the sink so far.
   std::uint32_t Lines() const noexcept { return lines_; }
 
+  // Says which part of the picture the lines are wanted for: the pixels
+  // from `topLeft` to `bottomRight`. A curve that lies wholly above that
+  // part, below it or to one side of it is then given as one line, from
+  // its start to its end, and not cut up. That changes nothing in what a
+  // filled shape covers within the part, since there a line that lies
+  // outside counts only for where it starts and ends, and it spares the
+  // cutting of every curve that is not in the strip being drawn. An arc
+  // is cut up wherever it lies.
+  void KeepTo(Point topLeft, Point bottomRight) noexcept;
+
  private:
   Point InPixels(Point point) noexcept;
   void Line(Point to) noexcept;
   bool NearlyStraight(Fixed halfX, Fixed halfY, Fixed radiusX, Fixed radiusY) const noexcept;
+  // Whether a curve with these points, which it cannot go outside, lies
+  // wholly to one side of the part of the picture that is wanted.
+  bool Outside(Point a, Point b, Point c, Point d) const noexcept;
 
   LineSink* sink_;
   Matrix matrix_;
@@ -81,6 +94,9 @@ class PathFlattener final : public PathSink {
   Fixed tolerance_;
   std::uint64_t flatness_;  // Sixteen times the square of the tolerance.
   bool clamped_ = false;
+  bool kept_ = false;  // KeepTo() has said what is wanted,
+  Point keptFrom_;     // from here
+  Point keptTo_;       // to here.
   std::uint32_t lines_ = 0;
   // Where the outline has got to and where this part of it began, in the
   // drawing's coordinates and in pixels.

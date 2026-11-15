@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which reads the outlines of a drawing as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which reads the outlines of a drawing and fills them as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -952,10 +952,11 @@ to fit and to hold every item once.
 
 ## Outlines of drawings
 
-A book can hold a drawing as SVG, and the first step of drawing one is
-done: `draw/` reads the outline of a shape, which SVG writes as path data
-(the `d` of a `<path>`), and turns it into straight lines in pixels.
-Nothing fills an outline yet.
+A book can hold a drawing as SVG, and the first two steps of drawing one
+are done: `draw/` reads the outline of a shape, which SVG writes as path
+data (the `d` of a `<path>`), turns it into straight lines in pixels, and
+fills what they enclose with a gray. Nothing reads a whole SVG file yet,
+and nothing draws a line of some width along an outline.
 
 The device's processor has no floating point, so all of it is done in whole
 numbers (`draw/fixed.h`). A position counts 4096ths of a unit of the
@@ -978,14 +979,17 @@ its kind is held at the largest that fits, and whoever asked is told.
   through a matrix and cuts each curve into lines, as many as it takes for
   none to stand further from the curve than a tolerance, which is a
   quarter of a pixel unless it is told otherwise. It gives each line to a
-  `LineSink` as it is made and keeps none.
+  `LineSink` as it is made and keeps none. Told which part of a picture is
+  being drawn (`KeepTo()`), it gives a curve that lies wholly above, below
+  or to one side of that part as a single line, which changes nothing that
+  is drawn there.
 - **Arcs** are drawn as SVG defines them, whatever the matrix does to
   them: radii too short to reach from one end to the other are made just
   long enough, and with no radius an arc is a line. One so shallow that it
   stays within the tolerance of a straight line is drawn as that line,
   which is what makes a radius of any size harmless: two public books
   have arcs whose radius is seventeen digits long.
-- **Memory**: the reader is 168 bytes and the flattener 88, on the device,
+- **Memory**: the reader is 168 bytes and the flattener 104, on the device,
   and cutting a curve takes about half a kilobyte of stack. Nothing is
   allocated, and nothing grows with the path.
 - **Flash**: 17 KB, as compiled for the device.
@@ -1056,6 +1060,91 @@ beside a second reading of path data that shares none of its code, written
 in Python with regular expressions: over paths made up at random in every
 way SVG lets one be written, the commands have to be the same and the lines
 within the tolerance of the true curves.
+
+### Filling an outline
+
+`Filler` (`draw/fill.h`) is a `LineSink`, so the flattener's lines go
+straight to it. Given the lines of a shape, it lays the shape in a gray
+over a strip of a picture, which is held a byte a pixel. Edges are smooth:
+a pixel the outline passes through takes as much of the gray as the shape
+covers of it.
+
+- **How**: no outline is kept. Each line, as it arrives, is added into a
+  row of cells, one for each pixel: what the line adds to the cover of the
+  pixels it passes through, and of every pixel to the right of it. Adding
+  the cells up along a row then gives how many times the outline has gone
+  round each pixel, in 256ths, and the fill rule turns that into cover.
+  Both of SVG's rules are there, `nonzero` and `evenodd`.
+- **Memory**: set by the strip and not by the drawing. Beside the strip
+  itself, there are two bytes of cells for each pixel and four for each
+  row: 30,848 bytes for 32 rows of 480 pixels. An outline of a hundred
+  thousand lines needs no more than one of three. The object is 68 bytes
+  on the device.
+- **Strips**: a picture taller than the memory to hand is drawn as several
+  strips, with the drawing gone through once for each. It comes out the
+  same, byte for byte, however it is cut.
+- **One shape over another**: a shape is laid over whatever the strip holds
+  already, and with an opacity short of the whole, what is under it shows
+  through.
+- **What lies outside**: lines may lie anywhere. What is above or below
+  the strip is passed over, what is right of it changes nothing, and what
+  is left of it counts for its height alone.
+- **What a call can cost**: wherever a line runs, it adds to no more cells
+  than `MostCellsPerLine()`, which is little over the strip's width and
+  four for each of its rows. `Fill()` looks at each pixel of the strip once
+  at the most.
+- **Limits**: a strip is at most 16,384 pixels wide and 16,384 rows high.
+  Cover is added up for a pixel as a whole. That is exact where one edge of
+  a shape passes through the pixel, or a corner, or the edge between two
+  parts that overlap, and only near where an outline crosses itself within
+  the pixel or runs twice along the same edge: a shape drawn twice over in
+  one outline comes out with a heavier edge. An outline that goes round a
+  pixel more than 127 times the same way is beyond what a cell counts.
+- **How exact**: lines are placed to a 256th of a pixel, and a pixel's
+  cover comes out within three parts in 255 of the area of the shape that
+  lies in it. What is left is the flattener's tolerance. One engraving in
+  a public book is a single outline of 2.4 MB and 102,891 commands. Drawn
+  480 pixels wide, it was set beside the same drawn eight times the size by
+  `rsvg-convert` and averaged down. At a tolerance of a quarter of a pixel
+  the worst pixel is 57 parts in 255 out and the average 2.0; at an
+  eighth, 29 and 1.1; at a sixteenth, 13 and 0.5; at a fiftieth, 5 and
+  0.3. What `rsvg-convert` draws at that size is itself 34 and 1.8 out.
+  The same was done for 389 paths taken at random from public books, each
+  drawn 160 pixels across: at a fiftieth the worst pixel of any of them is
+  8 parts in 255 out, and at a quarter 73, with half of the paths at 61 or
+  more. So a drawing whose edges are to be gray wants a finer tolerance
+  than the quarter of a pixel that is the flattener's own.
+- **Flash**: 5 KB, as compiled for the device.
+- **Speed**: not yet measured on a device. At a quarter of a pixel that
+  engraving is 139,129 lines, which add to cells 495,500 times. Drawn in
+  strips, the whole outline is read again for each, and a curve outside a
+  strip still costs a line: in 22 strips of 33 rows it comes to 1,957,022
+  lines.
+
+`bn-svg fill` draws path data into a picture, in strips of as many rows as
+it is told, and says what that took:
+
+```
+./build/host/tools/svg/bn-svg fill outline.d --size 100x80 --transform 'scale(2)' --rows 16 --out outline.pgm
+```
+
+```
+100 by 80 in 5 strips of 16 rows: 4 commands, 49 lines and 200 cells added to in all, 3264 bytes of cells
+```
+
+That is the outline above again, and the picture is a PGM file. `--rule`
+chooses `nonzero` or `evenodd`, `--gray` and `--opacity` what the shape is
+filled with and how much of what is under it shows through.
+
+The unit tests set what is drawn beside the cover each pixel should have,
+found two other ways: for shapes with no dents, by cutting the shape to the
+pixel and measuring what is left, and for shapes that cross themselves, by
+trying a grid of points in each pixel. They also hold it to the same
+picture however it is cut into strips, with or without `KeepTo()`. The
+end-to-end test fills shapes of lines, curves and arcs made up at random,
+and sets `bn-svg`'s pictures beside a second way of filling them, in
+Python: the outline traced finely, and lines run through each row of pixels
+to see where they are inside it.
 
 ## Device build
 

@@ -1,9 +1,10 @@
 // bn-svg: reads the parts of an SVG drawing with the code the firmware
 // draws one with, and says what it made of them.
 //
-// So far it reads path data, the `d` of a `<path>`: each command it holds,
-// and the straight lines each becomes once it has been put through a
-// transform and its curves have been flattened.
+// So far it reads path data, the `d` of a `<path>`. `path` prints each
+// command it holds and the straight lines each becomes once it has been put
+// through a transform and its curves have been flattened. `fill` draws the
+// shape it outlines into a picture, in strips, as the firmware would.
 
 #include <algorithm>
 #include <array>
@@ -14,7 +15,9 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "draw/fill.h"
 #include "draw/fixed.h"
 #include "draw/flatten.h"
 #include "draw/svg_number.h"
@@ -36,6 +39,8 @@ using bn::draw::SvgPathStatus;
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s path FILE [--transform TEXT] [--tolerance PIXELS] [--pieces BYTES] [--count]\n"
+               "       %s fill FILE --size WxH [--transform TEXT] [--tolerance PIXELS] [--rule RULE]\n"
+               "                 [--gray 0-255] [--opacity 0-255] [--rows ROWS] [--out PICTURE]\n"
                "\n"
                "Reads SVG path data the way the firmware does.\n"
                "\n"
@@ -54,9 +59,26 @@ void PrintUsage(const char* program) {
                "                      (default: all at once)\n"
                "  --count             print no commands or lines, only how many there were\n"
                "\n"
+               "  fill  draws the shape the path data in FILE outlines, in a picture W pixels\n"
+               "        wide and H high that starts white, and says what the drawing took. The\n"
+               "        picture is drawn a strip at a time, the data being read through once\n"
+               "        for each strip, which is how the firmware draws a picture taller than\n"
+               "        the memory it has for one.\n"
+               "\n"
+               "  --size WxH          the picture's size in pixels\n"
+               "  --rule RULE         nonzero (the default) or evenodd: which parts of an outline\n"
+               "                      that crosses itself are inside\n"
+               "  --gray 0-255        what the shape is filled with, from black, the default, to\n"
+               "                      white\n"
+               "  --opacity 0-255     how much of what is under it the shape hides (default: 255,\n"
+               "                      all of it)\n"
+               "  --rows ROWS         how many rows a strip has (default: the whole picture)\n"
+               "  --out PICTURE       write the picture there, as a PGM file: a byte a pixel\n"
+               "\n"
                "Ends with 0 if the data was read to its end, 1 if it is not path data from some\n"
-               "point on (what came before that is still printed) or FILE cannot be read.\n",
-               program);
+               "point on (what came before that is still printed, or drawn) or a file cannot be\n"
+               "read or written.\n",
+               program, program);
 }
 
 // A position as it is printed: to four places, which tells any two apart.
@@ -142,15 +164,32 @@ struct Options {
   Fixed tolerance = PathFlattener::kDefaultTolerance;
   std::size_t pieces = 0;
   bool count = false;
+  // For `fill`.
+  std::size_t width = 0;
+  std::size_t height = 0;
+  std::size_t rows = 0;
+  bn::draw::FillRule rule = bn::draw::FillRule::kNonZero;
+  std::uint8_t gray = 0;
+  std::uint8_t opacity = 255;
+  std::string out;
 };
 
-int Path(const Options& options) {
-  std::ifstream input(options.file, std::ios::binary);
+// The whole of a file. False, having said so, if it cannot be read.
+bool Read(const std::string& path, std::string& data) {
+  std::ifstream input(path, std::ios::binary);
   if (!input) {
-    std::fprintf(stderr, "error: cannot read %s\n", options.file.c_str());
+    std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
+    return false;
+  }
+  data.assign((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  return true;
+}
+
+int Path(const Options& options) {
+  std::string data;
+  if (!Read(options.file, data)) {
     return 1;
   }
-  const std::string data((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 
   Matrix matrix;
   bool clamped = false;
@@ -184,20 +223,143 @@ int Path(const Options& options) {
   return 0;
 }
 
+int Fill(const Options& options) {
+  std::string data;
+  if (!Read(options.file, data)) {
+    return 1;
+  }
+  Matrix matrix;
+  bool clamped = false;
+  if (!bn::draw::ParseSvgTransform(options.transform, matrix, clamped)) {
+    std::fprintf(stderr, "error: not a transform: %s\n", options.transform.c_str());
+    return 2;
+  }
+
+  // The picture is whole here so that it can be written out. The firmware
+  // would hold one strip of it at a time and hand each on as it was done.
+  const std::size_t stripRows = options.rows == 0 ? options.height : std::min(options.rows, options.height);
+  std::vector<std::uint8_t> picture(options.width * options.height, 255);
+  std::vector<std::int16_t> cells(bn::draw::Filler::CellsFor(options.width, stripRows));
+  const auto pixels = [](std::size_t count) { return static_cast<Fixed>(count * bn::draw::kFixedOne); };
+
+  SvgPathStatus status = SvgPathStatus::kOk;
+  std::uint32_t errorOffset = 0;
+  std::uint32_t commands = 0;
+  std::uint64_t lines = 0;
+  std::uint64_t cellsTouched = 0;
+  std::size_t strips = 0;
+  for (std::size_t top = 0; top < options.height; top += stripRows) {
+    const std::size_t rows = std::min(stripRows, options.height - top);
+    bn::draw::Filler filler;
+    if (!filler.Begin(std::span(picture).subspan(top * options.width, rows * options.width), options.width,
+                      static_cast<std::int32_t>(top), cells)) {
+      std::fprintf(stderr, "error: a strip of %zu rows of %zu pixels cannot be drawn\n", rows, options.width);
+      return 2;
+    }
+    PathFlattener flattener(filler, matrix, options.tolerance);
+    // Curves that lie wholly outside this strip need no cutting up.
+    flattener.KeepTo({.x = 0, .y = pixels(top)}, {.x = pixels(options.width), .y = pixels(top + rows)});
+    SvgPathReader reader(flattener);
+    reader.Feed(data);
+    status = reader.Finish();
+    filler.Fill(options.rule, options.gray, options.opacity);
+    clamped = clamped || reader.Clamped() || flattener.Clamped();
+    errorOffset = reader.ErrorOffset();
+    commands = reader.Commands();
+    lines += flattener.Lines();
+    cellsTouched += filler.CellsTouched();
+    ++strips;
+  }
+
+  if (!options.out.empty()) {
+    std::ofstream output(options.out, std::ios::binary);
+    output << "P5\n" << options.width << " " << options.height << "\n255\n";
+    output.write(reinterpret_cast<const char*>(picture.data()),  // NOLINT(*-reinterpret-cast): bytes, as characters.
+                 static_cast<std::streamsize>(picture.size()));
+    if (!output) {
+      std::fprintf(stderr, "error: cannot write %s\n", options.out.c_str());
+      return 1;
+    }
+  }
+  if (clamped) {
+    std::fprintf(stderr, "a number was too large and was held at the largest that fits\n");
+  }
+  std::fprintf(stderr,
+               "%zu by %zu in %zu %s of %zu rows: %u commands, %llu lines and %llu cells added to in all, "
+               "%zu bytes of cells\n",
+               options.width, options.height, strips, strips == 1 ? "strip" : "strips", stripRows,
+               static_cast<unsigned>(commands), static_cast<unsigned long long>(lines),
+               static_cast<unsigned long long>(cellsTouched), cells.size() * sizeof(std::int16_t));
+  if (status != SvgPathStatus::kOk) {
+    std::fprintf(stderr, "error: %s: %s at byte %u\n", options.file.c_str(), bn::draw::SvgPathStatusName(status),
+                 static_cast<unsigned>(errorOffset));
+    return 1;
+  }
+  return 0;
+}
+
+// A whole number from nothing up to `most`, written out in full. False if
+// `text` is not one.
+bool Whole(std::string_view text, std::size_t most, std::size_t& value) {
+  if (text.empty() || text.size() > 9) {
+    return false;
+  }
+  std::size_t number = 0;
+  for (const char c : text) {
+    if (c < '0' || c > '9') {
+      return false;
+    }
+    number = (number * 10) + static_cast<std::size_t>(c - '0');
+  }
+  value = number;
+  return number <= most;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 3 || std::strcmp(argv[1], "path") != 0) {
+  const std::string_view command = argc > 1 ? argv[1] : "";
+  if (argc < 3 || (command != "path" && command != "fill")) {
     PrintUsage(argv[0]);
     return 2;
   }
+  const bool filling = command == "fill";
   Options options;
   options.file = argv[2];
   for (int at = 3; at < argc; ++at) {
     const std::string_view option = argv[at];
     const char* value = at + 1 < argc ? argv[at + 1] : nullptr;
-    if (option == "--count") {
+    std::size_t whole = 0;
+    if (option == "--count" && !filling) {
       options.count = true;
+    } else if (option == "--size" && filling && value) {
+      const std::string_view size = value;
+      const std::size_t by = size.find('x');
+      if (by == std::string_view::npos || !Whole(size.substr(0, by), bn::draw::Filler::kMostWidth, options.width) ||
+          !Whole(size.substr(by + 1), bn::draw::Filler::kMostRows, options.height)) {
+        PrintUsage(argv[0]);
+        return 2;
+      }
+      ++at;
+    } else if (option == "--rule" && filling && value && std::string_view(value) == "nonzero") {
+      options.rule = bn::draw::FillRule::kNonZero;
+      ++at;
+    } else if (option == "--rule" && filling && value && std::string_view(value) == "evenodd") {
+      options.rule = bn::draw::FillRule::kEvenOdd;
+      ++at;
+    } else if (option == "--gray" && filling && value && Whole(value, 255, whole)) {
+      options.gray = static_cast<std::uint8_t>(whole);
+      ++at;
+    } else if (option == "--opacity" && filling && value && Whole(value, 255, whole)) {
+      options.opacity = static_cast<std::uint8_t>(whole);
+      ++at;
+    } else if (option == "--rows" && filling && value && Whole(value, bn::draw::Filler::kMostRows, whole) &&
+               whole > 0) {
+      options.rows = whole;
+      ++at;
+    } else if (option == "--out" && filling && value) {
+      options.out = value;
+      ++at;
     } else if (option == "--transform" && value) {
       options.transform = value;
       ++at;
@@ -212,7 +374,7 @@ int main(int argc, char** argv) {
       }
       options.tolerance = bn::draw::FixedOf(number, clamped);
       ++at;
-    } else if (option == "--pieces" && value) {
+    } else if (option == "--pieces" && !filling && value) {
       char* end = nullptr;
       const unsigned long long asked = std::strtoull(value, &end, 10);
       if (end == nullptr || *end != '\0' || asked == 0 || asked > (1ULL << 30U)) {
@@ -226,5 +388,12 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  return Path(options);
+  if (!filling) {
+    return Path(options);
+  }
+  if (options.width == 0 || options.height == 0) {
+    PrintUsage(argv[0]);
+    return 2;
+  }
+  return Fill(options);
 }

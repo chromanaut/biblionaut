@@ -200,15 +200,41 @@ void PathFlattener::Close() noexcept {
   currentPixels_ = startPixels_;
 }
 
+void PathFlattener::KeepTo(Point topLeft, Point bottomRight) noexcept {
+  kept_ = true;
+  keptFrom_ = topLeft;
+  keptTo_ = bottomRight;
+}
+
+// A curve never goes outside its control points, and a straight line
+// between two points on one side of an edge stays on that side.
+bool PathFlattener::Outside(Point a, Point b, Point c, Point d) const noexcept {
+  if (!kept_) {
+    return false;
+  }
+  const bool above = a.y <= keptFrom_.y && b.y <= keptFrom_.y && c.y <= keptFrom_.y && d.y <= keptFrom_.y;
+  const bool below = a.y >= keptTo_.y && b.y >= keptTo_.y && c.y >= keptTo_.y && d.y >= keptTo_.y;
+  const bool left = a.x <= keptFrom_.x && b.x <= keptFrom_.x && c.x <= keptFrom_.x && d.x <= keptFrom_.x;
+  const bool right = a.x >= keptTo_.x && b.x >= keptTo_.x && c.x >= keptTo_.x && d.x >= keptTo_.x;
+  return above || below || left || right;
+}
+
 // A curve is cut in half, and each half again, until every piece is flat
 // enough to be a line. The pieces not yet looked at wait in a small array:
 // there is never more than one waiting for each time the curve has been
 // cut, since the first half of a piece is always taken before the second.
 
 void PathFlattener::QuadTo(Point control, Point to) noexcept {
+  const Point pull = InPixels(control);
+  const Point end = InPixels(to);
+  if (Outside(currentPixels_, pull, end, end)) {
+    Line(end);
+    current_ = to;
+    return;
+  }
   std::array<Quad, kDeepest + 1> waiting;
   std::size_t count = 1;
-  waiting[0] = {.p0 = currentPixels_, .p1 = InPixels(control), .p2 = InPixels(to), .depth = 0};
+  waiting[0] = {.p0 = currentPixels_, .p1 = pull, .p2 = end, .depth = 0};
   while (count > 0) {
     --count;
     const Quad piece = waiting[count];
@@ -230,10 +256,17 @@ void PathFlattener::QuadTo(Point control, Point to) noexcept {
 }
 
 void PathFlattener::CubicTo(Point control1, Point control2, Point to) noexcept {
+  const Point pull1 = InPixels(control1);
+  const Point pull2 = InPixels(control2);
+  const Point end = InPixels(to);
+  if (Outside(currentPixels_, pull1, pull2, end)) {
+    Line(end);
+    current_ = to;
+    return;
+  }
   std::array<Cubic, kDeepest + 1> waiting;
   std::size_t count = 1;
-  waiting[0] = {
-      .p0 = currentPixels_, .p1 = InPixels(control1), .p2 = InPixels(control2), .p3 = InPixels(to), .depth = 0};
+  waiting[0] = {.p0 = currentPixels_, .p1 = pull1, .p2 = pull2, .p3 = end, .depth = 0};
   while (count > 0) {
     --count;
     const Cubic piece = waiting[count];

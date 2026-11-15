@@ -67,6 +67,7 @@ target_link_libraries(core_tests PRIVATE ZLIB::ZLIB)
 
 bn_add_unit_test(draw_tests
   SOURCES
+    unit/draw/fill_test.cpp
     unit/draw/fixed_test.cpp
     unit/draw/flatten_test.cpp
     unit/draw/svg_number_test.cpp
@@ -183,7 +184,8 @@ if(Python3_Interpreter_FOUND)
 
   # bn-svg, and through it the reading and flattening of SVG path data,
   # against a second reading of the same paths, with the curves they
-  # describe worked out in floating point.
+  # describe worked out in floating point; and the pictures it fills
+  # against a second way of filling the same shapes.
   add_test(
     NAME e2e.SvgTool
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/svg_tool.py

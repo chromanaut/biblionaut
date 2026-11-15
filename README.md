@@ -913,10 +913,10 @@ whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
 ## Fuzzing
 
 Each reader of a book's own files, from the inflater to the table of
-contents, has a fuzz target in `tests/fuzz`, and so has the heap the XML
-parser's memory comes from: one function that is given some bytes, puts
-them through the reader, and ends the program if the reader does anything
-it should not.
+contents, has a fuzz target in `tests/fuzz`, and so have the heap the XML
+parser's memory comes from and the hyphenator, which is given a book's
+words: one function that is given some bytes, puts them through the
+reader, and ends the program if the reader does anything it should not.
 Going outside its memory, or into undefined behaviour, is seen by the
 sanitizers. The rest a target checks for itself: what the reader's header
 promises of it, and that no single call does more than the header says a
@@ -930,6 +930,7 @@ call may.
 | `package` | `epub::Package`, a step at a time, twice | No step reads more than five blocks from storage. Nothing is said of the book until the reading is over. A book that was read has documents, each found again by its entry's name. A second reading says what the first said |
 | `toc` | `epub::TocReader`, a step at a time, twice, with a handler that may ask for no more | No step reads more than five blocks. Every label is whole characters with its spaces collapsed, within its length; every entry points at a document of the book or at none. A stopped reading says so |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
+| `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
 
 The `package` and `toc` targets do not take a ZIP file as their input:
 nearly every change to one would be stopped at an entry's checksum, and
@@ -938,6 +939,12 @@ make a sound ZIP file round them each time (`package` can also be given
 the ZIP file itself). Each target's source says how its input is laid out.
 The first byte or two are its choices: how much memory the reader has,
 how big a piece is asked for at a time, when the handler stops.
+
+The hyphenator's bound is one figure for a whole word, and most tables
+leave room to spare under it: work done past what a table says of itself
+would not show. So some of its seeds are tables that say the least a table
+can (patterns of one letter, states of one edge) and hold more, where
+going by what the table holds is over the bound at once.
 
 A target is built two ways.
 
@@ -948,8 +955,9 @@ A target is built two ways.
   once found stays found. The kept inputs are the seeds, which
   `tests/fuzz/make_seeds.py` makes out of text written for the purpose
   (a stream of each kind, a book of each kind, a table of contents with
-  entries in it), and any input that ever found a fault, cut down to the
-  least that shows it and named `found-` and what it found.
+  entries in it, a language's table and words for it), and any input that
+  ever found a fault, cut down to the least that shows it and named
+  `found-` and what it found.
 - **For fuzzing** it is linked with LLVM's fuzzing engine, libFuzzer,
   which makes up new inputs by changing the ones it has, keeps each one
   that reaches code none reached before, and goes on from those.
@@ -966,21 +974,23 @@ A target is built two ways.
   ```
   $ tools/fuzz.py --time 300
   Building the fuzz targets with /opt/homebrew/opt/llvm@23/bin/clang ...
-  Fuzzing 6 targets in 2 builds, 300 s each, 8 at once ...
+  Fuzzing 7 targets in 2 builds, 300 s each, 8 at once ...
 
   target       build         inputs tried   kept  result
-  inflate      fuzz               617,735     68  nothing found
-  inflate      fuzz-noasan        758,019    105  nothing found
-  zip          fuzz             1,321,538     28  nothing found
-  zip          fuzz-noasan      4,247,681     76  nothing found
-  xml          fuzz             1,249,846   1565  nothing found
-  xml          fuzz-noasan      1,953,223   2337  nothing found
-  package      fuzz               410,532    883  nothing found
-  package      fuzz-noasan        871,156   1849  nothing found
-  toc          fuzz               444,863   1606  nothing found
-  toc          fuzz-noasan        802,730   2836  nothing found
-  region_heap  fuzz             2,111,634    349  nothing found
-  region_heap  fuzz-noasan      2,917,734    404  nothing found
+  inflate      fuzz               498,151   1219  nothing found
+  inflate      fuzz-noasan        590,822   1430  nothing found
+  zip          fuzz             1,336,572    775  nothing found
+  zip          fuzz-noasan      4,117,414   1079  nothing found
+  xml          fuzz             2,474,789  21083  nothing found
+  xml          fuzz-noasan      3,590,363  26063  nothing found
+  package      fuzz               393,572   6033  nothing found
+  package      fuzz-noasan        800,163  10037  nothing found
+  toc          fuzz               606,643   8688  nothing found
+  toc          fuzz-noasan      1,096,894  12583  nothing found
+  region_heap  fuzz             1,424,760   2292  nothing found
+  region_heap  fuzz-noasan      1,966,673   2596  nothing found
+  hyphenator   fuzz             1,345,852   2201  nothing found
+  hyphenator   fuzz-noasan      3,159,901   2960  nothing found
 
   Nothing found. The inputs kept are in .fuzz/corpus/.
   ```
@@ -1086,7 +1096,8 @@ answered within the work they state and without a read outside them. The
 tables `bn-hyphen` makes are checked the same way, against the plain ones
 too. And an end-to-end test (`tests/e2e/hyphen_tool.py`) sets `bn-hyphen`
 beside a second way of breaking the same words that shares none of its
-code, on 150 made-up languages with letters of one byte to four.
+code, on 150 made-up languages with letters of one byte to four. Tables
+and words that nobody wrote are the fuzz target's (see Fuzzing).
 
 ## Breaking paragraphs into lines
 

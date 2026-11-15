@@ -113,11 +113,13 @@ bn_add_unit_test(epub_tests
 target_link_libraries(epub_tests PRIVATE ZLIB::ZLIB)
 
 # The line breaker is given paragraphs the tests make up, and checked
-# against trying every way of breaking them. The page chooser is given runs
-# of lines the tests make up, and checked against adding their heights up
-# over the whole run.
+# against trying every way of breaking them. The hyphenator is given tables
+# the tests write themselves, and checked against laying every pattern over
+# every place in a word. The page chooser is given runs of lines the tests
+# make up, and checked against adding their heights up over the whole run.
 bn_add_unit_test(layout_tests
   SOURCES
+    unit/layout/hyphenator_test.cpp
     unit/layout/line_breaker_test.cpp
     unit/layout/page_chooser_test.cpp
   LIBS bn_layout)
@@ -150,8 +152,9 @@ target_link_libraries(reader_tests PRIVATE ZLIB::ZLIB)
 
 bn_add_unit_test(tools_tests
   SOURCES
+    unit/tools/hyphen_tool_test.cpp
     unit/tools/trace_tool_test.cpp
-  LIBS bn_trace_tool)
+  LIBS bn_hyphen_tool bn_trace_tool)
 
 # The whole diagnostic path on the desktop: application -> capture file ->
 # bn-trace -> timeline.
@@ -227,6 +230,15 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/svg_draw.py
       $<TARGET_FILE:bn-svg> ${CMAKE_CURRENT_BINARY_DIR}/svg_draw)
   set_tests_properties(e2e.SvgDraw PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-hyphen, and through it the hyphenator and the tables it reads,
+  # against a second way of breaking the same words: the patterns kept as
+  # they were written, and every piece of a word looked up among them.
+  add_test(
+    NAME e2e.HyphenTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/hyphen_tool.py
+      $<TARGET_FILE:bn-hyphen> ${CMAKE_CURRENT_BINARY_DIR}/hyphen_tool)
+  set_tests_properties(e2e.HyphenTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
   # against bn-zip, bn-xml, bn-epub and zipfile on the same files.

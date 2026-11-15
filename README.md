@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -1014,6 +1014,79 @@ What it does not find:
   and is not held to anything here.
 - **Anything in a drawing.** The readers of SVG in `draw/` (path data,
   tags, values) take bytes from a book as well, and have no target yet.
+
+## Where a word may be broken
+
+`layout/hyphenator.h` finds the places a word may be broken across two
+lines, by the method TeX uses (Franklin Mark Liang, 1983). A language is a
+set of patterns: short runs of letters with a number at each place between
+them, such as `hy3ph` or `1tio`. Every pattern that occurs in a word is
+laid over it, each place takes the largest number any pattern puts there,
+and the word may be broken where that number is odd. So one pattern can
+allow a break and a longer one forbid it again.
+
+- **A table for each language**, made from its patterns by `bn-hyphen` and
+  read where its bytes lie: in the firmware itself, or wherever else it is
+  kept. Nothing is copied out of it and nothing is allocated. The patterns
+  are a tree, read a letter at a time, and branches that are alike are
+  kept once.
+- **No patterns are in this repository**, and no table is in the firmware
+  yet. Made from the patterns TeX has for American English (4,938 of
+  them, and 14 words written out), a table is 38,049 bytes; from those for
+  German (36,709), 234,154 bytes.
+- **A word** is given as UTF-8, and the places come back as how many bytes
+  of it come before each break. Capitals count as their small letters. A
+  character the language has no letter for divides the word, and each side
+  is looked at by itself; so do bytes that are not UTF-8. A word of more
+  than 63 characters is given no places.
+- **Words written out** with their breaks, as a language's exceptions are,
+  go into the table as patterns of their own that no other pattern can
+  change.
+- **A table is not trusted.** Whatever its bytes are, nothing outside it
+  is read, and a word is answered within the work the table's own header
+  allows: no more starts than the word has letters, no further from each
+  than the longest pattern, no more edges at a step than the widest state
+  has (`Hyphenator::MostWorkFor`). With the American English table that is
+  81,915 edges and numbers for a word of 63 letters. Over the 235,976
+  words of a dictionary, the most any one took was 940, and they took 325
+  each on average.
+- **Flash**: 1.6 KB, as compiled for the device, without a table.
+
+`bn-hyphen` makes a table and breaks words with one:
+
+```
+./build/host/tools/hyphen/bn-hyphen pack patterns.txt --out table.bnhy
+./build/host/tools/hyphen/bn-hyphen words table.bnhy words.txt
+./build/host/tools/hyphen/bn-hyphen info table.bnhy
+```
+
+`pack` takes patterns as they are written for TeX, with spaces or line
+ends between them, and optionally the language's exceptions
+(`--exceptions`), a list of its letters' other forms such as their capitals
+(`--letters`), and the fewest letters it leaves before and after a break
+(`--left`, `--right`: 2 and 3 unless told). For the nine patterns of TeX's
+that the word "hyphenation" meets, it says:
+
+```
+patterns 9, exceptions 0
+letters 9, as 18 characters
+states 13, edges 18 (18 before like branches were kept once), widest 5
+longest pattern 5, values 21 bytes
+table 199 bytes
+```
+
+`words` prints each word of a file, or of what it is given to read, with
+a `-` at every place it may be broken: `hy-phen-ation`.
+
+Its tests write tables of their own, the plain way and with nothing
+shared, and compare the places found with laying every pattern over every
+place: 300 made-up sets of patterns, 60 words each. A table with any one
+byte changed, and tables of bytes that are no table at all, have to be
+answered within the work they state and without a read outside them. The
+tables `bn-hyphen` makes are checked the same way, against the plain ones
+too. And an end-to-end test (`tests/e2e/hyphen_tool.py`) sets `bn-hyphen`
+beside a second way of breaking the same words that shares none of its
+code, on 150 made-up languages with letters of one byte to four.
 
 ## Breaking paragraphs into lines
 

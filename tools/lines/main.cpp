@@ -2,8 +2,10 @@
 // them with, and says what is on each line or what the setting took.
 //
 // There are no fonts here to measure text with. A made-up face stands in
-// for one: every character has a width that depends on its first byte and
-// on nothing else, so that whoever reads the output can add a line up.
+// for one (layout/made_up_face.h): every character has a width that depends
+// on its first byte and on nothing else, so that whoever reads the output
+// can add a line up. The device check for layout sets text in the same
+// face, and its figures are these.
 
 #include <algorithm>
 #include <cstdint>
@@ -19,6 +21,8 @@
 
 #include "layout/hyphenator.h"
 #include "layout/line_breaker.h"
+#include "layout/line_digest.h"
+#include "layout/made_up_face.h"
 #include "layout/paragraph_setter.h"
 
 namespace {
@@ -26,6 +30,8 @@ namespace {
 using bn::layout::Hyphenator;
 using bn::layout::HyphenStatus;
 using bn::layout::LineBreaker;
+using bn::layout::LineDigest;
+using bn::layout::MadeUpFace;
 using bn::layout::ParagraphSetter;
 using bn::layout::ParagraphSettings;
 using bn::layout::ParagraphStatus;
@@ -80,50 +86,6 @@ void PrintUsage(const char* program) {
                program);
 }
 
-// The made-up face.
-class Face final : public bn::layout::TextMeasure {
- public:
-  static std::uint16_t CharacterWidth(char first, std::uint16_t style) {
-    const auto byte = static_cast<std::uint8_t>(first);
-    if ((byte & 0xC0U) == 0x80U || byte == 0xCC || byte == 0xCD) {
-      return 0;  // It goes on with a character, or is a mark set over one.
-    }
-    const std::string_view narrow = "iljtf.,;:'!|";
-    const std::string_view wide = "mwMW";
-    std::uint16_t width = 36;
-    if (narrow.find(first) != std::string_view::npos) {
-      width = 18;
-    } else if (wide.find(first) != std::string_view::npos) {
-      width = 54;
-    } else if (first >= 'A' && first <= 'Z') {
-      width = 44;
-    } else if (first == '-') {
-      width = 22;
-    } else if (byte >= 0xC0) {
-      width = 40;
-    }
-    return static_cast<std::uint16_t>(width + (4 * style));
-  }
-
-  void Measure(std::string_view text, std::uint16_t style, std::span<const std::uint8_t> ends,
-               std::span<std::uint16_t> widths) noexcept override {
-    std::size_t from = 0;
-    for (std::size_t i = 0; i < ends.size(); ++i) {
-      std::uint32_t width = 0;
-      for (; from < ends[i] && from < text.size(); ++from) {
-        width += CharacterWidth(text[from], style);
-      }
-      widths[i] = static_cast<std::uint16_t>(std::min<std::uint32_t>(width, 0xFFFF));
-    }
-  }
-  std::uint16_t SpaceWidth(std::uint16_t style) noexcept override {
-    return static_cast<std::uint16_t>(18 + (4 * style));
-  }
-  std::uint16_t HyphenWidth(std::uint16_t style) noexcept override {
-    return static_cast<std::uint16_t>(22 + (4 * style));
-  }
-};
-
 // Some text in one style.
 struct Run {
   std::string text;
@@ -169,7 +131,10 @@ class Printer final : public bn::layout::TextLineSink {
   // The text the lines that follow are lines of.
   void Of(const std::string* text) noexcept { text_ = text; }
 
+  const LineDigest& Digest() const noexcept { return digest_; }
+
   void OnLine(const TextLine& line) noexcept override {
+    digest_.Add(line);
     ++figures_.lines;
     figures_.hyphens += line.hyphen ? 1U : 0U;
     figures_.tooWide += line.overfull ? 1U : 0U;
@@ -191,6 +156,7 @@ class Printer final : public bn::layout::TextLineSink {
   bool print_;
   Figures& figures_;
   const std::string* text_ = nullptr;
+  LineDigest digest_;
 };
 
 bool ReadFile(const std::string& path, std::string& contents) {
@@ -313,7 +279,7 @@ int SetFile(const Options& options) {
   std::vector<ParagraphSetter::Record> records(options.records);
   ParagraphSetter setter(nodes, records);
   setter.UseHyphenator(options.tablePath.empty() ? nullptr : &hyphenator);
-  Face face;
+  MadeUpFace face;
   Figures figures;
   Printer printer(!options.figures, figures);
   const ParagraphSettings settings{.widths = {.first = options.first, .rest = options.width},
@@ -372,6 +338,8 @@ int SetFile(const Options& options) {
     std::printf("calls %llu; the most work in one, by the setter %u of %u, by the breaker %u of %u\n",
                 count(figures.calls), figures.mostWork, ParagraphSetter::MostWorkFor(options.records),
                 figures.mostBreakerWork, LineBreaker::MostWorkFor(options.nodes));
+    std::printf("bytes measured %llu; checksum of the lines %08x\n", count(face.BytesMeasured()),
+                static_cast<unsigned>(printer.Digest().Checksum()));
   }
   return 0;
 }

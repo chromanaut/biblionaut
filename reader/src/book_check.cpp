@@ -8,6 +8,7 @@
 #include "core/metrics.h"
 #include "core/trace.h"
 #include "epub/package_digest.h"
+#include "log_line.h"
 #include "reader/trace_ids.h"
 
 namespace bn::reader {
@@ -37,64 +38,6 @@ constexpr std::string_view kTopDirectory = "/";
 constexpr std::size_t kChecksumRoundsPerStep = 16;
 constexpr std::size_t kChecksumRounds = BookCheck::kChecksumBytes / BookCheck::kChunkBytes;
 
-// A line of text put together piece by piece. What does not fit is left
-// off the end.
-class Line {
- public:
-  Line& Text(std::string_view text) noexcept {
-    for (const char ch : text) {
-      Put(ch);
-    }
-    return *this;
-  }
-  Line& Number(std::uint64_t value) noexcept {
-    std::array<char, 20> digits{};
-    std::size_t count = 0;
-    do {
-      digits[count++] = static_cast<char>('0' + (value % 10));
-      value /= 10;
-    } while (value != 0);
-    while (count > 0) {
-      Put(digits[--count]);
-    }
-    return *this;
-  }
-  // Eight digits of hexadecimal, as checksums are written.
-  Line& Hex8(std::uint32_t value) noexcept {
-    constexpr std::string_view kDigits = "0123456789abcdef";
-    for (int shift = 28; shift >= 0; shift -= 4) {
-      Put(kDigits[(value >> static_cast<unsigned>(shift)) & 0xFU]);
-    }
-    return *this;
-  }
-  // A number and what it counts: "1 read", "2 reads".
-  Line& Count(std::uint64_t value, std::string_view one, std::string_view many) noexcept {
-    return Number(value).Text(value == 1 ? one : many);
-  }
-  std::string_view View() const noexcept { return {text_.data(), length_}; }
-  // Starts another line in the same place.
-  void Clear() noexcept { length_ = 0; }
-
- private:
-  void Put(char ch) noexcept {
-    if (length_ < text_.size()) {
-      text_[length_++] = ch;
-    }
-  }
-
-  std::array<char, core::kMaxTextLength> text_{};
-  std::size_t length_ = 0;
-};
-
-// KB (of 1024 bytes) a second; 0 if no time passed.
-std::uint64_t KbPerSecond(std::uint64_t bytes, std::uint64_t microseconds) noexcept {
-  return microseconds == 0 ? 0 : (bytes * 1'000'000) / microseconds / 1024;
-}
-
-std::uint32_t Clamped(std::uint64_t value) noexcept {
-  return value > UINT32_MAX ? UINT32_MAX : static_cast<std::uint32_t>(value);
-}
-
 // Whether a file of this name is taken for a book: it ends in ".epub", in
 // capitals or not, and does not begin with a dot, as the files do that
 // some computers leave beside the real ones.
@@ -118,7 +61,7 @@ bool IsBookName(std::string_view name) noexcept {
 
 // "card ... ; inflating ... ; all ... ms.", the times of one book or of
 // all of them, added to `line`.
-void AddTimes(Line& line, const BookCheck::Figures& figures) noexcept {
+void AddTimes(LogLine& line, const BookCheck::Figures& figures) noexcept {
   line.Text("card ")
       .Number(figures.storageUs / 1000)
       .Text(" ms for ")
@@ -146,7 +89,7 @@ void AddTimes(Line& line, const BookCheck::Figures& figures) noexcept {
 // what was found and the most memory a document of it used; the line for
 // all of them, which has no one checksum, says how much of what was found
 // the check itself checksummed, and the memory has a line of its own.
-void AddXml(Line& line, const BookCheck::Figures& figures, const std::uint32_t* checksum) noexcept {
+void AddXml(LogLine& line, const BookCheck::Figures& figures, const std::uint32_t* checksum) noexcept {
   line.Text("XML: ")
       .Count(figures.xmlDocuments, " document, ", " documents, ")
       .Number(figures.xmlBytes)
@@ -175,7 +118,7 @@ void AddXml(Line& line, const BookCheck::Figures& figures, const std::uint32_t* 
 }
 
 // How the documents' use of the parser's memory was spread.
-void AddXmlMemory(Line& line, const BookCheck::Figures& figures) noexcept {
+void AddXmlMemory(LogLine& line, const BookCheck::Figures& figures) noexcept {
   line.Text("XML memory: the most a document used ")
       .Number(figures.xmlMostMemory)
       .Text(" bytes; documents over 8 KB: ")
@@ -189,7 +132,7 @@ void AddXmlMemory(Line& line, const BookCheck::Figures& figures) noexcept {
 
 // "... ms: card ... ms for ... reads of ... bytes", what a piece of
 // reading cost, added to `line`.
-void AddCost(Line& line, std::uint64_t allUs, std::uint64_t storageUs, std::uint32_t reads,
+void AddCost(LogLine& line, std::uint64_t allUs, std::uint64_t storageUs, std::uint32_t reads,
              std::uint64_t readBytes) noexcept {
   line.Number(allUs / 1000)
       .Text(" ms: card ")
@@ -201,12 +144,12 @@ void AddCost(Line& line, std::uint64_t allUs, std::uint64_t storageUs, std::uint
 }
 
 // What reading one package cost, or all of them.
-void AddPackageCost(Line& line, const BookCheck::Figures& figures) noexcept {
+void AddPackageCost(LogLine& line, const BookCheck::Figures& figures) noexcept {
   AddCost(line, figures.packageUs, figures.packageStorageUs, figures.packageReads, figures.packageReadBytes);
 }
 
 // And one table of contents, or all of them.
-void AddTocCost(Line& line, const BookCheck::Figures& figures) noexcept {
+void AddTocCost(LogLine& line, const BookCheck::Figures& figures) noexcept {
   AddCost(line, figures.tocUs, figures.tocStorageUs, figures.tocReads, figures.tocReadBytes);
 }
 
@@ -214,7 +157,7 @@ void AddTocCost(Line& line, const BookCheck::Figures& figures) noexcept {
 // marks, and cut to `Room` bytes at a character with "..." after it if it
 // is longer; or that the book has none.
 template <std::size_t Room>
-void AddName(Line& line, std::string_view what, std::string_view name) noexcept {
+void AddName(LogLine& line, std::string_view what, std::string_view name) noexcept {
   if (name.empty()) {
     line.Text("no ").Text(what);
     return;
@@ -582,7 +525,7 @@ void BookCheck::TimeChecksum() noexcept {
   }
   const std::uint64_t rate = KbPerSecond(kChecksumBytes, checksumUs_);
   checksumKbPerSecond.Set(Clamped(rate));
-  Line line;
+  LogLine line;
   line.Text("book check: the checksum alone, ")
       .Number(kChecksumBytes)
       .Text(" bytes in ")
@@ -603,7 +546,7 @@ void BookCheck::OpenDirectory() noexcept {
     return;
   }
   if (status != StorageStatus::kOk) {
-    Line line;
+    LogLine line;
     line.Text("book check: FAILED. ").Text(directory).Text(" cannot be listed: ").Text(core::StorageStatusName(status));
     (void)stream_.SendText(line.View());
     Finish(false);
@@ -629,7 +572,7 @@ void BookCheck::OpenFolder() noexcept {
   const std::string_view folder(path_.data(), prefixLengths_[1] - 1);
   const StorageStatus status = meter_.OpenDirectory(folder, listings_[1]);
   if (status != StorageStatus::kOk) {
-    Line line;
+    LogLine line;
     line.Text("book check: FAILED. ").Text(folder).Text(" cannot be listed: ").Text(core::StorageStatusName(status));
     (void)stream_.SendText(line.View());
     Finish(false);
@@ -649,7 +592,7 @@ void BookCheck::NextBook() noexcept {
   core::FileInfo info;
   const StorageStatus status = meter_.NextInDirectory(listings_[depth_], name, length, info);
   if (status != StorageStatus::kOk) {
-    Line line;
+    LogLine line;
     line.Text("book check: FAILED. The listing stopped: ").Text(core::StorageStatusName(status));
     (void)stream_.SendText(line.View());
     Finish(false);
@@ -704,7 +647,7 @@ void BookCheck::NextBook() noexcept {
   packageChecksum_ = 0;
   tocChecksum_ = 0;
   bookBeganTrace_ = BN_TRACE_NOW();
-  Line line;
+  LogLine line;
   line.Text("book ").Number(books_).Text(": ").Number(bookSize_).Text(" bytes, ").Text(Path());
   (void)stream_.SendText(line.View());
   MoveTo(Step::kReadPackage);
@@ -718,7 +661,7 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
     return;
   }
   if (foldersPassedOver_ != 0) {
-    Line passedOver;
+    LogLine passedOver;
     passedOver.Text("book check: ")
         .Count(foldersPassedOver_, " folder", " folders")
         .Text(" inside a folder not looked in: only one level down is.");
@@ -729,7 +672,7 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
     Finish(false);
     return;
   }
-  Line line;
+  LogLine line;
   line.Text("book check: ").Text(failedBooks_ == 0 ? "passed. " : "FAILED. ");
   if (failedBooks_ != 0) {
     line.Number(failedBooks_).Text(" of ");
@@ -748,23 +691,23 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
         .Number(totals_.bytesIn)
         .Text(".");
     (void)stream_.SendText(line.View());
-    Line times;
+    LogLine times;
     times.Text("book check: ");
     AddTimes(times, totals_);
     (void)stream_.SendText(times.View());
   }
   if (totals_.xmlDocuments != 0) {
-    Line xml;
+    LogLine xml;
     xml.Text("book check: ");
     AddXml(xml, totals_, nullptr);
     (void)stream_.SendText(xml.View());
-    Line memory;
+    LogLine memory;
     memory.Text("book check: ");
     AddXmlMemory(memory, totals_);
     (void)stream_.SendText(memory.View());
   }
   if (totals_.packagesRead + totals_.packagesNotRead != 0) {
-    Line packages;
+    LogLine packages;
     packages.Text("book check: packages: ").Number(totals_.packagesRead).Text(" read; ");
     AddPackageCost(packages, totals_);
     packages.Text("; the longest ")
@@ -778,7 +721,7 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
     (void)stream_.SendText(packages.View());
   }
   if (totals_.tocsRead + totals_.tocsNone + totals_.tocsNotRead != 0) {
-    Line contents;
+    LogLine contents;
     contents.Text("book check: contents: ")
         .Number(totals_.tocsRead)
         .Text(" read (")
@@ -795,7 +738,7 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
     }
     (void)stream_.SendText(contents.View());
   }
-  Line opening;
+  LogLine opening;
   opening.Text("book check: files opened ")
       .Count(totals_.opens, " time in ", " times in ")
       .Number(totals_.openUs / 1000)
@@ -803,7 +746,7 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
       .Number(totals_.openLongestUs)
       .Text(" us.");
   (void)stream_.SendText(opening.View());
-  Line places;
+  LogLine places;
   places.Text("book check: places: ")
       .Count(totals_.placeReads, " read in ", " reads in ")
       .Number(totals_.placeUs / 1000)
@@ -811,7 +754,7 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
       .Number(totals_.placeLongestUs)
       .Text(" us.");
   (void)stream_.SendText(places.View());
-  Line longest;
+  LogLine longest;
   longest.Text("book check: the longest step: ").Number(longestStepUs_).Text(" us, ").Text(LongestStepName()).Text(".");
   (void)stream_.SendText(longest.View());
   Finish(failedBooks_ == 0);
@@ -857,7 +800,7 @@ void BookCheck::ReadPackage() noexcept {
   // One line is used for all that is said, one after another: this
   // function's own place on the stack is under everything the reading of
   // the package put there.
-  Line line;
+  LogLine line;
   if (read != epub::PackageStatus::kOk) {
     MoveTo(Step::kReadPlaces);
     book_.packagesNotRead = 1;
@@ -951,7 +894,7 @@ void BookCheck::ReadToc() noexcept {
   MoveTo(Step::kReadPlaces);
   book_.tocLongestUs = book_.tocUs;
   const epub::TocStatus status = toc_.Status();
-  Line line;
+  LogLine line;
   line.Text("book ").Number(books_).Text(": contents: ");
   if (status == epub::TocStatus::kNoToc) {
     book_.tocsNone = 1;
@@ -1012,7 +955,7 @@ void BookCheck::ReadPlaces() noexcept {
     ++count_;
     return;
   }
-  Line line;
+  LogLine line;
   line.Text("book ")
       .Number(books_)
       .Text(": places: ")
@@ -1167,11 +1110,11 @@ void BookCheck::EndBook() noexcept {
   CloseBook();
   const bool sound = book_.failedEntries == 0;
   if (brief_) {
-    Line line;
+    LogLine line;
     line.Text("book ").Number(books_).Text(": ok. Not read through.");
     (void)stream_.SendText(line.View());
   } else {
-    Line line;
+    LogLine line;
     line.Text("book ").Number(books_).Text(sound ? ": ok. " : ": FAILED. ");
     if (!sound) {
       line.Number(book_.failedEntries).Text(" of ");
@@ -1188,7 +1131,7 @@ void BookCheck::EndBook() noexcept {
       line.Text(" First to fail: entry ").Number(firstFailedEntry_).Text(", ").Text(epub::ZipStatusName(firstFailure_));
     }
     (void)stream_.SendText(line.View());
-    Line times;
+    LogLine times;
     times.Text("book ").Number(books_).Text(": ");
     AddTimes(times, book_);
     (void)stream_.SendText(times.View());
@@ -1198,7 +1141,7 @@ void BookCheck::EndBook() noexcept {
   book_.opens = meter_.Now().opens - bookBegan_.opens;
   book_.openUs = meter_.Now().openUs - bookBegan_.openUs;
   book_.openLongestUs = meter_.TakeLongestOpenUs();
-  Line opening;
+  LogLine opening;
   opening.Text("book ")
       .Number(books_)
       .Text(": opened ")
@@ -1214,7 +1157,7 @@ void BookCheck::EndBook() noexcept {
   book_.xmlEventBytes = digest_.Bytes();
   xmlChecksum_ = digest_.Checksum();
   if (book_.xmlDocuments != 0) {
-    Line xml;
+    LogLine xml;
     xml.Text("book ").Number(books_).Text(": ");
     AddXml(xml, book_, &xmlChecksum_);
     (void)stream_.SendText(xml.View());
@@ -1238,7 +1181,7 @@ void BookCheck::EntryFailed(std::uint32_t number, ZipStatus status) noexcept {
 
 void BookCheck::BookFailed(std::string_view why) noexcept {
   CloseBook();
-  Line line;
+  LogLine line;
   line.Text("book ").Number(books_).Text(": FAILED. It cannot be read: ").Text(why);
   (void)stream_.SendText(line.View());
   ++failedBooks_;

@@ -14,6 +14,7 @@
 #include "input_fakes.h"
 #include "memory_fakes.h"
 #include "reader/book_check.h"
+#include "reader/layout_check.h"
 #include "reader/trace_ids.h"
 #include "storage_fakes.h"
 #include "stream_fakes.h"
@@ -408,6 +409,37 @@ TEST(App, LooksForACardAgainBeforeReadingTheBooksWhenPowerIsPressed) {
   fixture.RunFor(200'000);
   EXPECT_EQ(fixture.app.BookChecker()->CurrentState(), BookState::kPassed);
   EXPECT_EQ(fixture.app.BookChecker()->Books(), 1u);
+}
+
+TEST(App, CanHaveTheLayoutCodeTimedAtStartAndAtEachPressOfPower) {
+  using LayoutState = bn::reader::LayoutCheck::State;
+  AppFixture fixture;
+  const std::string text = "The lamp was lit before anyone had asked for it.\n\nAnd the harbour went on.\n";
+  fixture.storage.Put(std::string(bn::reader::LayoutCheck::kTextPath), {text.begin(), text.end()});
+  fixture.app.CheckLayout();
+  fixture.app.Start();
+  ASSERT_NE(fixture.app.LayoutChecker(), nullptr);
+  EXPECT_EQ(fixture.app.LayoutChecker()->CurrentState(), LayoutState::kRunning);
+  fixture.RunFor(5'100'000);
+  EXPECT_EQ(fixture.app.LayoutChecker()->CurrentState(), LayoutState::kPassed);
+  EXPECT_EQ(fixture.app.LayoutChecker()->PassFigures(0).paragraphs, 2U);
+  EXPECT_NE(fixture.Metrics().find("layout_check=1["), std::string::npos) << fixture.Metrics();
+  EXPECT_EQ(fixture.storage.changes, 0) << "it writes nothing";
+
+  const auto passedLines = [&fixture] {
+    int count = 0;
+    for (const StreamItem& item : fixture.ItemsOfType(FrameType::kText)) {
+      count += item.Text() == "layout check: passed." ? 1 : 0;
+    }
+    return count;
+  };
+  EXPECT_EQ(passedLines(), 1);
+
+  // Power runs it again.
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(200'000);
+  EXPECT_EQ(fixture.app.LayoutChecker()->CurrentState(), LayoutState::kPassed);
+  EXPECT_EQ(passedLines(), 2);
 }
 
 TEST(App, ReportsButtonsThatCannotBeRead) {

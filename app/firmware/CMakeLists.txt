@@ -57,6 +57,18 @@ option(BN_BOOK_CHECK "Read every book on the SD card at start and at each press 
 #   tools/idf -DBN_BOOK_CHECK=ON -DBN_BOOK_CHECK_BRIEF=ON build flash
 option(BN_BOOK_CHECK_BRIEF "With BN_BOOK_CHECK: open every book and read none through" OFF)
 
+# For timing, on a device, the line breaker, the hyphenator and the
+# paragraph setter, and setting the text on the card in lines
+# (reader/layout_check.h says what is done):
+#
+#   tools/idf -DBN_LAYOUT_CHECK=ON build flash    (back to normal: -DBN_LAYOUT_CHECK=OFF)
+#
+# Such a firmware does it at start, and again at each press of the Power
+# button. It reads /layout/paragraphs.txt and /layout/hyphenation.bnhy, and
+# writes nothing to the card. Not together with BN_STORAGE_CHECK or
+# BN_BOOK_CHECK.
+option(BN_LAYOUT_CHECK "Time the layout code, and set the text on the SD card, at start and at each press of Power" OFF)
+
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
 set(COMPONENTS main)

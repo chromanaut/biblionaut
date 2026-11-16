@@ -219,8 +219,8 @@ def main() -> int:
     words_in_all = 0
     places_in_all = 0
     try:
-        # A word whose breaks are known: the one the method's author gave
-        # his thesis its title with, by the patterns of TeX's that it meets.
+        # A word whose breaks are known: the one in the title of the thesis
+        # that set the method out, by the patterns of TeX's that it meets.
         known = work / "known.pat.txt"
         known.write_text("hy3ph he2n hena4 hen5at\n1na n2at 1tio 2io o2n\n", encoding="utf-8")
         table = work / "known.bnhy"

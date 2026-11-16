@@ -59,3 +59,15 @@ elseif(BN_BOOK_CHECK_BRIEF)
   message(FATAL_ERROR "BN_BOOK_CHECK_BRIEF is a kind of book check: configure with -DBN_BOOK_CHECK=ON as well, "
                       "or with -DBN_BOOK_CHECK_BRIEF=OFF.")
 endif()
+
+# A firmware that times the layout code (see BN_LAYOUT_CHECK in the project
+# file).
+if(BN_LAYOUT_CHECK)
+  if(BN_STORAGE_CHECK OR BN_BOOK_CHECK)
+    message(FATAL_ERROR "BN_LAYOUT_CHECK would be timed while BN_STORAGE_CHECK or BN_BOOK_CHECK took the card's "
+                        "time: configure with the others OFF.")
+  endif()
+  message(WARNING "This firmware times the layout code at start and at each press of Power. "
+                  "Configure with -DBN_LAYOUT_CHECK=OFF for a normal build.")
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_LAYOUT_CHECK=1)
+endif()

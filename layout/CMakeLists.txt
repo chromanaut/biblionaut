@@ -7,6 +7,8 @@
 add_library(bn_layout STATIC
   src/hyphenator.cpp
   src/line_breaker.cpp
+  src/line_digest.cpp
+  src/made_up_face.cpp
   src/page_chooser.cpp
   src/paragraph_setter.cpp)
 target_include_directories(bn_layout PUBLIC include)

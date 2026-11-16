@@ -4,6 +4,7 @@
 add_library(bn_reader STATIC
   src/app.cpp
   src/book_check.cpp
+  src/layout_check.cpp
   src/pattern_viewer.cpp
   src/storage_check.cpp)
 target_include_directories(bn_reader PUBLIC include)

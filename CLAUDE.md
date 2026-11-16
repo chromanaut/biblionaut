@@ -105,9 +105,9 @@ The application is a single loop calling `App::Tick()`. Work that takes long is 
 
 ### Device checks and their desktop twins
 
-A firmware can be built to check one thing on real hardware: `-DBN_BOOK_CHECK=ON` (with `-DBN_BOOK_CHECK_BRIEF=ON` it opens each book and reads none through), `-DBN_STORAGE_CHECK=ON` (these two are `reader::DeviceCheck`s, cannot be combined, and are in no normal firmware) or `-DBN_PLANE_CHECK=ON`. The desktop application runs the same checks when the environment variable of the same name is set, with `BN_STORAGE` naming a folder that stands for the card and `BN_SERIAL_OUT` a file to capture the stream in.
+A firmware can be built to check one thing on real hardware: `-DBN_BOOK_CHECK=ON` (with `-DBN_BOOK_CHECK_BRIEF=ON` it opens each book and reads none through), `-DBN_STORAGE_CHECK=ON`, `-DBN_LAYOUT_CHECK=ON` (these three are `reader::DeviceCheck`s, no two can be combined, and none is in a normal firmware) or `-DBN_PLANE_CHECK=ON`. The desktop application runs the same checks when the environment variable of the same name is set, with `BN_STORAGE` naming a folder that stands for the card and `BN_SERIAL_OUT` a file to capture the stream in.
 
-Each layer of the book pipeline also has a host tool that runs the same code on one file: `bn-zip`, `bn-xml`, `bn-epub`, `bn-css`. The book check reports counts, reads of storage and checksums in the same terms those tools print, so that what a device found can be set beside what the desktop finds for the same book. When a check gains a figure, the matching tool should print it too.
+Each layer of the book pipeline also has a host tool that runs the same code on one file: `bn-zip`, `bn-xml`, `bn-epub`, `bn-css`. The book check reports counts, reads of storage and checksums in the same terms those tools print, so that what a device found can be set beside what the desktop finds for the same book. The layout check does the same with `bn-lines --figures`, over a file of paragraphs that `tools/layout-text.py` makes from books. When a check gains a figure, the matching tool should print it too.
 
 ## Conventions
 

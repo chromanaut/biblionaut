@@ -56,7 +56,12 @@
   /* reading of one book within it, each with whether it passed */             \
   /* (1) or failed (0). What was found is in the log text. */                  \
   X(13, kSpanBookCheck, "book_check", "passed")                                \
-  X(14, kSpanBookCheckBook, "book_check_book", "passed")
+  X(14, kSpanBookCheckBook, "book_check_book", "passed")                       \
+  /* A whole run of the layout check (reader/layout_check.h), and */           \
+  /* each setting of the text on the card within it: its number, */            \
+  /* from 1. What was found is in the log text. */                             \
+  X(15, kSpanLayoutCheck, "layout_check", "passed")                            \
+  X(16, kSpanLayoutCheckPass, "layout_check_pass", "pass")
 
 namespace bn::reader {
 

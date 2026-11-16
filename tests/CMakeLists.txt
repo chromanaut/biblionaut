@@ -123,6 +123,8 @@ bn_add_unit_test(layout_tests
   SOURCES
     unit/layout/hyphenator_test.cpp
     unit/layout/line_breaker_test.cpp
+    unit/layout/line_digest_test.cpp
+    unit/layout/made_up_face_test.cpp
     unit/layout/page_chooser_test.cpp
     unit/layout/paragraph_setter_test.cpp
   LIBS bn_layout)
@@ -144,16 +146,19 @@ bn_add_unit_test(reader_tests
   SOURCES
     unit/reader/app_test.cpp
     unit/reader/book_check_test.cpp
+    unit/reader/layout_check_test.cpp
     unit/reader/pattern_viewer_test.cpp
     unit/reader/storage_check_test.cpp
   LIBS bn_reader)
 # The pattern viewer's tests compare what reaches the panel with the picture
 # from draw, which the reader links but does not pass on. The book check's
 # tests are in the same position with the ZIP reader from epub, and make
-# their ZIP files with zlib.
+# their ZIP files with zlib; and the layout check's with the setter from
+# layout, which they set the text with a second time.
 target_include_directories(reader_tests PRIVATE
   $<TARGET_PROPERTY:bn_draw,INTERFACE_INCLUDE_DIRECTORIES>
-  $<TARGET_PROPERTY:bn_epub,INTERFACE_INCLUDE_DIRECTORIES>)
+  $<TARGET_PROPERTY:bn_epub,INTERFACE_INCLUDE_DIRECTORIES>
+  $<TARGET_PROPERTY:bn_layout,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(reader_tests PRIVATE ZLIB::ZLIB)
 
 bn_add_unit_test(tools_tests
@@ -284,6 +289,16 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lines_tool.py
       $<TARGET_FILE:bn-lines> $<TARGET_FILE:bn-hyphen> ${CMAKE_CURRENT_BINARY_DIR}/lines_tool)
   set_tests_properties(e2e.LinesTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # The layout check, run by the desktop application over a folder standing
+  # for the card, against bn-lines on the same text and table; and the
+  # script that makes the text, against a book whose paragraphs are known.
+  add_test(
+    NAME e2e.LayoutCheck
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/layout_check.py
+      $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-trace> $<TARGET_FILE:bn-lines> $<TARGET_FILE:bn-hyphen>
+      ${PROJECT_SOURCE_DIR}/tools/layout-text.py ${CMAKE_CURRENT_BINARY_DIR}/layout_check)
+  set_tests_properties(e2e.LayoutCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
   # against bn-zip, bn-xml, bn-epub and zipfile on the same files.

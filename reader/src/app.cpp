@@ -5,6 +5,7 @@
 #include "core/metrics.h"
 #include "hw/platform.h"
 #include "reader/book_check.h"
+#include "reader/layout_check.h"
 #include "reader/trace_ids.h"
 
 namespace bn::reader {
@@ -84,6 +85,13 @@ void App::CheckBooks(bool brief) noexcept {
   }
 }
 
+void App::CheckLayout() noexcept {
+  if (layoutCheck_ == nullptr) {
+    layoutCheck_ = new (std::nothrow) LayoutCheck(services_.storage, services_.clock, stream_);
+    checks_[2] = layoutCheck_;
+  }
+}
+
 void App::StartStorage() noexcept {
   const std::uint32_t began = BN_TRACE_NOW();
   const core::StorageStatus status = services_.storage.Start();
@@ -141,7 +149,7 @@ void App::Tick() noexcept {
 
   core::InputEvent event{};
   for (int taken = 0; taken < kMaxInputEventsPerTick && services_.input.Next(event); ++taken) {
-    const bool hasChecks = checks_[0] != nullptr || checks_[1] != nullptr;
+    const bool hasChecks = checks_[0] != nullptr || checks_[1] != nullptr || checks_[2] != nullptr;
     if (hasChecks && event.kind == core::InputEventKind::kPress && event.button == core::Button::kPower) {
       // The viewer has no use for this button. A card may have been put in
       // since the last look.

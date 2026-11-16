@@ -26,7 +26,8 @@ void PrintUsage(const char* program) {
                "to have it put through its paces at start and at each (scripted) press\n"
                "of Power.\n"
                "Set BN_BOOK_CHECK instead to have every EPUB in that folder's books folder\n"
-               "read from end to end, at the same moments.\n",
+               "read from end to end, at the same moments; and BN_BOOK_CHECK_BRIEF with it\n"
+               "to have each only opened, and none read through.\n",
                program);
 }
 
@@ -67,7 +68,8 @@ int main(int argc, char** argv) {
     app.CheckStorage();
   }
   if (checkBooks) {
-    app.CheckBooks();
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
+    app.CheckBooks(std::getenv("BN_BOOK_CHECK_BRIEF") != nullptr);
   }
   app.Start();
   std::printf("Biblionaut %s (%s)\n", bn::reader::Version(), bn::hw::PortName());

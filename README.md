@@ -253,6 +253,26 @@ ESP-IDF's SD driver and FatFS, which is called directly
 is what cards of up to 32 GB are sold with; a bigger card comes with exFAT
 and has to be formatted as FAT32 first.
 
+FAT keeps a file as a chain of pieces, and to go to a place in a file
+FatFS follows the chain there, from the file's start if the place is
+behind where it is, reading the card's table as it goes: the larger the
+file, the longer that takes. On an X4, going from the start of a book of
+353 MB to its end took 67 ms. So the driver gives a large file that is
+opened to be read a table, which FatFS fills with a map of the file's
+pieces and goes by afterwards, reading nothing: a place in that book then
+costs what it does in a small one, 3.5 ms with the 4 KB read there. Making
+the map follows the chain once, so it is paid for when the file is opened
+(62 ms for that book). A file is large, here, if its chain is longer than
+one sector of the card's table holds, which is 128 clusters (4 MB where a
+cluster is 32 KB): a shorter chain is one read of the table however it is
+followed, and such a file is opened as it always was. A table has room for
+a file in 63 pieces (half a kilobyte for each of the four files that can
+be open); a file in more goes without a map, and is only slower. The
+metrics say how many files were given a map (`sd_maps`), how many were in
+too many pieces (`sd_maps_refused`), the most numbers a file's map needed
+(`sd_map_items`, two for each piece and two more), and the size of the
+card's clusters (`sd_cluster_bytes`).
+
 On the desktop the card is a folder (`hw/desktop/folder_storage.h`), the
 one named by the `BN_STORAGE` environment variable; without it there is no
 card. It is made to behave as a card does where that is cheap: the same
@@ -416,9 +436,13 @@ instead (`reader/book_check.h`). With each book it does two things. First
 it opens the book as a reader would: finds the ZIP directory and reads the
 book's package, which says what the book is called and where its documents
 are (see "What a book says of itself" below); and then, with the book
-still open, reads its table of contents ("The table of contents" below). Then it closes the book, opens it afresh, reads every entry to its
-end, which checks the entry's size and checksum, and looks each entry up
-by name.
+still open, reads its table of contents ("The table of contents" below);
+and last, before closing it, reads a byte at each of sixteen places far
+apart in the file, to and fro: the start, the end, the middle, and so on
+by halves. That is what going to a place in a file costs, which on a card
+depends on how large the file is (see "Storage" above). Then it closes the
+book, opens it afresh, reads every entry to its end, which checks the
+entry's size and checksum, and looks each entry up by name.
 Every entry with an XML file's name (one ending in `.xhtml`, `.html`,
 `.htm`, `.xml`, `.opf` or `.ncx`) is also parsed as it is read. It works
 for about 20 ms a turn, so the panel and the buttons carry on around it,
@@ -431,36 +455,42 @@ how long: on a device, that is whether those calls are as short as an
 application that has a panel and buttons to see to needs them to be.
 
 What it finds goes out as log text: a line when a book is begun, three for
-its package, one for its table of contents, four when it ends, and eight
-at the end for all of them.
+its package, one for its table of contents, one for the places, four when
+it ends, and nine at the end for all of them.
 
 ```
-book check: the checksum alone, 262144 bytes in 2256 us (113475 KB/s).
+book check: the checksum alone, 262144 bytes in 1783 us (143578 KB/s).
 book 1: 1832425 bytes, /books/core/The First Book.epub
 book 1: package: title "The First Book", author "A. Writer", language "en".
 book 1: package: 374 files, 368 documents, cover jpeg, nav, ncx; memory 16288; checksum 7b162ac4.
-book 1: package: 2 ms: card 0 ms for 24 reads of 90555 bytes.
+book 1: package: 3 ms: card 1 ms for 24 reads of 90555 bytes.
 book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 1 ms: card 0 ms for 2 reads of 8192 bytes.
+book 1: places: 16 far apart, 16 reads in 1775 us, the longest 188 us.
 book 1: ok. 377 entries, 4353104 bytes out of 1769871. Directory found in 1 read, 0 ms.
-book 1: card 1 ms for 468 reads of 1909179 bytes (1654332 KB/s); inflating 48 ms: 1661195 bytes in (33155 KB/s), 4244428 out (84713 KB/s); all 88 ms.
-book 1: opened 4 times in 106 us, the longest 40 us; number 1 in its folder.
-book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 36 ms (112464 KB/s); most memory 11632.
+book 1: card 1 ms for 468 reads of 1909179 bytes (1416742 KB/s); inflating 49 ms: 1661195 bytes in (32687 KB/s), 4244428 out (83518 KB/s); all 90 ms.
+book 1: opened 4 times in 121 us, the longest 53 us; number 1 in its folder.
+book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 38 ms (108702 KB/s); most memory 11632.
 ...
 book check: passed. 34 books, 5152 entries, 63899132 bytes out of 39526769.
-book check: card 39 ms for 10091 reads of 41148789 bytes (1025477 KB/s); inflating 524 ms: 24130522 bytes in (44885 KB/s), 48502885 out (90221 KB/s); all 923 ms.
-book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 278 ms (110844 KB/s); 32821373 bytes of events checksummed.
+book check: card 26 ms for 10091 reads of 41148789 bytes (1540870 KB/s); inflating 527 ms: 24130522 bytes in (44677 KB/s), 48502885 out (89802 KB/s); all 918 ms.
+book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 284 ms (108377 KB/s); 32821373 bytes of events checksummed.
 book check: XML memory: the most a document used 18952 bytes; documents over 8 KB: 2072, over 12 KB: 24, over 16 KB: 5.
-book check: packages: 33 read; 15 ms: card 3 ms for 258 reads of 901750 bytes; the longest 2 ms; the most memory 22448. Not read: 1.
+book check: packages: 33 read; 33 ms: card 21 ms for 258 reads of 901750 bytes; the longest 3 ms; the most memory 22448. Not read: 1.
 book check: contents: 33 read (25 nav), 2666 entries; 8 ms: card 0 ms for 49 reads of 195690 bytes; the longest 1 ms.
-book check: files opened 136 times in 3 ms; the longest 113 us.
-book check: the longest step: 1057 us, reading an entry.
+book check: files opened 136 times in 4 ms; the longest 98 us.
+book check: places: 544 reads in 33 ms; the longest 332 us.
+book check: the longest step: 2937 us, parsing an entry.
 ```
 
 (Those figures are a desktop's, and the book's names are made up.) A
 book's file is opened four times, twice to read its package and twice to
 read it through; the line about that says how long those took, and where
 the book comes in the listing of its folder, since a file is found by
-going past the names before it. There are four times besides. `card` is the time
+going past the names before it. The line about the places says how many
+reads of storage the sixteen came to (fewer in a file so small that one
+place is in the block the one before was in), how long they took, and the
+longest of them; none of that is in the book's other figures. There are
+four times besides. `card` is the time
 spent inside storage. `inflating` is the time spent reading out the
 compressed entries with storage's share taken off, which is the processor
 inflating and checksumming, beside what went into the inflater and what
@@ -531,6 +561,20 @@ tools/idf -DBN_BOOK_CHECK=OFF build flash     # back to the normal firmware
 It cannot be combined with `-DBN_STORAGE_CHECK=ON`: the two would get in
 each other's way on the card. A firmware built with neither has the code
 of neither in it.
+
+With `-DBN_BOOK_CHECK_BRIEF=ON` as well (on the desktop,
+`BN_BOOK_CHECK_BRIEF` set as well) the check is a brief one: each book is
+opened, its package and its table of contents are read and its sixteen
+places gone to, and no book is read through. That takes seconds where the
+whole takes minutes, and still says whether each book opens, what it
+holds, and what opening it and going about in it cost. A book's file is
+then opened twice, its last line is `book 1: ok. Not read through.`, and
+the run's is `book check: passed. 34 books opened, none read through.`
+with nothing after it about entries or XML.
+
+```
+tools/idf -DBN_BOOK_CHECK=ON -DBN_BOOK_CHECK_BRIEF=ON build flash
+```
 
 ## XML
 

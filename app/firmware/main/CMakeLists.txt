@@ -52,4 +52,10 @@ if(BN_BOOK_CHECK)
   message(WARNING "This firmware reads every book on the SD card at start and at each press of Power. "
                   "Configure with -DBN_BOOK_CHECK=OFF for a normal build.")
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_BOOK_CHECK=1)
+  if(BN_BOOK_CHECK_BRIEF)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_BOOK_CHECK_BRIEF=1)
+  endif()
+elseif(BN_BOOK_CHECK_BRIEF)
+  message(FATAL_ERROR "BN_BOOK_CHECK_BRIEF is a kind of book check: configure with -DBN_BOOK_CHECK=ON as well, "
+                      "or with -DBN_BOOK_CHECK_BRIEF=OFF.")
 endif()

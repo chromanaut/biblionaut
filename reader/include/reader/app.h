@@ -97,8 +97,9 @@ class App {
   // (reader/book_check.h): once at start, and again whenever the Power
   // button is pressed, which also looks for a card again if none was found
   // before. Call before Start(). Not together with CheckStorage(): the two
-  // would get in each other's way on the card.
-  void CheckBooks() noexcept;
+  // would get in each other's way on the card. With `brief`, each book is
+  // opened and none is read through.
+  void CheckBooks(bool brief = false) noexcept;
   // The check, if CheckBooks() was called; null otherwise.
   const BookCheck* BookChecker() const noexcept { return bookCheck_; }
 

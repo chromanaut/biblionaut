@@ -319,15 +319,16 @@ TEST(BookCheck, MakesTheSameReadsAsACheckOnTheDesktopAndCountsEveryOne) {
   ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
   const BookCheck::Figures totals = fixture.check->Totals();
   const std::size_t readsOfTheCheck = fixture.storage.reads.size();
-  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads, readsOfTheCheck)
-      << "every read of storage is counted, to the reading of the book or to the look for its package";
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads + totals.placeReads, readsOfTheCheck)
+      << "every read of storage is counted: to the reading of the book, to the look for its package, or to the "
+         "going about in it";
   EXPECT_GT(totals.reads, 20u);
   EXPECT_GT(totals.packageReads, 0u);
   std::uint64_t bytes = 0;
   for (const FakeStorage::ReadCall& call : fixture.storage.reads) {
     bytes += std::min<std::uint64_t>(call.size, fixture.storage.Contents("/books/long.epub").size() - call.offset);
   }
-  EXPECT_EQ(totals.readBytes + totals.packageReadBytes, bytes);
+  EXPECT_EQ(totals.readBytes + totals.packageReadBytes + totals.placeReadBytes, bytes);
 
   // The look for the package first does not change the reading that follows.
   EXPECT_EQ(ReadsOfAStraightCheck(fixture.storage, "/books/long.epub"), totals.reads);
@@ -614,9 +615,17 @@ TEST(BookCheck, ClosesTheBookAgainOnceItHasItsPackageAndItsTableOfContents) {
     ++turns;
   }
   ASSERT_FALSE(fixture.LineWith("book 1: contents: ").empty());
+  // That has been read too: the book stays open, for the going about in
+  // it.
+  EXPECT_EQ(fixture.storage.OpenCount(), 2);
+  while (fixture.LineWith("book 1: places: ").empty() && turns < 1'000) {
+    fixture.check->Tick();
+    ++turns;
+  }
+  ASSERT_FALSE(fixture.LineWith("book 1: places: ").empty());
   ASSERT_EQ(fixture.check->CurrentState(), State::kRunning);
-  // That has been read too, and the reading of the entries not begun: the
-  // book is not open, and only /books is being listed.
+  // That is done, and the reading of the entries not begun: the book is
+  // not open, and only /books is being listed.
   EXPECT_EQ(fixture.storage.OpenCount(), 0);
   EXPECT_EQ(fixture.storage.ListedCount(), 1);
   EXPECT_EQ(fixture.storage.opens, 2);
@@ -625,17 +634,20 @@ TEST(BookCheck, ClosesTheBookAgainOnceItHasItsPackageAndItsTableOfContents) {
   EXPECT_EQ(fixture.check->CurrentState(), State::kPassed);
   EXPECT_EQ(fixture.storage.opens, 4);
 
-  // And a book whose package cannot be read, once that has been said.
+  // And a book whose package cannot be read, once that has been said and
+  // the book gone about in all the same.
   CheckFixture unread;
   unread.storage.Put("/books/a.epub", Book().file);
   unread.clock.step = BookCheck::kSliceUs;
   unread.check->Begin();
   turns = 0;
-  while (unread.LineWith("book 1: package: NOT READ").empty() && turns < 1'000) {
+  while (unread.LineWith("book 1: places: ").empty() && turns < 1'000) {
     unread.check->Tick();
     ++turns;
   }
   ASSERT_FALSE(unread.LineWith("book 1: package: NOT READ").empty());
+  ASSERT_FALSE(unread.LineWith("book 1: places: ").empty());
+  EXPECT_TRUE(unread.LineWith("book 1: contents: ").empty());
   EXPECT_EQ(unread.check->CurrentState(), State::kRunning);
   EXPECT_EQ(unread.storage.OpenCount(), 0);
   EXPECT_EQ(unread.storage.opens, 2);
@@ -764,9 +776,9 @@ TEST(BookCheck, ReadsTheTableOfContentsOfEveryBookAndSaysWhatItFound) {
   // The package's figures are what they were without it, and so are the
   // book's own.
   EXPECT_EQ(totals.packageReads, first.reads + second.reads);
-  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads,
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads + totals.placeReads,
             fixture.storage.reads.size() - first.reads - first.tocReads - second.reads - second.tocReads)
-      << "every read the check made is counted to one of the three";
+      << "every read the check made is counted to one of the four";
   EXPECT_EQ(totals.failedEntries, 0u);
 }
 
@@ -840,7 +852,7 @@ TEST(BookCheck, ReadsATableOfContentsAPieceAtATimeAndCountsItsTimeByItself) {
       << line;
   const std::string last = fixture.LineWith("book check: contents: ");
   EXPECT_TRUE(last.ends_with(" bytes; the longest " + std::to_string(totals.tocUs / 1000) + " ms.")) << last;
-  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads,
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads + totals.placeReads,
             fixture.storage.reads.size() - opened.reads - opened.tocReads);
 }
 
@@ -1190,6 +1202,140 @@ TEST(BookCheck, SaysWhatOpeningABooksFileTookAndWhereTheBookComesInItsFolder) {
             "book check: files opened 12 times in 0 ms; the longest 50 us.");
   // It is storage's time, and counted there too.
   EXPECT_GE(totals.storageUs + totals.packageStorageUs, totals.openUs);
+}
+
+TEST(BookCheck, GoesToSixteenPlacesFarApartInABookOneAStepAndSaysWhatThatTook) {
+  CheckFixture fixture;
+  // A book of more than sixteen blocks, so that every place is in a block
+  // of its own; and one of less than a block.
+  ZipBuilder builder;
+  builder.Add("mimetype", BytesOf("application/epub+zip"));
+  for (int chapter = 0; chapter < 20; ++chapter) {
+    builder.Add("OEBPS/chapter-" + std::to_string(chapter) + ".xhtml", Prose(5'000, static_cast<unsigned>(chapter)),
+                {.deflate = false});
+  }
+  const Bytes large = builder.Finish();
+  ASSERT_GT(large.size(), std::size_t{16} * 4096);
+  ZipBuilder little;
+  little.Add("mimetype", BytesOf("application/epub+zip"));
+  const Bytes small = little.Finish();
+  ASSERT_LT(small.size(), 4096U);
+  fixture.storage.Put("/books/a.epub", large);
+  fixture.storage.Put("/books/b.epub", small);
+  // A clock that uses up a turn each time it is read: one step a turn.
+  fixture.clock.step = BookCheck::kSliceUs;
+  fixture.check->Begin();
+  int turns = 0;
+  while (fixture.LineWith("book 1: package: NOT READ").empty() && turns < 1'000) {
+    fixture.check->Tick();
+    ++turns;
+  }
+  ASSERT_FALSE(fixture.LineWith("book 1: package: NOT READ").empty());
+  // From here until it says what the places took, a turn reads one block
+  // of storage and no more: the block each place is in, in this order.
+  const std::size_t readsBefore = fixture.storage.reads.size();
+  while (fixture.LineWith("book 1: places: ").empty() && turns < 1'000) {
+    const std::size_t readsSoFar = fixture.storage.reads.size();
+    fixture.check->Tick();
+    EXPECT_LE(fixture.storage.reads.size() - readsSoFar, 1U) << turns;
+    ++turns;
+  }
+  ASSERT_EQ(fixture.storage.reads.size() - readsBefore, BookCheck::kPlaces);
+  const std::array<std::uint32_t, BookCheck::kPlaces> sixteenths = {0,  16, 8,  4, 12, 2, 14, 6,
+                                                                    10, 1,  15, 7, 9,  3, 13, 5};
+  const auto last = static_cast<std::uint64_t>(large.size() - 1);
+  for (std::size_t i = 0; i < BookCheck::kPlaces; ++i) {
+    const auto place = static_cast<std::uint32_t>((last * sixteenths.at(i)) / 16);
+    EXPECT_EQ(fixture.storage.reads.at(readsBefore + i).offset, place - (place % 4096)) << i;
+    EXPECT_EQ(fixture.storage.reads.at(readsBefore + i).size,
+              std::min<std::size_t>(4096, large.size() - (place - (place % 4096))))
+        << i;
+  }
+  EXPECT_EQ(fixture.storage.reads.at(readsBefore).offset, 0U) << "the first place is the file's start";
+  EXPECT_EQ(fixture.storage.reads.at(readsBefore + 1).offset, last - (last % 4096)) << "and the second its end";
+  // The clock moves a turn's worth at each reading of it: it is read
+  // before a going and after it, and the meter reads it twice more round
+  // the read of storage.
+  const std::string line = fixture.LineWith("book 1: places: ");
+  const std::uint64_t one = std::uint64_t{3} * BookCheck::kSliceUs;
+  EXPECT_EQ(line, "book 1: places: 16 far apart, 16 reads in " + std::to_string(16 * one) + " us, the longest " +
+                      std::to_string(one) + " us.");
+
+  fixture.clock.step = 50;
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  // In the small book every place is in the one block, which the reading
+  // of the package before left in the file's buffer or did not.
+  const std::string second = fixture.LineWith("book 2: places: ");
+  EXPECT_TRUE(second.starts_with("book 2: places: 16 far apart, 0 reads in ") ||
+              second.starts_with("book 2: places: 16 far apart, 1 read in "))
+      << second;
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_GE(totals.placeReads, 16U);
+  EXPECT_LE(totals.placeReads, 17U);
+  EXPECT_GE(totals.placeReadBytes, std::uint64_t{15} * 4096);
+  EXPECT_EQ(totals.placeLongestUs, one);
+  const std::string all = fixture.LineWith("book check: places: ");
+  EXPECT_TRUE(all.starts_with("book check: places: " + std::to_string(totals.placeReads) + " reads in ")) << all;
+  EXPECT_TRUE(all.ends_with(" ms; the longest " + std::to_string(one) + " us.")) << all;
+}
+
+TEST(BookCheck, ABriefCheckOpensEveryBookAndReadsNoneThrough) {
+  CheckFixture fixture;
+  fixture.check = std::make_unique<BookCheck>(fixture.storage, fixture.clock, fixture.stream, true);
+  fixture.storage.Put("/books/a.epub", RealBook().file);
+  fixture.storage.Put("/books/more/b.epub", Book().file);
+  fixture.storage.Put("/books/c.epub", Prose(5'000));
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  // The file that is no book is still found out, and fails the check.
+  ASSERT_EQ(fixture.check->CurrentState(), State::kFailed) << fixture.AllLines();
+  EXPECT_FALSE(fixture.LineWith("book 2: FAILED. It cannot be read").empty()) << fixture.AllLines();
+
+  // A book whose package is read, and one whose package is not: each is
+  // opened once, which is the file opened twice, gone about in, and left.
+  const Opened opened = OpenAsAReaderWould(fixture.storage, "/books/a.epub");
+  EXPECT_FALSE(fixture.LineWith("book 1: package: title ").empty()) << fixture.AllLines();
+  EXPECT_FALSE(fixture.LineWith("book 1: contents: ").empty());
+  EXPECT_FALSE(fixture.LineWith("book 1: places: 16 far apart, ").empty());
+  EXPECT_EQ(fixture.LineWith("book 1: ok."), "book 1: ok. Not read through.");
+  EXPECT_TRUE(fixture.LineWith("book 1: opened 2 times in ").ends_with("number 1 in its folder."))
+      << fixture.LineWith("book 1: opened");
+  EXPECT_FALSE(fixture.LineWith("book 3: package: NOT READ").empty());
+  EXPECT_FALSE(fixture.LineWith("book 3: places: 16 far apart, ").empty());
+  EXPECT_EQ(fixture.LineWith("book 3: ok."), "book 3: ok. Not read through.");
+
+  // Nothing is said of entries, bytes or XML, of one book or of all, and
+  // no entry was read: every read of storage was the package's, the table
+  // of contents' or a place's.
+  for (const std::string& line : fixture.Lines()) {
+    EXPECT_EQ(line.find(" bytes out of "), std::string::npos) << line;
+    EXPECT_EQ(line.find("Directory found"), std::string::npos) << line;
+    EXPECT_EQ(line.find("xml"), std::string::npos) << line;
+    EXPECT_EQ(line.find("XML"), std::string::npos) << line;
+  }
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.entries, 0U);
+  EXPECT_EQ(totals.reads, 0U);
+  EXPECT_EQ(totals.packagesRead, 1U);
+  EXPECT_EQ(totals.tocsRead, 1U);
+  EXPECT_EQ(totals.opens, 4U);
+  EXPECT_GE(totals.packageReads, opened.reads);
+  EXPECT_FALSE(fixture.LineWith("book check: FAILED. 1 of 3 books").empty()) << fixture.AllLines();
+  EXPECT_FALSE(fixture.LineWith("book check: places: ").empty());
+  EXPECT_FALSE(fixture.LineWith("book check: files opened 4 times in ").empty()) << fixture.AllLines();
+
+  // And when every file is a book, it passes and says what it did.
+  CheckFixture sound;
+  sound.check = std::make_unique<BookCheck>(sound.storage, sound.clock, sound.stream, true);
+  sound.storage.Put("/books/a.epub", RealBook().file);
+  sound.storage.Put("/books/b.epub", RealBook().file);
+  sound.check->Begin();
+  sound.RunToTheEnd();
+  EXPECT_EQ(sound.check->CurrentState(), State::kPassed) << sound.AllLines();
+  EXPECT_EQ(sound.LineWith("book check: passed."), "book check: passed. 2 books opened, none read through.");
+  EXPECT_EQ(sound.storage.OpenCount(), 0);
+  EXPECT_EQ(sound.storage.opens, 4);
 }
 
 TEST(BookCheck, WorksForAShortWhileEachTurn) {

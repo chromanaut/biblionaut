@@ -9,6 +9,8 @@
 //            bits 3 to 5: how many rows a strip has
 //            bits 6 to 7: how large the picture is
 //   byte 1   bits 0 to 1: how far a line may stand from its curve
+//            bits 2 to 4: how much memory there is for what the file
+//                         defines
 //   the rest a file, or what passes for one
 //
 // The file is gone through three times: once with nothing to draw into,
@@ -17,10 +19,19 @@
 // bytes are:
 //
 //   - a call takes no more than it was given, and there are no more calls
-//     than three times the bytes: it cannot be made to go round;
+//     than three times the bytes it read, of the file and of what it kept
+//     of the file: it cannot be made to go round;
 //   - a call gives an outline no more than kMostCommandsPerStep commands
 //     and fills no more than one shape, so its lines, the cells they add
 //     to and the pixels a filling looks at are bounded too;
+//   - a call reads the file or what was kept of it, not both; of what was
+//     kept it reads no more than kReusedPerStep bytes, and it begins no
+//     more than kTokensPerStep elements;
+//   - no more is kept than there is memory for or than the file holds,
+//     and no more is read again in a pass than kMostReused bytes and what
+//     was being read when that was reached;
+//   - whatever the memory for definitions held before a pass changes
+//     nothing: it is filled with something else before each;
 //   - once the file has gone wrong, whatever else is given is taken and
 //     nothing comes of it, and where it went wrong is not past its end;
 //   - no more groups are open at once than kDeepest;
@@ -71,10 +82,48 @@ constexpr std::array<PictureSize, 4> kSizes = {
 // A sixteenth of a pixel, a quarter, a whole one, and a 64th.
 constexpr std::array<Fixed, 4> kTolerances = {256, 1024, 4096, 64};
 
+// How much memory there is for what the file defines. The first, which
+// the seeds that say nothing of it get, is more than a file of the length
+// the engine makes can fill.
+constexpr std::array<std::size_t, 8> kRooms = {16384, 0, 24, 96, 300, 1024, 4096, 8192};
+
 // A few bytes of path data can ask for millions of lines: an arc is up to
 // 32,768 of them. Past this many a drawing is left off: what the engine is
-// after is in the file, not in how long it can be made to go on.
+// after is in the file, not in how long it can be made to go on. The same
+// goes for a few bytes that use what uses what uses something: the
+// renderer's own limit on reading again, kMostReused, is far above what
+// is worth an engine's time, and a unit test takes a file up to it.
 constexpr std::uint64_t kMostLines = 200000;
+constexpr std::uint64_t kMostReusedHere = 200000;
+
+// How much a drawing has come to so far, over all its strips.
+struct Work {
+  std::uint64_t lines = 0;
+  std::uint64_t reused = 0;
+};
+
+// The memory a renderer is given for what a file defines: of exactly the
+// size chosen, so that a byte read or written past either end of it is
+// outside any memory there is.
+class Room {
+ public:
+  explicit Room(std::size_t size) : bytes_(size) {}
+
+  std::span<std::uint8_t> Block() noexcept { return bytes_; }
+  std::size_t Size() const noexcept { return bytes_.size(); }
+  // Leaves in it what a pass might mistake for something kept, a different
+  // thing each time, so that a pass that read any of it would not come
+  // out as the others do.
+  void Litter() noexcept {
+    constexpr std::string_view kLitter = "<>/'\"= #&;]au";
+    std::fill(bytes_.begin(), bytes_.end(), static_cast<std::uint8_t>(kLitter[passes_ % kLitter.size()]));
+    ++passes_;
+  }
+
+ private:
+  std::vector<std::uint8_t> bytes_;
+  std::size_t passes_ = 0;
+};
 
 // What is kept either side of a strip, to see that nothing is written
 // there.
@@ -102,15 +151,18 @@ bool SameFile(const Reading& one, const Reading& other) {
   return one.status == other.status && one.errorOffset == other.errorOffset &&
          one.report.leftOut == other.report.leftOut && one.report.elements == other.report.elements &&
          one.report.shapes == other.report.shapes && one.report.commands == other.report.commands &&
-         one.report.deepest == other.report.deepest && SameSize(one.size, other.size);
+         one.report.deepest == other.report.deepest && one.report.kept == other.report.kept &&
+         one.report.reused == other.report.reused && SameSize(one.size, other.size);
 }
 
 // Gives the renderer the file, `piece` bytes at a time, with `filler` to
 // draw into or nothing, and holds every call to what a call may do.
-// `lines` is how many the drawing has come to so far, over all its strips.
+// `room` is the memory it has for definitions, and `work` what the
+// drawing has come to so far, over all its strips.
 Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::size_t piece, PictureSize picture,
-             Fixed tolerance, std::uint64_t& lines) {
+             Fixed tolerance, Room& room, Work& work) {
   Reading reading;
+  room.Litter();
   renderer.Begin(filler, static_cast<Fixed>(picture.width * kFixedOne), static_cast<Fixed>(picture.height * kFixedOne),
                  tolerance);
   const std::uint64_t cellsALine = filler == nullptr
@@ -119,7 +171,7 @@ Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::
                                                                   static_cast<std::uint32_t>(filler->Rows()));
   const std::uint64_t pixels =
       filler == nullptr ? 0 : static_cast<std::uint64_t>(filler->Width()) * static_cast<std::uint64_t>(filler->Rows());
-  const std::uint64_t linesBefore = lines;
+  const Work workBefore = work;
   std::size_t calls = 0;
   bool failed = false;
   for (std::size_t at = 0; at < file.size() && !reading.leftOff;) {
@@ -138,6 +190,13 @@ Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::
       BN_FUZZ_CHECK(commands <= SvgRenderer::kMostCommandsPerStep,
                     "a call gave an outline more commands than a call may");
       BN_FUZZ_CHECK(after.shapes - before.shapes <= 1, "a call filled more than one shape");
+      const std::uint64_t again = after.reused - before.reused;
+      BN_FUZZ_CHECK(after.elements - before.elements <= SvgRenderer::kTokensPerStep,
+                    "a call began more elements than a call may");
+      BN_FUZZ_CHECK(again <= SvgRenderer::kReusedPerStep, "a call read more of what is kept than a call may");
+      BN_FUZZ_CHECK(took == 0 || again == 0, "a call read the file and what is kept of it");
+      BN_FUZZ_CHECK(after.kept >= before.kept && after.kept <= room.Size(),
+                    "more is kept than there is memory for, or less than was");
       BN_FUZZ_CHECK(made <= std::uint64_t{SvgRenderer::kMostCommandsPerStep} * PathFlattener::kMostLinesPerArc,
                     "a call made more lines than its commands can come to");
       if (filler != nullptr) {
@@ -152,17 +211,20 @@ Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::
       }
       if (failed) {
         BN_FUZZ_CHECK(took == bytes.size() && after.elements == before.elements && commands == 0 && made == 0 &&
-                          after.shapes == before.shapes && after.leftOut == before.leftOut,
+                          after.shapes == before.shapes && after.leftOut == before.leftOut && again == 0 &&
+                          after.kept == before.kept,
                       "a file that had gone wrong was read on");
       }
       failed = renderer.Status() != SvgStatus::kOk;
       BN_FUZZ_CHECK(after.deepest <= SvgRenderer::kDeepest, "more groups were open at once than can be");
       bytes.remove_prefix(took);
-      lines = linesBefore + after.lines;
-      reading.leftOff = lines > kMostLines;
+      work.lines = workBefore.lines + after.lines;
+      work.reused = workBefore.reused + after.reused;
+      reading.leftOff = work.lines > kMostLines || work.reused > kMostReusedHere;
     }
   }
-  BN_FUZZ_CHECK(calls <= (3 * file.size()) + 16, "there were more calls than three times the bytes");
+  BN_FUZZ_CHECK(calls <= (3 * (file.size() + renderer.Report().reused)) + 16,
+                "there were more calls than three times the bytes read");
 
   reading.status = renderer.Finish();
   BN_FUZZ_CHECK(!failed || reading.status == renderer.Status(), "a file that had gone wrong ended otherwise");
@@ -173,6 +235,9 @@ Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::
   reading.report = renderer.Report();
   reading.size = renderer.Size();
   BN_FUZZ_CHECK(reading.errorOffset <= file.size(), "a file is said to have gone wrong past its end");
+  BN_FUZZ_CHECK(reading.report.kept <= file.size(), "more is kept of a file than it holds");
+  BN_FUZZ_CHECK(reading.report.reused <= SvgRenderer::kMostReused + (SvgRenderer::kDeepestUse * room.Size()),
+                "more was read again than the most that may be");
   if (!reading.leftOff) {
     BN_FUZZ_CHECK(reading.status != SvgStatus::kOk || reading.size.known,
                   "a file was read as a drawing and its size is not known");
@@ -195,11 +260,14 @@ struct Drawing {
   Reading reading;  // The first strip's.
 };
 
-Drawing Draw(std::string_view file, PictureSize size, std::size_t stripRows, std::size_t piece, Fixed tolerance) {
+Drawing Draw(std::string_view file, PictureSize size, std::size_t stripRows, std::size_t piece, Fixed tolerance,
+             std::size_t roomSize) {
   Drawing drawing;
   drawing.picture.assign(size.width * size.height, 255);
+  Room room(roomSize);
   SvgRenderer renderer;
-  std::uint64_t lines = 0;
+  renderer.KeepDefinitionsIn(room.Block());
+  Work work;
   for (std::size_t top = 0; top < size.height; top += stripRows) {
     const std::size_t rows = std::min(stripRows, size.height - top);
     // The strip and its cells are each in memory of their own, of exactly
@@ -213,7 +281,7 @@ Drawing Draw(std::string_view file, PictureSize size, std::size_t stripRows, std
     BN_FUZZ_CHECK(filler.Begin(gray, size.width, static_cast<std::int32_t>(top), cells),
                   "a strip of the picture was refused");
 
-    const Reading reading = Read(renderer, &filler, file, piece, size, tolerance, lines);
+    const Reading reading = Read(renderer, &filler, file, piece, size, tolerance, room, work);
     BN_FUZZ_CHECK(std::all_of(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(size.width * rows),
                               [](std::int16_t cell) { return cell == 0; }),
                   "a drawing left something in the filler's cells");
@@ -249,17 +317,20 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::size_t chosenRows = kStripRows[(first >> 3U) & 7U];
   const std::size_t stripRows = chosenRows == 0 ? picture.height : std::min(chosenRows, picture.height);
   const Fixed tolerance = kTolerances[second & 3U];
+  const std::size_t roomSize = kRooms[(second >> 2U) & 7U];
 
   // With nothing to draw into.
+  Room room(roomSize);
   SvgRenderer renderer;
-  std::uint64_t noLines = 0;
-  const Reading read = Read(renderer, nullptr, file, piece, picture, tolerance, noLines);
+  renderer.KeepDefinitionsIn(room.Block());
+  Work nothing;
+  const Reading read = Read(renderer, nullptr, file, piece, picture, tolerance, room, nothing);
   BN_FUZZ_CHECK(read.report.shapes == 0 && read.report.commands == 0 && read.report.lines == 0,
                 "a reading with nothing to draw into drew something");
 
-  const Drawing whole = Draw(file, picture, picture.height, SIZE_MAX, tolerance);
-  const Drawing cut = Draw(file, picture, stripRows, piece, tolerance);
-  if (whole.reading.leftOff || cut.reading.leftOff) {
+  const Drawing whole = Draw(file, picture, picture.height, SIZE_MAX, tolerance, roomSize);
+  const Drawing cut = Draw(file, picture, stripRows, piece, tolerance, roomSize);
+  if (read.leftOff || whole.reading.leftOff || cut.reading.leftOff) {
     return 0;
   }
   BN_FUZZ_CHECK(SameFile(cut.reading, whole.reading), "a file cut up was read differently from the same file whole");
@@ -270,7 +341,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   // what goes wrong in an outline is only found by drawing it.)
   BN_FUZZ_CHECK(read.status == whole.reading.status && read.errorOffset == whole.reading.errorOffset &&
                     read.report.elements == whole.reading.report.elements &&
-                    read.report.deepest == whole.reading.report.deepest && SameSize(read.size, whole.reading.size),
+                    read.report.deepest == whole.reading.report.deepest &&
+                    read.report.kept == whole.reading.report.kept &&
+                    read.report.reused == whole.reading.report.reused && SameSize(read.size, whole.reading.size),
                 "a file read with nothing to draw into was another file");
   BN_FUZZ_CHECK((read.report.leftOut & ~whole.reading.report.leftOut) == 0,
                 "a reading with nothing to draw into says something was left out that the drawing does not");

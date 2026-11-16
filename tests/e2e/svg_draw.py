@@ -4,15 +4,17 @@
 The unit tests say what the renderer should make of files written for them.
 Here drawings are made up at random: groups inside groups, every kind of
 shape, transforms, paint said as attributes and as `style`, things hidden,
-an `svg` inside another, and a few things bn-svg does not draw. Each is
+an `svg` inside another that cuts off what is in it, things defined in
+`defs` and drawn by `use`, and a few things bn-svg does not draw. Each is
 written out as a file in one of the many ways the same drawing can be
 written, and bn-svg draws it.
 
 The picture it should make is worked out here from the drawing itself and
 not from the file, so nothing of the file is read twice: where each shape
 goes by multiplying out its matrices, its outline traced finely, the pixels
-inside found by running lines through each row, and one shape laid over
-another by the opacity it has. That shares no code with bn-svg. The two
+inside found by running lines through each row, what a `use` names drawn
+again where the `use` stands, and one shape laid over another by the
+opacity it has. That shares no code with bn-svg. The two
 pictures have to agree, the picture has to be the same however it is cut
 into strips and however the file is cut into pieces, and what bn-svg says
 it left out has to be what the drawing was given that it does not draw.
@@ -177,15 +179,33 @@ def a_shape(rng: random.Random, across: float, down: float) -> dict:
     return shape
 
 
-def a_group(rng: random.Random, across: float, down: float, depth: int) -> dict:
-    """A group, or an `svg` with a place and a view box of its own, and what is in it."""
+def a_use(rng: random.Random, definitions: list) -> dict:
+    """A `use` of one of the things a drawing defines: which, where it is put, and what the use says of its paint."""
+    target = rng.choice(definitions)
+    use: dict = {"name": "use", "paint": paint_of(rng, True), "target": target,
+                 "attributes": {rng.choice(["href", "xlink:href"]): "#" + target["attributes"]["id"]}}
+    if rng.random() < 0.5:
+        use["at"] = (rng.randrange(-20, 21) / 4, rng.randrange(-20, 21) / 4)
+        use["attributes"].update({"x": number(use["at"][0]), "y": number(use["at"][1])})
+    if rng.random() < 0.3:
+        use["transform"] = a_transform(rng)
+    return use
+
+
+def a_group(rng: random.Random, across: float, down: float, depth: int, definitions: list | None = None,
+            inner: bool = False) -> dict:
+    """A group, or an `svg` with a place and a view box of its own, and what is in it. With `inner`, an `svg`
+    for certain, with something in it that lies beyond its edges."""
     group: dict = {"name": "g", "paint": paint_of(rng, True), "children": []}
     inner_across, inner_down = across, down
-    if rng.random() < 0.15:
+    if inner or rng.random() < 0.25:
         # An svg inside: where it is, how large, and perhaps its own coordinates and how they are fitted.
         place = (rng.randrange(0, int(across / 2)), rng.randrange(0, int(down / 2)), rng.randrange(8, max(int(across), 9)),
                  rng.randrange(8, max(int(down), 9)))
         group.update({"name": "svg", "place": place})
+        if rng.random() < 0.4:
+            # What is in it is cut off at its edges unless this says it may show beyond them.
+            group["overflow"] = rng.choice(["visible", "auto", "hidden", "scroll"])
         inner_across, inner_down = float(place[2]), float(place[3])
         if rng.random() < 0.7:
             group["box"] = (rng.choice([0, -4, 10]), rng.choice([0, 5]), rng.randrange(10, 60), rng.randrange(10, 60))
@@ -194,10 +214,17 @@ def a_group(rng: random.Random, across: float, down: float, depth: int) -> dict:
     elif rng.random() < 0.5:
         group["transform"] = a_transform(rng)
     for _ in range(rng.randrange(1, 4)):
-        if depth < 3 and rng.random() < 0.25:
-            group["children"].append(a_group(rng, inner_across, inner_down, depth + 1))
+        if definitions and rng.random() < 0.3:
+            group["children"].append(a_use(rng, definitions))
+        elif depth < 3 and rng.random() < 0.25:
+            group["children"].append(a_group(rng, inner_across, inner_down, depth + 1, definitions))
         else:
             group["children"].append(a_shape(rng, inner_across, inner_down))
+    if group["name"] == "svg" and (inner or rng.random() < 0.7):
+        # Something half as large again as the space, and moved, so that some of it lies beyond the edges.
+        x, y = -rng.randrange(0, int(inner_across)) / 4, -rng.randrange(0, int(inner_down)) / 4
+        group["children"].append({"name": "g", "paint": {}, "children": [a_shape(rng, inner_across, inner_down)],
+                                  "transform": (f"translate({number(x)} {number(y)}) scale(1.5)", (1.5, 0.0, 0.0, 1.5, x, y))})
     return group
 
 
@@ -222,13 +249,48 @@ def a_drawing(rng: random.Random) -> dict:
     else:
         drawing["size"] = (number(across), number(down))
     drawing["across"], drawing["down"] = across, down
+    # Things defined, to be drawn only where they are used: shapes, groups, and groups that use what was
+    # defined before them. They are written first, in one `defs` or two.
+    definitions: list[dict] = []
+    if rng.random() < 0.7:
+        names = rng.sample(["a", "glyph0", "MJMAIN-31", "E1-MJMATHI-78", "b_2", "leaf.1", "a1"], 3)
+        for name in names[:rng.randrange(1, 4)]:
+            if definitions and rng.random() < 0.3:
+                thing: dict = {"name": "g", "paint": paint_of(rng, True),
+                               "children": [a_use(rng, list(definitions)), a_shape(rng, across, down)]}
+            elif rng.random() < 0.3:
+                thing = a_group(rng, across, down, 2)
+            else:
+                thing = a_shape(rng, across, down)
+            thing.setdefault("attributes", {})["id"] = name
+            definitions.append(thing)
+        split = rng.randrange(len(definitions) + 1)
+        for some in (definitions[:split], definitions[split:]):
+            if some:
+                drawing["children"].append({"name": "defs", "paint": {}, "children": some})
     for _ in range(rng.randrange(2, 5)):
-        maker = a_group if rng.random() < 0.4 else None
-        drawing["children"].append(maker(rng, across, down, 1) if maker else a_shape(rng, across, down))
+        kind = rng.random()
+        if definitions and kind < 0.3:
+            drawing["children"].append(a_use(rng, definitions))
+        elif kind < 0.4:
+            # An svg that says what is in it may show beyond its edges.
+            showing = a_group(rng, across, down, 1, definitions, True)
+            showing["overflow"] = rng.choice(["visible", "auto"])
+            drawing["children"].append(showing)
+        elif kind < 0.5:
+            # An svg in a group that turns it, which is drawn whole.
+            degrees = rng.choice([-30, 15, 45])
+            cos, sin = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+            drawing["children"].append({"name": "g", "paint": {}, "transform": (f"rotate({degrees})", (cos, sin, -sin, cos, 0.0, 0.0)),
+                                        "children": [a_group(rng, across, down, 2, definitions, True)]})
+        elif kind < 0.7:
+            drawing["children"].append(a_group(rng, across, down, 1, definitions))
+        else:
+            drawing["children"].append(a_shape(rng, across, down))
     # Things that are not drawn, and should be said to have been left out or should not matter at all.
     drawing["extras"] = [extra for extra in (
         ("<text x='5' y='9'>Words</text>", "text"),
-        ("<use href='#nothing' x='3'/>", "use"),
+        ("<use href='#nothing' x='3'/>", "use of what is not defined"),
         ("<image href='picture.png' width='9' height='9'/>", "a picture"),
         ("<defs><rect width='999' height='999'/><path d='M0 0h999v999z'/></defs>", None),
         ("<title>A drawing</title><desc>Made up</desc>", None),
@@ -245,10 +307,13 @@ def written(rng: random.Random, element: dict, indent: str = "") -> str:
     attributes: list[tuple[str, str]] = list(element.get("attributes", {}).items())
     if element.get("root"):
         attributes.append(("xmlns", "http://www.w3.org/2000/svg"))
+        attributes.append(("xmlns:xlink", "http://www.w3.org/1999/xlink"))
         if "size" in element:
             attributes += [("width", element["size"][0]), ("height", element["size"][1])]
     if "place" in element:
         attributes += list(zip(("x", "y", "width", "height"), (number(value) for value in element["place"])))
+    if "overflow" in element:
+        attributes.append(("overflow", element["overflow"]))
     if "box" in element:
         attributes.append(("viewBox", rng.choice([" ", ",", ", "]).join(number(value) for value in element["box"])))
         if element.get("fit"):
@@ -329,11 +394,20 @@ class Picture:
         self.sure = [[True] * width for _ in range(height)]
         self.left_out: set[str] = set()
         self.shapes = 0
+        self.uses = 0
+        self.cut = 0  # Pixels that something was cut off in, wholly or partly,
+        self.uncut = 0  # and those something showed in beyond the edges of an svg that lets it.
+        self.turned = 0  # Inner svgs drawn whole because they are turned.
+        # Whether bn-svg's numbers could fairly say something else of this drawing than these do.
+        self.doubtful = False
 
-    def draw(self, element: dict, matrix: tuple, handed: dict) -> None:
-        """Lays an element, and what is in it, over the picture. `handed` is what it takes from what it is in."""
+    def draw(self, element: dict, matrix: tuple, handed: dict, box: tuple | None = None,
+             beyond: tuple | None = None) -> None:
+        """Lays an element, and what is in it, over the picture. `handed` is what it takes from what it is in,
+        and `box` the edges it is cut off at, in pixels, if it is inside an `svg` that cuts things off.
+        `beyond` is the edges of an `svg` it is in that cuts nothing off, kept only to count what shows there."""
         paint = element["paint"]
-        if paint.get("hidden") == "display":
+        if paint.get("hidden") == "display" or element["name"] == "defs":
             return
         state = dict(handed)
         if "fill" in paint:
@@ -347,10 +421,42 @@ class Picture:
         # Opacity is the element's own. bn-svg gives a group's to each shape in it, and says so.
         state["opacity"] = handed["opacity"] * paint.get("opacity", 1.0)
 
+        if element["name"] == "use":
+            # What it names, as if that stood here: moved by the use's transform and then to its place, and
+            # painted as the use is where it says nothing itself.
+            if "transform" in element:
+                matrix = multiplied(matrix, element["transform"][1])
+            if "at" in element:
+                matrix = multiplied(matrix, (1.0, 0.0, 0.0, 1.0, element["at"][0], element["at"][1]))
+            if "opacity" in paint:
+                self.left_out.add("opacity on a group")
+            self.uses += 1
+            self.draw(element["target"], matrix, state, box, beyond)
+            return
+
         if "children" in element:
             if "place" in element:
-                self.left_out.add("the edges of an inner svg")
                 place = tuple(float(value) for value in element["place"])
+                if element.get("overflow") in ("visible", "auto"):
+                    if matrix[1] == 0.0 and matrix[2] == 0.0:
+                        one = moved((place[0], place[1]), matrix)
+                        other = moved((place[0] + place[2], place[1] + place[3]), matrix)
+                        beyond = (min(one[0], other[0]), min(one[1], other[1]), max(one[0], other[0]), max(one[1], other[1]))
+                else:
+                    if matrix[1] == 0.0 and matrix[2] == 0.0:
+                        # Its edges are edges of pixels' rows and columns: what is in it is cut off there,
+                        # and at the edges of whatever it is in.
+                        one = moved((place[0], place[1]), matrix)
+                        other = moved((place[0] + place[2], place[1] + place[3]), matrix)
+                        edges = (min(one[0], other[0]), min(one[1], other[1]), max(one[0], other[0]), max(one[1], other[1]))
+                        box = edges if box is None else (max(box[0], edges[0]), max(box[1], edges[1]),
+                                                         min(box[2], edges[2]), min(box[3], edges[3]))
+                    else:
+                        # Turned or slanted, it is drawn whole, and bn-svg says so. Turns that all but undo
+                        # each other could come out as no turn at all in its arithmetic.
+                        self.left_out.add("the edges of an inner svg that is turned")
+                        self.doubtful = self.doubtful or (abs(matrix[1]) < 1e-6 and abs(matrix[2]) < 1e-6)
+                        self.turned += 1
                 inner = fitted(element["box"], place, element.get("fit")) if "box" in element else (1.0, 0.0, 0.0, 1.0, place[0], place[1])
                 matrix = multiplied(matrix, inner)
             elif "transform" in element:
@@ -358,7 +464,7 @@ class Picture:
             if "opacity" in paint:
                 self.left_out.add("opacity on a group")
             for child in element["children"]:
-                self.draw(child, matrix, state)
+                self.draw(child, matrix, state, box, beyond)
             return
 
         if "transform" in element:
@@ -374,10 +480,27 @@ class Picture:
         self.shapes += 1
         for row in range(self.height):
             for pixel in range(self.width):
+                # How much of the pixel is inside the edges it is cut off at.
+                share = 1.0
+                if box is not None:
+                    share = (max(0.0, min(pixel + 1.0, box[2]) - max(float(pixel), box[0])) *
+                             max(0.0, min(row + 1.0, box[3]) - max(float(row), box[1])))
+                if share < 1.0 and (cover[row][pixel] > 0 or not plain[row][pixel]):
+                    self.cut += 1
+                if beyond is not None and cover[row][pixel] > 0.5 and not (
+                        beyond[0] <= pixel and pixel + 1 <= beyond[2] and beyond[1] <= row and row + 1 <= beyond[3]):
+                    self.uncut += 1
+                if share == 0.0:
+                    continue
                 if not plain[row][pixel]:
                     self.sure[row][pixel] = False
                 elif cover[row][pixel] > 0:
-                    self.gray[row][pixel] += (state["fill"] - self.gray[row][pixel]) * cover[row][pixel] * solid
+                    if share < 1.0 and cover[row][pixel] < 0.999:
+                        # An edge of the shape and an edge it is cut off at, in one pixel: how much of the
+                        # shape is on the inner side of the cut is not known from how much is in the pixel.
+                        self.sure[row][pixel] = False
+                    else:
+                        self.gray[row][pixel] += (state["fill"] - self.gray[row][pixel]) * cover[row][pixel] * share * solid
 
 
 def picture_of(drawing: dict, width: int, height: int) -> Picture:
@@ -418,8 +541,10 @@ def draw(tool: str, work: Path, file: str | bytes, *options: str):
     return result, summary, left_out, pixels
 
 
-def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> tuple[int, int, float]:
-    """Checks one drawing. Returns how many of its pixels were compared, how many were left out, and the worst."""
+def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> tuple:
+    """Checks one drawing. Returns how many of its pixels were compared, how many were left out, the worst, and
+    how much of what the test is for the drawing had: uses, pixels with something cut off, pixels with something
+    showing beyond the edges of an `svg` that lets it, and `svg` elements that are turned."""
     drawing = a_drawing(rng)
     file = ("<?xml version='1.0' encoding='UTF-8'?>\n" if number_of % 2 else "") + written(rng, drawing)
     width, height = rng.randrange(30, 49), rng.randrange(24, 37)
@@ -432,6 +557,8 @@ def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> 
         expect(again == drawn and left_again == left_out, f"{file}\ndrawn differently with {more}")
 
     picture = picture_of(drawing, width, height)
+    if picture.doubtful:
+        return 0, 0, 0.0, (0, 0, 0, 0)
     expect(left_out == picture.left_out, f"{file}\nbn-svg says it left out {sorted(left_out)}; it was given {sorted(picture.left_out)}")
     expect(int(summary.group(8)) == picture.shapes, f"{file}\nbn-svg filled {int(summary.group(8))} shapes of {picture.shapes}")
     compared, unsure, worst, total = 0, 0, 0.0, 0.0
@@ -447,7 +574,7 @@ def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> 
             worst = max(worst, apart)
             total += apart
     expect(total / max(compared, 1) <= 0.004, f"{file}\n{total / max(compared, 1):.4f} of the way from black to white out on average")
-    return compared, unsure, worst
+    return compared, unsure, worst, (picture.uses, picture.cut, picture.uncut, picture.turned)
 
 
 def check_the_tool(tool: str, work: Path) -> None:
@@ -490,6 +617,22 @@ def check_the_tool(tool: str, work: Path) -> None:
     result, _, _, _ = draw(tool, work, "<svg width='20000' height='5'/>")
     expect(result.returncode == 1 and b"too large" in result.stderr, f"a drawing too large: {result.stderr!r}")
 
+    # What a file defines and uses is kept in the memory it is given for that, and it says how much. With too
+    # little, what did not fit is not drawn, and it says that.
+    defined = square.replace("</svg>", "<defs><rect id='dot' width='4' height='4'/></defs><use href='#dot' x='20' y='10'/></svg>")
+    result, _, left_out, pixels = draw(tool, work, defined)
+    kept = len("<rect id='dot' width='4' height='4'/></defs>")
+    expect(result.returncode == 0 and not left_out and gray_at(pixels, 30, 22, 12) == 0
+           and f"definitions: {kept} bytes kept of 32768, and {kept - len('</defs>')} gone through again in a strip\n".encode()
+           in result.stderr, f"something defined and used: {result.stderr!r}")
+    result, _, left_out, pixels = draw(tool, work, defined, "--definitions", "30")
+    expect(result.returncode == 0 and left_out == {"definitions there was no room for", "use of what is not defined"}
+           and gray_at(pixels, 30, 22, 12) == 255 and gray_at(pixels, 30, 5, 3) == 128
+           and b"definitions: 30 bytes kept of 30, and 0 gone through again in a strip\n" in result.stderr,
+           f"too little room for what is defined: {result.stderr!r}")
+    result, _, _, pixels = draw(tool, work, defined, "--definitions", str(kept + 8), "--rows", "3", "--pieces", "5")
+    expect(result.returncode == 0 and gray_at(pixels, 30, 22, 12) == 0, f"just room enough for what is defined: {result.stderr!r}")
+
     # What it leaves out is said, and the rest is drawn.
     result, _, left_out, pixels = draw(tool, work, square.replace("</svg>", "<text>Words</text><path d='M20 0h5v5' stroke='#000' fill='url(#g)'/></svg>"))
     expect(result.returncode == 0 and left_out == {"text", "a stroke", "a gradient or a pattern"} and gray_at(pixels, 30, 5, 3) == 128,
@@ -498,7 +641,8 @@ def check_the_tool(tool: str, work: Path) -> None:
     # What it will not do.
     (work / "drawing.svg").write_text(square)
     for options in (["--width", "0"], ["--height", "x"], ["--width", "99999"], ["--rows", "0"], ["--size", "10x10"],
-                    ["--transform", "scale(2)"], ["--count"], ["--tolerance", "0"], ["--pieces", "0"], ["--out"]):
+                    ["--transform", "scale(2)"], ["--count"], ["--tolerance", "0"], ["--pieces", "0"], ["--out"],
+                    ["--definitions", "x"], ["--definitions", "99999999"], ["--definitions"]):
         result = subprocess.run([tool, "draw", str(work / "drawing.svg"), *options], capture_output=True, check=False)
         expect(result.returncode == 2 and b"usage:" in result.stderr, f"draw {options}: ended with {result.returncode}")
     result = subprocess.run([tool, "draw", str(work / "not-there.svg")], capture_output=True, check=False)
@@ -520,15 +664,21 @@ def main() -> int:
         check_the_tool(tool, work)
         rng = random.Random(20261116)
         drawings, compared, unsure, worst = 0, 0, 0, 0.0
-        for number_of in range(24):
-            one, left, apart = check_drawing(tool, work, rng, number_of)
-            drawings, compared, unsure, worst = drawings + 1, compared + one, unsure + left, max(worst, apart)
+        uses, cut, uncut, turned = 0, 0, 0, 0
+        for number_of in range(36):
+            one, left, apart, had = check_drawing(tool, work, rng, number_of)
+            drawings, compared, unsure, worst = drawings + (1 if one else 0), compared + one, unsure + left, max(worst, apart)
+            uses, cut, uncut, turned = uses + had[0], cut + had[1], uncut + had[2], turned + had[3]
         expect(unsure * 5 < compared, f"{unsure} pixels of {compared + unsure} could not be compared: the test is at fault")
+        expect(drawings >= 30 and uses >= 30 and cut >= 300 and uncut >= 100 and turned >= 2,
+               f"{drawings} drawings with {uses} uses, {cut} pixels cut off, {uncut} showing beyond an svg's edges and "
+               f"{turned} svg elements turned: too few for the test to mean much")
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
-    print(f"{drawings} drawings, {compared} pixels: what bn-svg draws agrees with the picture each drawing should make "
-          f"to within {worst:.3f} of the way from black to white, and is the same in any strips and pieces")
+    print(f"{drawings} drawings, {compared} pixels, {uses} uses, {cut} pixels with something cut off: what bn-svg draws "
+          f"agrees with the picture each drawing should make to within {worst:.3f} of the way from black to white, and is "
+          f"the same in any strips and pieces")
     return 0
 
 

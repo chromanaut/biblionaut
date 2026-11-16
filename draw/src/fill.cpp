@@ -297,13 +297,33 @@ void Filler::AddSlice(std::int32_t row, std::int32_t x0, std::int32_t x1, std::i
 }
 
 void Filler::Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity) noexcept {
+  FillWithin(rule, gray, opacity, nullptr, nullptr);
+}
+
+void Filler::Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity, Point from, Point to) noexcept {
+  const Place first = PlaceOf(from);
+  const Place last = PlaceOf(to);
+  FillWithin(rule, gray, opacity, &first, &last);
+}
+
+void Filler::FillWithin(FillRule rule, std::uint8_t gray, std::uint8_t opacity, const Place* from,
+                        const Place* to) noexcept {
   CloseOutline();
   // Opacity out of 256, so that the whole of it leaves nothing showing.
   const std::uint32_t strength = std::uint32_t{opacity} + (opacity >> 7U);
   const auto wide = static_cast<std::size_t>(width_);
   const std::size_t extents = wide * static_cast<std::size_t>(rows_);
+  const bool boxed = from != nullptr && to != nullptr;
+  // How much of the pixel, or of the row, that begins at `start` lies
+  // between two edges of the box, in 256ths.
+  const auto share = [](std::int64_t start, std::int32_t low, std::int32_t high) noexcept {
+    const std::int64_t inside = std::min<std::int64_t>(start + kPixel, high) - std::max<std::int64_t>(start, low);
+    return static_cast<std::uint32_t>(std::clamp<std::int64_t>(inside, 0, kPixel));
+  };
   for (std::int32_t row = firstRow_; row <= lastRow_; ++row) {
     const auto at = static_cast<std::size_t>(row);
+    const std::uint32_t rowShare = boxed ? share(std::int64_t{top_} + (std::int64_t{row} * kPixel), from->y, to->y)
+                                         : static_cast<std::uint32_t>(kPixel);
     const std::int32_t first = cells_[extents + (2 * at)];
     const std::int32_t last = cells_[extents + (2 * at) + 1];
     cells_[extents + (2 * at)] = static_cast<std::int16_t>(width_);
@@ -321,7 +341,12 @@ void Filler::Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity) noexce
         break;
       }
       ++pixelsVisited_;
-      const std::uint32_t cover = Covered(static_cast<std::int16_t>(sum), rule) * strength;
+      std::uint32_t cover = Covered(static_cast<std::int16_t>(sum), rule) * strength;
+      if (boxed && cover != 0) {
+        // Only as much of it as is inside the box, across and down.
+        const std::uint32_t inside = ((share(std::int64_t{pixel} * kPixel, from->x, to->x) * rowShare) + 128U) >> 8U;
+        cover = ((cover * inside) + 128U) >> 8U;
+      }
       if (cover != 0) {
         std::uint8_t& under = gray_[index];
         constexpr std::int32_t kHalf = 32768;

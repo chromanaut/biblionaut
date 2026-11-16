@@ -76,7 +76,7 @@ struct SvgTagToken {
 // - The bytes are taken to be UTF-8, or at least to have ASCII's tags.
 //
 // The bytes are not trusted. Whatever they are, reading ends with a
-// status. The object is 76 bytes on the device.
+// status. The object is 80 bytes on the device.
 class SvgTagReader {
  public:
   static constexpr std::size_t kLongestName = 40;
@@ -102,6 +102,12 @@ class SvgTagReader {
   // How many elements are open.
   std::uint32_t Depth() const noexcept { return depth_; }
   std::uint32_t UnknownEntities() const noexcept { return unknownEntities_; }
+  // How many bytes have been taken and kept; and, counted the same way,
+  // where the tag last begun starts: the place of its `<`. Whoever keeps
+  // the bytes as they go by can find an element among them again by that.
+  // Once reading has failed, what is taken after that is not counted.
+  std::uint32_t Offset() const noexcept { return offset_; }
+  std::uint32_t TagOffset() const noexcept { return tagOffset_; }
 
  private:
   enum class State : std::uint8_t {
@@ -145,6 +151,7 @@ class SvgTagReader {
   std::array<char, 12> entity_{};  // An `&` and what follows it, up to the `;`.
   std::uint32_t depth_ = 0;
   std::uint32_t offset_ = 0;
+  std::uint32_t tagOffset_ = 0;
   std::uint32_t errorOffset_ = 0;
   std::uint32_t unknownEntities_ = 0;
 };

@@ -740,4 +740,143 @@ TEST(Fill, ACurveOutsideTheStripIsOneLine) {
   EXPECT_EQ(lines(true, {499, 0}, {900, 800}), cut);
 }
 
+// ---- Within a box ----
+
+// A shape drawn in black, cut off at the edges of a box.
+Picture DrawnWithin(std::size_t width, std::size_t height, const Shape& shape, Real from, Real to,
+                    FillRule rule = FillRule::kNonZero, std::size_t stripRows = 0) {
+  Picture picture(width, height);
+  stripRows = stripRows == 0 ? height : stripRows;
+  std::vector<std::int16_t> cells(Filler::CellsFor(width, stripRows));
+  for (std::size_t top = 0; top < height; top += stripRows) {
+    const std::size_t rows = std::min(stripRows, height - top);
+    Filler filler;
+    EXPECT_TRUE(filler.Begin(std::span(picture.gray).subspan(top * width, rows * width), width,
+                             static_cast<std::int32_t>(top), cells));
+    Outlined(filler, shape);
+    filler.Fill(rule, kBlack, 255, AsPoint(from), AsPoint(to));
+    // Whatever the box left out, the whole outline has been used up.
+    EXPECT_EQ(std::count(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(width * rows), 0),
+              static_cast<std::ptrdiff_t>(width * rows));
+  }
+  return picture;
+}
+
+// A box with its corners anywhere, some of them off the picture.
+void AnyBox(std::mt19937& random, double width, double height, Real& from, Real& to) {
+  std::uniform_real_distribution<double> across(-0.15 * width, 1.15 * width);
+  std::uniform_real_distribution<double> down(-0.15 * height, 1.15 * height);
+  const Real one = OnGrid({across(random), down(random)});
+  const Real other = OnGrid({across(random), down(random)});
+  from = {std::min(one.x, other.x), std::min(one.y, other.y)};
+  to = {std::max(one.x, other.x), std::max(one.y, other.y)};
+}
+
+TEST(Fill, WithinABoxNothingOutsideItIsDrawnAndWhatIsInsideIsAsEver) {
+  std::mt19937 random = Repeatable(61);
+  for (int i = 0; i < 200; ++i) {
+    const Shape shape = {Tangle(random, 30, 24)};
+    const FillRule rule = i % 2 == 0 ? FillRule::kEvenOdd : FillRule::kNonZero;
+    Real from;
+    Real to;
+    AnyBox(random, 30, 24, from, to);
+    const Picture whole = Drawn(30, 24, shape, rule);
+    const Picture cut = DrawnWithin(30, 24, shape, from, to, rule);
+    for (std::size_t y = 0; y < 24; ++y) {
+      for (std::size_t x = 0; x < 30; ++x) {
+        const auto left = static_cast<double>(x);
+        const auto top = static_cast<double>(y);
+        const bool inside = left >= from.x && left + 1 <= to.x && top >= from.y && top + 1 <= to.y;
+        const bool outside = left + 1 <= from.x || left >= to.x || top + 1 <= from.y || top >= to.y;
+        if (inside) {
+          ASSERT_EQ(cut.At(x, y), whole.At(x, y)) << i << " at " << x << "," << y;
+        } else if (outside) {
+          ASSERT_EQ(cut.At(x, y), kWhite) << i << " at " << x << "," << y;
+        } else {
+          // An edge of the box goes through it: it has some of what it
+          // would have had, and no more.
+          ASSERT_GE(cut.At(x, y), whole.At(x, y)) << i << " at " << x << "," << y;
+        }
+      }
+    }
+  }
+}
+
+TEST(Fill, ABoxLeavesAPixelItCrossesTheShareThatLiesInside) {
+  // A shape that covers the whole picture, so that what is drawn is the
+  // box itself.
+  const Shape all = {{{-5, -5}, {40, -5}, {40, 40}, {-5, 40}}};
+  std::mt19937 random = Repeatable(62);
+  for (int i = 0; i < 100; ++i) {
+    Real from;
+    Real to;
+    AnyBox(random, 30, 24, from, to);
+    const Picture cut = DrawnWithin(30, 24, all, from, to);
+    for (std::size_t y = 0; y < 24; ++y) {
+      for (std::size_t x = 0; x < 30; ++x) {
+        const auto left = static_cast<double>(x);
+        const auto top = static_cast<double>(y);
+        const double across = std::clamp(std::min(left + 1, to.x) - std::max(left, from.x), 0.0, 1.0);
+        const double down = std::clamp(std::min(top + 1, to.y) - std::max(top, from.y), 0.0, 1.0);
+        ASSERT_NEAR(cut.Cover(x, y), across * down, 1.5 / 255) << i << " at " << x << "," << y;
+      }
+    }
+  }
+}
+
+TEST(Fill, ABoxWithNothingInItDrawsNothingAndStillUsesUpTheOutline) {
+  const Shape square = {{{2, 2}, {8, 2}, {8, 8}, {2, 8}}};
+  const Real boxes[][2] = {
+      {{5, 5}, {5, 5}},      // A point.
+      {{3, 4}, {7, 4}},      // No height.
+      {{7, 7}, {3, 3}},      // Inside out.
+      {{20, 20}, {30, 30}},  // Off the picture.
+      {{-9, -9}, {0, 0}},
+  };
+  for (const auto& box : boxes) {
+    Picture picture(10, 10);
+    std::vector<std::int16_t> cells(Filler::CellsFor(10, 10));
+    Filler filler;
+    ASSERT_TRUE(filler.Begin(picture.gray, 10, 0, cells));
+    Outlined(filler, square);
+    filler.Fill(FillRule::kNonZero, kBlack, 255, AsPoint(box[0]), AsPoint(box[1]));
+    EXPECT_EQ(std::count(picture.gray.begin(), picture.gray.end(), kWhite), 100) << box[0].x;
+    // The outline is gone: filling again draws nothing.
+    filler.Fill(FillRule::kNonZero, kBlack);
+    EXPECT_EQ(std::count(picture.gray.begin(), picture.gray.end(), kWhite), 100) << box[0].x;
+  }
+}
+
+TEST(Fill, WithinABoxItComesOutTheSameHoweverThePictureIsCutIntoStrips) {
+  std::mt19937 random = Repeatable(63);
+  for (int i = 0; i < 60; ++i) {
+    const Shape shape = {Tangle(random, 30, 24), NoDents(random, 30, 24)};
+    Real from;
+    Real to;
+    AnyBox(random, 30, 24, from, to);
+    const Picture whole = DrawnWithin(30, 24, shape, from, to);
+    for (const std::size_t stripRows : {std::size_t{1}, std::size_t{5}, std::size_t{23}, std::size_t{64}}) {
+      ASSERT_EQ(DrawnWithin(30, 24, shape, from, to, FillRule::kNonZero, stripRows).gray, whole.gray)
+          << i << " in strips of " << stripRows;
+    }
+  }
+}
+
+TEST(Fill, ABoxLetsWhatIsUnderShowThroughAThinShapeAsEver) {
+  // Half as solid, and half of the pixel inside the box: a quarter of the
+  // way from what was there to the gray that is laid on.
+  Picture picture(4, 4);
+  std::vector<std::int16_t> cells(Filler::CellsFor(4, 4));
+  Filler filler;
+  ASSERT_TRUE(filler.Begin(picture.gray, 4, 0, cells));
+  Outlined(filler, {{{0, 0}, {4, 0}, {4, 4}, {0, 4}}});
+  filler.Fill(FillRule::kNonZero, kBlack, 128, AsPoint({1.5, 1}), AsPoint({3, 3}));
+  EXPECT_EQ(picture.At(0, 1), kWhite);
+  EXPECT_NEAR(picture.At(1, 1), 255 - 64, 1);
+  EXPECT_NEAR(picture.At(2, 1), 255 - 128, 1);
+  EXPECT_EQ(picture.At(3, 1), kWhite);
+  EXPECT_EQ(picture.At(2, 0), kWhite);
+  EXPECT_EQ(picture.At(2, 3), kWhite);
+}
+
 }  // namespace

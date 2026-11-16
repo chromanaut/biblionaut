@@ -758,6 +758,17 @@ LEFT_OUT = b"""<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w
 </svg>
 """
 
+DEFINED_BODY = (b"<defs><path id='MJMAIN-31' d='M6 2l3-1v10h3v1H5v-1h3V3L6 4z'/>"
+                b"<path id=\"MJMATHI-78\" d='M2 6c1-2 3-2 4 0l1 2 2-2c1-1 2 0 1 1l-3 2 1 3c1 2 2 1 3 0l1 1c-2 2-4 2-5 0l-1-2"
+                b"-2 2c-1 1-2 0-1-1l3-2-1-3c-1-1-2-1-3 0z'/>\n"
+                b"<g id='frac' fill='#333'><use xlink:href='#MJMAIN-31' x='4'/><rect y='13' width='20' height='1'/>"
+                b"<use xlink:href='#MJMATHI-78' x='3' y='13' fill='#777'/></g></defs>\n"
+                b"<g transform='translate(1 0)'><use xlink:href='#frac'/></g>\n"
+                b"<use href='#frac' transform='translate(22 2) scale(.75)' fill='#999' fill-opacity='.8'/>"
+                b"<use href='#MJMATHI-78' x='26' y='12' style='fill:#222'></use>")
+DEFINED = (b"<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='40' height='24'>"
+           + DEFINED_BODY + b"</svg>")
+
 LONG_DATA = b"M2 20" + b"l.3-.1 .05.2" * 120 + b"L38 22 2 22z"
 
 
@@ -857,14 +868,16 @@ def svg_path_seeds() -> None:
     seed("nothing", b"")
 
 
-# ---- svg: bytes 0 and 1 (how the file and the picture are cut up), then a file ----
+# ---- svg: bytes 0 and 1 (how the file and the picture are cut up, and how much room there is for what it
+# defines), then a file ----
 
 
 def svg_seeds() -> None:
     clear("svg")
 
-    def seed(name: str, file: bytes, piece: int = 0, rows: int = 0, size: int = 0, tolerance: int = 0) -> None:
-        write("svg", name, bytes([piece | (rows << 3) | (size << 6), tolerance]) + file)
+    def seed(name: str, file: bytes, piece: int = 0, rows: int = 0, size: int = 0, tolerance: int = 0,
+             room: int = 0) -> None:
+        write("svg", name, bytes([piece | (rows << 3) | (size << 6), tolerance | (room << 2)]) + file)
 
     def drawing(body: bytes, attributes: bytes = b"width='40' height='24'") -> bytes:
         return b"<svg xmlns='http://www.w3.org/2000/svg' " + attributes + b">" + body + b"</svg>"
@@ -910,6 +923,101 @@ def svg_seeds() -> None:
          drawing(b"<rect width='9' height='9'/><defs><g><symbol><path d='M0 0h9v9z'/>")[:-6], piece=2, rows=2)
     seed("tags-that-go-wrong", drawing(b"<rect width='9' height='9'/><<<"), piece=1)
     seed("more-after-the-drawing", drawing(b"<rect width='9' height='9'/>") + b"<rect width='40' height='24'/><svg/>")
+
+    # What a file defines in one place and uses in another, and what an svg inside another cuts off.
+    seed("things-defined-and-used", DEFINED)
+    seed("things-defined-and-used-a-byte-at-a-time-in-strips-of-one-row", DEFINED, piece=1, rows=1)
+    seed("things-defined-and-used-in-a-large-picture", DEFINED, piece=4, rows=5, size=3, tolerance=1)
+    # With no memory to keep them in, with too little for any, for the first, and for all but the last.
+    for room, name in ((1, "no"), (2, "24-bytes-of"), (3, "96-bytes-of"), (4, "300-bytes-of"), (5, "1024-bytes-of")):
+        seed(f"things-defined-and-used-with-{name}-room", DEFINED, piece=3 + room % 3, rows=room, room=room)
+    # With 24 bytes: the first thing is 22 of them, and there are not eight left to say where it is.
+    seed("room-for-something-and-not-for-where-it-is",
+         drawing(b"<defs><path id='first-one'/><rect id='b' width='4' height='4'/></defs><use href='#first-one'/><use href='#b'/>"),
+         piece=2, rows=2, room=2)
+    seed("long-path-data-defined-and-used-twice",
+         drawing(b"<defs><path id='long' d='" + LONG_DATA + b"'/></defs><use href='#long' fill='#555'/>"
+                 b"<use href='#long' transform='translate(40 24) rotate(180)' fill-opacity='.5'/>"), piece=6, rows=3)
+    seed("something-that-uses-itself",
+         drawing(b"<defs><g id='a'><rect width='3' height='3'/><use href='#a' x='4' y='2'/></g></defs><use href='#a'/>"),
+         piece=2, rows=4)
+    seed("things-that-use-things-that-use-things",
+         drawing(b"<defs><rect id='u0' width='2' height='1'/>"
+                 + b"".join(b"<g id='u%d'>" % level + b"".join(b"<use href='#u%d' x='%d' y='%d'/>" % (level - 1, 3 * step, step)
+                                                               for step in range(6)) + b"</g>" for level in range(1, 6))
+                 + b"</defs><use href='#u5'/><use href='#u3' y='12'/>"), piece=5, rows=6)
+    seed("a-symbol-and-an-svg-used",
+         drawing(b"<defs><symbol id='s' viewBox='0 0 10 10'><circle cx='5' cy='5' r='7'/></symbol>"
+                 b"<svg id='v' width='6' height='6' viewBox='0 0 2 2'><rect width='3' height='1'/></svg></defs>"
+                 b"<use href='#s' x='2' y='2' width='12' height='8'/><use href='#s' x='20'/>"
+                 b"<use href='#v' x='18' y='14'/><use href='#v' y='14' width='16' height='9'/><symbol><rect width='40' height='24'/></symbol>"),
+         piece=4, rows=2)
+    seed("an-svg-that-cuts-off-what-is-in-it",
+         drawing(b"<svg x='4.5' y='3.25' width='20' height='10'><circle cx='10' cy='5' r='11' fill='#444'/>"
+                 b"<svg x='12' y='-3' width='20' height='9' overflow='hidden'><rect x='-9' y='-9' width='99' height='99' fill='#999'/></svg>"
+                 b"<svg x='2' y='6' width='5' height='9' overflow='visible'><rect x='-1' width='9' height='9'/></svg></svg>"
+                 b"<g transform='translate(30 14) rotate(30)'><svg width='6' height='6'><rect x='-3' y='-3' width='12' height='12'/></svg></g>"
+                 b"<g transform='translate(40 0) scale(-1 1)'><svg x='1' y='18' width='7' height='5' style='overflow: auto'>"
+                 b"<circle r='9'/></svg></g>"), piece=3, rows=3)
+    seed("uses-that-find-nothing",
+         drawing(b"<use href='#later'/><defs><rect id='later' width='4' height='4'/><rect id='&#97;' width='4' height='4'/>"
+                 b"<rect id=\"a'b\" width='4' height='4'/><rect id='' width='4' height='4'/><rect id='aa' id='b' width='4' height='4'/>"
+                 b"</defs><rect id='out' width='4' height='4'/><use/><use href=''/><use href='#'/><use href='later'/>"
+                 b"<use href='#a'/><use href='#b'/><use href='#out'/><use href='" + b"#" + b"n" * 80 + b"'/>"
+                 b"<use href='#later' x='10'><rect width='40' height='24'/><use href='#later' y='10'/></use>"
+                 b"<use href='#aa' x='20' display='none'/><use href='#aa' x='20' y='10' opacity='.5' visibility='hidden'/>"),
+         piece=2, rows=5)
+    seed("cut-short-inside-what-is-defined",
+         drawing(b"<rect width='9' height='9'/><defs><g id='a'><path id='b' d='M0 0h9v9z'/><rect id='c' width='5'")[:-6],
+         piece=3, rows=2)
+    seed("cut-short-as-something-is-used",
+         drawing(b"<defs><g id='a'><path d='M0 0h9v9z'/><rect y='10' width='5' height='5'/></g></defs><use href='#a'/>")[:-6],
+         piece=1, rows=3)
+    seed("tags-that-go-wrong-inside-what-is-defined",
+         drawing(b"<defs><rect id='a' width='9' height='9'/><g id='b'><<</g></defs><use href='#a'/>"), piece=4, rows=1)
+
+    # Things the engine is a long time coming to by changing bytes, since each takes several tags that agree
+    # with one another.
+    dot = b"<defs><rect id='dot' width='3' height='2'/></defs>"
+    seed("groups-inside-what-is-used",
+         drawing(b"<defs><g id='a'><g fill='#555'><g><rect width='3' height='3'/></g><circle cx='8' cy='4' r='3'/></g>"
+                 b"<g><title>Nothing</title></g><a><rect y='6' width='5' height='2'/></a></g></defs>"
+                 b"<use href='#a'/><use href='#a' x='14' y='9' fill='#999'/>"), piece=2, rows=3)
+    seed("a-use-that-names-a-use",
+         drawing(b"<defs><rect id='dot' width='3' height='2'/><use id='right' href='#dot' x='10'/>"
+                 b"<use id='down' href='#right' y='8'><desc>Down</desc></use></defs>"
+                 b"<use href='#right'/><use href='#down' fill='#666'/><use href='#down' x='20' y='4'/>"), piece=3, rows=2)
+    seed("something-used-at-every-depth-of-groups",
+         drawing(dot + b"".join(b"<g><use href='#dot' x='%d' y='%d'/>" % (depth, depth % 20) for depth in range(36))
+                 + b"</g>" * 36 + b"<use href='#dot' x='36' y='20'/>"), piece=4, rows=4)
+    seed("names-inside-names-deeper-than-are-kept",
+         drawing(b"<defs>" + b"".join(b"<g id='n%d'>" % depth for depth in range(11)) + b"<rect width='4' height='3'/>"
+                 + b"</g>" * 11 + b"</defs><use href='#n0'/><use href='#n7' x='10'/><use href='#n10' x='20'/>"), piece=5, rows=1)
+    seed("definitions-inside-what-is-used",
+         drawing(b"<defs><g id='a'><defs><rect id='b' x='10' width='2' height='2'/></defs><rect width='4' height='4'/></g>"
+                 b"</defs><use href='#a'/><use href='#b' y='6'/><use href='#a' y='12'/><use href='#b' x='20'/>"),
+         piece=1, rows=2, room=4)
+    seed("inherit-and-none-for-everything",
+         drawing(b"<g fill='#777' fill-rule='evenodd' fill-opacity='.5' color='#333' stroke='#000' stroke-width='0' opacity='.9'>"
+                 b"<path d='M2 2h20v20h-20zM6 6h12v12h-12z' fill='inherit' fill-rule='inherit' fill-opacity='inherit'"
+                 b" color='inherit' visibility='inherit' stroke='inherit' stroke-width='inherit' opacity='inherit'/>"
+                 b"<rect x='24' width='9' height='9' style='fill:inherit;fill-rule:inherit;fill-opacity:inherit;color:inherit;"
+                 b"visibility:inherit;stroke:inherit;stroke-width:inherit;opacity:inherit;display:inherit;overflow:inherit'/>"
+                 b"<g visibility='collapse'><rect y='12' width='9' height='9' visibility='inherit'/></g>"
+                 b"<rect x='12' y='12' width='9' height='9' clip-path='none' mask='none' filter='none' marker-start='none'"
+                 b" marker-mid='none' marker-end='none' stroke='none' display='inline'/>"
+                 b"<rect x='24' y='12' width='9' height='9' style='clip-path:none;mask:none;filter:none;marker:none'/></g>"),
+         piece=2, rows=5)
+    seed("long-path-data-in-something-that-cannot-be-read",
+         drawing(b"<path transform='rotate(' d='" + LONG_DATA + b"'/><path d='" + LONG_DATA + b"' transform='scale('/>"
+                 b"<rect width='4' height='4'/>"), piece=6, rows=2)
+    seed("an-svg-in-a-group-that-is-slanted",
+         drawing(b"<g transform='skewX(30)'><svg x='4' y='4' width='8' height='8'><rect x='-4' y='-4' width='16' height='16'/>"
+                 b"</svg></g><g transform='translate(24 0) skewY(20)'><svg width='8' height='8'><circle r='9'/></svg></g>"),
+         piece=3, rows=3)
+    seed("brackets-in-style-deeper-than-are-counted",
+         drawing(b"<rect width='9' height='9' style='-x:" + b"(" * 256 + b";fill:#fff" + b")" * 256 + b";fill-opacity:0.5'/>"),
+         piece=4)
     seed("nothing", b"")
 
 

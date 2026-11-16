@@ -154,10 +154,12 @@ std::size_t SvgTagReader::Next(std::string_view bytes, SvgTagToken& token) noexc
         if (at > from) {
           return Give(Kind::kText, {bytes.data() + from, at - from}, true, at, token);
         }
-        ++at;
         if (c == '<') {
+          tagOffset_ = offset_ + static_cast<std::uint32_t>(at);
           state_ = State::kLess;
+          ++at;
         } else {
+          ++at;
           back_ = State::kContent;
           entity_[0] = '&';
           entitySize_ = 1;

@@ -99,6 +99,13 @@ class Filler final : public LineSink {
   // `gray`. With an `opacity` under 255, what was there shows through.
   void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity = 255) noexcept;
 
+  // The same, cut off at the edges of a box of the picture, from `from` to
+  // `to` in pixels: nothing outside the box is drawn, and a pixel an edge
+  // of it passes through takes as much less as lies outside. A box with
+  // nothing in it draws nothing. Everything outlined is used up all the
+  // same.
+  void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity, Point from, Point to) noexcept;
+
   // The strip that was set: how many pixels wide it is, which row of the
   // picture its first row is, and how many rows it has. No rows, if
   // Begin() refused it.
@@ -122,6 +129,8 @@ class Filler final : public LineSink {
 
   static Place PlaceOf(Point point) noexcept;
   void CloseOutline() noexcept;
+  // Fill(), within the box from `from` to `to` if there is one.
+  void FillWithin(FillRule rule, std::uint8_t gray, std::uint8_t opacity, const Place* from, const Place* to) noexcept;
   void AddLine(Place from, Place to) noexcept;
   // A line's part to the left of the strip, from `top` down to `bottom`.
   void AddBeside(std::int32_t top, std::int32_t bottom, std::int32_t sign) noexcept;

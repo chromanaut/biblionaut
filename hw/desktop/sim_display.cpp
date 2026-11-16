@@ -94,7 +94,8 @@ SimDisplay::SimDisplay(core::Clock& clock, std::string outputPrefix, std::uint32
       speed_(speed < 1 ? 1 : speed),
       memory_{std::vector<std::uint8_t>(kSize.RowBytes() * kSize.height, 0xFF),
               std::vector<std::uint8_t>(kSize.RowBytes() * kSize.height, 0xFF)},
-      shown_(memory_[0]) {}
+      shown_(memory_[0]),
+      shownBefore_(memory_[0]) {}
 
 std::vector<std::uint8_t>& SimDisplay::Memory(core::DisplayPlane plane) noexcept {
   return memory_[plane == core::DisplayPlane::kNew ? newIs_ : 1 - newIs_];
@@ -148,6 +149,7 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
   if (!started_ || Busy()) {
     return false;
   }
+  shownBefore_ = shown_;
   const std::vector<std::uint8_t>& newPlane = Memory(core::DisplayPlane::kNew);
   const std::vector<std::uint8_t>& oldPlane = Memory(core::DisplayPlane::kOld);
   std::uint64_t durationUs = kFullRefreshUs;
@@ -179,6 +181,8 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
     newIs_ = 0;
   }
   powered_ = !powerOff;
+  const std::uint64_t now = clock_.NowUs();
+  lastRefresh_ = Refresh{.mode = mode, .startUs = now, .doneUs = now + (durationUs / speed_)};
   BeginBusy(durationUs + (powerOff ? kPowerOffUs : 0), span, powerOff ? 1 : 0);
   ++refreshCount_;
   SavePicture();

@@ -59,6 +59,20 @@ class SimDisplay final : public core::Display {
 
   // What the panel shows (once the refresh in progress, if any, is over).
   std::span<const std::uint8_t> Shown() const noexcept { return shown_; }
+
+  // The last refresh: how it was made, when it began, and when the picture
+  // was finished, on the clock's time and shortened by `speed`. (A switch-off
+  // that follows it keeps the panel busy longer, and changes nothing that is
+  // shown.) Before the first refresh, one that was over at 0.
+  struct Refresh {
+    core::RefreshMode mode = core::RefreshMode::kFull;
+    std::uint64_t startUs = 0;
+    std::uint64_t doneUs = 0;
+  };
+  const Refresh& LastRefresh() const noexcept { return lastRefresh_; }
+  // What the panel showed before the last refresh began.
+  std::span<const std::uint8_t> ShownBefore() const noexcept { return shownBefore_; }
+
   // What the plane now in that role holds.
   std::span<const std::uint8_t> Plane(core::DisplayPlane plane) const noexcept;
   int RefreshCount() const noexcept { return refreshCount_; }
@@ -82,6 +96,8 @@ class SimDisplay final : public core::Display {
   std::array<std::vector<std::uint8_t>, 2> memory_;
   std::size_t newIs_ = 0;
   std::vector<std::uint8_t> shown_;
+  std::vector<std::uint8_t> shownBefore_;
+  Refresh lastRefresh_;
   bool started_ = false;
   bool powered_ = false;
   bool busy_ = false;
@@ -91,5 +107,8 @@ class SimDisplay final : public core::Display {
   std::uint32_t busySpanArg_ = 0;
   int refreshCount_ = 0;
 };
+
+// The desktop's panel, as what it is: the one SystemDisplay() hands out.
+SimDisplay& SystemSimDisplay() noexcept;
 
 }  // namespace bn::hw

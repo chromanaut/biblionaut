@@ -131,9 +131,12 @@ bn_add_unit_test(layout_tests
 # are reached the way its sources reach them, as "desktop/...".
 bn_add_unit_test(hw_tests
   SOURCES
+    unit/hw/device_layout_test.cpp
     unit/hw/folder_storage_test.cpp
+    unit/hw/panel_view_test.cpp
     unit/hw/scripted_input_test.cpp
     unit/hw/sim_display_test.cpp
+    unit/hw/window_input_test.cpp
   LIBS bn_hw)
 target_include_directories(hw_tests PRIVATE ${PROJECT_SOURCE_DIR}/hw)
 
@@ -178,6 +181,19 @@ add_test(
     -DTOOL=$<TARGET_FILE:bn-trace>
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/panel_switch_off.cmake)
+
+# The application with its window, on SDL's stand-in for a screen, against
+# the same application without one: the same scripted presses have to put
+# the same pictures on the panel. Only a build with a window has this.
+if(BN_DESKTOP_WINDOW)
+  add_test(
+    NAME e2e.Window
+    COMMAND ${CMAKE_COMMAND}
+      -DAPP=$<TARGET_FILE:biblionaut-desktop>
+      -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/window.cmake)
+  set_tests_properties(e2e.Window PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+endif()
 
 # tools/bn-symbolize against a stand-in ELF archive and addr2line.
 find_package(Python3 COMPONENTS Interpreter)

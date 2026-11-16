@@ -29,6 +29,8 @@ The test programs are `core_tests`, `draw_tests`, `epub_tests`, `layout_tests`, 
 
 `host-release` is the optimised preset without sanitizers (`build/host-release`): use it for timing anything and for running the tools over many files. Its tests are run as well (`ctest --preset host-release`): a few things are built differently when a sanitizer is there, the heap inside a block among them, and the firmware has none.
 
+`window` (`build/window`) is the desktop application alone with a window, made with SDL, which that build fetches (`BN_DESKTOP_WINDOW`): `./build/window/app/desktop/biblionaut-desktop --window` draws the X4 with the simulated panel and the buttons, which are clicked or pressed from the keyboard. Its one test is `e2e.Window` (`ctest --preset window`). Opening the window puts it on the screen of whoever is at the computer; the test uses SDL's `dummy` video driver, which needs no screen, and `SDL_VIDEO_DUMMY_SAVE_FRAMES=1` with that driver saves each frame the window would show as a BMP in the current folder.
+
 `tools/check-books.py FOLDER` runs `bn-zip`, `bn-xml`, `bn-epub` and `bn-css` over every EPUB under a folder and compares each with a reading of the same book by Python. CTest runs it over `corpus/` as `e2e.Corpus`; run it over any larger collection of books a change could affect, with the `host-release` tools.
 
 The other checks. CI runs all of them (`.github/workflows/ci.yml`), and all of them are run before work is handed over:
@@ -42,6 +44,7 @@ The other checks. CI runs all of them (`.github/workflows/ci.yml`), and all of t
 | Nothing in the portable parts can throw | `tools/check-firmware-symbols.sh` (after a firmware build) |
 | clang-tidy on what the firmware compiles | `tools/check-firmware-tidy.py` (after a firmware build) |
 | The tests again, optimised and without sanitizers | `cmake --build --preset host-release && ctest --preset host-release` |
+| The desktop application with its window (CI: macOS only) | `cmake --preset window && cmake --build --preset window && ctest --preset window` |
 | CI's Linux job: GCC 14, with sanitizers and then without | `tools/linux-check.sh` (needs Docker running; arguments go to `ctest`) |
 
 CI does not build a firmware with one of the device checks switched on (below). Build and test that here when a change touches it.

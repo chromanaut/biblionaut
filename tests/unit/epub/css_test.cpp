@@ -16,6 +16,7 @@
 
 namespace {
 
+using bn::epub::CssAttributeTest;
 using bn::epub::CssCombinator;
 using bn::epub::CssDropped;
 using bn::epub::CssReader;
@@ -59,8 +60,9 @@ class Recorder final : public bn::epub::CssHandler {
     for (const bn::epub::CssCompound& part : selector.compounds) {
       text += part.combinator == CssCombinator::kDescendant ? " "
               : part.combinator == CssCombinator::kChild    ? " > "
+              : part.combinator == CssCombinator::kAdjacent ? " + "
                                                             : "";
-      if (part.element.empty() && part.id.empty() && part.classes.empty()) {
+      if (part.element.empty() && part.id.empty() && part.classes.empty() && part.attributes.empty()) {
         text += '*';
       }
       text += part.element;
@@ -69,6 +71,16 @@ class Recorder final : public bn::epub::CssHandler {
       }
       for (const std::string_view name : part.classes) {
         text += "." + std::string(name);
+      }
+      // What is asked of an attribute: [name], or [name="value"] with the
+      // sign for how the value is held against it.
+      for (const bn::epub::CssAttribute& attribute : part.attributes) {
+        text += std::string("[") + (attribute.anyPrefix ? "*|" : "") + std::string(attribute.name);
+        if (attribute.test != CssAttributeTest::kPresent) {
+          text += std::string(bn::epub::CssAttributeTestName(attribute.test)) + "\"" + std::string(attribute.value) +
+                  "\"" + (attribute.anyCase ? " i" : "");
+        }
+        text += ']';
       }
     }
     if (selector.firstLetter) {
@@ -223,6 +235,117 @@ TEST(CssReader, ReadsSelectorsByElementClassAndIdJoinedByDescentOrAsChild) {
   EXPECT_EQ(Read("\n div\t#main\n>p.x { }"), "{\nS 1,1,2 div #main > p.x\n}\n");
 }
 
+TEST(CssReader, ReadsTheElementStraightAfterAnother) {
+  EXPECT_EQ(Read("h2 + p, h1+p.first, div > h2 + p i, a+b+c {}"),
+            "{\nS 0,0,2 h2 + p\nS 0,1,2 h1 + p.first\nS 0,0,4 div > h2 + p i\nS 0,0,3 a + b + c\n}\n");
+  // The sign is not part of a number here, nor of anything in brackets.
+  EXPECT_EQ(Read("li:nth-child(2n+1), [title=\"a+b\"] {}"),
+            "X pseudo-class: :nth-child\n{\nS 0,1,0 [title=\"a+b\"]\n}\n");
+  // It joins two parts, and has to have both.
+  for (const char* bad : {"+ p", "p +", "p + + q", "p + > q", "p > + q"}) {
+    EXPECT_EQ(Read(std::string(bad) + " , b {}"), "X selector: " + std::string(bad) + "\n{\nS 0,0,1 b\n}\n") << bad;
+  }
+}
+
+TEST(CssReader, ReadsWhatASelectorAsksOfAnAttribute) {
+  struct Checker final : bn::epub::CssHandler {
+    void OnRuleBegin() noexcept override {}
+    void OnSelector(const bn::epub::CssSelector& selector) noexcept override {
+      ASSERT_EQ(selector.compounds.size(), 2U);
+      const bn::epub::CssCompound& section = selector.compounds[0];
+      EXPECT_EQ(section.element, "section");
+      ASSERT_EQ(section.attributes.size(), 2U);
+      EXPECT_EQ(section.attributes[0].name, "epub:type");
+      EXPECT_EQ(section.attributes[0].test, CssAttributeTest::kWord);
+      EXPECT_EQ(section.attributes[0].value, "chapter");
+      EXPECT_FALSE(section.attributes[0].anyCase);
+      EXPECT_FALSE(section.attributes[0].anyPrefix);
+      EXPECT_EQ(section.attributes[1].name, "hidden");
+      EXPECT_EQ(section.attributes[1].test, CssAttributeTest::kPresent);
+      EXPECT_EQ(section.attributes[1].value, "");
+      const bn::epub::CssCompound& last = selector.compounds[1];
+      EXPECT_EQ(last.combinator, CssCombinator::kChild);
+      EXPECT_EQ(last.element, "");
+      EXPECT_TRUE(last.classes.empty());
+      ASSERT_EQ(last.attributes.size(), 1U);
+      EXPECT_EQ(last.attributes[0].name, "lang");
+      EXPECT_EQ(last.attributes[0].test, CssAttributeTest::kDash);
+      EXPECT_EQ(last.attributes[0].value, "EN");
+      EXPECT_TRUE(last.attributes[0].anyCase);
+      EXPECT_TRUE(last.attributes[0].anyPrefix);
+      // Each thing asked counts as a class does.
+      EXPECT_EQ(selector.specificity, (3U << 8U) | 1U);
+      ++seen;
+    }
+    void OnDeclaration(const bn::epub::CssDeclaration& /*declaration*/) noexcept override {}
+    void OnRuleEnd() noexcept override {}
+    void OnImport(std::string_view /*url*/) noexcept override {}
+    void OnDropped(CssDropped /*dropped*/, std::string_view /*text*/) noexcept override {}
+    int seen = 0;
+  };
+  Checker checker;
+  const std::string_view sheet = "section[epub|type~=\"chapter\"][hidden] > [*|lang|=EN i] {}";
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): characters, as the bytes they are.
+  bn::core::MemoryByteSource source({reinterpret_cast<const std::uint8_t*>(sheet.data()), sheet.size()});
+  CssReader reader;
+  EXPECT_EQ(reader.Read(source, checker), CssStatus::kOk);
+  EXPECT_EQ(checker.seen, 1);
+
+  // Every way of holding a value against an attribute's, with the value
+  // in either kind of quotes or as a name, and spaces wherever they may be.
+  EXPECT_EQ(Read("[a], [a=b], [a~='b'], [a|=\"b\"], [a^=b], [a$=b], [a*=b], [ a = b ], [a='b'i], [a=b S] {}"),
+            "{\nS 0,1,0 [a]\nS 0,1,0 [a=\"b\"]\nS 0,1,0 [a~=\"b\"]\nS 0,1,0 [a|=\"b\"]\nS 0,1,0 [a^=\"b\"]\n"
+            "S 0,1,0 [a$=\"b\"]\nS 0,1,0 [a*=\"b\"]\nS 0,1,0 [a=\"b\"]\nS 0,1,0 [a=\"b\" i]\nS 0,1,0 [a=\"b\"]\n}\n");
+  // With the rest of a part, in any order; and a value may be empty.
+  EXPECT_EQ(Read("a.x[href]#y[rel=\"\"]:link, td[colspan=\"2\"] p {}"),
+            "{\nS 1,4,1 a#y.x[href][rel=\"\"]\nS 0,1,2 td[colspan=\"2\"] p\n}\n");
+}
+
+TEST(CssReader, WritesAnAttributesNameAsADocumentHasIt) {
+  // In small letters, with a `:` after a namespace's prefix; `|` with no
+  // prefix is no namespace, which is what a plain name is in; `*|` is any.
+  EXPECT_EQ(Read("[EPUB|Type~=\"Note\"], [xml|lang], [|title], [*|HREF], [DATA-x=A] {}"),
+            "{\nS 0,1,0 [epub:type~=\"Note\"]\nS 0,1,0 [xml:lang]\nS 0,1,0 [title]\nS 0,1,0 [*|href]\n"
+            "S 0,1,0 [data-x=\"A\"]\n}\n");
+  // A prefix is told from the sign that begins with the same mark.
+  EXPECT_EQ(Read("[a|b|=c], [a|=c], [*|a|=c] {}"),
+            "{\nS 0,1,0 [a:b|=\"c\"]\nS 0,1,0 [a|=\"c\"]\nS 0,1,0 [*|a|=\"c\"]\n}\n");
+  // Backslashes are taken out of both halves before they are joined.
+  EXPECT_EQ(Read(R"([\65 pub|t\79pe], [e\70 ub\:type] {})"), "{\nS 0,1,0 [epub:type]\nS 0,1,0 [epub:type]\n}\n");
+}
+
+TEST(CssReader, TakesTheQuotesAndBackslashesOutOfAnAttributesValue) {
+  // Either kind of quotes, with the other kind inside as it is; a quote, a
+  // character by its number and a line's end after a backslash; and
+  // whatever else is inside quotes is only itself.
+  EXPECT_EQ(Read(R"([a="x y"], [a='say "hi"'], [a="say \"hi\""], [a='\41 b\63'], [a="1\
+2"], [a=\31 0], [a="]{,;"] {})"),
+            "{\nS 0,1,0 [a=\"x y\"]\nS 0,1,0 [a=\"say \"hi\"\"]\nS 0,1,0 [a=\"say \"hi\"\"]\n"
+            "S 0,1,0 [a=\"Abc\"]\nS 0,1,0 [a=\"12\"]\nS 0,1,0 [a=\"10\"]\nS 0,1,0 [a=\"]{,;\"]\n}\n");
+}
+
+TEST(CssReader, DropsBracketsThatDoNotHoldATestOfAnAttribute) {
+  for (const char* bad :
+       {"[]",     "[ ]",  "[a=]", "[a=1]",   "[=b]",   "[a b]", "[a=b c]", "[a=b ii]", "[a=b i i]",  "[a==b]", "[a~b]",
+        "[a!=b]", "[1a]", "[a|]", "[a|b|c]", "[|a|b]", "[*|]",  "[*a]",    "[a='b'x]", "[a='b''c']", "p[a][]"}) {
+    EXPECT_EQ(Read(std::string(bad) + " , b {}"), "X attribute selector: " + std::string(bad) + "\n{\nS 0,0,1 b\n}\n")
+        << bad;
+  }
+  // What is dropped is told as the sheet had it, its name not yet made
+  // small or joined.
+  EXPECT_EQ(Read("[Epub|TYPE=\"x\" y], i {}"), "X attribute selector: [Epub|TYPE=\"x\" y]\n{\nS 0,0,1 i\n}\n");
+  // Brackets that are not closed take the rest of the list with them, as a
+  // comma inside them is not between two selectors.
+  EXPECT_EQ(Read("[a , b {} i {}"), "X attribute selector: [a , b\nX rule: \n{\nS 0,0,1 i\n}\n");
+  EXPECT_EQ(Read("p[a=b, b {} i {}"), "X attribute selector: p[a=b, b\nX rule: \n{\nS 0,0,1 i\n}\n");
+  // A string ends with its line if it was not closed, and is then no
+  // value, whether or not a quote comes later; nor is one that the text
+  // ends in the middle of, after a backslash.
+  EXPECT_EQ(Read("[a=\"b\n], b {} i {}"), "X attribute selector: [a=\"b\n], b\nX rule: \n{\nS 0,0,1 i\n}\n");
+  EXPECT_EQ(Read("[a=\"b\nc\"]\n, i {}"), "X attribute selector: [a=\"b\nc\"]\n{\nS 0,0,1 i\n}\n");
+  EXPECT_EQ(Read("[a=\"b\\ \n{} i {}"), "X attribute selector: [a=\"b\\\nX rule: \n{\nS 0,0,1 i\n}\n");
+}
+
 TEST(CssReader, WritesElementNamesSmallAndLeavesClassesAndIdsAsTheyAre) {
   EXPECT_EQ(Read("DIV.Note P#Top{}"), "{\nS 1,1,2 div.Note p#Top\n}\n");
 }
@@ -256,9 +379,9 @@ TEST(CssReader, ReadsFirstLetterAndTakesLinkAsAlwaysSo) {
 }
 
 TEST(CssReader, DropsASelectorItDoesNotReadAndKeepsTheOthersOfItsRule) {
-  EXPECT_EQ(Read("h1 + p, p[lang], a:hover, p::before, li:nth-child(2n + 1), h2 ~ p, q:after, p { margin-top: 0 }"),
-            "X sibling selector: h1 + p\n"
-            "X attribute selector: p[lang]\n"
+  EXPECT_EQ(Read("h1 ~ p, p[lang=], a:hover, p::before, li:nth-child(2n + 1), h2 ~ p, q:after, p { margin-top: 0 }"),
+            "X sibling selector: h1 ~ p\n"
+            "X attribute selector: p[lang=]\n"
             "X pseudo-class: :hover\n"
             "X pseudo-element: ::before\n"
             "X pseudo-class: :nth-child\n"
@@ -270,7 +393,7 @@ TEST(CssReader, DropsASelectorItDoesNotReadAndKeepsTheOthersOfItsRule) {
             "}\n");
   // A comma inside brackets is not between two selectors.
   EXPECT_EQ(Read("p:not(.a, .b), [title=\"a,b\"] x, i {}"),
-            "X pseudo-class: :not\nX attribute selector: [title=\"a,b\"] x\n{\nS 0,0,1 i\n}\n");
+            "X pseudo-class: :not\n{\nS 0,1,1 [title=\"a,b\"] x\nS 0,0,1 i\n}\n");
   // What is no selector at all.
   for (const char* bad :
        {"> p", "p >", "p > > q", "p..a", ".5a", "#", "p#a#b", "svg|rect", "p*", "*p", "p$", "1a", ""}) {
@@ -279,20 +402,20 @@ TEST(CssReader, DropsASelectorItDoesNotReadAndKeepsTheOthersOfItsRule) {
 }
 
 TEST(CssReader, DropsARuleNoneOfWhoseSelectorsCouldBeRead) {
-  PiecewiseSource source("p + p, a:visited { margin: 0; color: red } b { font-style: italic }", 4096);
+  PiecewiseSource source("p ~ p, a:visited { margin: 0; color: red } b { font-style: italic }", 4096);
   Recorder recorder;
   CssReader reader;
   EXPECT_EQ(reader.Read(source, recorder), CssStatus::kOk);
   // Nothing of what it sets is told, or counted.
   EXPECT_EQ(recorder.lines,
-            "X sibling selector: p + p\nX pseudo-class: :visited\nX rule: \n{\nS 0,0,1 b\nD font-style: italic\n}\n");
+            "X sibling selector: p ~ p\nX pseudo-class: :visited\nX rule: \n{\nS 0,0,1 b\nD font-style: italic\n}\n");
   EXPECT_EQ(reader.Rules(), 1U);
   EXPECT_EQ(reader.Declarations(), 1U);
   EXPECT_EQ(reader.Dropped(CssDropped::kRule), 1U);
   EXPECT_EQ(reader.Dropped(CssDropped::kProperty), 0U);
 }
 
-TEST(CssReader, DropsASelectorWithMorePartsOrClassesThanThereIsRoomFor) {
+TEST(CssReader, DropsASelectorWithMorePartsClassesOrAttributesThanThereIsRoomFor) {
   std::string parts = "a";
   for (std::size_t i = 1; i < CssReader::kMaxCompounds; ++i) {
     parts += " > a";
@@ -306,6 +429,15 @@ TEST(CssReader, DropsASelectorWithMorePartsOrClassesThanThereIsRoomFor) {
   }
   EXPECT_EQ(Read(classes + "{}"), "{\nS 0,12,1 " + classes + "\n}\n");
   EXPECT_EQ(Read(classes + ".d, i {}"), "X selector: " + classes + ".d\n{\nS 0,0,1 i\n}\n");
+
+  // What is asked of attributes is counted over the whole selector, as
+  // classes are.
+  std::string attributes = "p";
+  for (std::size_t i = 0; i < CssReader::kMaxAttributes; ++i) {
+    attributes += i % 2 == 0 ? "[a]" : " q[b]";
+  }
+  EXPECT_EQ(Read(attributes + "{}"), "{\nS 0,8,5 " + attributes + "\n}\n");
+  EXPECT_EQ(Read(attributes + "[c], i {}"), "X selector: " + attributes + "[c]\n{\nS 0,0,1 i\n}\n");
 }
 
 TEST(CssReader, ReadsEachPropertyItKnows) {
@@ -675,7 +807,7 @@ TEST(CssReader, ReadsOnePieceAtAStepAndNoMore) {
 
 TEST(CssReader, CountsWhatItToldOfAndWhatItPassedOver) {
   const std::string sheet =
-      "p, b:hover, i[x], u + s, q::after, 1 { margin: 0; color: red; width: 1vh; oops }\n"
+      "p, b:hover, i[x=], u ~ s, q::after, 1 { margin: 0; color: red; width: 1vh; oops }\n"
       "a:visited { }\n@font-face { }\n@media print { }\n"
       "em { font-family: " +
       std::string(600, 'x') + " }";

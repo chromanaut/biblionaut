@@ -33,6 +33,7 @@ MAX_PRELUDE = 1024
 MAX_DECLARATION = 512
 MAX_COMPOUNDS = 8
 MAX_CLASSES = 12
+MAX_ATTRIBUTES = 8
 MAX_NUMBER = 100_000_000
 MOST_DROPPED_TEXT = 80
 
@@ -399,6 +400,26 @@ def read_style(text: bytes) -> list[bytes]:
     return [line.translate(ESCAPES).encode("latin-1") for line in out]
 
 
+def take_escape(text: list[str], at: int, out: int) -> tuple[int, int]:
+    """What the backslash before `at` stands for, written at `out`; and where both have got to."""
+    if text[at] not in "0123456789abcdefABCDEF":
+        text[out] = text[at]
+        return at + 1, out + 1
+    digits = ""
+    while len(digits) < 6 and at < len(text) and text[at] in "0123456789abcdefABCDEF":
+        digits += text[at]
+        at += 1
+    if at < len(text) and text[at] in SPACE:
+        at += 1
+    code = int(digits, 16)
+    if code == 0 or code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
+        code = 0xFFFD if at - out >= 3 else ord("?")
+    for byte in chr(code).encode("utf-8"):
+        text[out] = chr(byte)
+        out += 1
+    return at, out
+
+
 def take_name(text: list[str], at: int) -> tuple[str, int]:
     """A name at `at`, its backslashes taken out where it stands; and where it ends."""
     start = at
@@ -415,27 +436,107 @@ def take_name(text: list[str], at: int) -> tuple[str, int]:
             out += 1
             at += 1
         elif ch == "\\" and at + 1 < len(text) and text[at + 1] != "\n":
-            at += 1
-            if text[at] in "0123456789abcdefABCDEF":
-                digits = ""
-                while len(digits) < 6 and at < len(text) and text[at] in "0123456789abcdefABCDEF":
-                    digits += text[at]
-                    at += 1
-                if at < len(text) and text[at] in SPACE:
-                    at += 1
-                code = int(digits, 16)
-                if code == 0 or code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
-                    code = 0xFFFD if at - out >= 3 else ord("?")
-                for byte in chr(code).encode("utf-8"):
-                    text[out] = chr(byte)
-                    out += 1
-            else:
-                text[out] = text[at]
-                out += 1
-                at += 1
+            at, out = take_escape(text, at + 1, out)
         else:
             break
     return "".join(text[start:out]), at
+
+
+def take_string(text: list[str], at: int) -> tuple[str | None, int]:
+    """A string whose opening quote is at `at`, without its quotes and backslashes; None if it is not closed."""
+    quote = text[at]
+    at += 1
+    start = out = at
+    while at < len(text):
+        ch = text[at]
+        if ch == quote:
+            return "".join(text[start:out]), at + 1
+        if ch == "\n":
+            return None, at
+        if ch != "\\":
+            text[out] = ch
+            out += 1
+            at += 1
+        elif at + 1 >= len(text):
+            return None, at
+        elif text[at + 1] == "\n":
+            at += 2
+        else:
+            at, out = take_escape(text, at + 1, out)
+    return None, at
+
+
+ASKINGS = {"~": "~=", "|": "|=", "^": "^=", "$": "$=", "*": "*="}
+
+
+def take_attribute(text: list[str], at: int) -> tuple[str | None, int]:
+    """What is asked of an attribute in the brackets that open at `at`, as the tool writes it; None if it is not that."""
+
+    def spaces(at: int) -> int:
+        while at < len(text) and text[at] in SPACE:
+            at += 1
+        return at
+
+    def follows(at: int, mark: str) -> bool:
+        return at + 1 < len(text) and text[at] == mark
+
+    at = spaces(at + 1)
+    any_prefix = False
+    may_have_prefix = True
+    if follows(at, "*") and text[at + 1] == "|":
+        any_prefix = True
+        may_have_prefix = False
+        at += 2
+    elif follows(at, "|") and text[at + 1] != "=":
+        may_have_prefix = False
+        at += 1
+    name_start = at
+    name, at = take_name(text, at)
+    if not name:
+        return None, at
+    if may_have_prefix and follows(at, "|") and text[at + 1] != "=":
+        local, at = take_name(text, at + 1)
+        if not local:
+            return None, at
+        name += ":" + local
+
+    def named() -> str:
+        # The name is written where it stood, as the reader leaves it, once
+        # the rest is known to be right: what is dropped is told as it was.
+        text[name_start:name_start + len(name)] = list(lower(name))
+        return "[" + ("*|" if any_prefix else "") + lower(name)
+
+    at = spaces(at)
+    if at < len(text) and text[at] == "]":
+        return named() + "]", at + 1
+    if at < len(text) and text[at] == "=":
+        asking = "="
+        at += 1
+    elif at + 1 < len(text) and text[at] in ASKINGS and text[at + 1] == "=":
+        asking = ASKINGS[text[at]]
+        at += 2
+    else:
+        return None, at
+    at = spaces(at)
+    if at < len(text) and text[at] in "\"'":
+        value, at = take_string(text, at)
+        if value is None:
+            return None, at
+    else:
+        value, at = take_name(text, at)
+        if not value:
+            return None, at
+    any_case = False
+    at = spaces(at)
+    if at < len(text) and text[at] != "]":
+        flag, at = take_name(text, at)
+        if lower(flag) not in ("i", "s"):
+            return None, at
+        any_case = lower(flag) == "i"
+        at = spaces(at)
+    if at >= len(text) or text[at] != "]":
+        return None, at
+    return named() + asking + '"' + value + '"' + (" i" if any_case else "") + "]", at + 1
 
 
 def skip_brackets(text: list[str], at: int) -> int:
@@ -470,6 +571,7 @@ def read_selector(piece: str, out: list[str]) -> bool:
 
     parts: list[str] = []
     class_total = 0
+    attribute_total = 0
     ids = classes = elements = 0
     first_letter = False
     combinator = ""
@@ -483,15 +585,15 @@ def read_selector(piece: str, out: list[str]) -> bool:
         if at >= len(text):
             break
         ch = text[at]
-        if ch == ">":
+        if ch == "~":
+            return drop("sibling selector")
+        if ch in ">+":
             if want_part:
                 return drop("selector")
-            combinator = " > "
+            combinator = f" {ch} "
             want_part = True
             at += 1
             continue
-        if ch in "+~":
-            return drop("sibling selector")
         if not want_part:
             if not space:
                 return drop("selector")
@@ -501,6 +603,7 @@ def read_selector(piece: str, out: list[str]) -> bool:
         element = ""
         part_id = ""
         part_classes: list[str] = []
+        part_attributes: list[str] = []
         anything = False
         if ch == "*":
             anything = True
@@ -521,7 +624,16 @@ def read_selector(piece: str, out: list[str]) -> bool:
             if first_letter:
                 return drop("selector")
             if mark == "[":
-                return drop("attribute selector")
+                if attribute_total == MAX_ATTRIBUTES:
+                    return drop("selector")
+                asked, at = take_attribute(text, at)
+                if asked is None:
+                    return drop("attribute selector")
+                part_attributes.append(asked)
+                attribute_total += 1
+                classes += 1
+                anything = True
+                continue
             if mark in ".#":
                 at += 1
                 name, at = take_name(text, at)
@@ -564,7 +676,8 @@ def read_selector(piece: str, out: list[str]) -> bool:
             anything = True
         if not anything:
             return drop("selector")
-        shown = element + ("#" + part_id if part_id else "") + "".join("." + name for name in part_classes)
+        shown = (element + ("#" + part_id if part_id else "") + "".join("." + name for name in part_classes) +
+                 "".join(part_attributes))
         parts.append(combinator + (shown or "*"))
         want_part = False
     if not parts or want_part:
@@ -867,6 +980,25 @@ table td[colspan], li::before, q:lang(fr) { display: none }
                             b".\\31 0, .a\\:b, DIV.Up#Id, .\\0, .x\\0z, #a#b, p..q { line-height: 1.2.3; line-height: 120% }\n"
                             b"p::first-letter::first-letter, p::first-letter.x, p:first-letter, :first-letter { float: left }\n"
                             b"-->\n.end { font: bold 2em; font: caption; font: italic 700 x-large/normal a , \"B  c\" ")
+    # What a selector asks of an attribute, and the element straight after
+    # another: every form of each, then what is not one.
+    made["selectors.css"] = rb"""@namespace epub "http://www.idpf.org/2007/ops";
+h2 + p, h1+p.first, div > h2 + p i, a + b + c { text-indent: 0 }
+section[epub|type~="chapter"] > p, [hidden], a[href], td[colspan="2"] p, li[class] + li { margin: 0 }
+[lang|=en], [class^='x y'], [title$="say \"hi\""], [data-x*=q i], [ *|type = "a" S ], [|title] { margin: 0 }
+[EPUB|Type~="Note"], [\65 pub|t\79pe], [e\70 ub\:type], [a="1\
+2"], [a='\41 b\0 c'], [a=\31 0], [a="]{,;"], a.x[href]#y[rel=""]:link, [a|b|=c], [*|a|=c] { margin: 0 }
+[], [ ], [a=], [a=1], [=b], [a b], [a=b c], [a=b ii], [a=b i i], [a==b], [a~b], [a!=b], [1a] { margin: 0 }
+[a|], [a|b|c], [|a|b], [*|], [*a], [a='b'x], [a='b''c'], p[a][], [Epub|TYPE="x" y], h|p, *|p { margin: 0 }
+p[a][b][c][d][e][f][g][h], p[a][b][c][d][e][f][g][h][i], p[a] q[b] r[c] s[d] t[e] u[f] v[g] w[h] { margin: 0 }
++ p, p +, p + + q, p + > q, p > + q, a ~ b, a+b~c, li:nth-child(2n+1) + li, [title="a+b~c>d"] + p { margin: 0 }
+p::first-letter[x], p[x]::first-letter, h1 + p::first-letter { float: left }
+[a , b { margin: 0 }
+p[a=b, b { margin: 0 }
+[a="b
+], b { margin: 0 }
+.end[x] { float: left }
+"""
     long_selectors = ", ".join(f"p.class-number-{n}" for n in range(80))
     made["long.css"] = (long_selectors + " { margin: 0 }\nq { font-family: " + "x" * 600 + "; float: left }\n" +
                         "p" + " " * 1022 + "{ float: none }\n" + " > ".join("a" * 3 for _ in range(9)) + " {}\n" +
@@ -881,7 +1013,8 @@ table td[colspan], li::before, q:lang(fr) { display: none }
               "red", "1px 2px", "1px 2px 3px", "bold 1em/1.5 serif", "super", "0.0004px", "999999999999px"]
     lines = []
     for _ in range(400):
-        selector = rng.choice(["p", "div.a", ".b > i", "h1, h2", "a:link", "p::first-letter", "td[x]", "u + s", "*"])
+        selector = rng.choice(["p", "div.a", ".b > i", "h1, h2", "a:link", "p::first-letter", "td[x]", "u + s", "*",
+                               "[epub|type~=\"z\"] q", "a[href^='#']", "u ~ s", "i[x=]"])
         declarations = "; ".join(f"{rng.choice(properties)}: {rng.choice(values)}" +
                                  (" !important" if rng.random() < 0.1 else "") for _ in range(rng.randrange(1, 5)))
         lines.append(f"{selector} {{ {declarations} }}")
@@ -893,7 +1026,7 @@ table td[colspan], li::before, q:lang(fr) { display: none }
 
 def damaged(rng: random.Random, sheet: bytes) -> bytes:
     """`sheet` with a few bytes changed, taken out or put in."""
-    marks = b"{}()[];:,\"'\\/*@!.#> \n-"
+    marks = b"{}()[];:,\"'\\/*@!.#> \n-=~|^$+"
     data = bytearray(sheet)
     for _ in range(rng.randrange(1, 9)):
         if not data:
@@ -949,7 +1082,7 @@ def main() -> int:
         # readings make the same of what is left.
         rng = random.Random(1115)
         rounds = 0
-        for name in ("plain.css", "media.css", "mistakes.css"):
+        for name in ("plain.css", "media.css", "mistakes.css", "selectors.css"):
             for _ in range(150):
                 compare(tool, work / "damaged.css", damaged(rng, made[name]), f"{name}, damaged (round {rounds})")
                 rounds += 1

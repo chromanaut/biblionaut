@@ -18,12 +18,14 @@
 // Only so much of CSS is read, and the rest is passed over and counted,
 // by name, so that what a collection of books loses to that can be seen:
 //
-//   - Selectors by element, class and id, joined by descent ("div p") or
-//     as child ("div > p"), with `*` for any element and `:link` taken as
-//     always so. `::first-letter` is read, for drop caps. A selector with
-//     anything else in it (an attribute in brackets, any other
-//     pseudo-class or pseudo-element, `+` or `~`) is dropped, and a rule
-//     all of whose selectors were dropped is dropped with them.
+//   - Selectors by element, class, id and what an attribute is
+//     ("[hidden]", "[epub|type~='chapter']"), joined by descent ("div p"),
+//     as child ("div > p") or as the element straight after ("h2 + p"),
+//     with `*` for any element and `:link` taken as always so.
+//     `::first-letter` is read, for drop caps. A selector with anything
+//     else in it (any other pseudo-class or pseudo-element, `~`, a
+//     namespace before an element's name) is dropped, and a rule all of
+//     whose selectors were dropped is dropped with them.
 //   - The properties of CssProperty. `margin`, `padding`, `font`,
 //     `page-break-*` and `break-*` are taken apart into those. Any other
 //     property is dropped, as is a value that is not understood.
@@ -170,14 +172,48 @@ enum class CssCombinator : std::uint8_t {
   kFirst,       // It is the first part.
   kDescendant,  // "a b": inside it, at any depth.
   kChild,       // "a > b": directly inside it.
+  kAdjacent,    // "a + b": the element straight after it, inside the same one.
+};
+
+// What is asked of an attribute's value.
+enum class CssAttributeTest : std::uint8_t {
+  kPresent,   // "[a]": nothing; the element has the attribute.
+  kEquals,    // "[a=v]": it is v.
+  kWord,      // "[a~=v]": one of its words, parted by spaces, is v.
+  kDash,      // "[a|=v]": it is v, or begins with v and a `-`.
+  kBegins,    // "[a^=v]": it begins with v.
+  kEnds,      // "[a$=v]": it ends with v.
+  kContains,  // "[a*=v]": v is somewhere in it.
+};
+
+// "", "=", "~=", "|=", "^=", "$=" or "*=".
+const char* CssAttributeTestName(CssAttributeTest test) noexcept;
+
+// One thing a part of a selector asks of an attribute.
+struct CssAttribute {
+  // The attribute's name as a document writes it, in small letters. A
+  // namespace is gone by its prefix, as XmlParser has it: `epub|type` in a
+  // sheet is "epub:type" here. What the sheet's `@namespace` says the
+  // prefix stands for is not looked at.
+  std::string_view name;
+  // What the value is held against, without its quotes and backslashes.
+  // Empty for kPresent; and it may be empty for the others, where by CSS's
+  // rules kWord, kBegins, kEnds and kContains then match nothing.
+  std::string_view value;
+  CssAttributeTest test = CssAttributeTest::kPresent;
+  // "[*|type]": the name may have any prefix in a document, or none.
+  bool anyPrefix = false;
+  // "[a=v i]": capitals and small letters of English are taken as the same.
+  bool anyCase = false;
 };
 
 // One part of a selector: what an element has to be to match it.
 struct CssCompound {
   CssCombinator combinator = CssCombinator::kFirst;
-  std::string_view element;                   // The element's name; empty for any.
+  std::string_view element;                   // The element's name, in small letters; empty for any.
   std::string_view id;                        // Its id; empty for any.
   std::span<const std::string_view> classes;  // Classes it must have, all of them.
+  std::span<const CssAttribute> attributes;   // What its attributes must be, all of them.
 };
 
 // One selector: its parts from the outermost to the one that is styled.
@@ -188,18 +224,18 @@ struct CssSelector {
   // letter of the element, not the element.
   bool firstLetter = false;
   // How CSS ranks it against other selectors, greater winning: the count
-  // of ids, then of classes (and `:link`), then of element names (and
-  // `::first-letter`), eight bits each.
+  // of ids, then of classes (and attributes, and `:link`), then of element
+  // names (and `::first-letter`), eight bits each.
   std::uint32_t specificity = 0;
 };
 
 // The kinds of thing that are passed over, for the count.
 enum class CssDropped : std::uint8_t {
-  kSelectorAttribute,      // A selector with an attribute in brackets. The text is the selector.
+  kSelectorAttribute,      // A selector whose brackets are not a test of an attribute. The text is the selector.
   kSelectorPseudoClass,    // One with a pseudo-class that is not read. The text is the pseudo-class.
   kSelectorPseudoElement,  // One with a pseudo-element that is not read. The text is the pseudo-element.
-  kSelectorCombinator,     // One with `+` or `~`. The text is the selector.
-  kSelectorOther,          // One that is not a selector, or has more parts or classes than there is room for.
+  kSelectorCombinator,     // One with `~`. The text is the selector.
+  kSelectorOther,          // Not a selector, or one with more parts, classes or attributes than there is room for.
   kRule,                   // A rule none of whose selectors could be read. No text.
   kProperty,               // A declaration of a property that is not read. The text is the property's name.
   kValue,                  // A value that was not understood. The text is the declaration.
@@ -264,11 +300,13 @@ class CssReader {
   // are 649 and 179.
   static constexpr std::size_t kMaxPrelude = 1024;
   static constexpr std::size_t kMaxDeclaration = 512;
-  // The most parts a selector can have, and the most classes among them.
-  // In 520 books five selectors have more parts, each styling a table of
-  // contents, and no part has more than 6 classes.
+  // The most parts a selector can have, and the most classes and the most
+  // tests of attributes among them. In 520 books five selectors have more
+  // parts, each styling a table of contents; no part has more than 6
+  // classes, and no selector asks more than 3 things of attributes.
   static constexpr std::size_t kMaxCompounds = 8;
   static constexpr std::size_t kMaxClasses = 12;
+  static constexpr std::size_t kMaxAttributes = 8;
 
   CssReader() noexcept = default;
 

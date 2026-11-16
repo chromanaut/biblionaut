@@ -699,6 +699,30 @@ MISTAKES_SHEET = (b"\xef\xbb\xbf<!--\n} p { margin-top: 1em margin-bottom: 2em; 
                   b".\\31 0, .a\\:b, DIV.Up#Id, .\\0, .x\\0z, #a#b, p..q { line-height: 1.2.3; line-height: 120% }\n"
                   b"-->\n.end { font: bold 2em; font: caption; font: italic 700 x-large/normal a , \"B  c\" ")
 
+# What a selector asks of an attribute, in every form, and the element
+# straight after another; then brackets that hold no such thing.
+ATTRIBUTES_SHEET = rb"""@namespace epub "http://www.idpf.org/2007/ops";
+h2 + p, h1+p.first, div > h2 + p i { text-indent: 0 }
+section[epub|type~="chapter"] > p, [hidden], a[href^='#'], td[colspan="2"] p, li[class] + li { margin: 0 }
+[lang|=en], [title$="say \"hi\""], [data-x*=q i], [ *|type = "a" S ], [|title], [a|b|=c] { margin: 0 }
+[EPUB|Type~="Note"], [\65 pub|t\79pe], [a="1\
+2"], [a='\41 b\0 c'], [a=\31 0], [a="]{,;"], a.x[href]#y[rel=""]:link { margin: 0 }
+[], [a=], [a=1], [=b], [a b], [a=b ii], [a==b], [a~b], [a|], [a|b|c], [*|], [a='b'x], h|p { margin: 0 }
+p[a][b][c][d][e][f][g][h][i], p[a] q[b] r[c] s[d] t[e] u[f] v[g] w[h], + p, p + + q, a ~ b { margin: 0 }
+[a , b { margin: 0 }
+[a="b
+], b { margin: 0 }
+.caf\e9, .\1F600 z, .-x, [a='\e9\1F600 '] { margin: 0 }
+*, * > p, div *[x], 1a, p$, li:nth-child(2n+1) + li, p:not(.a, [b="c)"]) + q { margin: 0 }
+p:, q::, li:lang("\)") { margin: 0 }
+.end[x] { float: left }
+"""
+
+# Values that are cut short: by the end of the brackets' text after a
+# backslash, by the end of the line, and with something after them.
+CUT_SHORT_SHEET = (b'[a=b i i], [a="b\\ \n{ margin: 0 }\n[a="b\n{ margin: 0 }\n[a=b, c { margin: 0 }\n'
+                   b'[a="b\\\n c"], [a=\'b { margin: 0 }\n.end { float: left }\n')
+
 
 def css_seeds() -> None:
     clear("css")
@@ -710,6 +734,9 @@ def css_seeds() -> None:
     seed("a-sheet-a-byte-at-a-time", 1, SHEET)
     seed("media-and-other-at-rules", 3, MEDIA_SHEET)
     seed("mistakes", 5, MISTAKES_SHEET)
+    seed("what-is-asked-of-attributes", 0, ATTRIBUTES_SHEET)
+    seed("what-is-asked-of-attributes-a-few-bytes-at-a-time", 3, ATTRIBUTES_SHEET)
+    seed("values-of-attributes-cut-short", 2, CUT_SHORT_SHEET)
     seed("a-style-attribute", 0, b"margin-left: 2em; font-weight: 700 !important; color: red; font-family: \"a;b\", serif")
     seed("a-media-query", 0, b"only screen and (max-width: 420px), not amzn-mobi")
     seed("longer-than-there-is-room-for", 6,

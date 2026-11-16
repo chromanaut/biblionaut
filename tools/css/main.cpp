@@ -13,9 +13,14 @@
 //   I url                an @import
 //   X kind: text         something that was passed over
 //
-// A selector is written with one space for descent and " > " for a child,
-// each part as its element's name, then its id, then its classes, `*` for
-// a part with none of them, and " ::first-letter" at the end if it has it.
+// A selector is written with one space for descent, " > " for a child and
+// " + " for the element straight after; each part as its element's name,
+// then its id, then its classes, then what it asks of attributes, and `*`
+// for a part with none of them; and " ::first-letter" at the end if it has
+// it. What is asked of an attribute is written as [name], or as
+// [name="value"] with the sign the sheet had before the `=`, the name as a
+// document writes it ("epub:type"), `*|` before it if any prefix will do,
+// and " i" after the value if any case will.
 // A length is written as a number and its unit, in pixels where the sheet
 // had points or inches. A backslash, a line end, a tab and a carriage
 // return in any text are written as \\, \n, \t and \r.
@@ -141,8 +146,10 @@ std::string SelectorText(const bn::epub::CssSelector& selector) {
       out += ' ';
     } else if (part.combinator == bn::epub::CssCombinator::kChild) {
       out += " > ";
+    } else if (part.combinator == bn::epub::CssCombinator::kAdjacent) {
+      out += " + ";
     }
-    if (part.element.empty() && part.id.empty() && part.classes.empty()) {
+    if (part.element.empty() && part.id.empty() && part.classes.empty() && part.attributes.empty()) {
       out += '*';
     }
     out += part.element;
@@ -151,6 +158,14 @@ std::string SelectorText(const bn::epub::CssSelector& selector) {
     }
     for (const std::string_view name : part.classes) {
       out += "." + std::string(name);
+    }
+    for (const bn::epub::CssAttribute& attribute : part.attributes) {
+      out += std::string("[") + (attribute.anyPrefix ? "*|" : "") + std::string(attribute.name);
+      if (attribute.test != bn::epub::CssAttributeTest::kPresent) {
+        out += std::string(bn::epub::CssAttributeTestName(attribute.test)) + "\"" + std::string(attribute.value) +
+               "\"" + (attribute.anyCase ? " i" : "");
+      }
+      out += ']';
     }
   }
   if (selector.firstLetter) {

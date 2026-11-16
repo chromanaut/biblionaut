@@ -11,6 +11,7 @@ option(BN_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" 
 option(BN_WERROR "Treat warnings as errors" ON)
 option(BN_CLANG_TIDY "Run clang-tidy on Biblionaut's own sources as they compile" OFF)
 option(BN_FUZZ "Build the fuzz targets with a fuzzing engine, to look for new inputs (tools/fuzz.py)" OFF)
+option(BN_DESKTOP_WINDOW "Give the desktop application a window (--window), made with SDL, which is fetched and built" OFF)
 
 set(CMAKE_CXX_EXTENSIONS OFF)  # -std=c++20, not gnu++20
 
@@ -78,6 +79,9 @@ include(BnOptions)
 include(BnParts)
 
 bn_add_portable_parts("${CMAKE_BINARY_DIR}/parts")
+if(BN_DESKTOP_WINDOW)
+  add_subdirectory(third_party/sdl)
+endif()
 add_subdirectory(hw)
 add_subdirectory(app/desktop)
 add_subdirectory(tools)

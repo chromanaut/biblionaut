@@ -53,7 +53,9 @@ GoogleTest. The tests also link zlib, to check the inflater against and to
 make their ZIP files with: macOS has it, and on Linux it is the `zlib1g-dev`
 package. Eight of the end-to-end
 tests are run only if Python 3 is found, and one of them makes more of its
-test files if there is a `zip` command.
+test files if there is a `zip` command. A build with the desktop
+application's window downloads a third thing, SDL (see A window on the
+desktop, below).
 
 ```
 cmake --preset host
@@ -182,6 +184,64 @@ open panel-001.png          # one picture per refresh
   are `back`, `confirm`, `left`, `right`, `up`, `down` and `power`.
 - `BN_DISPLAY_SPEED=20` makes the simulated panel twenty times quicker than
   a real one, which takes 3.6 s over a full refresh.
+
+### A window on the desktop
+
+A build configured with `BN_DESKTOP_WINDOW` gives the desktop application
+a window. Run with `--window`, it draws an X4 there: the simulated panel as
+it would look at each moment, and the device's buttons around it. The
+window is made with SDL, which CMake then fetches and builds
+(`third_party/sdl`); no other build has it. The `window` preset is such a
+build, of the application alone:
+
+```
+cmake --preset window
+cmake --build --preset window
+./build/window/app/desktop/biblionaut-desktop --window
+```
+
+The buttons are on the edges they are on on an X4 held for reading: Back,
+Confirm, Left and Right in a row under the panel, and Power, Up and Down
+down the right edge (`hw/desktop/device_layout.h`). Clicking one presses
+it, and holding the mouse down holds it. The keys press them too:
+
+| Key | Button |
+|---|---|
+| Left, Right, Up, Down | The buttons of those names |
+| Page Up, Page Down | Up and Down, the two on the side |
+| Return | Confirm |
+| Escape, Backspace | Back |
+| P | Power |
+
+A button is drawn lit while the application has been told that it is
+down, by a key, a click or `BN_INPUT`'s script. R turns the device between
+the way a book is read, which is how the window opens, and the panel's own
+way, a quarter-turn anticlockwise, which is how `BN_DISPLAY_OUT` saves the
+picture. The window can be made any size, and the device keeps its shape.
+
+A refresh takes as long as it would on a device, and the window shows it
+going. A full refresh shows the old picture black for white, then all
+black, then all white, for a third of its time each, and then the new
+picture. A half refresh shows black, then white. A fast refresh leaves the
+old picture until it is over. That is not the panel's own sequence, only
+enough to show which kind of refresh was made and how long it kept the
+panel. While it lasts, the window's title names it. What the window shows
+once it is over is what the simulation worked out, stale pixels and all.
+
+Everything else is as it is without the window. `BN_INPUT` presses
+buttons alongside the keyboard, `BN_DISPLAY_OUT` saves the pictures,
+`BN_DISPLAY_SPEED` quickens the panel, and the checks run as they do.
+Without `--run-ms`, the application runs until the window is closed. A
+press is dated from when SDL saw the key go down, so the trace times it
+from there, as it times a press on a device from the button. How quickly
+the application answers is the desktop's, which is many times quicker
+than an X4's: that takes a device and its trace.
+
+The window build has one more test, `e2e.Window` (`ctest --preset window`).
+It runs the application twice with the same scripted presses, with its
+window and without, the window on SDL's stand-in for a screen (the `dummy`
+video driver, which needs none), and checks that the panel was given the
+same pictures both times.
 
 ### The panel's two planes
 
@@ -2283,6 +2343,7 @@ CI runs all of these on every push to `main` and every pull request
 | The same tests in the optimised build, without sanitizers | `cmake --build --preset host-release && ctest --preset host-release` |
 | Both as CI's Linux job runs them: GCC 14 on Ubuntu, in Docker | `tools/linux-check.sh` (arguments go to `ctest`) |
 | The fuzz targets, over the inputs kept for them | Part of each of the three above; `ctest --preset host -R '^fuzz'` for those alone |
+| The desktop application with its window, and its end-to-end test (CI runs it on macOS) | `cmake --preset window && cmake --build --preset window && ctest --preset window` |
 | Formatting | `tools/check-format.sh` (`--fix` to rewrite files) |
 | Constructs the portable parts may not use (`std::string`, `std::vector`, `std::function`, `std::shared_ptr`, iostreams, C stdio streams) | `tools/check-banned.py` |
 | clang-tidy (rules in `.clang-tidy`) on everything the host build compiles | `cmake --preset tidy && cmake --build --preset tidy` |
@@ -2298,7 +2359,7 @@ is run on a developer's computer, for minutes or hours, and CI only takes
 the targets through the inputs they have kept.
 
 Two clang-tidy runs, because no single build compiles everything. The host
-run sees the portable parts, the desktop port, the tools and the tests, and
+run sees the portable parts, the desktop port with its window, the tools and the tests, and
 leaves the Clang Static Analyzer out for the tests (`tests/.clang-tidy` says
 why). The firmware run sees the device code under `hw/` and
 `app/firmware`, which nothing else checks, by translating the firmware's

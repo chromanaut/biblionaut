@@ -98,6 +98,16 @@ jobs:
       - name: Test (release)
         run: ctest --preset host-release
 
+      # The desktop application with its window, which fetches and builds
+      # SDL. Its test needs no screen: it uses SDL's stand-in for one. On
+      # macOS only, where SDL needs nothing more to be installed for it.
+      - name: Window build and test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake --preset window
+          cmake --build --preset window
+          ctest --preset window
+
   firmware:
     name: Firmware build
     runs-on: ubuntu-24.04

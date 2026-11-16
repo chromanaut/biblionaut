@@ -28,6 +28,15 @@
       }
     },
     {
+      "name": "window",
+      "displayName": "Host, debug, sanitizers on, with the desktop application's window (fetches and builds SDL)",
+      "inherits": "host",
+      "binaryDir": "${sourceDir}/build/window",
+      "cacheVariables": {
+        "BN_DESKTOP_WINDOW": "ON"
+      }
+    },
+    {
       "name": "tidy",
       "displayName": "Host, clang-tidy on every source",
       "generator": "Ninja",
@@ -35,7 +44,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "BN_SANITIZE": "OFF",
-        "BN_CLANG_TIDY": "ON"
+        "BN_CLANG_TIDY": "ON",
+        "BN_DESKTOP_WINDOW": "ON"
       }
     },
     {
@@ -71,6 +81,11 @@
       "configurePreset": "host-release"
     },
     {
+      "name": "window",
+      "configurePreset": "window",
+      "targets": ["biblionaut-desktop"]
+    },
+    {
       "name": "tidy",
       "configurePreset": "tidy"
     },
@@ -98,6 +113,18 @@
       "configurePreset": "host-release",
       "output": {
         "outputOnFailure": true
+      }
+    },
+    {
+      "name": "window",
+      "configurePreset": "window",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "name": "^e2e\\.Window$"
+        }
       }
     }
   ]

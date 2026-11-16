@@ -182,6 +182,36 @@ TEST(SimDisplay, AFullRefreshShowsTheNewPlaneAndKeepsThePanelBusyMeanwhile) {
   EXPECT_TRUE(fixture.display.Powered());
 }
 
+TEST(SimDisplay, RemembersTheLastRefreshAndWhatWasShownBeforeIt) {
+  bn::test::FakeClock clock;
+  SimDisplay display(clock, "", 4);  // Four times quicker than a real panel.
+  ASSERT_TRUE(display.Start());
+  EXPECT_EQ(display.LastRefresh().doneUs, 0u);
+  EXPECT_TRUE(RowIsWhite(display.ShownBefore(), 0));
+
+  clock.now = 1'000;
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(10, 1)));
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kStayPowered));
+  EXPECT_EQ(display.LastRefresh().mode, RefreshMode::kHalf);
+  EXPECT_EQ(display.LastRefresh().startUs, 1'000u);
+  EXPECT_EQ(display.LastRefresh().doneUs, 1'000 + (SimDisplay::kHalfRefreshUs / 4));
+  EXPECT_TRUE(RowIsWhite(display.ShownBefore(), 10));
+  EXPECT_TRUE(RowIsBlack(display.Shown(), 10));
+
+  // Switching off after a refresh keeps the panel busy longer, and the
+  // picture is finished when the refresh is.
+  clock.now = 2'000'000;
+  ASSERT_FALSE(display.Busy());
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(20, 1)));
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFast, AfterRefresh::kPowerOff));
+  EXPECT_EQ(display.LastRefresh().mode, RefreshMode::kFast);
+  EXPECT_EQ(display.LastRefresh().doneUs, 2'000'000 + (SimDisplay::kFastRefreshUs / 4));
+  EXPECT_TRUE(RowIsBlack(display.ShownBefore(), 10));
+  EXPECT_TRUE(RowIsWhite(display.ShownBefore(), 20));
+  clock.now = display.LastRefresh().doneUs;
+  EXPECT_TRUE(display.Busy());
+}
+
 TEST(SimDisplay, AFastRefreshLeavesAloneOnlyWhatBothPlanesCallWhite) {
   SimFixture fixture;
   ASSERT_TRUE(fixture.display.Start());

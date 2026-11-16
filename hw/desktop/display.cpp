@@ -6,7 +6,7 @@
 
 namespace bn::hw {
 
-core::Display& SystemDisplay() noexcept {
+SimDisplay& SystemSimDisplay() noexcept {
   // NOLINTBEGIN(concurrency-mt-unsafe): read once, before any other thread exists.
   const char* prefix = std::getenv("BN_DISPLAY_OUT");
   const char* speedText = std::getenv("BN_DISPLAY_SPEED");
@@ -17,5 +17,7 @@ core::Display& SystemDisplay() noexcept {
                              speed >= 1 ? static_cast<std::uint32_t>(speed) : 1);
   return instance;
 }
+
+core::Display& SystemDisplay() noexcept { return SystemSimDisplay(); }
 
 }  // namespace bn::hw

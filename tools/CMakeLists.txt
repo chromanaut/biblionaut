@@ -5,6 +5,7 @@
 add_subdirectory(css)
 add_subdirectory(epub)
 add_subdirectory(hyphen)
+add_subdirectory(lines)
 add_subdirectory(svg)
 add_subdirectory(trace)
 add_subdirectory(xml)

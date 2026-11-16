@@ -123,6 +123,7 @@ bn_add_unit_test(layout_tests
     unit/layout/hyphenator_test.cpp
     unit/layout/line_breaker_test.cpp
     unit/layout/page_chooser_test.cpp
+    unit/layout/paragraph_setter_test.cpp
   LIBS bn_layout)
 
 # The desktop port, which the other host programs run on. Its own headers
@@ -248,6 +249,15 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/hyphen_tool.py
       $<TARGET_FILE:bn-hyphen> ${CMAKE_CURRENT_BINARY_DIR}/hyphen_tool)
   set_tests_properties(e2e.HyphenTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-lines, and through it the paragraph setter, against a second reading
+  # of the same paragraphs: each taken apart all at once, and the cheapest
+  # way of ending its lines found by trying them.
+  add_test(
+    NAME e2e.LinesTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lines_tool.py
+      $<TARGET_FILE:bn-lines> $<TARGET_FILE:bn-hyphen> ${CMAKE_CURRENT_BINARY_DIR}/lines_tool)
+  set_tests_properties(e2e.LinesTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
   # against bn-zip, bn-xml, bn-epub and zipfile on the same files.

@@ -41,7 +41,8 @@ struct AppFixture {
                                            .crash = crash,
                                            .display = display,
                                            .input = input,
-                                           .storage = storage}};
+                                           .storage = storage,
+                                           .startCause = bn::core::StartCause::kWatchdog}};
 
   // The bytes of every crash frame sent so far, joined, after checking that
   // each piece continues the one before.
@@ -136,6 +137,9 @@ TEST(App, StartAnnouncesTheStreamWithItsVersion) {
   ASSERT_FALSE(hello[0].payload.empty());
   EXPECT_EQ(hello[0].payload[0], bn::core::kStreamProtocolVersion);
   EXPECT_EQ(hello[0].Text(), bn::reader::Version());
+  // And with why the device started, as its hardware has it.
+  ASSERT_GE(hello[0].payload.size(), 2u);
+  EXPECT_EQ(hello[0].payload[1], static_cast<std::uint8_t>(bn::core::StartCause::kWatchdog));
 }
 
 TEST(App, SendsNoCrashFramesWhenNothingCrashed) {

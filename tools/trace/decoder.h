@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/crash.h"
+#include "core/start.h"
 #include "core/trace.h"
 
 // Turns the bytes of a diagnostic stream (core/frame.h, core/trace_stream.h)
@@ -15,8 +16,11 @@
 
 namespace bn::trace_tool {
 
-// The protocol version this tool understands (core::kStreamProtocolVersion).
-inline constexpr std::uint8_t kSupportedProtocol = 2;
+// The protocol version this tool understands (core::kStreamProtocolVersion),
+// and the oldest it still reads: before version 3 a hello did not say why
+// the device started, and everything else was as it is.
+inline constexpr std::uint8_t kSupportedProtocol = 3;
+inline constexpr std::uint8_t kOldestProtocol = 2;
 
 enum class EventKind : std::uint8_t {
   kHello,    // The device started a stream: `text` is its version, `arg` the protocol version.
@@ -38,7 +42,8 @@ struct Event {
   std::uint8_t task = 0;         // Spans and instants.
   std::uint32_t arg = 0;
   std::string text;
-  std::shared_ptr<const core::CrashReport> crash;  // Crash reports only.
+  core::StartCause cause = core::StartCause::kUnknown;  // Hellos only: why the device started.
+  std::shared_ptr<const core::CrashReport> crash;       // Crash reports only.
 };
 
 struct DecoderStats {

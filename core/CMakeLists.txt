@@ -11,6 +11,7 @@ add_library(bn_core STATIC
   src/input.cpp
   src/metrics.cpp
   src/region_heap.cpp
+  src/start.cpp
   src/storage.cpp
   src/trace.cpp
   src/trace_stream.cpp)

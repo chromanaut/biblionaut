@@ -24,6 +24,8 @@ core::Clock& SystemClock() noexcept {
   return instance;
 }
 
+core::StartCause WhyStarted() noexcept { return core::StartCause::kPowerOn; }
+
 const char* PortName() noexcept { return "desktop"; }
 
 }  // namespace bn::hw

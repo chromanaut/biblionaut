@@ -6,6 +6,7 @@
 #include "core/display.h"
 #include "core/input.h"
 #include "core/memory_probe.h"
+#include "core/start.h"
 #include "core/storage.h"
 #include "core/trace.h"
 
@@ -56,6 +57,10 @@ core::Input& SystemInput() noexcept;
 // folder named by the BN_STORAGE environment variable, and when that is not
 // set there is none, as on a device with no card in it.
 core::Storage& SystemStorage() noexcept;
+
+// Why this run began: what the hardware says ended the one before. On the
+// desktop every run begins with power coming on.
+core::StartCause WhyStarted() noexcept;
 
 // Short name of the port, for the boot banner and diagnostics.
 const char* PortName() noexcept;

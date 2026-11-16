@@ -238,14 +238,20 @@ void StreamDecoder::HandleFrame(std::uint8_t type, std::span<const std::uint8_t>
     lastTime32_ = 0;
     lastTime64_ = 0;
     lastDropped_ = 0;
-    protocolSupported_ = payload[0] == kSupportedProtocol;
+    protocolSupported_ = payload[0] >= kOldestProtocol && payload[0] <= kSupportedProtocol;
     AbandonCrashReport();  // The restart cut it short; the new run sends it again.
 
     Event event;
     event.kind = EventKind::kHello;
     event.boot = boot_;
     event.arg = payload[0];
-    event.text = SanitizeText(payload.subspan(1));
+    // From version 3 on, why the device started comes before the text.
+    std::span<const std::uint8_t> text = payload.subspan(1);
+    if (payload[0] >= 3 && protocolSupported_ && !text.empty()) {
+      event.cause = text[0] < core::kStartCauses ? static_cast<core::StartCause>(text[0]) : core::StartCause::kUnknown;
+      text = text.subspan(1);
+    }
+    event.text = SanitizeText(text);
     events_.push_back(std::move(event));
     return;
   }

@@ -39,12 +39,12 @@ struct StreamItem {
   std::vector<std::uint8_t> payload;  // The frame's payload, or the raw bytes.
 
   // The payload as text: all of it for raw bytes, and what follows the
-  // leading field for a frame (the version byte of a hello, the time of a
-  // text or metrics frame).
+  // leading fields for a frame (the version byte of a hello and why the
+  // device started, the time of a text or metrics frame).
   std::string Text() const {
     std::size_t skip = 0;
     if (isFrame) {
-      skip = type == core::FrameType::kHello ? 1 : 4;
+      skip = type == core::FrameType::kHello ? 2 : 4;
     }
     if (skip > payload.size()) {
       return {};

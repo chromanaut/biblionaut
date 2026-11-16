@@ -51,7 +51,8 @@ Services DefaultServices() noexcept {
                   .crash = hw::SystemCrashStore(),
                   .display = hw::SystemDisplay(),
                   .input = hw::SystemInput(),
-                  .storage = hw::SystemStorage()};
+                  .storage = hw::SystemStorage(),
+                  .startCause = hw::WhyStarted()};
 }
 
 App::App(const Services& services) noexcept
@@ -100,7 +101,7 @@ void App::Start() noexcept {
 
   {
     BN_TRACE_TOP_SCOPE(kSpanAppStart);
-    stream_.SendHello(Version());
+    stream_.SendHello(Version(), services_.startCause);
 
     crashReport_ = services_.crash.Saved();
     services_.crash.SetVersion(Version());

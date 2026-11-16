@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -102,17 +103,33 @@ std::vector<std::uint32_t> Sequence(std::uint32_t first, std::uint32_t count) {
   return values;
 }
 
-TEST(TraceStream, HelloCarriesTheProtocolVersionAndFirmwareVersion) {
+TEST(TraceStream, HelloCarriesTheProtocolVersionWhyTheDeviceStartedAndTheFirmwareVersion) {
   StreamFixture<4> fixture;
+  EXPECT_TRUE(fixture.stream.SendHello("0.1.0-test", bn::core::StartCause::kBrownout));
   EXPECT_TRUE(fixture.stream.SendHello("0.1.0-test"));
 
   const auto items = fixture.Items();
-  ASSERT_EQ(items.size(), 1u);
+  ASSERT_EQ(items.size(), 2u);
   ASSERT_TRUE(items[0].isFrame);
   EXPECT_EQ(items[0].type, FrameType::kHello);
-  ASSERT_FALSE(items[0].payload.empty());
+  ASSERT_GE(items[0].payload.size(), 2u);
   EXPECT_EQ(items[0].payload[0], bn::core::kStreamProtocolVersion);
+  EXPECT_EQ(items[0].payload[1], static_cast<std::uint8_t>(bn::core::StartCause::kBrownout));
   EXPECT_EQ(items[0].Text(), "0.1.0-test");
+  // With nothing said of why, it is not known.
+  ASSERT_GE(items[1].payload.size(), 2u);
+  EXPECT_EQ(items[1].payload[1], static_cast<std::uint8_t>(bn::core::StartCause::kUnknown));
+}
+
+TEST(StartCause, HasANameForEachAndOneForWhatIsNone) {
+  std::vector<std::string> names;
+  for (std::size_t cause = 0; cause < bn::core::kStartCauses; ++cause) {
+    names.emplace_back(bn::core::StartCauseName(static_cast<bn::core::StartCause>(cause)));
+    EXPECT_FALSE(names.back().empty());
+  }
+  std::sort(names.begin(), names.end());
+  EXPECT_EQ(std::adjacent_find(names.begin(), names.end()), names.end());
+  EXPECT_STREQ(bn::core::StartCauseName(static_cast<bn::core::StartCause>(200)), "unknown");
 }
 
 TEST(TraceStream, SendsALineOfTextWithTheTimeItWasSent) {

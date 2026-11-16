@@ -152,6 +152,7 @@ TEST(StreamDecoder, DecodesEveryKindOfFrame) {
   EXPECT_EQ(events[0].boot, 1);
   EXPECT_EQ(events[0].arg, bn::trace_tool::kSupportedProtocol);
   EXPECT_EQ(events[0].text, "0.1.0-test");
+  EXPECT_EQ(events[0].cause, bn::core::StartCause::kUnknown);
 
   EXPECT_EQ(events[1].kind, EventKind::kSpan);
   EXPECT_EQ(events[1].id, kSpanAppStart);
@@ -669,6 +670,44 @@ TEST(Names, DescribesKnownIdsAndNumbersUnknownOnes) {
   EXPECT_GE(bn::trace_tool::KnownSpanCount(), 12u);
 }
 
+TEST(StreamDecoder, ReadsWhyTheDeviceStartedAndACaptureFromBeforeThatWasSaid) {
+  bn::test::FakeSink sink;
+  bn::test::TraceFixture<8> trace;
+  bn::core::TraceStream stream(trace.tracer, sink);
+  stream.SendHello("new", bn::core::StartCause::kWatchdog);
+  stream.SendText("from the new");
+  // A hello as protocol 2 had it: the version byte, then the text.
+  std::array<std::uint8_t, 64> buffer{};
+  bn::core::FrameWriter old(bn::core::FrameType::kHello, buffer);
+  old.Put(std::uint8_t{2});
+  old.Put(Bytes("old"));
+  ASSERT_TRUE(sink.Write(old.Finish()));
+  stream.SendText("from the old");
+  // And one that says something there is no name for.
+  bn::core::FrameWriter odd(bn::core::FrameType::kHello, buffer);
+  odd.Put(bn::core::kStreamProtocolVersion);
+  odd.Put(std::uint8_t{77});
+  odd.Put(Bytes("odd"));
+  ASSERT_TRUE(sink.Write(odd.Finish()));
+
+  StreamDecoder decoder;
+  const std::vector<Event> events = Decode(sink.received, decoder);
+  ASSERT_EQ(events.size(), 5u);
+  EXPECT_EQ(events[0].kind, EventKind::kHello);
+  EXPECT_EQ(events[0].text, "new");
+  EXPECT_EQ(events[0].cause, bn::core::StartCause::kWatchdog);
+  EXPECT_EQ(bn::trace_tool::FormatEvent(events[0]), "=== boot 1: new (stream protocol 3), started by a watchdog ===");
+  EXPECT_EQ(events[1].text, "from the new");
+  EXPECT_EQ(events[2].kind, EventKind::kHello);
+  EXPECT_EQ(events[2].text, "old");
+  EXPECT_EQ(events[2].arg, 2u);
+  EXPECT_EQ(bn::trace_tool::FormatEvent(events[2]), "=== boot 2: old (stream protocol 2) ===");
+  EXPECT_EQ(events[3].text, "from the old");
+  EXPECT_EQ(events[4].text, "odd");
+  EXPECT_EQ(events[4].cause, bn::core::StartCause::kUnknown);
+  EXPECT_EQ(decoder.Stats().unsupportedFrames, 0u);
+}
+
 TEST(FormatEvent, WritesOneReadableLinePerEvent) {
   using bn::trace_tool::FormatEvent;
   Event event;
@@ -677,7 +716,8 @@ TEST(FormatEvent, WritesOneReadableLinePerEvent) {
   event.kind = EventKind::kHello;
   event.arg = bn::trace_tool::kSupportedProtocol;
   event.text = "0.1.0";
-  EXPECT_EQ(FormatEvent(event), "=== boot 1: 0.1.0 (stream protocol 2) ===");
+  event.cause = bn::core::StartCause::kPowerOn;
+  EXPECT_EQ(FormatEvent(event), "=== boot 1: 0.1.0 (stream protocol 3), started by power on ===");
 
   event.kind = EventKind::kSpan;
   event.id = kSpanAppStart;

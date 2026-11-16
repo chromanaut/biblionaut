@@ -254,6 +254,9 @@ void Add(BookCheck::Figures& total, const BookCheck::Figures& book) noexcept {
   total.packageStorageUs += book.packageStorageUs;
   total.packageUs += book.packageUs;
   total.packageLongestUs = std::max(total.packageLongestUs, book.packageLongestUs);
+  total.opens += book.opens;
+  total.openUs += book.openUs;
+  total.openLongestUs = std::max(total.openLongestUs, book.openLongestUs);
   total.packageMostMemory = std::max(total.packageMostMemory, book.packageMostMemory);
   total.tocsRead += book.tocsRead;
   total.tocsNav += book.tocsNav;
@@ -296,8 +299,14 @@ StorageStatus BookCheck::Meter::Start() noexcept {
 }
 
 StorageStatus BookCheck::Meter::Open(std::string_view path, core::OpenMode mode, core::FileHandle& file) noexcept {
-  const Stopwatch timed(clock_, counts_.timeUs);
-  return storage_.Open(path, mode, file);
+  const std::uint64_t began = clock_.NowUs();
+  const StorageStatus status = storage_.Open(path, mode, file);
+  const std::uint64_t took = clock_.NowUs() - began;
+  counts_.timeUs += took;
+  ++counts_.opens;
+  counts_.openUs += took;
+  longestOpenUs_ = std::max(longestOpenUs_, took);
+  return status;
 }
 
 void BookCheck::Meter::Close(core::FileHandle file) noexcept { storage_.Close(file); }
@@ -601,6 +610,7 @@ void BookCheck::OpenDirectory() noexcept {
   prefixLengths_[0] = length;
   depth_ = 0;
   booksHere_ = 0;
+  listed_[0] = 0;
   MoveTo(Step::kNextBook);
 }
 
@@ -616,6 +626,7 @@ void BookCheck::OpenFolder() noexcept {
     return;
   }
   depth_ = 1;
+  listed_[1] = 0;
   MoveTo(Step::kNextBook);
 }
 
@@ -644,6 +655,7 @@ void BookCheck::NextBook() noexcept {
     LookInTopDirectoryOrFinish();
     return;
   }
+  ++listed_[depth_];
   const std::string_view found(name.data(), length);
   if (info.isDirectory) {
     // A folder is looked in, unless its name begins with a dot, as those
@@ -673,6 +685,9 @@ void BookCheck::NextBook() noexcept {
   book_ = {};
   openReads_ = 0;
   openUs_ = 0;
+  bookListedAt_ = listed_[depth_];
+  bookBegan_ = meter_.Now();
+  (void)meter_.TakeLongestOpenUs();
   firstFailedEntry_ = 0;
   firstFailure_ = ZipStatus::kOk;
   digest_.Reset();
@@ -765,6 +780,14 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
     }
     (void)stream_.SendText(contents.View());
   }
+  Line opening;
+  opening.Text("book check: files opened ")
+      .Count(totals_.opens, " time in ", " times in ")
+      .Number(totals_.openUs / 1000)
+      .Text(" ms; the longest ")
+      .Number(totals_.openLongestUs)
+      .Text(" us.");
+  (void)stream_.SendText(opening.View());
   Line longest;
   longest.Text("book check: the longest step: ").Number(longestStepUs_).Text(" us, ").Text(LongestStepName()).Text(".");
   (void)stream_.SendText(longest.View());
@@ -1103,6 +1126,23 @@ void BookCheck::EndBook() noexcept {
   times.Text("book ").Number(books_).Text(": ");
   AddTimes(times, book_);
   (void)stream_.SendText(times.View());
+  // What opening its file took, each time, and where its name comes in the
+  // listing of its folder: the further down, the more names to go past.
+  book_.opens = meter_.Now().opens - bookBegan_.opens;
+  book_.openUs = meter_.Now().openUs - bookBegan_.openUs;
+  book_.openLongestUs = meter_.TakeLongestOpenUs();
+  Line opening;
+  opening.Text("book ")
+      .Number(books_)
+      .Text(": opened ")
+      .Count(book_.opens, " time in ", " times in ")
+      .Number(book_.openUs)
+      .Text(" us, the longest ")
+      .Number(book_.openLongestUs)
+      .Text(" us; number ")
+      .Number(bookListedAt_)
+      .Text(" in its folder.");
+  (void)stream_.SendText(opening.View());
   book_.xmlEvents = digest_.Events();
   book_.xmlEventBytes = digest_.Bytes();
   xmlChecksum_ = digest_.Checksum();

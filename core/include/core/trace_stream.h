@@ -10,6 +10,7 @@
 #include "core/crash.h"
 #include "core/frame.h"
 #include "core/metrics.h"
+#include "core/start.h"
 #include "core/trace.h"
 
 // The diagnostic stream: trace records, log text and metrics, sent as frames
@@ -25,7 +26,8 @@ namespace bn::core {
 // change it: a reader skips types it does not know.
 //   1  first version
 //   2  text and metrics frames start with the time they were sent
-inline constexpr std::uint8_t kStreamProtocolVersion = 2;
+//   3  the hello says why the device started, after the version byte
+inline constexpr std::uint8_t kStreamProtocolVersion = 3;
 
 // Trace records carried by one frame.
 inline constexpr std::size_t kMaxRecordsPerFrame = 16;
@@ -44,9 +46,9 @@ class TraceStream {
   TraceStream& operator=(const TraceStream&) = delete;
   ~TraceStream() = default;
 
-  // Announces the stream: protocol version and the firmware version text.
-  // Returns false if the sink had no room.
-  bool SendHello(std::string_view version) noexcept;
+  // Announces the stream: protocol version, why the device started, and
+  // the firmware version text. Returns false if the sink had no room.
+  bool SendHello(std::string_view version, StartCause cause = StartCause::kUnknown) noexcept;
 
   // Sends one line of log text, stamped with the current time. Safe to call
   // from any task.

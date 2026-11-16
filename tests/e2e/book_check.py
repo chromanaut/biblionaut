@@ -203,6 +203,10 @@ def reported(lines: list[str]) -> dict[str, dict]:
             book.update(xml_documents=int(xml[1]), xml_bytes=int(xml[2]), xml_events=int(xml[3]),
                         xml_checksum=int(xml[4], 16), xml_memory=int(xml[5]), xml_not=int(xml[6] or 0),
                         xml_refused=int(xml[7] or 0))
+        elif opened := re.match(r"opened (\d+) times? in (\d+) us, the longest (\d+) us; number (\d+) in its folder\.$",
+                                rest):
+            book.update(opens=int(opened[1]), open_us=int(opened[2]), open_longest=int(opened[3]),
+                        listed_at=int(opened[4]))
         elif unread := re.match(r"FAILED\. It cannot be read: (.*)$", rest):
             book.update(ok=False, unreadable=unread[1])
         elif names := re.match(r"package: (title \".*\"|no title), (author \".*\"|no author), "
@@ -405,6 +409,16 @@ def main() -> int:
                    f" ms for {toc_total['reads']} reads of {toc_total['read_bytes']} bytes; the longest " in line
                    for line in lines) and toc_total["nav"] == 2,
                f"the tables of contents of all the books together should be {toc_total}:\n{said}")
+        # Each book that could be opened was opened four times, twice for its package and twice to be read through;
+        # and no two books of one folder come at the same place in its listing.
+        opened = [book for book in found.values() if "opens" in book]
+        expect(len(opened) == 4 and all(book["opens"] == 4 and book["open_us"] >= book["open_longest"] > 0
+                                        for book in opened), f"what opening the books took:\n{said}")
+        places = [(book["path"].rpartition("/")[0], book["listed_at"]) for book in opened]
+        expect(len(set(places)) == 4 and all(place >= 1 for _, place in places) and
+               found["/books/more/In a Folder.epub"]["listed_at"] <= 3, f"where the books come in their folders:\n{said}")
+        expect(any(re.match(r"book check: files opened 16 times in \d+ ms; the longest \d+ us\.$", line)
+                   for line in lines), f"the line about opening files:\n{said}")
         expect("top.epub" not in said and "too-deep" not in said,
                f"only /books and the folders in it are read:\n{said}")
         expect("book check: 1 folder inside a folder not looked in: only one level down is." in lines,

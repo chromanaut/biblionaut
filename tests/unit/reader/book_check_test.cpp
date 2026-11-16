@@ -1162,6 +1162,36 @@ TEST(BookCheck, CountsItsTimeInThreeParts) {
   EXPECT_EQ(plain.AllLines().find("XML"), std::string::npos) << plain.AllLines();
 }
 
+TEST(BookCheck, SaysWhatOpeningABooksFileTookAndWhereTheBookComesInItsFolder) {
+  CheckFixture fixture;
+  fixture.storage.Put("/books/a-note.txt", BytesOf("not a book"));
+  fixture.storage.Put("/books/b.epub", Book().file);
+  fixture.storage.Put("/books/more/c.epub", Book().file);
+  fixture.storage.Put("/books/z.epub", Book().file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  // A book's file is opened four times: twice to read its package, for the
+  // directory and for the entries, and twice again to read it through. The
+  // clock moves 50 us at each reading of it, and the meter reads it once
+  // before an opening and once after. Where a book comes in its folder
+  // counts everything listed before it, books or not.
+  EXPECT_EQ(fixture.LineWith("book 1: opened"),
+            "book 1: opened 4 times in 200 us, the longest 50 us; number 2 in its folder.");
+  EXPECT_EQ(fixture.LineWith("book 2: opened"),
+            "book 2: opened 4 times in 200 us, the longest 50 us; number 1 in its folder.");
+  EXPECT_EQ(fixture.LineWith("book 3: opened"),
+            "book 3: opened 4 times in 200 us, the longest 50 us; number 4 in its folder.");
+  const BookCheck::Figures& totals = fixture.check->Totals();
+  EXPECT_EQ(totals.opens, 12U);
+  EXPECT_EQ(totals.openUs, 600U);
+  EXPECT_EQ(totals.openLongestUs, 50U);
+  EXPECT_EQ(fixture.LineWith("book check: files opened"),
+            "book check: files opened 12 times in 0 ms; the longest 50 us.");
+  // It is storage's time, and counted there too.
+  EXPECT_GE(totals.storageUs + totals.packageStorageUs, totals.openUs);
+}
+
 TEST(BookCheck, WorksForAShortWhileEachTurn) {
   CheckFixture fixture;
   fixture.storage.Put("/books/a.epub", Book().file);

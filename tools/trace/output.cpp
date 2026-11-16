@@ -254,7 +254,10 @@ std::string FormatEvent(const Event& event) {
     case EventKind::kHello: {
       std::string line = "=== boot " + std::to_string(event.boot) + ": " + event.text + " (stream protocol " +
                          std::to_string(event.arg) + ")";
-      if (event.arg != kSupportedProtocol) {
+      if (event.arg >= 3 && event.arg <= kSupportedProtocol) {
+        line += std::string(", started by ") + core::StartCauseName(event.cause);
+      }
+      if (event.arg < kOldestProtocol || event.arg > kSupportedProtocol) {
         line += "; this tool reads protocol " + std::to_string(kSupportedProtocol) + ", so its frames are skipped";
       }
       return line + " ===";

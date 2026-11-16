@@ -21,7 +21,7 @@
 namespace bn::core {
 
 enum class FrameType : std::uint8_t {
-  kHello = 1,    // Protocol version byte, then the firmware version as text.
+  kHello = 1,    // Protocol version byte, why the device started (core/start.h), then the firmware version as text.
   kTrace = 2,    // Dropped-record count (u32), then trace records.
   kText = 3,     // Time (u32 microseconds), then one line of log text without a line ending.
   kMetrics = 4,  // Time (u32 microseconds), then counters and gauges as one line of text.

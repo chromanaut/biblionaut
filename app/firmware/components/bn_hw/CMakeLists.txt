@@ -11,6 +11,7 @@ idf_component_register(
     "${bn_root}/hw/esp32c3/sd_storage.cpp"
     "${bn_root}/hw/esp32c3/serial.cpp"
     "${bn_root}/hw/esp32c3/spi_bus.cpp"
+    "${bn_root}/hw/esp32c3/start.cpp"
     "${bn_root}/hw/esp32c3/trace_sync.cpp"
     "${bn_root}/hw/x4/display.cpp"
     "${bn_root}/hw/x4/input.cpp"

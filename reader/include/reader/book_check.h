@@ -133,6 +133,13 @@ class BookCheck final : public DeviceCheck {
     std::uint64_t tocStorageUs = 0;  // Time spent inside storage,
     std::uint64_t tocUs = 0;         // and all the time it took.
     std::uint64_t tocLongestUs = 0;  // The longest one book took.
+
+    // Opening the book's file, which is done four times for a book: twice
+    // to read its package and twice to read it through. The time is in
+    // the figures above, as storage's; here it is by itself.
+    std::uint32_t opens = 0;
+    std::uint64_t openUs = 0;
+    std::uint64_t openLongestUs = 0;  // The longest one opening took.
   };
 
   // How much of an entry is read out at a time.
@@ -194,8 +201,17 @@ class BookCheck final : public DeviceCheck {
       std::uint32_t reads = 0;
       std::uint64_t readBytes = 0;
       std::uint64_t timeUs = 0;
+      std::uint32_t opens = 0;   // Files opened,
+      std::uint64_t openUs = 0;  // and the time that took, which is in `timeUs` as well.
     };
     const Counts& Now() const noexcept { return counts_; }
+    // The longest one opening of a file has taken since this was last
+    // asked.
+    std::uint64_t TakeLongestOpenUs() noexcept {
+      const std::uint64_t longest = longestOpenUs_;
+      longestOpenUs_ = 0;
+      return longest;
+    }
 
     [[nodiscard]] core::StorageStatus Start() noexcept override;
     [[nodiscard]] core::StorageStatus Open(std::string_view path, core::OpenMode mode,
@@ -221,6 +237,7 @@ class BookCheck final : public DeviceCheck {
     core::Storage& storage_;
     core::Clock& clock_;
     Counts counts_;
+    std::uint64_t longestOpenUs_ = 0;
   };
 
   // Gives the XML parser the entry being read. It draws on the entry a
@@ -336,6 +353,12 @@ class BookCheck final : public DeviceCheck {
   // What finding the book's directory cost, out of book_.
   std::uint32_t openReads_ = 0;
   std::uint64_t openUs_ = 0;
+  // How many things the listing of each directory has given so far, and
+  // which of them the book in hand was: opening a file means finding its
+  // name among those before it.
+  std::array<std::uint32_t, 2> listed_{};
+  std::uint32_t bookListedAt_ = 0;
+  Meter::Counts bookBegan_;  // The meter when the book in hand was begun.
   // The first of its entries that failed, counted from 1, and how.
   std::uint32_t firstFailedEntry_ = 0;
   epub::ZipStatus firstFailure_ = epub::ZipStatus::kOk;

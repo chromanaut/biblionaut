@@ -105,6 +105,19 @@ and the hello that names the firmware. `--no-reset` attaches without
 restarting, and then shows whatever the device had buffered since something
 last read it.
 
+The hello also says why the device started, as its hardware has it
+(`core/start.h`): power coming on, the reset pin, a host on the USB port
+(which is what `bn-trace` restarting it is), the firmware itself, a crash,
+a watchdog, the supply falling too low, or waking from deep sleep. So a
+run that was cut short is not taken for a fresh start:
+
+```
+=== boot 1: 0.1.0-dev+5e81f9e (stream protocol 3), started by power on ===
+```
+
+A capture from before the hello said so (protocol 2) is still read, and
+its line stops at the bracket.
+
 In the timeline each boot of the device is a process and each task a thread;
 spans are slices, log lines are markers, and each counter and gauge is its
 own graph. `--save` keeps the raw bytes so a capture can be decoded again
@@ -418,31 +431,36 @@ how long: on a device, that is whether those calls are as short as an
 application that has a panel and buttons to see to needs them to be.
 
 What it finds goes out as log text: a line when a book is begun, three for
-its package, one for its table of contents, three when it ends, and seven
+its package, one for its table of contents, four when it ends, and eight
 at the end for all of them.
 
 ```
-book check: the checksum alone, 262144 bytes in 1783 us (143578 KB/s).
+book check: the checksum alone, 262144 bytes in 2256 us (113475 KB/s).
 book 1: 1832425 bytes, /books/core/The First Book.epub
 book 1: package: title "The First Book", author "A. Writer", language "en".
 book 1: package: 374 files, 368 documents, cover jpeg, nav, ncx; memory 16288; checksum 7b162ac4.
 book 1: package: 2 ms: card 0 ms for 24 reads of 90555 bytes.
 book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 1 ms: card 0 ms for 2 reads of 8192 bytes.
 book 1: ok. 377 entries, 4353104 bytes out of 1769871. Directory found in 1 read, 0 ms.
-book 1: card 1 ms for 468 reads of 1909179 bytes (1594895 KB/s); inflating 56 ms: 1661195 bytes in (28518 KB/s), 4244428 out (72865 KB/s); all 101 ms.
-book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 42 ms (97069 KB/s); most memory 11632.
+book 1: card 1 ms for 468 reads of 1909179 bytes (1654332 KB/s); inflating 48 ms: 1661195 bytes in (33155 KB/s), 4244428 out (84713 KB/s); all 88 ms.
+book 1: opened 4 times in 106 us, the longest 40 us; number 1 in its folder.
+book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 36 ms (112464 KB/s); most memory 11632.
 ...
 book check: passed. 34 books, 5152 entries, 63899132 bytes out of 39526769.
-book check: card 27 ms for 10091 reads of 41148789 bytes (1482380 KB/s); inflating 612 ms: 24130522 bytes in (38452 KB/s), 48502885 out (77290 KB/s); all 1053 ms.
-book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 323 ms (95224 KB/s); 32821373 bytes of events checksummed.
+book check: card 39 ms for 10091 reads of 41148789 bytes (1025477 KB/s); inflating 524 ms: 24130522 bytes in (44885 KB/s), 48502885 out (90221 KB/s); all 923 ms.
+book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 278 ms (110844 KB/s); 32821373 bytes of events checksummed.
 book check: XML memory: the most a document used 18952 bytes; documents over 8 KB: 2072, over 12 KB: 24, over 16 KB: 5.
-book check: packages: 33 read; 30 ms: card 17 ms for 258 reads of 901750 bytes; the longest 3 ms; the most memory 22448. Not read: 1.
-book check: contents: 33 read (25 nav), 2666 entries; 9 ms: card 0 ms for 49 reads of 195690 bytes; the longest 1 ms.
-book check: the longest step: 665 us, listing a directory.
+book check: packages: 33 read; 15 ms: card 3 ms for 258 reads of 901750 bytes; the longest 2 ms; the most memory 22448. Not read: 1.
+book check: contents: 33 read (25 nav), 2666 entries; 8 ms: card 0 ms for 49 reads of 195690 bytes; the longest 1 ms.
+book check: files opened 136 times in 3 ms; the longest 113 us.
+book check: the longest step: 1057 us, reading an entry.
 ```
 
-(Those figures are a desktop's, and the book's names are made up.) There
-are four times. `card` is the time
+(Those figures are a desktop's, and the book's names are made up.) A
+book's file is opened four times, twice to read its package and twice to
+read it through; the line about that says how long those took, and where
+the book comes in the listing of its folder, since a file is found by
+going past the names before it. There are four times besides. `card` is the time
 spent inside storage. `inflating` is the time spent reading out the
 compressed entries with storage's share taken off, which is the processor
 inflating and checksumming, beside what went into the inflater and what

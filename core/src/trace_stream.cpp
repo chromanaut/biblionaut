@@ -35,13 +35,14 @@ bool TraceStream::SendTextFrame(FrameType type, std::uint32_t timeUs, std::strin
   return SendFrame(writer);
 }
 
-bool TraceStream::SendHello(std::string_view version) noexcept {
+bool TraceStream::SendHello(std::string_view version, StartCause cause) noexcept {
   if (version.size() > kMaxTextLength) {
     version.remove_suffix(version.size() - kMaxTextLength);
   }
-  std::array<std::uint8_t, MaxEncodedFrameSize(1 + kMaxTextLength)> buffer{};
+  std::array<std::uint8_t, MaxEncodedFrameSize(2 + kMaxTextLength)> buffer{};
   FrameWriter writer(FrameType::kHello, buffer);
   writer.Put(kStreamProtocolVersion);
+  writer.Put(static_cast<std::uint8_t>(cause));
   writer.Put(AsBytes(version));
   return SendFrame(writer);
 }

@@ -10,6 +10,7 @@
 #include "core/display.h"
 #include "core/input.h"
 #include "core/memory_probe.h"
+#include "core/start.h"
 #include "core/storage.h"
 #include "core/trace.h"
 #include "core/trace_stream.h"
@@ -32,6 +33,8 @@ struct Services {
   core::Display& display;
   core::Input& input;
   core::Storage& storage;
+  // Why this run began, to be told at the head of the stream.
+  core::StartCause startCause = core::StartCause::kUnknown;
 };
 
 // The services of the hardware port this build was linked with.

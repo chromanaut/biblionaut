@@ -416,6 +416,83 @@ TEST(PatternViewer, SwitchesThePanelOffTwoSecondsAfterTheLastRefresh) {
   EXPECT_EQ(fixture.display.refused, 0);
 }
 
+TEST(PatternViewer, GoesToSleepWithItsVoltagesSwitchedOffFirst) {
+  ViewerFixture fixture;
+  fixture.StartAndSettle();
+
+  fixture.viewer.Sleep();
+  fixture.viewer.Tick();
+  std::vector<FakeDisplay::Call> calls = fixture.NewCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].op, Op::kPowerOff);
+  EXPECT_EQ(fixture.viewer.CurrentState(), PatternViewer::State::kReady);
+  fixture.viewer.Tick();
+  EXPECT_TRUE(fixture.NewCalls().empty()) << "nothing while they go off";
+
+  fixture.FinishBusy();
+  calls = fixture.NewCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].op, Op::kSleep);
+  EXPECT_EQ(fixture.viewer.CurrentState(), PatternViewer::State::kAsleep);
+  // The picture stays on the panel.
+  EXPECT_EQ(fixture.display.shown, Picture(fixture.display, 1));
+
+  // And it is done with the panel.
+  fixture.clock.now += 60'000'000;
+  fixture.Press(Button::kDown);
+  fixture.viewer.Tick();
+  EXPECT_TRUE(fixture.NewCalls().empty());
+  EXPECT_EQ(fixture.display.refused, 0);
+}
+
+TEST(PatternViewer, LetsARefreshFinishBeforeGoingToSleep) {
+  ViewerFixture fixture;
+  fixture.viewer.Start();
+  (void)fixture.NewCalls();
+  fixture.viewer.Sleep();
+  fixture.clock.now += 1'000'000;
+  fixture.viewer.Tick();
+  EXPECT_TRUE(fixture.NewCalls().empty()) << "the first picture is still on its way";
+
+  fixture.FinishBusy();
+  EXPECT_EQ(fixture.NewCalls().back().op, Op::kPowerOff);
+  fixture.FinishBusy();
+  EXPECT_EQ(fixture.NewCalls().back().op, Op::kSleep);
+  EXPECT_EQ(fixture.viewer.CurrentState(), PatternViewer::State::kAsleep);
+  EXPECT_EQ(fixture.display.refused, 0);
+}
+
+TEST(PatternViewer, GoesStraightToSleepOnceTheVoltagesAreOffAlready) {
+  ViewerFixture fixture;
+  fixture.StartAndSettle();
+  fixture.Pause();
+  (void)fixture.NewCalls();
+
+  fixture.viewer.Sleep();
+  fixture.viewer.Tick();
+  const std::vector<FakeDisplay::Call> calls = fixture.NewCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].op, Op::kSleep);
+  EXPECT_EQ(fixture.viewer.CurrentState(), PatternViewer::State::kAsleep);
+}
+
+TEST(PatternViewer, DropsPressesOnceAskedToSleep) {
+  ViewerFixture fixture;
+  fixture.StartAndSettle();
+  // A press not yet acted on, and one after.
+  fixture.Press(Button::kDown);
+  fixture.viewer.Sleep();
+  fixture.Press(Button::kBack);
+  fixture.viewer.Tick();
+  fixture.FinishBusy();
+  for (const FakeDisplay::Call& call : fixture.NewCalls()) {
+    EXPECT_NE(call.op, Op::kRefresh);
+    EXPECT_NE(call.op, Op::kWrite);
+  }
+  EXPECT_EQ(fixture.viewer.Picture(), 1);
+  EXPECT_EQ(fixture.viewer.CurrentState(), PatternViewer::State::kAsleep);
+}
+
 TEST(PatternViewer, WritesBothPlanesAgainOnceTheVoltagesAreOff) {
   ViewerFixture fixture;
   fixture.StartAndSettle();

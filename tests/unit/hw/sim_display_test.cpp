@@ -38,6 +38,11 @@ bool RowIsBlack(std::span<const std::uint8_t> picture, std::size_t row) {
   return std::all_of(bytes.begin(), bytes.end(), [](std::uint8_t byte) { return byte == 0x00; });
 }
 
+bool RowIsBlackOfWidth(std::span<const std::uint8_t> picture, std::size_t rowBytes, std::size_t row) {
+  const std::span<const std::uint8_t> bytes = picture.subspan(row * rowBytes, rowBytes);
+  return std::all_of(bytes.begin(), bytes.end(), [](std::uint8_t byte) { return byte == 0x00; });
+}
+
 bool RowIsWhite(std::span<const std::uint8_t> picture, std::size_t row) {
   const std::span<const std::uint8_t> bytes = picture.subspan(row * kRowBytes, kRowBytes);
   return std::all_of(bytes.begin(), bytes.end(), [](std::uint8_t byte) { return byte == 0xFF; });
@@ -45,7 +50,7 @@ bool RowIsWhite(std::span<const std::uint8_t> picture, std::size_t row) {
 
 struct SimFixture {
   bn::test::FakeClock clock;
-  SimDisplay display{clock, ""};
+  SimDisplay display{clock, bn::hw::X4(), ""};
 
   void Finish() {
     clock.now += 10'000'000;
@@ -169,7 +174,7 @@ TEST(SimDisplay, AFullRefreshShowsTheNewPlaneAndKeepsThePanelBusyMeanwhile) {
   EXPECT_FALSE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
   EXPECT_FALSE(fixture.display.Sleep());
 
-  fixture.clock.now += SimDisplay::kFullRefreshUs - 1;
+  fixture.clock.now += bn::hw::X4().times.fullRefreshUs - 1;
   EXPECT_TRUE(fixture.display.Busy());
   fixture.clock.now += 1;
   EXPECT_FALSE(fixture.display.Busy());
@@ -182,9 +187,43 @@ TEST(SimDisplay, AFullRefreshShowsTheNewPlaneAndKeepsThePanelBusyMeanwhile) {
   EXPECT_TRUE(fixture.display.Powered());
 }
 
+TEST(SimDisplay, IsTheSizeOfItsDeviceAndTakesAsLongAsItsPanelDoes) {
+  const bn::hw::DeviceProfile device{
+      .name = "other",
+      .panel = {.width = 400, .height = 300},
+      .times = {.fullRefreshUs = 2'000, .halfRefreshUs = 1'000, .fastRefreshUs = 300, .powerOffUs = 70},
+      .buttons = {}};
+  bn::test::FakeClock clock;
+  SimDisplay display(clock, device, "");
+  EXPECT_EQ(&display.Device(), &device);
+  EXPECT_EQ(display.Size().width, 400u);
+  EXPECT_EQ(display.Size().height, 300u);
+  ASSERT_TRUE(display.Start());
+  EXPECT_EQ(display.Shown().size(), 15'000u);  // 300 rows of 50 bytes.
+
+  // Rows of its width, as many as it has, and no more.
+  const std::vector<std::uint8_t> rows(15'000, 0x00);
+  EXPECT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, rows));
+  EXPECT_FALSE(display.WriteRows(DisplayPlane::kNew, 1, rows));
+
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
+  clock.now = 1'999;
+  EXPECT_TRUE(display.Busy());
+  clock.now = 2'000;
+  EXPECT_FALSE(display.Busy());
+  EXPECT_TRUE(RowIsBlackOfWidth(display.Shown(), 50, 299));
+
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFast, AfterRefresh::kPowerOff));
+  EXPECT_EQ(display.LastRefresh().doneUs, 2'300u);
+  clock.now = 2'369;
+  EXPECT_TRUE(display.Busy());
+  clock.now = 2'370;
+  EXPECT_FALSE(display.Busy());
+}
+
 TEST(SimDisplay, RemembersTheLastRefreshAndWhatWasShownBeforeIt) {
   bn::test::FakeClock clock;
-  SimDisplay display(clock, "", 4);  // Four times quicker than a real panel.
+  SimDisplay display(clock, bn::hw::X4(), "", 4);  // Four times quicker than a real panel.
   ASSERT_TRUE(display.Start());
   EXPECT_EQ(display.LastRefresh().doneUs, 0u);
   EXPECT_TRUE(RowIsWhite(display.ShownBefore(), 0));
@@ -194,7 +233,7 @@ TEST(SimDisplay, RemembersTheLastRefreshAndWhatWasShownBeforeIt) {
   ASSERT_TRUE(display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kStayPowered));
   EXPECT_EQ(display.LastRefresh().mode, RefreshMode::kHalf);
   EXPECT_EQ(display.LastRefresh().startUs, 1'000u);
-  EXPECT_EQ(display.LastRefresh().doneUs, 1'000 + (SimDisplay::kHalfRefreshUs / 4));
+  EXPECT_EQ(display.LastRefresh().doneUs, 1'000 + (bn::hw::X4().times.halfRefreshUs / 4));
   EXPECT_TRUE(RowIsWhite(display.ShownBefore(), 10));
   EXPECT_TRUE(RowIsBlack(display.Shown(), 10));
 
@@ -205,7 +244,7 @@ TEST(SimDisplay, RemembersTheLastRefreshAndWhatWasShownBeforeIt) {
   ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(20, 1)));
   ASSERT_TRUE(display.StartRefresh(RefreshMode::kFast, AfterRefresh::kPowerOff));
   EXPECT_EQ(display.LastRefresh().mode, RefreshMode::kFast);
-  EXPECT_EQ(display.LastRefresh().doneUs, 2'000'000 + (SimDisplay::kFastRefreshUs / 4));
+  EXPECT_EQ(display.LastRefresh().doneUs, 2'000'000 + (bn::hw::X4().times.fastRefreshUs / 4));
   EXPECT_TRUE(RowIsBlack(display.ShownBefore(), 10));
   EXPECT_TRUE(RowIsWhite(display.ShownBefore(), 20));
   clock.now = display.LastRefresh().doneUs;
@@ -227,7 +266,7 @@ TEST(SimDisplay, AFastRefreshLeavesAloneOnlyWhatBothPlanesCallWhite) {
   // sees no reason to touch rows 100 to 149, and they stay black.
   ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, second));
   ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
-  fixture.clock.now += SimDisplay::kFastRefreshUs;
+  fixture.clock.now += bn::hw::X4().times.fastRefreshUs;
   EXPECT_FALSE(fixture.display.Busy());
   EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 320));
   EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 120)) << "left over from the first picture";
@@ -237,7 +276,7 @@ TEST(SimDisplay, AFastRefreshLeavesAloneOnlyWhatBothPlanesCallWhite) {
   ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, first));
   ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, first));
   ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kStayPowered));
-  fixture.clock.now += SimDisplay::kHalfRefreshUs;
+  fixture.clock.now += bn::hw::X4().times.halfRefreshUs;
   ASSERT_FALSE(fixture.display.Busy());
   ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, second));
   ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kPowerOff));
@@ -470,11 +509,11 @@ TEST(SimDisplay, StartingAgainAbandonsARefreshInProgress) {
 
 TEST(SimDisplay, RecordsEachRefreshInTheTraceFromStartToFinish) {
   bn::test::TraceFixture<16> trace;
-  SimDisplay display(trace.clock, "");
+  SimDisplay display(trace.clock, bn::hw::X4(), "");
   ASSERT_TRUE(display.Start());
   trace.clock.now = 1'000;
   ASSERT_TRUE(display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
-  trace.clock.now += SimDisplay::kFastRefreshUs + 250;  // Noticed a little late, as by a main loop.
+  trace.clock.now += bn::hw::X4().times.fastRefreshUs + 250;  // Noticed a little late, as by a main loop.
   EXPECT_FALSE(display.Busy());
   EXPECT_FALSE(display.Busy());
 
@@ -482,12 +521,12 @@ TEST(SimDisplay, RecordsEachRefreshInTheTraceFromStartToFinish) {
   ASSERT_EQ(trace.tracer.Drain(records), 1u);
   EXPECT_EQ(records[0].id, bn::hw::kSpanRefreshFast);
   EXPECT_EQ(records[0].startUs, 1'000u);
-  EXPECT_EQ(records[0].durationUs, SimDisplay::kFastRefreshUs + 250);
+  EXPECT_EQ(records[0].durationUs, bn::hw::X4().times.fastRefreshUs + 250);
   EXPECT_EQ(records[0].arg, 0u);
 
   // Switching off as part of a refresh makes the refresh that much longer.
   ASSERT_TRUE(display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kPowerOff));
-  trace.clock.now += SimDisplay::kHalfRefreshUs + SimDisplay::kPowerOffUs - 1;
+  trace.clock.now += bn::hw::X4().times.halfRefreshUs + bn::hw::X4().times.powerOffUs - 1;
   EXPECT_TRUE(display.Busy());
   trace.clock.now += 1;
   EXPECT_FALSE(display.Busy());
@@ -498,7 +537,7 @@ TEST(SimDisplay, RecordsEachRefreshInTheTraceFromStartToFinish) {
 
 TEST(SimDisplay, SwitchingOffTakesAMomentAndKeepsWhatThePlanesHold) {
   bn::test::TraceFixture<16> trace;
-  SimDisplay display(trace.clock, "");
+  SimDisplay display(trace.clock, bn::hw::X4(), "");
   EXPECT_FALSE(display.PowerOff()) << "not started";
   ASSERT_TRUE(display.Start());
 
@@ -511,7 +550,7 @@ TEST(SimDisplay, SwitchingOffTakesAMomentAndKeepsWhatThePlanesHold) {
   ASSERT_TRUE(display.WriteRows(DisplayPlane::kOld, 0, picture));
   ASSERT_TRUE(display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
   EXPECT_FALSE(display.PowerOff()) << "busy";
-  trace.clock.now += SimDisplay::kFullRefreshUs;
+  trace.clock.now += bn::hw::X4().times.fullRefreshUs;
   ASSERT_FALSE(display.Busy());
   ASSERT_TRUE(display.Powered());
 
@@ -519,7 +558,7 @@ TEST(SimDisplay, SwitchingOffTakesAMomentAndKeepsWhatThePlanesHold) {
   EXPECT_TRUE(display.PowerOff());
   EXPECT_FALSE(display.Powered());
   EXPECT_TRUE(display.Busy());
-  trace.clock.now += SimDisplay::kPowerOffUs;
+  trace.clock.now += bn::hw::X4().times.powerOffUs;
   EXPECT_FALSE(display.Busy());
   EXPECT_TRUE(display.Started());
   EXPECT_TRUE(RowIsBlack(display.Plane(DisplayPlane::kNew), 120));
@@ -530,7 +569,7 @@ TEST(SimDisplay, SwitchingOffTakesAMomentAndKeepsWhatThePlanesHold) {
   ASSERT_GE(count, 1u);
   EXPECT_EQ(records[count - 1].id, bn::hw::kSpanPanelPowerOff);
   EXPECT_EQ(records[count - 1].startUs, 20'000'000u);
-  EXPECT_EQ(records[count - 1].durationUs, SimDisplay::kPowerOffUs);
+  EXPECT_EQ(records[count - 1].durationUs, bn::hw::X4().times.powerOffUs);
 
   // The next refresh switches it on again.
   ASSERT_TRUE(display.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
@@ -539,19 +578,19 @@ TEST(SimDisplay, SwitchingOffTakesAMomentAndKeepsWhatThePlanesHold) {
 
 TEST(SimDisplay, CanWorkFasterThanARealPanel) {
   bn::test::FakeClock clock;
-  SimDisplay display(clock, "", 20);
+  SimDisplay display(clock, bn::hw::X4(), "", 20);
   ASSERT_TRUE(display.Start());
   ASSERT_TRUE(display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
-  clock.now += (SimDisplay::kFullRefreshUs / 20) - 1;
+  clock.now += (bn::hw::X4().times.fullRefreshUs / 20) - 1;
   EXPECT_TRUE(display.Busy());
   clock.now += 1;
   EXPECT_FALSE(display.Busy());
 
   // A speed of nothing is no speed-up at all.
-  SimDisplay ordinary(clock, "", 0);
+  SimDisplay ordinary(clock, bn::hw::X4(), "", 0);
   ASSERT_TRUE(ordinary.Start());
   ASSERT_TRUE(ordinary.StartRefresh(RefreshMode::kFast, AfterRefresh::kStayPowered));
-  clock.now += SimDisplay::kFastRefreshUs - 1;
+  clock.now += bn::hw::X4().times.fastRefreshUs - 1;
   EXPECT_TRUE(ordinary.Busy());
 }
 
@@ -561,7 +600,7 @@ TEST(SimDisplay, SavesThePanelsPictureAtEveryRefresh) {
     std::remove((prefix + suffix).c_str());
   }
   bn::test::FakeClock clock;
-  SimDisplay display(clock, prefix);
+  SimDisplay display(clock, bn::hw::X4(), prefix);
   ASSERT_TRUE(display.Start());
   ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(10, 5)));
   ASSERT_TRUE(display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));

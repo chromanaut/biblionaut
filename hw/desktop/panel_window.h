@@ -5,6 +5,7 @@
 #include "core/clock.h"
 #include "core/input.h"
 #include "desktop/sim_display.h"
+#include "desktop/sim_power.h"
 
 // A window on the desktop: the simulated panel as it would look at each
 // moment, in a drawing of the device with its buttons.
@@ -13,8 +14,9 @@ namespace bn::hw {
 
 // Only a build configured with BN_DESKTOP_WINDOW has one, made with SDL.
 //
-// The buttons are drawn where they are on an X4 (DeviceLayout), and are
-// pressed by clicking them, or by keys:
+// The device is the one `display` simulates. Its buttons are drawn where
+// its profile puts them (DeviceLayout), and are pressed by clicking them,
+// or by keys, those of them it has:
 //
 //   Left, Right, Up, Down            the buttons of those names
 //   Page Up, Page Down               Up and Down, the two on the side
@@ -26,17 +28,19 @@ namespace bn::hw {
 //
 // A button is drawn lit while the application has been told it is down,
 // however it was pressed, BN_INPUT's script included. A refresh is shown as
-// it goes (RefreshStage), and named in the window's title while it lasts.
+// it goes (RefreshStage), and named in the window's title while it lasts,
+// as is the device being asleep.
 class PanelWindow {
  public:
   // The keys, as above, in a line or two for the person at the keyboard.
   static const char* KeysHelp() noexcept;
 
-  // Opens a window onto `display`, with buttons from the keyboard and from
-  // `script` (the desktop's BN_INPUT) alongside them. Null, with why on the
-  // standard error stream, if no window can be opened, or this build has
-  // none.
-  static std::unique_ptr<PanelWindow> Open(core::Clock& clock, SimDisplay& display, core::Input& script);
+  // Opens a window onto `display` and `power`, with buttons from the
+  // keyboard and from `script` (the desktop's BN_INPUT) alongside them.
+  // Null, with why on the standard error stream, if no window can be
+  // opened, or this build has none.
+  static std::unique_ptr<PanelWindow> Open(core::Clock& clock, SimDisplay& display, const SimPower& power,
+                                           core::Input& script);
 
   PanelWindow() = default;
   virtual ~PanelWindow() = default;

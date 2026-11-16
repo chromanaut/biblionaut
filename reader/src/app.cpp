@@ -53,6 +53,7 @@ Services DefaultServices() noexcept {
                   .display = hw::SystemDisplay(),
                   .input = hw::SystemInput(),
                   .storage = hw::SystemStorage(),
+                  .power = hw::SystemPower(),
                   .startCause = hw::WhyStarted()};
 }
 
@@ -134,7 +135,7 @@ void App::BeginChecks() noexcept {
 }
 
 void App::Tick() noexcept {
-  if (!started_) {
+  if (!started_ || asleep_) {
     return;
   }
   appTicks.Add();
@@ -149,18 +150,19 @@ void App::Tick() noexcept {
 
   core::InputEvent event{};
   for (int taken = 0; taken < kMaxInputEventsPerTick && services_.input.Next(event); ++taken) {
-    const bool hasChecks = checks_[0] != nullptr || checks_[1] != nullptr || checks_[2] != nullptr;
-    if (hasChecks && event.kind == core::InputEventKind::kPress && event.button == core::Button::kPower) {
-      // The viewer has no use for this button. A card may have been put in
-      // since the last look.
-      if (!storageReady_) {
-        StartStorage();
-      }
-      BeginChecks();
+    if (event.kind == core::InputEventKind::kPress && event.button == core::Button::kPower) {
+      OnPower(event.timeUs);
     }
     viewer_.OnInput(event);
   }
   viewer_.Tick();
+  if (sleepAsked_ && (viewer_.CurrentState() == PatternViewer::State::kAsleep ||
+                      viewer_.CurrentState() == PatternViewer::State::kFailed)) {
+    // The panel is at rest and asleep, or there is nothing more to be done
+    // with it.
+    GoToSleep();
+    return;
+  }
   for (DeviceCheck* check : checks_) {
     if (check != nullptr) {
       check->Tick();
@@ -182,6 +184,33 @@ void App::Tick() noexcept {
     stream_.SendMetrics(core::DefaultMetrics());
     nextMetricsUs_ = now + kMetricsIntervalUs;
   }
+}
+
+void App::OnPower(std::uint64_t pressedAtUs) noexcept {
+  const bool hasChecks = checks_[0] != nullptr || checks_[1] != nullptr || checks_[2] != nullptr;
+  if (hasChecks) {
+    // The button is the checks'. A card may have been put in since the
+    // last look.
+    if (!storageReady_) {
+      StartStorage();
+    }
+    BeginChecks();
+    return;
+  }
+  if (!sleepAsked_ && services_.power.CanSleep()) {
+    sleepAsked_ = true;
+    sleepPressedAtUs_ = pressedAtUs;
+    viewer_.Sleep();
+  }
+}
+
+void App::GoToSleep() noexcept {
+  // Trace times are the low half of the clock the press was timed on.
+  BN_TRACE_TOP_SPAN_SINCE(kSpanPressToSleep, static_cast<std::uint32_t>(sleepPressedAtUs_), 0);
+  // Everything is sent first: on a device nothing comes back from sleep.
+  Flush();
+  asleep_ = true;
+  services_.power.Sleep();
 }
 
 void App::SampleMemory() noexcept {

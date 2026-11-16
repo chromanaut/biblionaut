@@ -7,12 +7,14 @@
 add_library(bn_hw STATIC
   desktop/crash.cpp
   desktop/device_layout.cpp
+  desktop/device_profile.cpp
   desktop/display.cpp
   desktop/folder_storage.cpp
   desktop/input.cpp
   desktop/memory_probe.cpp
   desktop/panel_view.cpp
   desktop/platform.cpp
+  desktop/power.cpp
   desktop/scripted_input.cpp
   desktop/serial.cpp
   desktop/sim_display.cpp

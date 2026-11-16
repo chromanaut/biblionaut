@@ -134,6 +134,7 @@ bn_add_unit_test(layout_tests
 bn_add_unit_test(hw_tests
   SOURCES
     unit/hw/device_layout_test.cpp
+    unit/hw/device_profile_test.cpp
     unit/hw/folder_storage_test.cpp
     unit/hw/panel_view_test.cpp
     unit/hw/scripted_input_test.cpp
@@ -186,6 +187,16 @@ add_test(
     -DTOOL=$<TARGET_FILE:bn-trace>
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/panel_switch_off.cmake)
+
+# The Power button on the desktop: the device put to sleep, and woken into
+# a new run.
+add_test(
+  NAME e2e.PowerSleep
+  COMMAND ${CMAKE_COMMAND}
+    -DAPP=$<TARGET_FILE:biblionaut-desktop>
+    -DTOOL=$<TARGET_FILE:bn-trace>
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/power_sleep.cmake)
 
 # The application with its window, on SDL's stand-in for a screen, against
 # the same application without one: the same scripted presses have to put

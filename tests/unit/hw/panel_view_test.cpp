@@ -13,6 +13,7 @@ using bn::core::AfterRefresh;
 using bn::core::DisplayPlane;
 using bn::core::RefreshMode;
 using bn::hw::PanelView;
+using bn::hw::ReadingTurn;
 using bn::hw::RefreshStage;
 using bn::hw::SimDisplay;
 using bn::hw::StageAt;
@@ -24,7 +25,7 @@ constexpr std::size_t kRowBytes = 100;
 
 struct ViewFixture {
   bn::test::FakeClock clock;
-  SimDisplay display{clock, ""};
+  SimDisplay display{clock, bn::hw::X4(), ""};
 
   ViewFixture() { EXPECT_TRUE(display.Start()); }
 
@@ -54,7 +55,7 @@ TEST(PanelView, ShowsThePanelTurnedTheWayABookIsRead) {
   ViewFixture f;
   // The first pixel of the first row, and the last of the last.
   f.Show({{0, 0}, {kWidth - 1, kHeight - 1}});
-  PanelView view({.width = kWidth, .height = kHeight});
+  PanelView view({.width = kWidth, .height = kHeight}, ReadingTurn::kClockwise);
   EXPECT_EQ(view.Turn(), ViewTurn::kAsRead);
   ASSERT_TRUE(view.Update(f.display, f.clock.now));
 
@@ -70,10 +71,67 @@ TEST(PanelView, ShowsThePanelTurnedTheWayABookIsRead) {
   EXPECT_EQ(view.Pixels()[(kWidth * kHeight) - 1], PanelView::kWhite);  // Bottom right.
 }
 
+TEST(PanelView, TurnsThePanelWhicheverWayTheDeviceIsRead) {
+  // A small panel with the first two pixels of its first row black: where
+  // they land says which way it was turned.
+  constexpr bn::core::DisplaySize kSmall{.width = 16, .height = 8};
+  const bn::hw::DeviceProfile device{
+      .name = "small",
+      .panel = kSmall,
+      .times = {.fullRefreshUs = 10, .halfRefreshUs = 10, .fastRefreshUs = 10, .powerOffUs = 10},
+      .buttons = {}};
+  bn::test::FakeClock clock;
+  SimDisplay display(clock, device, "");
+  ASSERT_TRUE(display.Start());
+  std::vector<std::uint8_t> rows(kSmall.RowBytes() * kSmall.height, 0xFF);
+  rows[0] = 0x3F;
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, rows));
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
+  clock.now = 1'000;
+
+  struct Expected {
+    ReadingTurn turn;
+    std::size_t width;
+    std::size_t firstAt;   // Where the first pixel goes, as an index into Pixels().
+    std::size_t secondAt;  // And the one after it in the row.
+  };
+  const Expected expected[] = {
+      // As it is: the row runs along the top from the left.
+      {.turn = ReadingTurn::kNone, .width = 16, .firstAt = 0, .secondAt = 1},
+      // A quarter-turn clockwise: down the right edge from the top.
+      {.turn = ReadingTurn::kClockwise, .width = 8, .firstAt = 7, .secondAt = (1 * 8) + 7},
+      // Upside down: along the bottom from the right.
+      {.turn = ReadingTurn::kHalf, .width = 16, .firstAt = (7 * 16) + 15, .secondAt = (7 * 16) + 14},
+      // A quarter-turn anticlockwise: up the left edge from the bottom.
+      // (The last row of 8, and the one above it.)
+      {.turn = ReadingTurn::kAnticlockwise, .width = 8, .firstAt = 120, .secondAt = 112},
+  };
+  for (const Expected& e : expected) {
+    PanelView view(kSmall, e.turn);
+    ASSERT_TRUE(view.Update(display, clock.now));
+    EXPECT_EQ(view.Size().width, e.width) << static_cast<int>(e.turn);
+    EXPECT_EQ(static_cast<std::size_t>(view.Size().width) * view.Size().height, kSmall.width * kSmall.height);
+    EXPECT_EQ(view.Pixels()[e.firstAt], PanelView::kBlack) << static_cast<int>(e.turn);
+    EXPECT_EQ(view.Pixels()[e.secondAt], PanelView::kBlack) << static_cast<int>(e.turn);
+    std::size_t black = 0;
+    for (const std::uint32_t pixel : view.Pixels()) {
+      black += pixel == PanelView::kBlack ? 1 : 0;
+    }
+    EXPECT_EQ(black, 2u) << static_cast<int>(e.turn);
+
+    // In the panel's own way, however the device is read, nothing is turned.
+    view.SetTurn(ViewTurn::kAsPanel);
+    ASSERT_TRUE(view.Update(display, clock.now));
+    EXPECT_EQ(view.Size().width, kSmall.width);
+    EXPECT_EQ(view.Pixels()[0], PanelView::kBlack);
+    EXPECT_EQ(view.Pixels()[1], PanelView::kBlack);
+  }
+}
+
 TEST(PanelView, ShowsThePanelInItsOwnOrientationWhenTurned) {
   ViewFixture f;
   f.Show({{3, 0}, {kWidth - 1, 2}});
-  PanelView view({.width = kWidth, .height = kHeight});
+  PanelView view({.width = kWidth, .height = kHeight}, ReadingTurn::kClockwise);
   ASSERT_TRUE(view.Update(f.display, f.clock.now));
 
   view.SetTurn(ViewTurn::kAsPanel);
@@ -94,7 +152,7 @@ TEST(PanelView, ShowsThePanelInItsOwnOrientationWhenTurned) {
 TEST(PanelView, FlashesThroughAFullRefreshAndEndsOnTheNewPicture) {
   ViewFixture f;
   f.Show({{10, 10}});
-  PanelView view({.width = kWidth, .height = kHeight});
+  PanelView view({.width = kWidth, .height = kHeight}, ReadingTurn::kClockwise);
   ASSERT_TRUE(view.Update(f.display, f.clock.now));
 
   // A picture with no black at all, by a full refresh.
@@ -102,7 +160,7 @@ TEST(PanelView, FlashesThroughAFullRefreshAndEndsOnTheNewPicture) {
   std::vector<std::uint8_t> white(kRowBytes * kHeight, 0xFF);
   ASSERT_TRUE(f.display.WriteRows(DisplayPlane::kNew, 0, white));
   ASSERT_TRUE(f.display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
-  const std::uint64_t length = SimDisplay::kFullRefreshUs;
+  const std::uint64_t length = bn::hw::X4().times.fullRefreshUs;
   EXPECT_EQ(f.display.LastRefresh().doneUs, start + length);
 
   // The old picture, black for white.
@@ -125,7 +183,7 @@ TEST(PanelView, FlashesThroughAFullRefreshAndEndsOnTheNewPicture) {
 TEST(PanelView, ShowsAFastRefreshsPictureOnceItIsOver) {
   ViewFixture f;
   f.Show({{10, 10}});
-  PanelView view({.width = kWidth, .height = kHeight});
+  PanelView view({.width = kWidth, .height = kHeight}, ReadingTurn::kClockwise);
   ASSERT_TRUE(view.Update(f.display, f.clock.now));
 
   const std::uint64_t start = f.clock.now;
@@ -138,11 +196,11 @@ TEST(PanelView, ShowsAFastRefreshsPictureOnceItIsOver) {
   ASSERT_TRUE(view.Update(f.display, start));
   EXPECT_EQ(view.Stage(), RefreshStage::kBefore);
   EXPECT_EQ(CountBlack(view), 1u);
-  EXPECT_FALSE(view.Update(f.display, start + SimDisplay::kFastRefreshUs - 1));
+  EXPECT_FALSE(view.Update(f.display, start + bn::hw::X4().times.fastRefreshUs - 1));
 
   // Then what the fast refresh left: its own pixels and, where the old-image
   // plane was white, the one from before as well.
-  ASSERT_TRUE(view.Update(f.display, start + SimDisplay::kFastRefreshUs));
+  ASSERT_TRUE(view.Update(f.display, start + bn::hw::X4().times.fastRefreshUs));
   EXPECT_EQ(view.Stage(), RefreshStage::kAfter);
   EXPECT_EQ(CountBlack(view), 9u);
 }
@@ -150,7 +208,7 @@ TEST(PanelView, ShowsAFastRefreshsPictureOnceItIsOver) {
 TEST(PanelView, ChangesOnlyWhenWhatThePanelLooksLikeDoes) {
   ViewFixture f;
   f.Show({{0, 0}});
-  PanelView view({.width = kWidth, .height = kHeight});
+  PanelView view({.width = kWidth, .height = kHeight}, ReadingTurn::kClockwise);
   EXPECT_TRUE(view.Update(f.display, f.clock.now));
   EXPECT_FALSE(view.Update(f.display, f.clock.now));
   EXPECT_FALSE(view.Update(f.display, f.clock.now + 5'000'000));

@@ -1,72 +1,95 @@
 #include "desktop/device_layout.h"
 
+#include <array>
+#include <utility>
+
 namespace bn::hw {
 
 namespace {
 
-// The device's edge around the panel, the gap between the panel and a row
-// of buttons, and how deep a row is. A button is inset in its row, and wide
-// or deep enough for the longest label, "Confirm", 56 units across.
+// The device's edge where it has no buttons; the gap between the panel and
+// a strip of buttons; how deep a strip is; and how far a button is inset in
+// its strip. Across a strip a button is 60 deep, enough for "Confirm", 56.
 constexpr int kEdge = 16;
 constexpr int kGap = 8;
-constexpr int kRow = 72;
+constexpr int kStrip = 72;
 constexpr int kInset = 6;
-constexpr int kButtonGap = 8;
-// How long the buttons down the side are.
-constexpr int kPowerLength = 72;
-constexpr int kSideLength = 96;
+
+// `rect`, in something `height` high, turned a quarter-turn clockwise with
+// it.
+Rect TurnedClockwise(const Rect& rect, int height) {
+  return Rect{.x = height - rect.y - rect.height, .y = rect.x, .width = rect.height, .height = rect.width};
+}
 
 }  // namespace
 
-DeviceLayout::DeviceLayout(core::DisplaySize panel, ViewTurn turn) noexcept {
-  // Laid out held as a book is read, with the panel turned to stand upright.
-  const int width = panel.height;
-  const int height = panel.width;
-  panel_ = Rect{.x = kEdge, .y = kEdge, .width = width, .height = height};
-
-  // The row under the panel.
-  const int front = (width - (3 * kButtonGap)) / 4;
-  const int frontY = kEdge + height + kGap + kInset;
-  const int deep = kRow - (2 * kInset);
-  const auto inRow = [&](int i) {
-    return Rect{.x = kEdge + (i * (front + kButtonGap)), .y = frontY, .width = front, .height = deep};
+DeviceLayout::DeviceLayout(const DeviceProfile& device, ViewTurn turn) noexcept {
+  // Laid out held as a book is read, with the panel turned to stand that way.
+  const bool sideways = static_cast<unsigned>(device.turn) % 2 == 1;
+  const int width = sideways ? device.panel.height : device.panel.width;
+  const int height = sideways ? device.panel.width : device.panel.height;
+  std::array<bool, 4> hasStrip{};
+  for (const ButtonSpot& spot : device.buttons) {
+    hasStrip[static_cast<std::size_t>(spot.edge)] = true;
+  }
+  const auto beside = [&hasStrip](Edge edge) {
+    return hasStrip[static_cast<std::size_t>(edge)] ? kGap + kStrip : kEdge;
   };
-  // Down the right edge: Power at the top, Up and Down a third of the way down.
-  const int sideX = kEdge + width + kGap + kInset;
-  const int up = kEdge + (height / 3);
-  buttons_ = {{
-      {.button = core::Button::kBack, .label = "Back", .rect = inRow(0)},
-      {.button = core::Button::kConfirm, .label = "Confirm", .rect = inRow(1)},
-      {.button = core::Button::kLeft, .label = "Left", .rect = inRow(2)},
-      {.button = core::Button::kRight, .label = "Right", .rect = inRow(3)},
-      {.button = core::Button::kPower,
-       .label = "Power",
-       .rect = {.x = sideX, .y = kEdge, .width = deep, .height = kPowerLength}},
-      {.button = core::Button::kUp, .label = "Up", .rect = {.x = sideX, .y = up, .width = deep, .height = kSideLength}},
-      {.button = core::Button::kDown,
-       .label = "Down",
-       .rect = {.x = sideX, .y = up + kSideLength + kButtonGap, .width = deep, .height = kSideLength}},
-  }};
-  size_ = core::DisplaySize{.width = static_cast<std::uint16_t>(kEdge + width + kGap + kRow),
-                            .height = static_cast<std::uint16_t>(kEdge + height + kGap + kRow)};
+  const int left = beside(Edge::kLeft);
+  const int top = beside(Edge::kTop);
+  int across = left + width + beside(Edge::kRight);
+  int down = top + height + beside(Edge::kBottom);
+  panel_ = Rect{.x = left, .y = top, .width = width, .height = height};
+
+  constexpr int kDeep = kStrip - (2 * kInset);
+  for (const ButtonSpot& spot : device.buttons) {
+    if (count_ == places_.size()) {
+      break;
+    }
+    Rect rect;
+    switch (spot.edge) {
+      case Edge::kTop:
+        rect = Rect{.x = left + spot.start, .y = kInset, .width = spot.length, .height = kDeep};
+        break;
+      case Edge::kBottom:
+        rect = Rect{.x = left + spot.start, .y = top + height + kGap + kInset, .width = spot.length, .height = kDeep};
+        break;
+      case Edge::kLeft:
+        rect = Rect{.x = kInset, .y = top + spot.start, .width = kDeep, .height = spot.length};
+        break;
+      case Edge::kRight:
+        rect = Rect{.x = left + width + kGap + kInset, .y = top + spot.start, .width = kDeep, .height = spot.length};
+        break;
+    }
+    places_[count_++] = ButtonPlace{.button = spot.button, .label = spot.label, .rect = rect};
+  }
 
   if (turn == ViewTurn::kAsPanel) {
-    // A quarter-turn anticlockwise: what was at the right is at the top, and
-    // what was at the bottom is at the right.
-    const int across = size_.width;
-    const auto turned = [across](Rect r) {
-      return Rect{.x = r.y, .y = across - r.x - r.width, .width = r.height, .height = r.width};
-    };
-    panel_ = turned(panel_);
-    for (ButtonPlace& place : buttons_) {
-      place.rect = turned(place.rect);
+    // Turned back to the panel's own way: as many quarter-turns clockwise
+    // as, with the turn for reading, make a whole turn.
+    const unsigned turns = (4 - static_cast<unsigned>(device.turn)) % 4;
+    for (unsigned i = 0; i < turns; ++i) {
+      panel_ = TurnedClockwise(panel_, down);
+      for (ButtonPlace& place : std::span(places_).first(count_)) {
+        place.rect = TurnedClockwise(place.rect, down);
+      }
+      std::swap(across, down);
     }
-    size_ = core::DisplaySize{.width = size_.height, .height = size_.width};
   }
+  size_ = core::DisplaySize{.width = static_cast<std::uint16_t>(across), .height = static_cast<std::uint16_t>(down)};
+}
+
+bool DeviceLayout::Has(core::Button button) const noexcept {
+  for (const ButtonPlace& place : Places()) {
+    if (place.button == button) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::optional<core::Button> DeviceLayout::ButtonAt(float x, float y) const noexcept {
-  for (const ButtonPlace& place : buttons_) {
+  for (const ButtonPlace& place : Places()) {
     if (place.rect.Contains(x, y)) {
       return place.button;
     }

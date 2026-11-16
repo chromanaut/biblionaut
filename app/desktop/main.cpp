@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include "core/heap.h"
 #include "desktop/panel_window.h"
 #include "desktop/sim_display.h"
+#include "desktop/sim_power.h"
 #include "hw/platform.h"
 #include "reader/app.h"
 
@@ -40,8 +42,10 @@ void PrintUsage(const char* program) {
                program);
 }
 
-// `services` with other buttons.
-bn::reader::Services WithButtons(const bn::reader::Services& services, bn::core::Input& input) {
+// The services of one run: `services` with other buttons, and begun for
+// another reason.
+bn::reader::Services ForRun(const bn::reader::Services& services, bn::core::Input& input,
+                            bn::core::StartCause startCause) {
   return bn::reader::Services{.clock = services.clock,
                               .traceSync = services.traceSync,
                               .serial = services.serial,
@@ -50,7 +54,82 @@ bn::reader::Services WithButtons(const bn::reader::Services& services, bn::core:
                               .display = services.display,
                               .input = input,
                               .storage = services.storage,
-                              .startCause = services.startCause};
+                              .power = services.power,
+                              .startCause = startCause};
+}
+
+// What the environment asks of every run.
+struct Checks {
+  bool planes = false;
+  bool storage = false;
+  bool books = false;
+  bool booksBrief = false;
+  bool layout = false;
+};
+
+// How long the application runs: until the window is closed, or until a
+// time.
+struct Limit {
+  bool untilClosed = false;
+  std::chrono::steady_clock::time_point deadline;
+
+  bool Over() const { return !untilClosed && std::chrono::steady_clock::now() >= deadline; }
+};
+
+// How one run of the application came to an end.
+enum class Ended : std::uint8_t {
+  kOver,    // The time was up, or the window was closed.
+  kAsleep,  // The device was put to sleep.
+};
+
+// One run of the application, from its start to its end.
+Ended Run(const bn::reader::Services& services, const Checks& checks, bn::hw::PanelWindow* window, const Limit& limit) {
+  bn::reader::App app(services);
+  if (checks.planes) {
+    app.CheckPanelPlanes();
+  }
+  if (checks.storage) {
+    app.CheckStorage();
+  }
+  if (checks.books) {
+    app.CheckBooks(checks.booksBrief);
+  }
+  if (checks.layout) {
+    app.CheckLayout();
+  }
+  app.Start();
+  while (!limit.Over()) {
+    app.Tick();
+    if (app.Asleep()) {
+      return Ended::kAsleep;  // It has sent everything already.
+    }
+    if (window != nullptr && !window->Pump()) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  app.Tick();
+  app.Flush();
+  return app.Asleep() ? Ended::kAsleep : Ended::kOver;
+}
+
+// With the device asleep and no application running, waits for Power to
+// be pressed, passing over every other button. False if the time is up, or
+// the window is closed, first.
+bool WaitForPower(bn::core::Input& input, bn::hw::PanelWindow* window, const Limit& limit) {
+  while (!limit.Over()) {
+    if (window != nullptr && !window->Pump()) {
+      return false;
+    }
+    bn::core::InputEvent event{};
+    while (input.Next(event)) {
+      if (event.kind == bn::core::InputEventKind::kPress && event.button == bn::core::Button::kPower) {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
 }
 
 }  // namespace
@@ -78,60 +157,52 @@ int main(int argc, char** argv) {
 
   bn::core::SetHeapFailureHandler(OnHeapFailure);
 
-  // The window is opened first, so that the application is given its
-  // buttons. It shows the same simulated panel as there is without it.
-  std::unique_ptr<bn::hw::PanelWindow> window;
-  if (withWindow) {
-    window = bn::hw::PanelWindow::Open(bn::hw::SystemClock(), bn::hw::SystemSimDisplay(), bn::hw::SystemInput());
-    if (window == nullptr) {
-      return 1;
-    }
-  }
-  const bn::reader::Services defaults = bn::reader::DefaultServices();
-  bn::reader::App app(window != nullptr ? WithButtons(defaults, window->Buttons()) : defaults);
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any other thread exists.
-  if (std::getenv("BN_PLANE_CHECK") != nullptr) {
-    app.CheckPanelPlanes();
-  }
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
-  const bool checkStorage = std::getenv("BN_STORAGE_CHECK") != nullptr;
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
-  const bool checkBooks = std::getenv("BN_BOOK_CHECK") != nullptr;
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
-  const bool checkLayout = std::getenv("BN_LAYOUT_CHECK") != nullptr;
-  if (static_cast<int>(checkStorage) + static_cast<int>(checkBooks) + static_cast<int>(checkLayout) > 1) {
+  // NOLINTBEGIN(concurrency-mt-unsafe): read once, before any other thread exists.
+  const Checks checks{.planes = std::getenv("BN_PLANE_CHECK") != nullptr,
+                      .storage = std::getenv("BN_STORAGE_CHECK") != nullptr,
+                      .books = std::getenv("BN_BOOK_CHECK") != nullptr,
+                      .booksBrief = std::getenv("BN_BOOK_CHECK_BRIEF") != nullptr,
+                      .layout = std::getenv("BN_LAYOUT_CHECK") != nullptr};
+  // NOLINTEND(concurrency-mt-unsafe)
+  if (static_cast<int>(checks.storage) + static_cast<int>(checks.books) + static_cast<int>(checks.layout) > 1) {
     std::fprintf(stderr,
                  "BN_STORAGE_CHECK, BN_BOOK_CHECK and BN_LAYOUT_CHECK would get in each other's way: set one of "
                  "them.\n");
     return 2;
   }
-  if (checkStorage) {
-    app.CheckStorage();
+
+  // The window is opened first, so that the application is given its
+  // buttons. It shows the same simulated panel as there is without it.
+  std::unique_ptr<bn::hw::PanelWindow> window;
+  if (withWindow) {
+    window = bn::hw::PanelWindow::Open(bn::hw::SystemClock(), bn::hw::SystemSimDisplay(), bn::hw::SystemSimPower(),
+                                       bn::hw::SystemInput());
+    if (window == nullptr) {
+      return 1;
+    }
   }
-  if (checkBooks) {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
-    app.CheckBooks(std::getenv("BN_BOOK_CHECK_BRIEF") != nullptr);
-  }
-  if (checkLayout) {
-    app.CheckLayout();
-  }
-  app.Start();
+  const bn::reader::Services defaults = bn::reader::DefaultServices();
+  bn::core::Input& buttons = window != nullptr ? window->Buttons() : defaults.input;
   std::printf("Biblionaut %s (%s)\n", bn::reader::Version(), bn::hw::PortName());
   if (window != nullptr) {
     std::printf("%s", bn::hw::PanelWindow::KeysHelp());
   }
   std::fflush(stdout);
 
-  const bool untilClosed = window != nullptr && !runMsGiven;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(runMs);
-  while (untilClosed || std::chrono::steady_clock::now() < deadline) {
-    app.Tick();
-    if (window != nullptr && !window->Pump()) {
+  const Limit limit{.untilClosed = window != nullptr && !runMsGiven,
+                    .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(runMs)};
+  // Each sleep ends a run, as it does on a device, and waking begins the
+  // next. What a device would lose in its sleep, the desktop keeps: the
+  // panel's simulation, the scripted presses still to come, the counters.
+  bn::core::StartCause cause = defaults.startCause;
+  while (Run(ForRun(defaults, buttons, cause), checks, window.get(), limit) == Ended::kAsleep) {
+    std::printf("Asleep: Power wakes it.\n");
+    std::fflush(stdout);
+    if (!WaitForPower(buttons, window.get(), limit)) {
       break;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    bn::hw::SystemSimPower().Wake();
+    cause = bn::core::StartCause::kDeepSleep;
   }
-  app.Tick();
-  app.Flush();
   return 0;
 }

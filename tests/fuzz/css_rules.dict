@@ -1,0 +1,48 @@
+# Pieces of what the target for the table of rules and the cascade is
+# given: of the selectors that make a table, and of the lines that stand
+# for a document. Given to the fuzzing engine (tools/fuzz.py), which would
+# be a long time coming to them by changing bytes. One piece a line, in
+# quotes.
+
+# Between the sheets, and the lines of a document
+"\x00"
+"\x0a<"
+"\x0a>\x0a"
+"<p\x0a"
+"<div|class|a b\x0a"
+"|class|"
+"|id|"
+"|style|"
+"|lang|en-GB"
+"|epub:type|"
+"|hidden|"
+
+# Selectors
+" > "
+" + "
+" "
+", "
+"*"
+".first"
+"#end"
+"::first-letter"
+":link"
+"[hidden]"
+"[epub|type~=\"note\"]"
+"[*|"
+"~="
+"|="
+"^="
+"$="
+"*="
+" i]"
+
+# What a rule sets
+" { float: left }\x0a"
+" { margin: 0 1px }\x0a"
+"{ width: 99999px }"
+"font-family: A, \"b c\";"
+"text-indent: 1.5em;"
+" !important"
+"@media not amzn-mobi {"
+"}"

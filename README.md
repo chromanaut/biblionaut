@@ -849,7 +849,7 @@ entry has to agree.
 `epub/css.h` reads CSS: a book's style sheets, the `<style>` elements of
 its documents and the `style` attributes of their elements. It reads a
 sheet and says what is in it. Which rules apply to which element is not
-its business, and nothing does that yet.
+its business: that is the next section's.
 
 - A sheet is read from a `ByteSource`, 1 KB at each `Step()`, and never
   held whole. What is found is told to a `CssHandler` as it is found: a
@@ -1002,7 +1002,11 @@ ok 660f898c     38     89     53 epub/css/core.css
 ok b1313d47      9     27     18 epub/css/local.css
 ok 4bbcc118     15     33     13 epub/css/se.css
 css_sheets=3 css_failed=0 css_bytes=10955 css_rules=62 css_declarations=149 css_dropped=84
+css_table_bytes=3148 css_table_names=56 css_table_nodes=31 css_table_rules=55 css_table_selectors=95 css_table_left_out=0 css_table_sheets_left_out=0
 ```
+
+The last line is what keeping all of those rules in one table takes (the
+next section).
 
 The unit tests say what the reader should make of sheets written for
 them: every property and unit, every kind of selector and of mistake, the
@@ -1046,6 +1050,153 @@ Standard Ebooks' sheets keep for one maker's reading application. Before
 `+` and attributes were read it was one in eight. In 335 books from trade
 publishers it is one in two hundred.
 
+## A book's rules, and what they come to
+
+`epub/css_rules.h` keeps the rules that the reader of CSS tells of, and
+says what they come to for each element of a document.
+
+- **`CssRules`** is the table. It is what a `CssReader` is handed as its
+  handler, a sheet at a time, and it keeps every sheet of a book in one
+  block of memory that the caller gives it: each name once, a selector in
+  about 12 bytes and a declaration in about 4. Of a rule that sets a
+  property more than once it keeps the declaration that would win. A rule
+  there is no room for is left out whole and counted, and the rules
+  before it are as they were.
+- **`CssCascade`** goes through a document beside its parser. Told of each
+  element as it opens and closes, it fills in a `CssStyle`: for each
+  property that some rule set, the value that wins, and the same again
+  for the element's first letter (`p::first-letter`). What wins is
+  decided as CSS has it: `!important` first, then the element's own
+  `style` attribute over any rule, then the selector's rank, then the
+  later sheet, then what was written later.
+- **A document is given the sheets it asks for** and no others, in the
+  order it asks for them: every rule is marked with its sheet, and a
+  cascade passes over the rules of sheets it was not given. Finding out
+  which sheets a document links is not here yet.
+- **A document's own rules** (its `<style>` elements) are added after the
+  book's and taken away again: `Here()` marks where the table stands and
+  `BackTo()` forgets everything added since.
+- **Nothing of the document is kept** but a few bytes for each element
+  that is open. A selector can ask anything of the elements an element is
+  inside and of the ones before it (`hgroup > h2 + p + p`, `tr + tr td`);
+  each different thing asked is a *node*, and for an open element there
+  is a bit for each node, twice: which nodes the element is, and which
+  the last element to close inside it was. A node for `h2 + p` is "a `p`,
+  after an element that is the node `h2`", so one remembered element
+  serves a row of `+` of any length. A book with no such selectors, which
+  is most trade books, keeps nothing at all. An element deeper than there
+  is memory for is still given the rules that ask nothing of the elements
+  around it.
+- **Values are as the sheets wrote them.** `inherit`, an em and "larger"
+  are given back as they are: what an element takes from the one it is
+  inside is for whatever keeps the styles of the open elements, which is
+  not built.
+- **Work is bounded.** A name is looked for among the table's by halving;
+  only the selectors kept under an element's id, its classes or its name
+  are tried on it, and those kept under none. `CssCascade::MostWorkFor()`
+  says the most one element can cost for a table of a given size, and
+  the tests and the fuzz target hold every element to it. In real books
+  the dearest element costs a few hundred steps.
+
+`bn-css cascade` runs it on a document and the sheets it is to be given:
+
+```
+./build/host/tools/css/bn-css cascade chapter.xhtml book.css
+./build/host/tools/css/bn-css cascade --in book.epub OEBPS/chapter.xhtml OEBPS/book.css
+```
+
+With the sheet of the last section, and this for the document,
+
+```
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<body>
+<section epub:type="dedication"><p>For A.</p></section>
+<h2>One</h2>
+<p>It began.</p>
+<p class="first" style="margin-top: 1em">And went <i>on</i>.</p>
+</body>
+</html>
+```
+
+it prints a line for each element that opens (`<`) and closes (`>`), and
+between them what is set for it (`P`) and for its first letter (`F`). Here
+from the heading on:
+
+```
+< h2
+P text-align: center
+P margin-top: 2em
+P margin-right: 0px
+P margin-bottom: 1em
+P margin-left: 0px
+P break-before: always
+>
+< p
+P text-indent: 0px
+P margin-top: 0px
+P margin-right: 0px
+P margin-bottom: 0px
+P margin-left: 0px
+>
+< p
+P text-indent: 0px
+P margin-top: 1em
+P margin-right: 0px
+P margin-bottom: 0px
+P margin-left: 0px
+F font-size: 3em
+F line-height: 1
+F float: left
+< i
+>
+>
+```
+
+The first paragraph has no indent because it comes after the heading
+(`h2 + p`), the second because of its class; the second's top margin is
+from its own `style`. With `--sum` it prints one line instead, with the
+checksum of those lines and what the table and the cascade took:
+
+```
+cascade ec12c5fe elements=8 lines=47 table_bytes=347 nodes=2 level_bytes=2 left_out=0 too_deep=0 too_many_classes=0 most_work=23
+```
+
+**How much memory.** `bn-css book` puts every sheet of a book into one
+table and says what that took, and `tools/check-books.py --css-report`
+adds it up over a folder. Over `corpus/`:
+
+```
+A table of all a book's rules, in the 28 books with style sheets:
+  bytes: 2188 at the median, 4090 for nine in ten, 4498 at the most
+  rules kept: 43 at the median, 87 for nine in ten, 105 at the most
+  nodes: 7 at the median, 42 for nine in ten, 51 at the most
+  books whose table is over 8 KB, 12 KB, 16 KB, 20 KB and 24 KB: 0, 0, 0, 0, 0
+  rules left out of a table of 64 KB: 0
+  bytes kept for each open element, in the documents the cascade was tried on: 2 at the median, 10 for nine in ten, 14 at the most
+  the most work for one element: 41 at the median, 119 for nine in ten, 150 at the most
+```
+
+In 335 books from trade publishers a table is 4.1 KB at the median,
+11.4 KB for nine in ten and 24.2 KB at the most, about 48 bytes a rule;
+eleven of them need more than 16 KB. Their sheets are mostly one class to
+a rule, and in the largest the names of the classes are two fifths of
+the table.
+
+**How it is tested.** The unit tests give it sheets and documents written
+for each thing it has to get right, and beside it a second working-out of
+the same rules (`tests/support/css_reference.h`) that keeps the whole
+document as a tree and tries every selector on every element; the two
+have to agree on every element of four hundred sets of sheets and twelve
+hundred documents made at random, with the cascade's memory sometimes cut
+to a few bytes. `e2e.CssCascade` compares `bn-css cascade` with a third
+working-out, in Python (`tests/e2e/css_cascade_tool.py`), which takes
+its rules from the second reading of CSS, so that nothing of the path
+from a sheet's bytes to an element's style is checked only against
+itself. `tools/check-books.py` runs that comparison on real books: on
+the first few documents of each, with the sheets each one links. The two
+agree on all 1,643,149 properties set for 384,305 elements of 2,909
+documents in the 520 books they were tried on.
+
 ## Real books
 
 The tests make most of the books they read, so that a test can say exactly
@@ -1072,7 +1223,7 @@ tools/check-books.py --tools build/host ~/books
 ```
 
 ```
-28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1294 rules.
+28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 42379 properties set for 15299 elements of 141 documents.
 28 files listed in SHA256SUMS: all there and unchanged.
 The tools and Python agree about every book.
 ```
@@ -1093,6 +1244,11 @@ The tools and Python agree about every book.
   the rules, the declarations and the count of things passed over that a
   second reading of it comes to (Style sheets, above, has what that
   reading is).
+- **What the rules come to**: for the first few documents of a book, up
+  to 1,500 elements between them, what `bn-css cascade` gives each element
+  is what a second working-out gives it, by checksum; each document with
+  the sheets it links and those they import, which Python finds. The
+  second working-out is slow, which is why it is not every document.
 
 Where they differ it prints a line for each difference, starting
 `DIFFERENT`, and ends with 1. It takes the tools from `build/host-release`
@@ -1137,6 +1293,7 @@ call may.
 | `package` | `epub::Package`, a step at a time, twice | No step reads more than five blocks from storage. Nothing is said of the book until the reading is over. A book that was read has documents, each found again by its entry's name. A second reading says what the first said |
 | `toc` | `epub::TocReader`, a step at a time, twice, with a handler that may ask for no more | No step reads more than five blocks. Every label is whole characters with its spaces collapsed, within its length; every entry points at a document of the book or at none. A stopped reading says so |
 | `css` | `epub::CssReader`, twice, with the sheet cut up two ways; and the same bytes as a `style` attribute | A step asks its source once, for 1 KB. A rule is told whole and in order. A selector has no more parts or classes than there is room for, asks no more of attributes, and has a rank its parts account for. A number is within its bounds, and not below zero where the property cannot be. The reader's counts are the counts of what it told. Both readings tell the same |
+| `css_rules` | `epub::CssRules` and `epub::CssCascade`: up to four sheets into a table of one of four sizes, a document gone through with a cascade that has one of four amounts of memory, the table taken back to before its last sheet, and the document gone through again | The table stays inside its memory. If it left no rule out, every element and every first letter is given exactly what a plain working-out of the same rules gives it (`tests/support/css_reference.h`). No element takes more work than `MostWorkFor()` says. A table taken back is the size it was and says of the document what a table never told of the last sheet says; and it takes the sheet again to the same end. |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
 | `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
 | `paragraph` | `layout::ParagraphSetter`, with a paragraph's text in runs of up to seven styles and line ends asked for, on lines from 1 wide to 30,000, measured four ways | A paragraph is done with in a number of calls that depends only on its length. No call does more than `MostWorkFor()` allows, gives the breaker more than one item, asks the hyphenator about more than one word, or has more than a word's worth of bytes measured. The lines hold all the text once and in order. Each is as wide as its text adds up to and has the places between words it says; one is only too wide for a single character that is. The measure is never given a soft hyphen, nor a piece that begins inside a character. The lines are the same when the text is offered all at once |

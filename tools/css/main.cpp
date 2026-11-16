@@ -1,6 +1,8 @@
 // bn-css: reads CSS with the reader the firmware reads it with, and says
 // what it found: for one sheet, every rule; for an EPUB, a line for each
-// of its style sheets and a count of what was passed over.
+// of its style sheets and a count of what was passed over; and for a
+// document and the sheets it is given, what the rules come to for each of
+// its elements.
 //
 // What is found is written one thing to a line, in a form made to be
 // compared with what another reader makes of the same sheet:
@@ -24,6 +26,14 @@
 // A length is written as a number and its unit, in pixels where the sheet
 // had points or inches. A backslash, a line end, a tab and a carriage
 // return in any text are written as \\, \n, \t and \r.
+//
+// What the rules come to for a document's elements is written the same
+// way:
+//
+//   < name               an element opens
+//   P property: value    something that is set for it, the value that wins
+//   F property: value    something that is set for its first letter
+//   >                    the element closes
 
 #include <algorithm>
 #include <array>
@@ -32,6 +42,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -44,6 +55,8 @@
 #include "core/inflate.h"
 #include "core/storage.h"
 #include "epub/css.h"
+#include "epub/css_rules.h"
+#include "epub/xml.h"
 #include "epub/zip.h"
 #include "support/one_file.h"
 
@@ -58,11 +71,17 @@ using bn::epub::ZipStatus;
 // How much of what was passed over is written out, at the most.
 constexpr std::size_t kMostDroppedText = 80;
 
+// What `cascade` gives the parser of a document, which is far more than a
+// document needs, and the cascade for the elements that are open.
+constexpr std::size_t kParserBytes = 1024UL * 1024UL;
+constexpr std::size_t kCascadeBytes = 4096;
+
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s rules FILE\n"
                "       %s style TEXT\n"
                "       %s book FILE [--dropped]\n"
+               "       %s cascade [--in BOOK] [--sum] DOCUMENT SHEET...\n"
                "\n"
                "Reads CSS the way the firmware does.\n"
                "\n"
@@ -75,14 +94,27 @@ void PrintUsage(const char* program) {
                "  book   reads every style sheet in the EPUB (or other ZIP file) FILE, those whose\n"
                "         names end in .css, and prints for each: how it ended, the checksum\n"
                "         (CRC-32) of what `rules` would print for it, its rules, the declarations\n"
-               "         in them, how many things were passed over, and its name; and at the end\n"
-               "         what all of them came to\n"
+               "         in them, how many things were passed over, and its name; at the end what\n"
+               "         all of them came to; and then what keeping all their rules in one table\n"
+               "         takes: its bytes, and the names, nodes, rules and selectors in it, and how\n"
+               "         many rules it had to leave out\n"
+               "  cascade  keeps the rules of each SHEET in a table, goes through the XML file\n"
+               "         DOCUMENT with them, the first sheet's rules applying first, and prints for\n"
+               "         each element what they come to:\n"
+               "           < name   an element opens      >   it closes\n"
+               "           P property: value   something set for it, the value that wins\n"
+               "           F property: value   something set for its first letter\n"
                "\n"
                "  --dropped  with book: after that, a line for each different thing that was\n"
                "             passed over: `dropped`, how many times, its kind, and what it was\n"
+               "  --in BOOK  with cascade: DOCUMENT and each SHEET are the names of entries in the\n"
+               "             EPUB (or other ZIP file) BOOK\n"
+               "  --sum      with cascade: print one line in place of those, with the checksum\n"
+               "             (CRC-32) of them, how many elements and lines there were, and what\n"
+               "             the table and the cascade took\n"
                "\n"
                "Ends with 0, or 1 if something could not be read.\n",
-               program, program, program);
+               program, program, program, program);
 }
 
 std::string Escaped(std::string_view raw) {
@@ -229,6 +261,108 @@ class Writer final : public bn::epub::CssHandler {
   std::uint32_t lines_ = 0;
 };
 
+// Tells two handlers of the same sheet.
+class Both final : public bn::epub::CssHandler {
+ public:
+  Both(bn::epub::CssHandler& first, bn::epub::CssHandler& second) : first_(first), second_(second) {}
+
+  void OnRuleBegin() noexcept override {
+    first_.OnRuleBegin();
+    second_.OnRuleBegin();
+  }
+  void OnSelector(const bn::epub::CssSelector& selector) noexcept override {
+    first_.OnSelector(selector);
+    second_.OnSelector(selector);
+  }
+  void OnDeclaration(const bn::epub::CssDeclaration& declaration) noexcept override {
+    first_.OnDeclaration(declaration);
+    second_.OnDeclaration(declaration);
+  }
+  void OnRuleEnd() noexcept override {
+    first_.OnRuleEnd();
+    second_.OnRuleEnd();
+  }
+  void OnImport(std::string_view url) noexcept override {
+    first_.OnImport(url);
+    second_.OnImport(url);
+  }
+  void OnDropped(CssDropped dropped, std::string_view text) noexcept override {
+    first_.OnDropped(dropped, text);
+    second_.OnDropped(dropped, text);
+  }
+
+ private:
+  bn::epub::CssHandler& first_;
+  bn::epub::CssHandler& second_;
+};
+
+// The lines of what the rules come to for a document's elements, written
+// out or only added up.
+class Lines {
+ public:
+  explicit Lines(bool print) : print_(print) {}
+
+  void Add(const std::string& line) {
+    if (print_) {
+      std::fwrite(line.data(), 1, line.size(), stdout);
+      std::fputc('\n', stdout);
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): characters, as the bytes they are.
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(line.data());
+    checksum_ = bn::core::Crc32({bytes, line.size()}, checksum_);
+    const std::array<std::uint8_t, 1> end = {'\n'};
+    checksum_ = bn::core::Crc32(end, checksum_);
+    ++count_;
+  }
+
+  std::uint32_t Checksum() const { return checksum_; }
+  std::uint32_t Count() const { return count_; }
+
+ private:
+  bool print_;
+  std::uint32_t checksum_ = 0;
+  std::uint32_t count_ = 0;
+};
+
+// Goes through a document beside its parser, asking the cascade about
+// each element and writing down what it says.
+class Styler final : public bn::epub::XmlHandler {
+ public:
+  Styler(bn::epub::CssCascade& cascade, Lines& lines) : cascade_(cascade), lines_(lines) {}
+
+  void OnStartElement(std::string_view name, const bn::epub::XmlAttributes& attributes) noexcept override {
+    bn::epub::CssStyle style;
+    bn::epub::CssStyle firstLetter;
+    cascade_.Open(name, attributes, style, firstLetter);
+    ++elements;
+    lines_.Add("< " + Escaped(name));
+    Set('P', style);
+    Set('F', firstLetter);
+  }
+  void OnEndElement(std::string_view /*name*/) noexcept override {
+    cascade_.Close();
+    lines_.Add(">");
+  }
+  void OnText(std::string_view /*text*/) noexcept override {}
+  void OnEntity(std::string_view /*name*/) noexcept override {}
+
+  std::uint32_t elements = 0;
+
+ private:
+  void Set(char mark, const bn::epub::CssStyle& style) {
+    for (std::size_t i = 0; i < bn::epub::kCssProperties; ++i) {
+      const auto property = static_cast<bn::epub::CssProperty>(i);
+      if (style.Has(property)) {
+        lines_.Add(std::string(1, mark) + " " + bn::epub::CssPropertyName(property) + ": " +
+                   Escaped(ValueText(style[property])));
+      }
+    }
+  }
+
+  bn::epub::CssCascade& cascade_;
+  Lines& lines_;
+};
+
 std::uint32_t DroppedInAll(const CssReader& reader) {
   std::uint32_t all = 0;
   for (std::size_t kind = 0; kind < bn::epub::kCssDroppedKinds; ++kind) {
@@ -290,6 +424,12 @@ int Book(const std::string& path, bool printDropped) {
   std::vector<char> name(65536);
 
   Writer writer(false);
+  // Every sheet's rules also go into one table, as large as a table can
+  // be, to say what keeping them takes.
+  std::vector<std::uint8_t> tableMemory(bn::epub::CssRules::kMaxBytes);
+  bn::epub::CssRules table(tableMemory);
+  Both both(writer, table);
+  std::uint32_t unnumbered = 0;  // Sheets after the most a table numbers.
   CssReader reader;
   bn::epub::ZipArchive::Cursor cursor;
   std::uint32_t sheets = 0;
@@ -315,8 +455,12 @@ int Book(const std::string& path, bool printDropped) {
     ++sheets;
     writer.Restart();
     const bool opened = next == ZipStatus::kOk && entryReader.Open(entries, entry) == ZipStatus::kOk;
+    std::uint8_t number = 0;
+    const bool numbered = table.BeginSheet(number);
+    unnumbered += numbered ? 0 : 1;
     const bool read =
-        opened && reader.Read(entryReader, writer) == CssStatus::kOk && entryReader.Status() == ZipStatus::kOk;
+        opened && reader.Read(entryReader, both) == CssStatus::kOk && entryReader.Status() == ZipStatus::kOk;
+    table.EndSheet();
     if (!read) {
       std::printf("unreadable -------- %6u %6u %6u %s\n", 0U, 0U, 0U, Escaped(entryName).c_str());
       ++failed;
@@ -333,6 +477,12 @@ int Book(const std::string& path, bool printDropped) {
   std::printf("css_sheets=%u css_failed=%u css_bytes=%llu css_rules=%u css_declarations=%u css_dropped=%u\n",
               static_cast<unsigned>(sheets), static_cast<unsigned>(failed), static_cast<unsigned long long>(bytes),
               static_cast<unsigned>(rules), static_cast<unsigned>(declarations), static_cast<unsigned>(dropped));
+  std::printf(
+      "css_table_bytes=%zu css_table_names=%zu css_table_nodes=%zu css_table_rules=%u css_table_selectors=%u "
+      "css_table_left_out=%u css_table_sheets_left_out=%u\n",
+      table.Bytes(), table.Names(), table.Nodes(), static_cast<unsigned>(table.Rules()),
+      static_cast<unsigned>(table.Selectors()), static_cast<unsigned>(table.LeftOutForRoom() + table.LeftOutForNodes()),
+      static_cast<unsigned>(unnumbered));
   if (printDropped) {
     for (const auto& [what, count] : writer.tally) {
       std::printf("dropped %u %s: ", static_cast<unsigned>(count), what.first.c_str());
@@ -341,6 +491,120 @@ int Book(const std::string& path, bool printDropped) {
     }
   }
   return failed == 0 ? 0 : 1;
+}
+
+// What `cascade` reads from: files of the computer's, or the entries of
+// one ZIP file.
+class Reading {
+ public:
+  explicit Reading(const std::string& book) : inBook_(!book.empty()), storage_(book) {}
+
+  // Gets the book ready, if there is one.
+  bool Start() {
+    if (!inBook_) {
+      return true;
+    }
+    return storage_.Start() == StorageStatus::kOk &&
+           directory_.Open(storage_, "/zip", bn::core::OpenMode::kRead) == StorageStatus::kOk &&
+           entries_.Open(storage_, "/zip", bn::core::OpenMode::kRead) == StorageStatus::kOk &&
+           archive_.Open(directory_) == ZipStatus::kOk;
+  }
+
+  // The source for what is at `name`, or null if it cannot be read. Good
+  // until the next is asked for.
+  bn::core::ByteSource* Open(const std::string& name) {
+    if (inBook_) {
+      bn::epub::ZipEntry entry;
+      if (archive_.Find(name, entry) != ZipStatus::kOk || entryReader_.Open(entries_, entry) != ZipStatus::kOk) {
+        return nullptr;
+      }
+      return &entryReader_;
+    }
+    file_.emplace(name);
+    fileBlock_.emplace(fileBuffer_);
+    if (file_->Start() != StorageStatus::kOk ||
+        fileBlock_->Open(*file_, "/file", bn::core::OpenMode::kRead) != StorageStatus::kOk) {
+      return nullptr;
+    }
+    return &*fileBlock_;
+  }
+
+  // Whether what was opened last was read without a fault of the ZIP
+  // file's.
+  bool Sound() const { return !inBook_ || entryReader_.Status() == ZipStatus::kOk; }
+
+ private:
+  bool inBook_;
+  bn::tools::OneFile storage_;
+  std::array<std::uint8_t, 4096> directoryBuffer_{};
+  std::array<std::uint8_t, 4096> entryBuffer_{};
+  std::array<std::uint8_t, 4096> fileBuffer_{};
+  bn::core::BlockFile directory_{directoryBuffer_};
+  bn::core::BlockFile entries_{entryBuffer_};
+  bn::epub::ZipArchive archive_;
+  std::vector<std::uint8_t> window_ = std::vector<std::uint8_t>(bn::core::Inflater::kWindowBytes);
+  bn::epub::ZipEntryReader entryReader_{window_};
+  std::optional<bn::tools::OneFile> file_;
+  std::optional<bn::core::BlockFile> fileBlock_;
+};
+
+int Cascade(const std::string& book, bool sum, const std::string& document, const std::vector<std::string>& sheets) {
+  Reading reading(book);
+  if (!reading.Start()) {
+    std::fprintf(stderr, "error: cannot read %s\n", book.c_str());
+    return 1;
+  }
+
+  // The rules of every sheet, in a table as large as a table can be.
+  std::vector<std::uint8_t> tableMemory(bn::epub::CssRules::kMaxBytes);
+  bn::epub::CssRules table(tableMemory);
+  std::vector<std::uint8_t> numbers;
+  CssReader reader;
+  for (const std::string& sheet : sheets) {
+    bn::core::ByteSource* source = reading.Open(sheet);
+    std::uint8_t number = 0;
+    if (source == nullptr || !table.BeginSheet(number)) {
+      std::fprintf(stderr, "error: cannot read %s\n", sheet.c_str());
+      return 1;
+    }
+    const bool read = reader.Read(*source, table) == CssStatus::kOk && reading.Sound();
+    table.EndSheet();
+    if (!read) {
+      std::fprintf(stderr, "error: %s: %s\n", sheet.c_str(), bn::epub::CssStatusName(reader.Status()));
+      return 1;
+    }
+    numbers.push_back(number);
+  }
+
+  bn::core::ByteSource* source = reading.Open(document);
+  if (source == nullptr) {
+    std::fprintf(stderr, "error: cannot read %s\n", document.c_str());
+    return 1;
+  }
+  std::vector<std::uint8_t> cascadeMemory(kCascadeBytes);
+  bn::epub::CssCascade cascade(table, cascadeMemory);
+  cascade.Begin(numbers);
+  Lines lines(!sum);
+  Styler styler(cascade, lines);
+  std::vector<std::uint8_t> parserMemory(kParserBytes);
+  bn::epub::XmlParser parser(parserMemory);
+  const bn::epub::XmlStatus status = parser.Parse(*source, styler);
+  if (status != bn::epub::XmlStatus::kOk || !reading.Sound()) {
+    std::fprintf(stderr, "error: %s: %s at line %u\n", document.c_str(), bn::epub::XmlStatusName(status),
+                 static_cast<unsigned>(parser.Line()));
+    return 1;
+  }
+  if (sum) {
+    std::printf(
+        "cascade %08x elements=%u lines=%u table_bytes=%zu nodes=%zu level_bytes=%zu left_out=%u too_deep=%u "
+        "too_many_classes=%u most_work=%llu\n",
+        static_cast<unsigned>(lines.Checksum()), static_cast<unsigned>(styler.elements),
+        static_cast<unsigned>(lines.Count()), table.Bytes(), table.Nodes(), cascade.LevelBytes(),
+        static_cast<unsigned>(table.LeftOutForRoom() + table.LeftOutForNodes()),
+        static_cast<unsigned>(cascade.TooDeep()), static_cast<unsigned>(cascade.TooManyClasses()),
+        static_cast<unsigned long long>(cascade.MostWork()));
+  }
+  return 0;
 }
 
 }  // namespace
@@ -355,6 +619,24 @@ int main(int argc, char** argv) {
   }
   if (command == "book" && (argc == 3 || (argc == 4 && std::strcmp(argv[3], "--dropped") == 0))) {
     return Book(argv[2], argc == 4);
+  }
+  if (command == "cascade") {
+    std::string book;
+    bool sum = false;
+    std::vector<std::string> names;
+    for (int i = 2; i < argc; ++i) {
+      const std::string argument = argv[i];
+      if (argument == "--in" && i + 1 < argc && book.empty()) {
+        book = argv[++i];
+      } else if (argument == "--sum") {
+        sum = true;
+      } else {
+        names.push_back(argument);
+      }
+    }
+    if (!names.empty()) {
+      return Cascade(book, sum, names.front(), {names.begin() + 1, names.end()});
+    }
   }
   PrintUsage(argv[0]);
   return 2;

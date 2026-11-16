@@ -469,8 +469,9 @@ def take_string(text: list[str], at: int) -> tuple[str | None, int]:
 ASKINGS = {"~": "~=", "|": "|=", "^": "^=", "$": "$=", "*": "*="}
 
 
-def take_attribute(text: list[str], at: int) -> tuple[str | None, int]:
-    """What is asked of an attribute in the brackets that open at `at`, as the tool writes it; None if it is not that."""
+def take_attribute(text: list[str], at: int) -> tuple[str | None, int, tuple | None]:
+    """What is asked of an attribute in the brackets that open at `at`, as the tool writes it, or None if it is not
+    that; where the brackets end; and the same as (name, sign, value, any prefix, any case)."""
 
     def spaces(at: int) -> int:
         while at < len(text) and text[at] in SPACE:
@@ -493,11 +494,11 @@ def take_attribute(text: list[str], at: int) -> tuple[str | None, int]:
     name_start = at
     name, at = take_name(text, at)
     if not name:
-        return None, at
+        return None, at, None
     if may_have_prefix and follows(at, "|") and text[at + 1] != "=":
         local, at = take_name(text, at + 1)
         if not local:
-            return None, at
+            return None, at, None
         name += ":" + local
 
     def named() -> str:
@@ -508,7 +509,7 @@ def take_attribute(text: list[str], at: int) -> tuple[str | None, int]:
 
     at = spaces(at)
     if at < len(text) and text[at] == "]":
-        return named() + "]", at + 1
+        return named() + "]", at + 1, (lower(name), "", "", any_prefix, False)
     if at < len(text) and text[at] == "=":
         asking = "="
         at += 1
@@ -516,27 +517,28 @@ def take_attribute(text: list[str], at: int) -> tuple[str | None, int]:
         asking = ASKINGS[text[at]]
         at += 2
     else:
-        return None, at
+        return None, at, None
     at = spaces(at)
     if at < len(text) and text[at] in "\"'":
         value, at = take_string(text, at)
         if value is None:
-            return None, at
+            return None, at, None
     else:
         value, at = take_name(text, at)
         if not value:
-            return None, at
+            return None, at, None
     any_case = False
     at = spaces(at)
     if at < len(text) and text[at] != "]":
         flag, at = take_name(text, at)
         if lower(flag) not in ("i", "s"):
-            return None, at
+            return None, at, None
         any_case = lower(flag) == "i"
         at = spaces(at)
     if at >= len(text) or text[at] != "]":
-        return None, at
-    return named() + asking + '"' + value + '"' + (" i" if any_case else "") + "]", at + 1
+        return None, at, None
+    return (named() + asking + '"' + value + '"' + (" i" if any_case else "") + "]", at + 1,
+            (lower(name), asking, value, any_prefix, any_case))
 
 
 def skip_brackets(text: list[str], at: int) -> int:
@@ -561,8 +563,12 @@ def skip_brackets(text: list[str], at: int) -> int:
     return at
 
 
-def read_selector(piece: str, out: list[str]) -> bool:
-    """One selector: its line, or why it was dropped. False if it was."""
+def read_selector(piece: str, out: list[str], shapes: list | None = None) -> bool:
+    """One selector: its line, or why it was dropped. False if it was.
+
+    A selector that is read is also added to `shapes`, if that is given, as what it asks: its parts from the
+    outermost, each (how it is joined to the one before, element, id, classes, what is asked of attributes), whether
+    it is for a first letter, and its rank."""
     text = list(piece.strip(SPACE))
 
     def drop(kind: str, what: str | None = None) -> bool:
@@ -570,6 +576,7 @@ def read_selector(piece: str, out: list[str]) -> bool:
         return False
 
     parts: list[str] = []
+    asked: list[tuple] = []
     class_total = 0
     attribute_total = 0
     ids = classes = elements = 0
@@ -604,6 +611,7 @@ def read_selector(piece: str, out: list[str]) -> bool:
         part_id = ""
         part_classes: list[str] = []
         part_attributes: list[str] = []
+        part_asked: list[tuple] = []
         anything = False
         if ch == "*":
             anything = True
@@ -626,10 +634,11 @@ def read_selector(piece: str, out: list[str]) -> bool:
             if mark == "[":
                 if attribute_total == MAX_ATTRIBUTES:
                     return drop("selector")
-                asked, at = take_attribute(text, at)
-                if asked is None:
+                shown_attribute, at, record = take_attribute(text, at)
+                if shown_attribute is None:
                     return drop("attribute selector")
-                part_attributes.append(asked)
+                part_attributes.append(shown_attribute)
+                part_asked.append(record)
                 attribute_total += 1
                 classes += 1
                 anything = True
@@ -679,11 +688,15 @@ def read_selector(piece: str, out: list[str]) -> bool:
         shown = (element + ("#" + part_id if part_id else "") + "".join("." + name for name in part_classes) +
                  "".join(part_attributes))
         parts.append(combinator + (shown or "*"))
+        asked.append((combinator.strip(" ") or (" " if combinator else ""), element, part_id, part_classes, part_asked))
         want_part = False
     if not parts or want_part:
         return drop("selector")
     out.append(f"S {min(ids, 255)},{min(classes, 255)},{min(elements, 255)} " + "".join(parts) +
                (" ::first-letter" if first_letter else ""))
+    if shapes is not None:
+        shapes.append({"parts": asked, "first_letter": first_letter,
+                       "rank": (min(ids, 255), min(classes, 255), min(elements, 255))})
     return True
 
 
@@ -761,8 +774,11 @@ def unwrapped(text: str) -> str:
 ESCAPES = str.maketrans({"\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r"})
 
 
-def read_css(data: bytes) -> list[bytes]:
-    """What `bn-css rules` prints for a sheet, a line to an item."""
+def read_css(data: bytes, rules: list | None = None) -> list[bytes]:
+    """What `bn-css rules` prints for a sheet, a line to an item.
+
+    Each rule that is told is also added to `rules`, if that is given: its selectors as read_selector() gives
+    them, and what it sets as (property, value, whether important), the value as it is printed."""
     source = data.decode("latin-1")
     # First, the sheet without its comments, each character marked with
     # whether it is only itself: inside quotes, or after a backslash.
@@ -916,10 +932,11 @@ def read_css(data: bytes) -> list[bytes]:
         if not block:
             continue
         selectors: list[str] = []
+        shapes: list[dict] = []
         rest = prelude
         while rest:
             cut = selector_end(rest)
-            read_selector(rest[:cut], selectors)
+            read_selector(rest[:cut], selectors, shapes)
             rest = rest[cut + 1:]
         told = any(line.startswith("S ") for line in selectors)
         opened = False
@@ -932,7 +949,16 @@ def read_css(data: bytes) -> list[bytes]:
             out.append("X rule: ")
             skip_block()
             continue
+        first = len(out)
         read_block()
+        if rules is not None:
+            sets = []
+            for line in out[first:]:
+                if line.startswith("D "):
+                    name, _, value = line[2:].partition(": ")
+                    important = value.endswith(" !important")
+                    sets.append((name, value[:-len(" !important")] if important else value, important))
+            rules.append({"selectors": shapes, "declarations": sets})
     return [line.translate(ESCAPES).encode("latin-1") for line in out]
 
 
@@ -1105,10 +1131,13 @@ def main() -> int:
         expect(result.returncode == 0, f"book.epub: bn-css ended with {result.returncode}: {result.stderr!r}")
         said = {}
         totals = b""
+        table: dict[str, int] = {}
         dropped: dict[bytes, int] = {}
         for line in result.stdout.split(b"\n")[:-1]:
             if line.startswith(b"css_sheets="):
                 totals = line
+            elif line.startswith(b"css_table_bytes="):
+                table = {key: int(value) for key, value in (item.split("=") for item in line.decode().split())}
             elif line.startswith(b"dropped "):
                 _, count, what = line.split(b" ", 2)
                 dropped[what] = int(count)
@@ -1140,6 +1169,20 @@ def main() -> int:
                f"book.epub: the totals are {totals!r}")
         expect(dropped == expected_dropped, "book.epub: what was passed over, by kind and text, is not what the second "
                                             f"reading passed over: {sorted(set(dropped.items()) ^ set(expected_dropped.items()))[:6]}")
+        # The table of all their rules keeps each rule that has a selector and sets something.
+        kept_rules = kept_selectors = 0
+        for name, data in list(made.items()) + [("../Capitals.CSS", b"P { MARGIN: 0 }")]:
+            rules: list[dict] = []
+            read_css(data, rules)
+            for rule in rules:
+                if rule["declarations"]:
+                    kept_rules += 1
+                    kept_selectors += len(rule["selectors"])
+        expect(table.get("css_table_rules") == kept_rules and table.get("css_table_selectors") == kept_selectors and
+               table.get("css_table_left_out") == 0 and table.get("css_table_sheets_left_out") == 0 and
+               0 < table.get("css_table_names", 0) < kept_selectors * 3 and table.get("css_table_bytes", 0) > kept_rules * 8,
+               f"book.epub: the table has {table}; the second reading keeps {kept_rules} rules and {kept_selectors} "
+               "selectors")
 
         # What cannot be read is said to be so.
         expect(subprocess.run([tool, "rules", str(work / "no-such-file.css")], capture_output=True,

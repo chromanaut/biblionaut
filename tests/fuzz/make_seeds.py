@@ -745,6 +745,198 @@ def css_seeds() -> None:
     seed("nothing", 0, b"")
 
 
+# ---- css_rules: byte 0 (how much memory, and how the sheets are given), then
+# ---- sheets and a document, a byte of zero between them ----
+
+RULES_SHEET = rb"""body { margin: 0 5%; font-family: Georgia, "Times New Roman", serif }
+h1, h2 { text-align: center; page-break-before: always; margin: 2em 0 1em; font-weight: bold }
+p { text-indent: 1.5em; margin: 0 }
+h2 + p, p.first, blockquote > p { text-indent: 0 }
+p.first::first-letter, .drop::first-letter { float: left; font-size: 3em; line-height: 1 }
+div.note p, div.note li > p { margin-left: 2em !important; font-size: 0.9em }
+#end, p#end.first { text-align: right; margin-left: 0 }
+.i { font-style: italic } .b.i { font-weight: bold } .I { text-decoration: underline }
+section[epub|type~="dedication"] > p, [hidden], a[href^='#'] { text-align: center; display: none }
+[lang|=en] i, [title$="s" i], [ *|type = "note" ] p { vertical-align: super }
+hgroup > h2 + p + p, hgroup > h2 + p + p + p, tr + tr td, td + td { font-variant: small-caps }
+ol > li + li > p, div div div > p, * + blockquote { margin-top: 1em; margin-top: 2em; padding: 1px 2px }
+a > b c, a > b > c d { width: 50%; height: auto; width: 99999px }
+"""
+
+RULES_SECOND_SHEET = rb"""p { text-indent: 3em; text-align: left !important }
+.first { text-indent: 2em; float: right }
+h2 + p { line-height: 1.2 }
+div.note p { margin-left: 3em !important }
+* { break-inside: avoid }
+"""
+
+# A document's own rules, as the last sheet: names before and after the
+# others in order, more selectors under old names, new nodes.
+RULES_OWN_SHEET = rb"""p { float: right } a.b > p.a, zz + p.first { width: 2px } * { height: 1px }
+i { font-family: A Face } div p + q, aa + aa + p { float: none } [k*=c i] > [k] + .first { width: 3px }
+"""
+
+# What is asked of attributes and is not so, in each way of asking; an id
+# asked of an element outside; something imported and something passed
+# over; and what is important written before what is not.
+RULES_ASKING_SHEET = rb"""@import "more.css";
+[title~='v w'] p, [title~=''] p, [title~=zz] i, [lang|=en-GB] i, [title*=zzz] p, [k^=''] p { width: 4px }
+#start > i, #nope p, p#nope.first, div#nope > p { height: 4px }
+[type] p, [TYPE=note] > p, li[type~=note] { text-indent: 5px }
+q, p.first { color: red; width: 1px !important; width: 2px; height: 1px; height: 2px !important }
+"""
+
+# A document, a line to each element that opens or closes.
+RULES_DOCUMENT = b"""<html|xmlns:epub|http://www.idpf.org/2007/ops|lang|en-GB
+<body|class|b i
+<section|epub:type|frontmatter dedication
+<p
+>
+<P|CLASS|first
+>
+>
+<hgroup
+<h2
+>
+<p
+>
+<p
+>
+<p
+>
+<p
+>
+>
+<h2|title|Headings
+>
+<p|style|margin-top: 1em; text-indent: 4em; margin-left: 9em
+>
+<p|class|first  drop\tI|id|start
+<i|class|i
+>
+<a|href|#end|hidden|
+>
+>
+<div|class|note|title|NOTES|k|abc
+<p|k|
+>
+<p|class|first
+>
+<ol
+<li
+<p
+>
+>
+<li|epub:type|note
+<p
+>
+>
+>
+<div
+<div
+<p
+>
+>
+>
+>
+<blockquote
+<p
+>
+>
+<blockquote|o:type|note
+<p|class|first
+>
+>
+<table
+<tr
+<td
+>
+<td
+>
+>
+<tr
+<td
+>
+<td
+>
+>
+>
+<a
+<b
+<x
+<b
+<c
+<y
+<c
+<d
+>
+>
+>
+>
+>
+>
+>
+>
+<p|class|first|id|end|style|float: none !important; text-align: justify
+>
+<p|class|FIRST|id|END|O:TYPE|note
+>
+>
+>
+"""
+
+
+def css_rules_seeds() -> None:
+    clear("css_rules")
+
+    def seed(name: str, choices: int, *parts: bytes) -> None:
+        write("css_rules", name, bytes([choices]) + b"\0".join(parts))
+
+    # The table's memory is the two low bits, the cascade's the next two,
+    # how the sheets are given the two after.
+    seed("two-sheets-and-a-document", 0, RULES_SHEET, RULES_SECOND_SHEET, RULES_DOCUMENT)
+    seed("the-sheets-the-other-way", 1 << 4, RULES_SHEET, RULES_SECOND_SHEET, RULES_DOCUMENT)
+    seed("a-sheet-given-twice", 2 << 4, RULES_SHEET, RULES_SECOND_SHEET, RULES_DOCUMENT)
+    seed("a-sheet-left-out", 3 << 4, RULES_SHEET, RULES_SECOND_SHEET, RULES_DOCUMENT)
+    seed("a-documents-own-rules-last", 0, RULES_SHEET, RULES_SECOND_SHEET, RULES_OWN_SHEET, RULES_DOCUMENT)
+    seed("a-table-with-room-for-part", 1, RULES_SHEET, RULES_SECOND_SHEET, RULES_OWN_SHEET, RULES_DOCUMENT)
+    seed("a-table-with-room-for-little", 2, RULES_SECOND_SHEET, RULES_OWN_SHEET, RULES_DOCUMENT)
+    seed("a-table-with-room-for-next-to-nothing", 3, RULES_SECOND_SHEET, RULES_DOCUMENT)
+    seed("room-for-a-few-open-elements", 1 << 2, RULES_SHEET, RULES_SECOND_SHEET, RULES_DOCUMENT)
+    seed("room-for-one-open-element", 2 << 2, RULES_SHEET, RULES_OWN_SHEET, RULES_DOCUMENT)
+    seed("room-for-no-open-element", 3 << 2, RULES_SHEET, RULES_OWN_SHEET, RULES_DOCUMENT)
+    seed("more-nodes-than-a-table-takes", 0,
+         b"".join(b"a%d p { margin-top: %dpx }\n" % (n, n) for n in range(256)) + b"one-more p, q { float: left }\n",
+         b"a7 i, a8 > i { width: 1px }", b"<a254\n<a8\n<p\n>\n<i\n>\n<q\n>\n>\n>\n")
+    seed("more-classes-than-are-looked-at", 0, b".c0 { float: left } .c15 { width: 1px } .late { height: 1px }",
+         b"<p|class|" + b" ".join(b"c%d" % n for n in range(16)) + b" late\n>\n<p|class|late c0 c0\n")
+    seed("what-is-asked-and-is-not-so", 0, RULES_SHEET, RULES_ASKING_SHEET, RULES_DOCUMENT)
+    # One of a higher kind outranks any number of a lower: a class eight
+    # element names, an id every class a selector can have.
+    seed("one-of-a-higher-kind-over-many-of-a-lower", 0,
+         b".a { float: left } a a a a a a a p { float: right } #x { width: 1px } "
+         b"p.a.a.a.a.a.a.a.a.a.a.a.a[b][b][b][b][b][b][b][b]:link:link:link { width: 2px; height: 2px }",
+         b"<a\n" * 7 + b"<p|class|a|id|x|b|\n")
+    # A table of 40 bytes, and what does not fit in it: a name, a list of
+    # families, what a rule sets, and the later selectors of a rule.
+    small = b"<p|class|first\n<q\n>\n>\n"
+    seed("no-room-for-a-name", 3, b"p { float: left } a-name-that-is-too-long-for-the-table { float: right }", small)
+    seed("no-room-for-an-id", 3, b"p { float: left } #an-id-that-is-too-long-for-the-table { float: right }", small)
+    # A table of 300 bytes that these rules fill to the last byte, so that
+    # there is no room even to begin the one after them.
+    seed("no-room-to-begin-a-rule", 2, b"p{float:left}" * 9 + b"p{width:1px}" * 6 + b"p{height:1px}q{float:left}", small)
+    seed("no-room-for-a-list-of-families", 3,
+         b"p { font-family: A Family With A Long Name, Another Of Them, serif } q { float: left }", small)
+    seed("no-room-for-what-a-rule-sets", 3,
+         b"p { margin: 1px 2px 3px 4px; padding: 1px 2px 3px 4px; width: 99999px; height: 99999px } q { float: left }",
+         small)
+    seed("no-room-for-the-later-selectors-of-a-rule", 3, b"p, q, r, s, t, u, v, w { float: left } q { width: 1px }",
+         b"q { float: right }", small)
+    seed("a-document-and-no-sheet", 0, RULES_DOCUMENT)
+    seed("a-sheet-and-no-document", 0, RULES_SHEET, b"")
+    seed("nothing", 0)
+
+
 # ---- svg_tags: byte 0 (how the file is cut up and handed back), then a file ----
 
 DRAWING = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -1145,6 +1337,7 @@ def main() -> None:
     region_heap_seeds()
     hyphenator_seeds()
     css_seeds()
+    css_rules_seeds()
     svg_tags_seeds()
     svg_values_seeds()
     svg_path_seeds()

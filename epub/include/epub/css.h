@@ -75,6 +75,9 @@ enum class CssProperty : std::uint8_t {
   kHeight,
 };
 
+// How many properties there are.
+inline constexpr std::size_t kCssProperties = static_cast<std::size_t>(CssProperty::kHeight) + 1;
+
 // The name of a property as CSS has it: "font-style", "margin-top", ...
 const char* CssPropertyName(CssProperty property) noexcept;
 

@@ -105,6 +105,7 @@ bn_add_unit_test(draw_tests
 bn_add_unit_test(epub_tests
   SOURCES
     unit/epub/book_path_test.cpp
+    unit/epub/css_rules_test.cpp
     unit/epub/css_test.cpp
     unit/epub/package_test.cpp
     unit/epub/toc_test.cpp
@@ -221,6 +222,15 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/css_tool.py
       $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/css_tool)
   set_tests_properties(e2e.CssTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-css cascade, and through it the table of rules and the cascade,
+  # against a second working-out of what the rules come to for each element
+  # of a document, which keeps the whole document and tries everything.
+  add_test(
+    NAME e2e.CssCascade
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/css_cascade_tool.py
+      $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/css_cascade_tool)
+  set_tests_properties(e2e.CssCascade PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # bn-svg, and through it the reading and flattening of SVG path data,
   # against a second reading of the same paths, with the curves they

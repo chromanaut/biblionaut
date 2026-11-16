@@ -855,14 +855,26 @@ its business, and nothing does that yet.
   held whole. What is found is told to a `CssHandler` as it is found: a
   rule's beginning, each of its selectors, each thing it sets, its end; an
   `@import`; and everything that was passed over, with what it was.
-- **Selectors**: by element, class and id, joined by descent (`div p`) or
-  as child (`div > p`), with `*` for any element. `:link` is taken as
-  always so, and `::first-letter` is read, for drop caps. A selector with
-  anything else in it is dropped: an attribute in brackets, any other
-  pseudo-class or pseudo-element, `+` or `~`. The others of its rule are
-  kept, and a rule left with none is dropped whole. Each selector comes
-  with its rank as CSS has it: its counts of ids, of classes and of
-  element names.
+- **Selectors**: by element, class and id, joined by descent (`div p`),
+  as child (`div > p`) or as the element straight after (`h2 + p`), with
+  `*` for any element. `:link` is taken as always so, and `::first-letter`
+  is read, for drop caps. A selector with anything else in it is dropped:
+  any other pseudo-class or pseudo-element, `~`, a namespace before an
+  element's name. The others of its rule are kept, and a rule left with
+  none is dropped whole. Each selector comes with its rank as CSS has it:
+  its counts of ids, of classes and of element names.
+- **Attributes**: a part of a selector may ask of an attribute that it is
+  there (`[hidden]`), or hold its value against another in any of CSS's
+  six ways (`=`, `~=`, `|=`, `^=`, `$=`, `*=`), with the value in quotes or
+  as a name, and `i` after it for any case. An attribute's name is given
+  as a document writes it, in small letters: `epub|type` in a sheet is
+  `epub:type`, since the XML parser gives names with their prefixes and
+  does not work namespaces out. So a sheet and a document have to use the
+  same prefix. In 520 books the sheets' prefixes are `epub` and `xml` and
+  no other, and every document that has such an attribute writes
+  `epub:type`. `[*|type]` is the name with any prefix, or none. Each thing
+  asked counts in the rank as a class does. A selector may ask 8 things of
+  attributes; none in those books asks more than 3.
 - **Properties**: `font-style`, `font-weight`, `font-variant`,
   `font-family`, `font-size`, `line-height`, `text-align`, `text-indent`,
   `text-decoration`, `vertical-align`, the four sides of `margin` and of
@@ -914,7 +926,8 @@ this sheet
 body { margin: 0 5%; font-family: Georgia, "Times New Roman", serif }
 h2 { text-align: center; page-break-before: always; margin: 2em 0 1em }
 p { text-indent: 1.5em; margin: 0; widows: 2 }
-h2 + p, p.first { text-indent: 0 }
+h2 + p, p.first, p:first-child { text-indent: 0 }
+section[epub|type~="dedication"] > p { text-align: center; font-style: italic }
 p.first::first-letter { float: left; font-size: 3em; line-height: 1 }
 @media amzn-mobi { p.first::first-letter { float: none } }
 a:link { text-decoration: none; color: #036 }
@@ -950,10 +963,16 @@ D margin-bottom: 0px
 D margin-left: 0px
 X property: widows
 }
-X sibling selector: h2 + p
 {
+S 0,0,2 h2 + p
 S 0,1,1 p.first
+X pseudo-class: :first-child
 D text-indent: 0px
+}
+{
+S 0,1,2 section[epub:type~="dedication"] > p
+D text-align: center
+D font-style: italic
 }
 {
 S 0,1,2 p.first ::first-letter
@@ -979,10 +998,10 @@ with `--dropped`, also each different thing that was passed over and how
 many times. For Standard Ebooks' *Flatland*, which is in `corpus/`:
 
 ```
-ok bd88232e     31     82     82 epub/css/core.css
+ok 660f898c     38     89     53 epub/css/core.css
 ok b1313d47      9     27     18 epub/css/local.css
-ok 0134d47d     15     33     13 epub/css/se.css
-css_sheets=3 css_failed=0 css_bytes=10955 css_rules=55 css_declarations=142 css_dropped=113
+ok 4bbcc118     15     33     13 epub/css/se.css
+css_sheets=3 css_failed=0 css_bytes=10955 css_rules=62 css_declarations=149 css_dropped=84
 ```
 
 The unit tests say what the reader should make of sheets written for
@@ -992,7 +1011,7 @@ at random. An end-to-end test (`tests/e2e/css_tool.py`) compares `bn-css`
 with a second reading of the same sheets. Python has no reader of CSS of
 its own, so the second reading is written in the test, another way round
 (the whole sheet at once, comments out first); every line has to agree,
-on sheets the test makes, on 450 of them damaged at random, and, through
+on sheets the test makes, on 600 of them damaged at random, and, through
 `tools/check-books.py`, on the sheets of real books. The two agree on all
 1,027 sheets of the 520 books they were tried on. Writing the second one
 found a fault in the first (a character written as `\0` was decoded over
@@ -1003,27 +1022,29 @@ minutes (a second `::first-letter` after the first was let through).
 what was passed over across a folder of books. Over `corpus/` it begins:
 
 ```
-Style sheets: 1294 rules read, with 3525 declarations; 1310 things passed over, in 28 books:
-       595  in   28 books  property
-       199  in    9 books  sibling selector
-       188  in   26 books  rule
-       133  in   15 books  pseudo-class
+Style sheets: 1406 rules read, with 3660 declarations; 963 things passed over, in 28 books:
+       604  in   28 books  property
+       134  in   15 books  pseudo-class
         78  in   26 books  at-rule
-        59  in   19 books  attribute selector
-        23  in    7 books  pseudo-element
+        76  in   17 books  rule
+        33  in    9 books  pseudo-element
         19  in    9 books  media block
-        16  in   16 books  value
+        17  in   17 books  value
+         2  in    1 books  sibling selector
   property, the 30 passed over most of 40:
           75  in   15 books  all
           57  in   19 books  color
+          39  in   24 books  border
           39  in   19 books  background-color
-          38  in   24 books  border
 ```
 
 and goes on to name the pseudo-classes, at-rules and media blocks. These
 books are from Project Gutenberg, Standard Ebooks and IDPF, whose sheets
-lean on what is not read: one rule in eight is dropped for its selectors.
-In 335 books from trade publishers it is one in a hundred.
+lean on selectors more than most: one rule in twenty is dropped for its
+selectors, most of them for `:root`, which begins the rules that
+Standard Ebooks' sheets keep for one maker's reading application. Before
+`+` and attributes were read it was one in eight. In 335 books from trade
+publishers it is one in two hundred.
 
 ## Real books
 
@@ -1115,7 +1136,7 @@ call may.
 | `xml` | `epub::XmlParser`, with more or less memory, and a handler that may stop it or try to use it from inside | A step asks its source once, for 1 KB. The parser's heap is in order after every step. Text comes in whole characters, and never more of it than twice the bytes read, which is the most a change of encoding makes of them. A handler that stops the parser is told nothing more. The parser reads a good document rightly afterwards |
 | `package` | `epub::Package`, a step at a time, twice | No step reads more than five blocks from storage. Nothing is said of the book until the reading is over. A book that was read has documents, each found again by its entry's name. A second reading says what the first said |
 | `toc` | `epub::TocReader`, a step at a time, twice, with a handler that may ask for no more | No step reads more than five blocks. Every label is whole characters with its spaces collapsed, within its length; every entry points at a document of the book or at none. A stopped reading says so |
-| `css` | `epub::CssReader`, twice, with the sheet cut up two ways; and the same bytes as a `style` attribute | A step asks its source once, for 1 KB. A rule is told whole and in order. A selector has no more parts or classes than there is room for, and a rank its parts account for. A number is within its bounds, and not below zero where the property cannot be. The reader's counts are the counts of what it told. Both readings tell the same |
+| `css` | `epub::CssReader`, twice, with the sheet cut up two ways; and the same bytes as a `style` attribute | A step asks its source once, for 1 KB. A rule is told whole and in order. A selector has no more parts or classes than there is room for, asks no more of attributes, and has a rank its parts account for. A number is within its bounds, and not below zero where the property cannot be. The reader's counts are the counts of what it told. Both readings tell the same |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
 | `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
 | `paragraph` | `layout::ParagraphSetter`, with a paragraph's text in runs of up to seven styles and line ends asked for, on lines from 1 wide to 30,000, measured four ways | A paragraph is done with in a number of calls that depends only on its length. No call does more than `MostWorkFor()` allows, gives the breaker more than one item, asks the hyphenator about more than one word, or has more than a word's worth of bytes measured. The lines hold all the text once and in order. Each is as wide as its text adds up to and has the places between words it says; one is only too wide for a single character that is. The measure is never given a soft hyphen, nor a piece that begins inside a character. The lines are the same when the text is offered all at once |

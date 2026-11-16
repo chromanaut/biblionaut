@@ -15,8 +15,9 @@
 //   - a rule is told whole and in order: its beginning, one selector or
 //     more, what it sets, its end, with nothing of another between;
 //   - a selector has from one part to kMaxCompounds, no more classes than
-//     kMaxClasses, an element's name in small letters, every name all
-//     there, and a rank that its parts account for;
+//     kMaxClasses and no more asked of attributes than kMaxAttributes, an
+//     element's name and an attribute's in small letters, every name and
+//     value all there, and a rank that its parts account for;
 //   - a declaration is of a property and a keyword there are, a number is
 //     within kCssMaxNumber, and is not below zero where the property
 //     cannot be;
@@ -37,6 +38,7 @@
 
 namespace {
 
+using bn::epub::CssAttributeTest;
 using bn::epub::CssCombinator;
 using bn::epub::CssDropped;
 using bn::epub::CssKeyword;
@@ -70,14 +72,17 @@ class Listener final : public bn::epub::CssHandler {
                   "a selector has no parts, or more than there is room for");
     std::uint32_t ids = 0;
     std::uint32_t classes = 0;
+    std::uint32_t attributes = 0;
     std::uint32_t elements = 0;
+    const auto hasCapital = [](std::string_view name) {
+      return std::any_of(name.begin(), name.end(), [](char ch) { return ch >= 'A' && ch <= 'Z'; });
+    };
     for (std::size_t i = 0; i < selector.compounds.size(); ++i) {
       const bn::epub::CssCompound& part = selector.compounds[i];
-      BN_FUZZ_CHECK((part.combinator == CssCombinator::kFirst) == (i == 0),
-                    "a selector's first part is joined to something, or a later one to nothing");
       BN_FUZZ_CHECK(
-          std::none_of(part.element.begin(), part.element.end(), [](char ch) { return ch >= 'A' && ch <= 'Z'; }),
-          "an element's name has a capital in it");
+          (part.combinator == CssCombinator::kFirst) == (i == 0) && part.combinator <= CssCombinator::kAdjacent,
+          "a selector's first part is joined to something, or a later one to nothing");
+      BN_FUZZ_CHECK(!hasCapital(part.element), "an element's name has a capital in it");
       Add(bn::fuzz::Touch(part.element) + bn::fuzz::Touch(part.id) + static_cast<std::uint32_t>(part.combinator));
       ids += part.id.empty() ? 0 : 1;
       elements += part.element.empty() ? 0 : 1;
@@ -86,12 +91,26 @@ class Listener final : public bn::epub::CssHandler {
         Add(bn::fuzz::Touch(name));
         ++classes;
       }
+      for (const bn::epub::CssAttribute& attribute : part.attributes) {
+        BN_FUZZ_CHECK(!attribute.name.empty() && !hasCapital(attribute.name),
+                      "an attribute with no name, or with a capital in its name");
+        BN_FUZZ_CHECK(attribute.test <= CssAttributeTest::kContains,
+                      "a way of asking of an attribute that there is not");
+        BN_FUZZ_CHECK(attribute.test != CssAttributeTest::kPresent || (attribute.value.empty() && !attribute.anyCase),
+                      "a value to hold an attribute against, where only its being there was asked");
+        Add(bn::fuzz::Touch(attribute.name) + bn::fuzz::Touch(attribute.value) +
+            static_cast<std::uint32_t>(attribute.test) + (attribute.anyPrefix ? 16U : 0U) +
+            (attribute.anyCase ? 32U : 0U));
+        ++attributes;
+      }
     }
     BN_FUZZ_CHECK(classes <= CssReader::kMaxClasses, "a selector has more classes than there is room for");
-    // The rank counts each id, each class and each element's name, and
-    // may count more: `:link` with the classes, `::first-letter` with the
-    // elements.
-    BN_FUZZ_CHECK((selector.specificity >> 16U) == ids && ((selector.specificity >> 8U) & 0xFFU) >= classes &&
+    BN_FUZZ_CHECK(attributes <= CssReader::kMaxAttributes, "a selector asks more of attributes than there is room for");
+    // The rank counts each id, each class, each thing asked of an
+    // attribute and each element's name, and may count more: `:link` with
+    // the classes, `::first-letter` with the elements.
+    BN_FUZZ_CHECK((selector.specificity >> 16U) == ids &&
+                      ((selector.specificity >> 8U) & 0xFFU) >= classes + attributes &&
                       (selector.specificity & 0xFFU) == elements + (selector.firstLetter ? 1U : 0U),
                   "a selector's rank is not what its parts come to");
     Add(selector.specificity + (selector.firstLetter ? 7U : 0U));

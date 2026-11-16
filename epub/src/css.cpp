@@ -608,6 +608,49 @@ void DeclareAll(const Sink& sink, std::string_view text) noexcept {
 
 // ---- Selectors ----
 
+// Reads what a backslash stands for: `at` is at what follows the
+// backslash, and is moved past it; the character it stands for is written
+// at `out`, which is moved past that.
+void TakeEscape(std::span<char> text, std::size_t& at, std::size_t& out) noexcept {
+  if (!IsHex(text[at])) {
+    text[out++] = text[at++];
+    return;
+  }
+  // Up to six digits of a character's number, and one space after.
+  std::uint32_t code = 0;
+  for (int digits = 0; digits < 6 && at < text.size() && IsHex(text[at]); ++digits, ++at) {
+    const char digit = AsciiLower(text[at]);
+    code = (code * 16) + static_cast<std::uint32_t>(IsDigit(digit) ? digit - '0' : digit - 'a' + 10);
+  }
+  if (at < text.size() && IsSpace(text[at])) {
+    ++at;
+  }
+  if (code == 0 || code > 0x10FFFFU || (code >= 0xD800U && code <= 0xDFFFU)) {
+    // No character has that number: the mark for one that is missing
+    // stands for it. The mark is three bytes, and "\0" is two: the text is
+    // written where it is read from, and must not get ahead of the
+    // reading, so there a `?` has to do.
+    code = at - out >= 3 ? 0xFFFDU : '?';
+  }
+  // As UTF-8, which for a character that there is, is never longer than
+  // the digits it was written with and their backslash.
+  if (code < 0x80U) {
+    text[out++] = static_cast<char>(code);
+  } else if (code < 0x800U) {
+    text[out++] = static_cast<char>(0xC0U | (code >> 6U));
+    text[out++] = static_cast<char>(0x80U | (code & 0x3FU));
+  } else if (code < 0x10000U) {
+    text[out++] = static_cast<char>(0xE0U | (code >> 12U));
+    text[out++] = static_cast<char>(0x80U | ((code >> 6U) & 0x3FU));
+    text[out++] = static_cast<char>(0x80U | (code & 0x3FU));
+  } else {
+    text[out++] = static_cast<char>(0xF0U | (code >> 18U));
+    text[out++] = static_cast<char>(0x80U | ((code >> 12U) & 0x3FU));
+    text[out++] = static_cast<char>(0x80U | ((code >> 6U) & 0x3FU));
+    text[out++] = static_cast<char>(0x80U | (code & 0x3FU));
+  }
+}
+
 // Reads a name where `at` is, taking the backslashes out of it where it
 // stands, and moves `at` past it. Empty if there is no name there.
 std::string_view TakeName(std::span<char> text, std::size_t& at) noexcept {
@@ -630,43 +673,7 @@ std::string_view TakeName(std::span<char> text, std::size_t& at) noexcept {
       ++at;
     } else if (ch == '\\' && at + 1 < text.size() && text[at + 1] != '\n') {
       ++at;
-      if (IsHex(text[at])) {
-        // Up to six digits of a character's number, and one space after.
-        std::uint32_t code = 0;
-        for (int digits = 0; digits < 6 && at < text.size() && IsHex(text[at]); ++digits, ++at) {
-          const char digit = AsciiLower(text[at]);
-          code = (code * 16) + static_cast<std::uint32_t>(IsDigit(digit) ? digit - '0' : digit - 'a' + 10);
-        }
-        if (at < text.size() && IsSpace(text[at])) {
-          ++at;
-        }
-        if (code == 0 || code > 0x10FFFFU || (code >= 0xD800U && code <= 0xDFFFU)) {
-          // No character has that number: the mark for one that is
-          // missing stands for it. The mark is three bytes, and "\0" is
-          // two: the name is written where it is read from, and must not
-          // get ahead of the reading, so there a `?` has to do.
-          code = at - out >= 3 ? 0xFFFDU : '?';
-        }
-        // As UTF-8, which for a character that there is, is never longer
-        // than the digits it was written with and their backslash.
-        if (code < 0x80U) {
-          text[out++] = static_cast<char>(code);
-        } else if (code < 0x800U) {
-          text[out++] = static_cast<char>(0xC0U | (code >> 6U));
-          text[out++] = static_cast<char>(0x80U | (code & 0x3FU));
-        } else if (code < 0x10000U) {
-          text[out++] = static_cast<char>(0xE0U | (code >> 12U));
-          text[out++] = static_cast<char>(0x80U | ((code >> 6U) & 0x3FU));
-          text[out++] = static_cast<char>(0x80U | (code & 0x3FU));
-        } else {
-          text[out++] = static_cast<char>(0xF0U | (code >> 18U));
-          text[out++] = static_cast<char>(0x80U | ((code >> 12U) & 0x3FU));
-          text[out++] = static_cast<char>(0x80U | ((code >> 6U) & 0x3FU));
-          text[out++] = static_cast<char>(0x80U | (code & 0x3FU));
-        }
-      } else {
-        text[out++] = text[at++];
-      }
+      TakeEscape(text, at, out);
     } else {
       break;
     }
@@ -674,10 +681,164 @@ std::string_view TakeName(std::span<char> text, std::size_t& at) noexcept {
   return {text.data() + start, out - start};
 }
 
+// Reads a string where `at` is, at its opening quote, taking its quotes
+// and backslashes out of it where it stands, and moves `at` past it. False
+// if it is not closed before its line or the text ends.
+bool TakeString(std::span<char> text, std::size_t& at, std::string_view& string) noexcept {
+  const char quote = text[at++];
+  const std::size_t start = at;
+  std::size_t out = at;
+  while (at < text.size()) {
+    const char ch = text[at];
+    if (ch == quote) {
+      ++at;
+      string = {text.data() + start, out - start};
+      return true;
+    }
+    if (ch == '\n') {
+      return false;
+    }
+    if (ch != '\\') {
+      text[out++] = ch;
+      ++at;
+    } else if (at + 1 >= text.size()) {
+      return false;
+    } else if (text[at + 1] == '\n') {
+      at += 2;  // A line's end after a backslash is not part of the string.
+    } else {
+      ++at;
+      TakeEscape(text, at, out);
+    }
+  }
+  return false;
+}
+
 void LowerInPlace(std::span<char> text) noexcept {
   for (char& ch : text) {
     ch = AsciiLower(ch);
   }
+}
+
+void SkipSpaces(std::span<const char> text, std::size_t& at) noexcept {
+  while (at < text.size() && IsSpace(text[at])) {
+    ++at;
+  }
+}
+
+// Reads what a selector asks of an attribute's value, after the
+// attribute's name, as far as the `]`, and moves `at` past that. False if
+// what is there is not that.
+bool TakeAttributeValue(std::span<char> text, std::size_t& at, CssAttribute& attribute) noexcept {
+  SkipSpaces(text, at);
+  if (at < text.size() && text[at] == ']') {
+    ++at;
+    return true;
+  }
+
+  // What is asked, then the value: a string or a name.
+  struct Asking {
+    char mark;
+    CssAttributeTest test;
+  };
+  constexpr std::array<Asking, 5> kAskings = {{{'~', CssAttributeTest::kWord},
+                                               {'|', CssAttributeTest::kDash},
+                                               {'^', CssAttributeTest::kBegins},
+                                               {'$', CssAttributeTest::kEnds},
+                                               {'*', CssAttributeTest::kContains}}};
+  if (at < text.size() && text[at] == '=') {
+    attribute.test = CssAttributeTest::kEquals;
+    ++at;
+  } else {
+    const auto* asking = std::find_if(kAskings.begin(), kAskings.end(), [&text, at](const Asking& one) {
+      return at + 1 < text.size() && text[at] == one.mark && text[at + 1] == '=';
+    });
+    if (asking == kAskings.end()) {
+      return false;
+    }
+    attribute.test = asking->test;
+    at += 2;
+  }
+  SkipSpaces(text, at);
+  if (at < text.size() && (text[at] == '"' || text[at] == '\'')) {
+    if (!TakeString(text, at, attribute.value)) {
+      return false;
+    }
+  } else {
+    attribute.value = TakeName(text, at);
+    if (attribute.value.empty()) {
+      return false;
+    }
+  }
+
+  // After the value there may be an `i`, for any case, or an `s`, for the
+  // case as written, which it is without one.
+  SkipSpaces(text, at);
+  if (at < text.size() && text[at] != ']') {
+    const std::string_view flag = TakeName(text, at);
+    if (flag.size() != 1 || (AsciiLower(flag.front()) != 'i' && AsciiLower(flag.front()) != 's')) {
+      return false;
+    }
+    attribute.anyCase = AsciiLower(flag.front()) == 'i';
+    SkipSpaces(text, at);
+  }
+  if (at >= text.size() || text[at] != ']') {
+    return false;
+  }
+  ++at;
+  return true;
+}
+
+// Reads what a selector asks of an attribute, where `at` is at its `[`,
+// and moves `at` past its `]`. False if what is there is not that.
+bool TakeAttribute(std::span<char> text, std::size_t& at, CssAttribute& attribute) noexcept {
+  attribute = CssAttribute();
+  ++at;
+  SkipSpaces(text, at);
+
+  // The name, which may have a namespace's prefix and a `|` before it:
+  // `*|` for any namespace, and `|` alone for none, which is what a name
+  // without a prefix has anyway.
+  bool mayHavePrefix = true;
+  if (at + 1 < text.size() && text[at] == '*' && text[at + 1] == '|') {
+    attribute.anyPrefix = true;
+    mayHavePrefix = false;
+    at += 2;
+  } else if (at + 1 < text.size() && text[at] == '|' && text[at + 1] != '=') {
+    mayHavePrefix = false;
+    ++at;
+  }
+  const std::size_t nameStart = at;
+  std::size_t nameLength = TakeName(text, at).size();
+  if (nameLength == 0) {
+    return false;
+  }
+  std::size_t localStart = 0;
+  std::size_t localLength = 0;
+  if (mayHavePrefix && at + 1 < text.size() && text[at] == '|' && text[at + 1] != '=') {
+    // That was a prefix, and the name comes after it.
+    localStart = ++at;
+    localLength = TakeName(text, at).size();
+    if (localLength == 0) {
+      return false;
+    }
+  }
+  if (!TakeAttributeValue(text, at, attribute)) {
+    return false;
+  }
+
+  // Now that it is known to be one, the name is made what a document has:
+  // in small letters, and after a prefix a `:` and the rest, which is
+  // never further on than where it was read.
+  if (localLength != 0) {
+    text[nameStart + nameLength] = ':';
+    for (std::size_t i = 0; i < localLength; ++i) {
+      text[nameStart + nameLength + 1 + i] = text[localStart + i];
+    }
+    nameLength += 1 + localLength;
+  }
+  LowerInPlace(text.subspan(nameStart, nameLength));
+  attribute.name = ViewOf(text.subspan(nameStart, nameLength));
+  return true;
 }
 
 // Moves `at` past brackets that open where it is, to after the one that
@@ -713,17 +874,22 @@ bool ReadSelector(const Sink& sink, std::span<char> text) noexcept {
   const std::string_view whole = ViewOf(text);
   std::array<CssCompound, CssReader::kMaxCompounds> compounds;
   std::array<std::string_view, CssReader::kMaxClasses> classes;
-  // Where each part's classes begin among `classes`, and how many it has.
+  std::array<CssAttribute, CssReader::kMaxAttributes> attributes;
+  // Where each part's classes begin among `classes`, and how many it has;
+  // and the same for what it asks of attributes.
   std::array<std::size_t, CssReader::kMaxCompounds> classStart{};
   std::array<std::size_t, CssReader::kMaxCompounds> classCount{};
+  std::array<std::size_t, CssReader::kMaxCompounds> attributeStart{};
+  std::array<std::size_t, CssReader::kMaxCompounds> attributeCount{};
   std::size_t compoundCount = 0;
   std::size_t classTotal = 0;
+  std::size_t attributeTotal = 0;
   std::uint32_t ids = 0;
   std::uint32_t classLike = 0;
   std::uint32_t elementLike = 0;
   bool firstLetter = false;
   CssCombinator combinator = CssCombinator::kFirst;
-  bool wantPart = true;  // A part has to come next: the start, or after a `>`.
+  bool wantPart = true;  // A part has to come next: the start, or after a `>` or a `+`.
 
   std::size_t at = 0;
   while (at < text.size()) {
@@ -736,19 +902,19 @@ bool ReadSelector(const Sink& sink, std::span<char> text) noexcept {
       break;
     }
     const char ch = text[at];
-    if (ch == '>') {
+    if (ch == '~') {
+      sink.Drop(CssDropped::kSelectorCombinator, whole);
+      return false;
+    }
+    if (ch == '>' || ch == '+') {
       if (wantPart) {
         sink.Drop(CssDropped::kSelectorOther, whole);
         return false;
       }
-      combinator = CssCombinator::kChild;
+      combinator = ch == '>' ? CssCombinator::kChild : CssCombinator::kAdjacent;
       wantPart = true;
       ++at;
       continue;
-    }
-    if (ch == '+' || ch == '~') {
-      sink.Drop(CssDropped::kSelectorCombinator, whole);
-      return false;
     }
     if (!wantPart) {
       if (!space) {
@@ -764,12 +930,13 @@ bool ReadSelector(const Sink& sink, std::span<char> text) noexcept {
       return false;
     }
 
-    // One part: an element's name or `*`, then classes, an id and
-    // pseudo-classes in any order.
+    // One part: an element's name or `*`, then classes, an id, what is
+    // asked of attributes and pseudo-classes, in any order.
     CssCompound& compound = compounds[compoundCount];
     compound = CssCompound();
     compound.combinator = combinator;
     classStart[compoundCount] = classTotal;
+    attributeStart[compoundCount] = attributeTotal;
     bool any = false;
     if (ch == '*') {
       any = true;
@@ -797,8 +964,18 @@ bool ReadSelector(const Sink& sink, std::span<char> text) noexcept {
         return false;
       }
       if (mark == '[') {
-        sink.Drop(CssDropped::kSelectorAttribute, whole);
-        return false;
+        if (attributeTotal == attributes.size()) {
+          sink.Drop(CssDropped::kSelectorOther, whole);
+          return false;
+        }
+        if (!TakeAttribute(text, at, attributes[attributeTotal])) {
+          sink.Drop(CssDropped::kSelectorAttribute, whole);
+          return false;
+        }
+        ++attributeTotal;
+        ++classLike;
+        any = true;
+        continue;
       }
       if (mark == '.' || mark == '#') {
         ++at;
@@ -858,6 +1035,7 @@ bool ReadSelector(const Sink& sink, std::span<char> text) noexcept {
       return false;
     }
     classCount[compoundCount] = classTotal - classStart[compoundCount];
+    attributeCount[compoundCount] = attributeTotal - attributeStart[compoundCount];
     ++compoundCount;
     wantPart = false;
   }
@@ -867,6 +1045,7 @@ bool ReadSelector(const Sink& sink, std::span<char> text) noexcept {
   }
   for (std::size_t i = 0; i < compoundCount; ++i) {
     compounds[i].classes = std::span<const std::string_view>(classes).subspan(classStart[i], classCount[i]);
+    compounds[i].attributes = std::span<const CssAttribute>(attributes).subspan(attributeStart[i], attributeCount[i]);
   }
   const CssSelector selector = {.compounds = std::span<const CssCompound>(compounds).first(compoundCount),
                                 .firstLetter = firstLetter,
@@ -1109,6 +1288,26 @@ const char* CssUnitName(CssUnit unit) noexcept {
       return "rem";
     case CssUnit::kPercent:
       return "%";
+  }
+  return "?";
+}
+
+const char* CssAttributeTestName(CssAttributeTest test) noexcept {
+  switch (test) {
+    case CssAttributeTest::kPresent:
+      return "";
+    case CssAttributeTest::kEquals:
+      return "=";
+    case CssAttributeTest::kWord:
+      return "~=";
+    case CssAttributeTest::kDash:
+      return "|=";
+    case CssAttributeTest::kBegins:
+      return "^=";
+    case CssAttributeTest::kEnds:
+      return "$=";
+    case CssAttributeTest::kContains:
+      return "*=";
   }
   return "?";
 }

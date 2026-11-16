@@ -1,0 +1,8 @@
+[a=b i i], [a="b\ 
+{ margin: 0 }
+[a="b
+{ margin: 0 }
+[a=b, c { margin: 0 }
+[a="b\
+ c"], [a='b { margin: 0 }
+.end { float: left }

@@ -1021,6 +1021,94 @@ def svg_seeds() -> None:
     seed("nothing", b"")
 
 
+# ---- paragraph: bytes 0 and 1 (the lines, the memory, the measure), then text ----
+
+
+def paragraph_seeds() -> None:
+    clear("paragraph")
+    text = TEXT.encode()
+
+    def seed(
+        name: str,
+        width: int,
+        written: bytes,
+        *,
+        first: bool = False,
+        at_a_time: int = 0,
+        least: bool = False,
+        hyphenator: bool = True,
+        cost: int = 2,
+        face: int = 1,
+    ) -> None:
+        """`width` is which of the target's eight widths the lines have; `at_a_time`, which of its four
+        ways of offering text; `cost`, which of its four prices for a hyphen; `face`, which measure."""
+        choices = width | (0x08 if first else 0) | (at_a_time << 4) | (0x40 if least else 0)
+        choices |= 0x80 if hyphenator else 0
+        write("paragraph", name, bytes([choices, cost | (face << 2)]) + written)
+
+    seed("a-paragraph", 5, text)
+    seed("narrow-lines", 3, text, cost=0)
+    seed("no-hyphenator", 4, text, hyphenator=False)
+    seed("first-lines-narrower", 4, text, first=True)
+    seed("a-byte-at-a-time", 4, text[:300], at_a_time=1)
+    seed("seven-bytes-at-a-time-and-little-memory", 3, text, at_a_time=2, least=True)
+    seed("every-character-as-wide", 3, text[:300], face=0)
+    # Lines that hold a letter or two, and lines that hold none.
+    seed("lines-narrower-than-a-word", 2, text[:300])
+    seed("lines-narrower-than-a-letter", 1, text[:200], least=True)
+    seed("lines-of-no-width-to-speak-of", 0, text[:120], face=0, first=True)
+    # A byte with no width, and then in another style a character wider than
+    # the line: the two are on one line, which is too wide for the one.
+    seed("a-byte-of-no-width-beside-a-character-too-wide", 0, b"\xb3\x06\xc3", face=0, first=True, cost=3)
+
+    # A byte from 1 to 7 puts what follows in that style, and a byte of 0
+    # asks for the line to end: here in the middle of words as well as
+    # between them.
+    seed(
+        "styles",
+        4,
+        b"The \x01lamp\x02 was l\x03i\x01t bef\x02ore any\x03one had \x04asked\x01 for it, \x05and \x06the "
+        b"\x07harbour\x01 went on with its evening.",
+        face=2,
+    )
+    seed("a-word-in-many-styles", 3, b"".join(bytes([1 + n % 7]) + b"ab" for n in range(60)) + b" and on", face=2)
+    seed("line-ends", 4, b"The lamp was lit\nbefore anyone  \n  had asked\n\nfor it,\x00and the har\x00bour went\n", cost=1)
+
+    # Places a line may end that are written in the text: hyphens and
+    # dashes (and where one is not such a place), soft hyphens, zero width
+    # spaces.
+    seed(
+        "hyphens-and-dashes",
+        3,
+        "a well-known lamp—lit by ten-twelve– not -ish nor 10-12, a--b, non‑breaking, self-\n".encode(),
+    )
+    seed(
+        "soft-hyphens-and-zero-width-spaces",
+        3,
+        "the lamp­lighter of the har­bour​side, ­ and ​ un­happy­ one​­two".encode(),
+    )
+    seed("words-the-hyphenator-breaks", 3, b"hyphenation unhappy lamp cabbage abba Unhappy HYPHENATION abab " * 3)
+
+    # Runs of bytes with no space in them: longer than is taken as a word,
+    # of characters of several bytes, and with marks set over letters.
+    seed("a-word-too-long", 4, b"see " + b"harbour" * 100 + b" and on")
+    seed("a-long-word-of-wide-characters", 3, "é\U00010428中".encode() * 90, at_a_time=3)
+    seed("marks-over-letters", 2, "éàố ".encode() * 20)
+    seed(
+        "not-utf-8",
+        3,
+        b"lamp\xc0\xaflight ev\x80ening harb\xed\xa0\x80our \xff\xfe \xc2 \xe2\x80 half\xe2\x80\xc2\xad a\xcc b\xcd\xff",
+    )
+
+    # Spaces: in runs, of several kinds, and at either end.
+    seed("spaces", 3, b"   The  lamp\t was \r\n lit   before \t\t anyone" + b" " * 300 + b"had asked.   ")
+    # More spaces in a row than one call may look at bytes.
+    seed("a-long-run-of-spaces", 4, b"lamp" + b" " * 2500 + b"lit" + b"\t" * 900)
+    seed("nothing-has-any-width", 3, text, face=3, least=True)
+    seed("no-words", 4, b"  \t \n \x00 \xc2\xad \xe2\x80\x8b ")
+    write("paragraph", "nothing", b"")
+
+
 def main() -> None:
     inflate_seeds()
     zip_seeds()
@@ -1034,6 +1122,7 @@ def main() -> None:
     svg_values_seeds()
     svg_path_seeds()
     svg_seeds()
+    paragraph_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

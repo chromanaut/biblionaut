@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -1099,10 +1099,10 @@ whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
 
 Each reader of a book's own files, from the inflater to the table of
 contents, has a fuzz target in `tests/fuzz`, and so have the heap the XML
-parser's memory comes from, the hyphenator, which is given a book's words,
-and each reader of a drawing: one function that is given some bytes, puts
-them through the reader, and ends the program if the reader does anything
-it should not.
+parser's memory comes from, the hyphenator and the paragraph setter, which
+are given a book's words, and each reader of a drawing: one function that
+is given some bytes, puts them through the reader, and ends the program if
+the reader does anything it should not.
 Going outside its memory, or into undefined behaviour, is seen by the
 sanitizers. The rest a target checks for itself: what the reader's header
 promises of it, and that no single call does more than the header says a
@@ -1118,6 +1118,7 @@ call may.
 | `css` | `epub::CssReader`, twice, with the sheet cut up two ways; and the same bytes as a `style` attribute | A step asks its source once, for 1 KB. A rule is told whole and in order. A selector has no more parts or classes than there is room for, and a rank its parts account for. A number is within its bounds, and not below zero where the property cannot be. The reader's counts are the counts of what it told. Both readings tell the same |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
 | `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
+| `paragraph` | `layout::ParagraphSetter`, with a paragraph's text in runs of up to seven styles and line ends asked for, on lines from 1 wide to 30,000, measured four ways | A paragraph is done with in a number of calls that depends only on its length. No call does more than `MostWorkFor()` allows, gives the breaker more than one item, asks the hyphenator about more than one word, or has more than a word's worth of bytes measured. The lines hold all the text once and in order. Each is as wide as its text adds up to and has the places between words it says; one is only too wide for a single character that is. The measure is never given a soft hyphen, nor a piece that begins inside a character. The lines are the same when the text is offered all at once |
 | `svg_tags` | `draw::SvgTagReader`, twice: whole, and cut up, with the ends of the pieces it gives handed back to it | A call takes a byte or tells something. Things are told in an order tags can have, and `Depth()` is how many elements were opened and not closed. Each tag is in the file where `TagOffset()` says it began. No more bytes are told of than were taken, and what an entity stands for is one character. Once reading has failed nothing more is told. Both readings tell the same things |
 | `svg_values` | Each reader of what an attribute says (`draw/svg_values.h`), and `ParseSvgTransform` | A reading that refuses the text leaves what it was to fill as it was. Space round the text changes nothing, nor capitals a colour. A view box is fitted where SVG says it goes, worked out again in floating point |
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
@@ -1153,9 +1154,10 @@ A target is built two ways.
   once found stays found. The kept inputs are the seeds, which
   `tests/fuzz/make_seeds.py` makes out of text written for the purpose
   (a stream of each kind, a book of each kind, a table of contents with
-  entries in it, a language's table and words for it, a drawing with
-  something of everything), and any input that ever found a fault, cut
-  down to the least that shows it and named `found-` and what it found.
+  entries in it, a language's table and words for it, paragraphs of text,
+  a drawing with something of everything), and any input that ever found
+  a fault, cut down to the least that shows it and named `found-` and
+  what it found.
 - **For fuzzing** it is linked with LLVM's fuzzing engine, libFuzzer,
   which makes up new inputs by changing the ones it has, keeps each one
   that reaches code none reached before, and goes on from those.
@@ -1167,41 +1169,8 @@ A target is built two ways.
   tools/fuzz.py xml zip          # only those two
   ```
 
-  Five minutes a target, on a laptop with ten cores:
-
-  ```
-  $ tools/fuzz.py --time 300
-  Building the fuzz targets with /opt/homebrew/opt/llvm@23/bin/clang ...
-  Fuzzing 12 targets in 2 builds, 300 s each, 8 at once ...
-
-  target       build         inputs tried   kept  result
-  inflate      fuzz               292,308     62  nothing found
-  inflate      fuzz-noasan        292,674     60  nothing found
-  zip          fuzz               961,536     31  nothing found
-  zip          fuzz-noasan      3,502,720     36  nothing found
-  xml          fuzz               738,660    771  nothing found
-  xml          fuzz-noasan      1,231,386   1363  nothing found
-  package      fuzz               289,376    476  nothing found
-  package      fuzz-noasan        613,873   1093  nothing found
-  toc          fuzz               228,866    436  nothing found
-  toc          fuzz-noasan        433,906    924  nothing found
-  css          fuzz               756,462  10889  nothing found
-  css          fuzz-noasan        879,992  11613  nothing found
-  region_heap  fuzz             1,276,626    118  nothing found
-  region_heap  fuzz-noasan      1,639,767    119  nothing found
-  hyphenator   fuzz               748,658    544  nothing found
-  hyphenator   fuzz-noasan      1,608,867    787  nothing found
-  svg_tags     fuzz            17,015,911    157  nothing found
-  svg_tags     fuzz-noasan     21,975,800    225  nothing found
-  svg_values   fuzz            31,967,259     19  nothing found
-  svg_values   fuzz-noasan     41,327,229     19  nothing found
-  svg_path     fuzz               200,249     46  nothing found
-  svg_path     fuzz-noasan        257,436     77  nothing found
-  svg          fuzz               125,312    205  nothing found
-  svg          fuzz-noasan        158,114    285  nothing found
-
-  Nothing found. The inputs kept are in .fuzz/corpus/.
-  ```
+  It ends with a line for each target in each build: how many inputs it
+  tried, how many of those it kept, and whether anything was found.
 
   It runs each target in two builds at once: one with AddressSanitizer,
   and one without, because the heap inside a block is laid out one way
@@ -1393,6 +1362,114 @@ paragraph of ordinary shape goes over 2,600 to 10,400. Another 400
 paragraphs are made to be awkward, with boxes of no width, boxes wider than
 any line, spaces of no width and breaks at every price, in 32 to 300
 nodes, half of them with a caller that asks for lines early.
+
+## Setting a paragraph's text in lines
+
+`layout/paragraph_setter.h` stands between a paragraph's text and the line
+breaker. It takes the text as it comes, in runs that each have a style;
+finds the words; asks the hyphenator where each may be broken, and a
+measure how wide its pieces are; gives the breaker its items; and says of
+each line that comes back which bytes of the paragraph's text are on it.
+It knows nothing of fonts. How wide text is, is asked of a `TextMeasure`
+that the caller provides, in whatever unit the lines' widths are in.
+
+- **Spaces** are where a line may end. Several in a row are one space as
+  wide as all of them. Those at the start of a paragraph, and after a line
+  end the text asks for, are left out. A line feed is such a line end.
+- **Words** are everything else, a no-break space among it. A word may
+  change style part way through and is one word still: the hyphenator is
+  asked about the whole of it, and each part is measured in its own style.
+- **Where a line may end inside a word**: where the hyphenator says, at a
+  price the caller sets, with a hyphen shown. At a soft hyphen, the same
+  way; and a word that has one is broken at those and nowhere the
+  hyphenator would have chosen. After a hyphen or a dash that is written in
+  the word, at no price and with nothing more shown: but not after one the
+  word begins with, between two of them, or between a minus and a figure.
+  And at a zero width space.
+- **What it says of a line**: where its text begins and ends in the
+  paragraph, how wide it is, how many places between words it has (which
+  is what spreading it out to the full width needs), whether a hyphen is
+  to be shown after it, and whether it ends the paragraph or ends where the
+  text asked. A line begins with the first character of its first word and
+  ends with the last of its last.
+- **Nothing runs off the end of a line.** A stretch with nowhere to end a
+  line that is wider than the paragraph's narrowest line may be ended
+  between any two of its characters, as a last resort, and the lines it
+  runs over are then filled as lines of words are. So is a run of bytes too
+  long to be taken as one word (252), which is how text in a script written
+  without spaces comes out as full lines. A line may also end without a
+  hyphen where a word could be broken and the narrowest line has no room
+  for one. Only a character that is itself wider than a line makes a line
+  too wide.
+- **Memory**: the caller's. The breaker's nodes, and a record of 4 bytes
+  for each item that is not yet on a line given out: 768 of them (3 KB) go
+  with 256 nodes. When the records run out, lines are given out early. The
+  setter itself is about 1 KB, most of it the word it has in hand.
+- **Flash**: 5.5 KB, as compiled for the device.
+- **One call's work**: a paragraph takes many calls, and a call need not
+  take all the text it is offered. Each looks at no more than a word's
+  worth of bytes (255), asks the hyphenator about one word at the most,
+  has the measure go over a word's worth of bytes at the most, and gives
+  the breaker one item at the most (`ParagraphSetter::MostWorkFor`). What
+  the hyphenator and the breaker then do, they bound themselves.
+- **Not done**: anything on a line that is not text, such as a picture
+  among the words; the spaces at the start of a line of text that is set
+  just as it is written; the rules for ending lines in scripts written
+  without spaces between words; and spreading a line out, which is for
+  whoever draws it.
+
+`bn-lines` (`tools/lines`) sets a file of paragraphs by this code. There
+are no fonts yet to measure text with, so it measures in a made-up face
+whose widths it states (a small letter is 36 quarters of a pixel, an `i`
+18, an `m` 54), which lets a reader add a line up. Text between two
+asterisks is in a second style, a little wider. With the table made above
+from the nine patterns that "hyphenation" meets:
+
+```
+$ cat text.txt
+Nobody on the quay had a word for hyphenation, and the well-known lamp was *lit* before anyone asked.
+$ ./build/host/tools/lines/bn-lines text.txt --table table.bnhy --width 640
+0	18	584	3	-	Nobody on the quay
+19	36	562	4	h	had a word for hy-
+36	54	540	2	-	phenation, and the
+55	70	508	1	-	well-known lamp
+71	85	426	2	-	was lit before
+86	99	432	1	l	anyone asked.
+```
+
+Each line is where it begins and ends in the paragraph's text, its width,
+its places between words, what is true of it (`h`: a hyphen is shown; `l`:
+it is a last line; `w`: it is too wide) and its text. `--figures` prints
+what setting the paragraphs took instead:
+
+```
+$ ./build/host/tools/lines/bn-lines text.txt --table table.bnhy --width 640 --figures
+paragraphs 1, bytes of text 99, lines 6, the most in one paragraph 6
+lines with a hyphen shown 1, too wide 0
+words the hyphenator was asked about 18, places made as a last resort 0
+lines given out early 0, in 0 paragraphs; ended for want of records 0
+nodes in use at the most 22 of 256
+calls 98; the most work in one, by the setter 36 of 1533, by the breaker 17 of 37888
+```
+
+Its tests set paragraphs written out by hand for each rule, and compare it
+with a second way of making a paragraph's items, written for the tests:
+the whole paragraph at once, every word found, cut and measured before the
+breaker is given anything, on 600 made-up paragraphs. Another 400, with
+lines as narrow as a letter, little memory, and the text offered a byte or
+a few at a time, have to come out as lines that hold all the text once and
+add up. Every call is held to what one call may do, on text made to be
+awkward as well: one run of 5,000 letters with every letter wider than the
+line, 500 soft hyphens end to end, 700 line feeds, a word in a new style
+at every other letter.
+
+An end-to-end test (`tests/e2e/lines_tool.py`) sets `bn-lines` beside a
+second reading of the same paragraphs in Python that shares none of its
+code. It takes each paragraph apart into the stretches that no line ends
+inside and the places between them, with a made-up language's hyphenation,
+and finds what the cheapest way of ending the lines costs by trying, for
+every place, every place a line ending there could have begun. Over 480
+paragraphs the lines `bn-lines` prints cost exactly that.
 
 ## Choosing the lines of a page
 

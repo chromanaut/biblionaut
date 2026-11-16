@@ -75,6 +75,7 @@ TARGETS = {
     "xml": 16384,
     "package": 16384,
     "toc": 16384,
+    "css": 16384,
     "region_heap": 3072,
     "hyphenator": 4096,
     "svg_tags": 4096,
@@ -83,15 +84,17 @@ TARGETS = {
     "svg": 8192,
 }
 
-# Pieces of XML, and of SVG, that the readers look for, which the engine
-# would be a long time coming to by changing bytes. For the targets that
-# read each.
+# Pieces of XML, of CSS and of SVG that the readers look for, which the
+# engine would be a long time coming to by changing bytes. For the targets
+# that read each.
 XML_PIECES = ROOT / "tests" / "fuzz" / "xml.dict"
+CSS_PIECES = ROOT / "tests" / "fuzz" / "css.dict"
 SVG_PIECES = ROOT / "tests" / "fuzz" / "svg.dict"
 DICTIONARIES = {
     "xml": XML_PIECES,
     "package": XML_PIECES,
     "toc": XML_PIECES,
+    "css": CSS_PIECES,
     "svg_tags": SVG_PIECES,
     "svg_values": SVG_PIECES,
     "svg_path": SVG_PIECES,

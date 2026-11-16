@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
 """Checks what the book tools make of real books against a reading of each by Python.
 
-bn-zip, bn-xml and bn-epub run the firmware's own code on one file. This
-runs them over every EPUB under the folders it is given and compares, book
-by book:
+bn-zip, bn-xml, bn-epub and bn-css run the firmware's own code on one file.
+This runs them over every EPUB under the folders it is given and compares,
+book by book:
 
   - bn-zip with Python's zipfile: every entry of the directory, every
     entry's contents by its checksum, and a few entries byte for byte;
   - bn-xml with Python's expat: every XML document, event for event;
   - bn-epub info with a reading of the package by ElementTree;
-  - bn-epub toc with a reading of each table of contents the book has.
+  - bn-epub toc with a reading of each table of contents the book has;
+  - bn-css with a second reading of every style sheet, line for line.
 
-The readings of the ZIP file, the documents and the package are the ones
-the end-to-end tests use on the books they make (tests/e2e). The reading
-of a table of contents is written here, since real tables do things the
-tests' own do not.
+The readings of the ZIP file, the documents, the package and the style
+sheets are the ones the end-to-end tests use on the books they make
+(tests/e2e). The reading of a table of contents is written here, since
+real tables do things the tests' own do not.
+
+With --css-report it also says what the style sheets of the books lose to
+what the reader of CSS does not read: each kind of thing that was passed
+over, and the properties, pseudo-classes and at-rules passed over most,
+each with how many times and in how many books.
 
 A folder with a file named SHA256SUMS in it is also checked against that
 file: every file it lists has to be there and unchanged, and every EPUB
 beside or below it has to be listed.
 
-usage: tools/check-books.py [--tools BUILD] [--zip BN_ZIP] [--xml BN_XML] [--epub BN_EPUB]
-                            [--jobs N] FOLDER_OR_FILE...
+usage: tools/check-books.py [--tools BUILD] [--zip BN_ZIP] [--xml BN_XML] [--epub BN_EPUB] [--css BN_CSS]
+                            [--css-report] [--jobs N] FOLDER_OR_FILE...
 
 BUILD is a build folder to take the tools from: build/host-release if it
-has them, or else build/host. Each of the three can be named by itself.
+has them, or else build/host. Each of the four can be named by itself.
 
 It ends with 0 if everything agreed, 1 if anything did not, 2 if it could
 not start.
@@ -50,7 +56,8 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPOSITORY / "tests" / "e2e"))
 sys.dont_write_bytecode = True  # Or Python leaves compiled copies of the tests' scripts beside them.
 
-import epub_tool  # noqa: E402  (found through the path set just above)
+import css_tool  # noqa: E402  (found through the path set just above)
+import epub_tool  # noqa: E402
 import xml_tool  # noqa: E402
 import zip_tool  # noqa: E402
 
@@ -346,8 +353,57 @@ def check_tables(tool: str, path: Path, figures: dict[str, int]) -> list[str]:
     return problems
 
 
-def check_book(arguments: tuple[str, str, str, str]) -> tuple[str, list[str], dict[str, int]]:
-    zip_tool_path, xml_tool_path, epub_tool_path, name = arguments
+def check_css(tool: str, path: Path, figures: dict[str, int]) -> list[str]:
+    result = run(tool, "book", str(path))
+    lines = result.stdout.decode("utf-8", "replace").splitlines()
+    if not lines or not lines[-1].startswith("css_sheets="):
+        return [f"bn-css: ended with {result.returncode} and its last line is {lines[-1:]!r}: {result.stderr[-120:]!r}"]
+    said = {}
+    for line in lines[:-1]:
+        how, crc, rules, declarations, dropped, name = line.split(None, 5)
+        said[name] = (how, crc, int(rules), int(declarations), int(dropped))
+    problems = []
+    all_rules = all_declarations = all_dropped = 0
+    with zipfile.ZipFile(path) as archive:
+        wanted = [info for info in archive.infolist() if info.filename.lower().endswith(".css")]
+        named = {info.filename: zip_tool.name_bytes(info).decode("utf-8", "replace") for info in wanted}
+        if set(said) != set(named.values()) or len(said) != len(wanted):
+            return [f"bn-css: it read {len(said)} sheets, and Python finds {len(wanted)} by their names, not all the same"]
+        for info in wanted:
+            expected = css_tool.read_css(archive.read(info))
+            rules = sum(1 for line in expected if line == b"}")
+            declarations = sum(1 for line in expected if line.startswith(b"D "))
+            dropped = sum(1 for line in expected if line.startswith(b"X "))
+            mine = ("ok", f"{css_tool.checksum(expected):08x}", rules, declarations, dropped)
+            if said[named[info.filename]] != mine:
+                problems.append(f"bn-css: {info.filename}: {said[named[info.filename]]}; the second reading has {mine}")
+            all_rules += rules
+            all_declarations += declarations
+            all_dropped += dropped
+            # What was passed over, for the report: by kind, and for the
+            # kinds whose text is a name, by name. A book counts once for each.
+            seen = set()
+            for line in expected:
+                if not line.startswith(b"X "):
+                    continue
+                kind, _, text = line[2:].decode("utf-8", "replace").partition(": ")
+                keys = [f"dropped\t{kind}"]
+                if kind in ("property", "pseudo-class", "pseudo-element", "at-rule", "media block"):
+                    keys.append(f"dropped\t{kind}\t{text.lower()}")
+                for key in keys:
+                    figures[key] = figures.get(key, 0) + 1
+                    seen.add(key)
+            for key in seen:
+                figures["books " + key] = 1
+    figures["sheets"] = len(wanted)
+    figures["css_rules"] = all_rules
+    figures["css_declarations"] = all_declarations
+    figures["css_dropped"] = all_dropped
+    return problems[:4]
+
+
+def check_book(arguments: tuple[str, str, str, str, str]) -> tuple[str, list[str], dict[str, int]]:
+    zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, name = arguments
     path = Path(name)
     figures: dict[str, int] = {}
     problems: list[str] = []
@@ -356,9 +412,29 @@ def check_book(arguments: tuple[str, str, str, str]) -> tuple[str, list[str], di
         problems += check_xml(xml_tool_path, path, figures)
         problems += check_package(epub_tool_path, path, figures)
         problems += check_tables(epub_tool_path, path, figures)
+        problems += check_css(css_tool_path, path, figures)
     except Exception as error:  # A book that the comparison itself trips over is a finding, not a crash.
         problems.append(f"the comparison failed: {error!r}")
     return name, problems, figures
+
+
+def print_css_report(totals: dict[str, int], books: int) -> None:
+    """What the style sheets lost to what is not read, from the figures every book gave."""
+    print(f"\nStyle sheets: {totals.get('css_rules', 0)} rules read, with {totals.get('css_declarations', 0)} "
+          f"declarations; {totals.get('css_dropped', 0)} things passed over, in {books} books:")
+    kinds = sorted(((count, key.split("\t")[1]) for key, count in totals.items()
+                    if key.startswith("dropped\t") and key.count("\t") == 1), reverse=True)
+    for count, kind in kinds:
+        print(f"  {count:8}  in {totals.get('books dropped' + chr(9) + kind, 0):4} books  {kind}")
+    for kind, most in (("property", 30), ("pseudo-class", 12), ("pseudo-element", 8), ("at-rule", 8), ("media block", 12)):
+        named = sorted(((count, key.split("\t", 2)[2]) for key, count in totals.items()
+                        if key.startswith(f"dropped\t{kind}\t")), reverse=True)
+        if not named:
+            continue
+        print(f"  {kind}, the {min(most, len(named))} passed over most of {len(named)}:")
+        for count, text in named[:most]:
+            in_books = totals.get(f"books dropped\t{kind}\t{text}", 0)
+            print(f"    {count:8}  in {in_books:4} books  {text}")
 
 
 def check_sums(sums: Path) -> tuple[int, list[str]]:
@@ -407,13 +483,15 @@ def main() -> int:
     parser.add_argument("--zip")
     parser.add_argument("--xml")
     parser.add_argument("--epub")
+    parser.add_argument("--css")
+    parser.add_argument("--css-report", action="store_true")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     parser.add_argument("places", nargs="+")
     options = parser.parse_args()
     tools = [find_tool(options.zip, options.tools, "zip", "bn-zip"), find_tool(options.xml, options.tools, "xml", "bn-xml"),
-             find_tool(options.epub, options.tools, "epub", "bn-epub")]
+             find_tool(options.epub, options.tools, "epub", "bn-epub"), find_tool(options.css, options.tools, "css", "bn-css")]
     if None in tools:
-        print("check-books: bn-zip, bn-xml and bn-epub are not all built: cmake --build --preset host-release",
+        print("check-books: bn-zip, bn-xml, bn-epub and bn-css are not all built: cmake --build --preset host-release",
               file=sys.stderr)
         return 2
     places = [Path(place) for place in options.places]
@@ -452,7 +530,10 @@ def main() -> int:
 
     print(f"{len(books)} books: {totals.get('entries', 0)} entries in their ZIP files, {totals.get('documents', 0)} XML "
           f"documents with {totals.get('events', 0)} events, {totals.get('spine', 0)} documents in their spines, "
-          f"{totals.get('tables', 0)} readings of tables of contents with {totals.get('toc_entries', 0)} entries.")
+          f"{totals.get('tables', 0)} readings of tables of contents with {totals.get('toc_entries', 0)} entries, "
+          f"{totals.get('sheets', 0)} style sheets with {totals.get('css_rules', 0)} rules.")
+    if options.css_report:
+        print_css_report(totals, len(books))
     if totals.get("not_xml"):
         print(f"{totals['not_xml']} documents are not XML, by the tools and by Python's expat alike.")
     if listed:

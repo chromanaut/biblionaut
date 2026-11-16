@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -844,6 +844,187 @@ books whose two tables differ, and compares `bn-epub toc` with a reading of
 each by Python's own XML parser, written separately for the test: every
 entry has to agree.
 
+## Style sheets
+
+`epub/css.h` reads CSS: a book's style sheets, the `<style>` elements of
+its documents and the `style` attributes of their elements. It reads a
+sheet and says what is in it. Which rules apply to which element is not
+its business, and nothing does that yet.
+
+- A sheet is read from a `ByteSource`, 1 KB at each `Step()`, and never
+  held whole. What is found is told to a `CssHandler` as it is found: a
+  rule's beginning, each of its selectors, each thing it sets, its end; an
+  `@import`; and everything that was passed over, with what it was.
+- **Selectors**: by element, class and id, joined by descent (`div p`) or
+  as child (`div > p`), with `*` for any element. `:link` is taken as
+  always so, and `::first-letter` is read, for drop caps. A selector with
+  anything else in it is dropped: an attribute in brackets, any other
+  pseudo-class or pseudo-element, `+` or `~`. The others of its rule are
+  kept, and a rule left with none is dropped whole. Each selector comes
+  with its rank as CSS has it: its counts of ids, of classes and of
+  element names.
+- **Properties**: `font-style`, `font-weight`, `font-variant`,
+  `font-family`, `font-size`, `line-height`, `text-align`, `text-indent`,
+  `text-decoration`, `vertical-align`, the four sides of `margin` and of
+  `padding`, `display`, `float`, `width`, `height`, and where a page may
+  break (`page-break-*` and `break-*`, as one). `margin`, `padding` and
+  `font` are taken apart into those. Any other property is dropped, and
+  so is a value that is not understood. `!important` is told with the
+  declaration.
+- **Lengths** are given as a number of thousandths and one of four units:
+  pixels, ems, rems and percent. Points, inches and the rest are turned
+  into pixels (12pt is 16px), and `ex` into half an em. A length that
+  depends on the screen (`vh`, `vw`) is not read.
+- **`@media`**: the rules in a block are read if the block is for `all` or
+  `screen`, or for "not" some other kind of device (`not amzn-mobi`, which
+  six of 335 trade books use, 709 times between them), and has no
+  condition in brackets. A
+  block for print, for one maker's device, or for a screen of some size is
+  passed over. The screen is not asked its size because what is made of a
+  book must not depend on which device made it.
+- **Other at-rules**: `@import` is told to the handler, if it is for a
+  reader of books by the same test. The rest are passed over, with their
+  blocks: `@font-face`, `@page`, `@supports`, `@namespace`, `@charset`.
+- **Mistakes** stop nothing. Whatever bytes a sheet has, reading goes on
+  to its end, dropping the declaration or the rule that cannot be made
+  sense of, as CSS's own rules for mistakes have it. In one thing it is
+  kinder than they are: a bracket left open ends with its rule, where by
+  the rules it would take the rest of the sheet with it. A list of
+  selectors over 1,024 bytes, or a declaration over 512, is dropped; the
+  longest in the 1,027 sheets of 520 books are 649 and 179.
+- **Memory**: about 2 KB of its own, for the selectors or the declaration
+  in hand. Nothing from the heap.
+- **What is passed over is counted**, by kind, and told to the handler
+  with its text, so that what a collection of books loses to all of the
+  above can be added up (below).
+
+`bn-css` runs the same code on the desktop:
+
+```
+./build/host/tools/css/bn-css rules book.css
+./build/host/tools/css/bn-css style 'margin: 1em 0; font-weight: 700 !important'
+./build/host/tools/css/bn-css book book.epub --dropped
+```
+
+`rules` prints what the reader finds in one sheet, a thing a line. For
+this sheet
+
+```
+@import url("fonts.css");
+body { margin: 0 5%; font-family: Georgia, "Times New Roman", serif }
+h2 { text-align: center; page-break-before: always; margin: 2em 0 1em }
+p { text-indent: 1.5em; margin: 0; widows: 2 }
+h2 + p, p.first { text-indent: 0 }
+p.first::first-letter { float: left; font-size: 3em; line-height: 1 }
+@media amzn-mobi { p.first::first-letter { float: none } }
+a:link { text-decoration: none; color: #036 }
+```
+
+it prints
+
+```
+I fonts.css
+{
+S 0,0,1 body
+D margin-top: 0px
+D margin-right: 5%
+D margin-bottom: 0px
+D margin-left: 5%
+D font-family: georgia, times new roman, serif
+}
+{
+S 0,0,1 h2
+D text-align: center
+D break-before: always
+D margin-top: 2em
+D margin-right: 0px
+D margin-bottom: 1em
+D margin-left: 0px
+}
+{
+S 0,0,1 p
+D text-indent: 1.5em
+D margin-top: 0px
+D margin-right: 0px
+D margin-bottom: 0px
+D margin-left: 0px
+X property: widows
+}
+X sibling selector: h2 + p
+{
+S 0,1,1 p.first
+D text-indent: 0px
+}
+{
+S 0,1,2 p.first ::first-letter
+D float: left
+D font-size: 3em
+D line-height: 1
+}
+X media block: amzn-mobi
+{
+S 0,1,1 a
+D text-decoration: none
+X property: color
+}
+```
+
+`{` and `}` are a rule's beginning and end, `S` a selector after its rank,
+`D` something the rule sets, `I` an import and `X` something passed over,
+with its kind. `style` prints the same for a `style` attribute. `book`
+reads every sheet in an EPUB as it comes out of the ZIP file, and prints
+for each how it ended, the checksum of what `rules` would print for it,
+its rules, the declarations in them and how many things were passed over;
+with `--dropped`, also each different thing that was passed over and how
+many times. For Standard Ebooks' *Flatland*, which is in `corpus/`:
+
+```
+ok bd88232e     31     82     82 epub/css/core.css
+ok b1313d47      9     27     18 epub/css/local.css
+ok 0134d47d     15     33     13 epub/css/se.css
+css_sheets=3 css_failed=0 css_bytes=10955 css_rules=55 css_declarations=142 css_dropped=113
+```
+
+The unit tests say what the reader should make of sheets written for
+them: every property and unit, every kind of selector and of mistake, the
+same sheet cut into pieces of every size, and four hundred sheets damaged
+at random. An end-to-end test (`tests/e2e/css_tool.py`) compares `bn-css`
+with a second reading of the same sheets. Python has no reader of CSS of
+its own, so the second reading is written in the test, another way round
+(the whole sheet at once, comments out first); every line has to agree,
+on sheets the test makes, on 450 of them damaged at random, and, through
+`tools/check-books.py`, on the sheets of real books. The two agree on all
+1,027 sheets of the 520 books they were tried on. Writing the second one
+found a fault in the first (a character written as `\0` was decoded over
+the byte after it), and the fuzz target found another in its first two
+minutes (a second `::first-letter` after the first was let through).
+
+**What books lose to it.** `tools/check-books.py --css-report` adds up
+what was passed over across a folder of books. Over `corpus/` it begins:
+
+```
+Style sheets: 1294 rules read, with 3525 declarations; 1310 things passed over, in 28 books:
+       595  in   28 books  property
+       199  in    9 books  sibling selector
+       188  in   26 books  rule
+       133  in   15 books  pseudo-class
+        78  in   26 books  at-rule
+        59  in   19 books  attribute selector
+        23  in    7 books  pseudo-element
+        19  in    9 books  media block
+        16  in   16 books  value
+  property, the 30 passed over most of 40:
+          75  in   15 books  all
+          57  in   19 books  color
+          39  in   19 books  background-color
+          38  in   24 books  border
+```
+
+and goes on to name the pseudo-classes, at-rules and media blocks. These
+books are from Project Gutenberg, Standard Ebooks and IDPF, whose sheets
+lean on what is not read: one rule in eight is dropped for its selectors.
+In 335 books from trade publishers it is one in a hundred.
+
 ## Real books
 
 The tests make most of the books they read, so that a test can say exactly
@@ -860,9 +1041,9 @@ pages are SVG files. `corpus/README.md` lists them, with where each came
 from and the terms it is passed on under, which are not this project's
 licence. They are kept byte for byte as they were fetched.
 
-`tools/check-books.py` runs `bn-zip`, `bn-xml` and `bn-epub` over every
-EPUB under a folder, and compares what each says of a book with a reading
-of the same book by Python:
+`tools/check-books.py` runs `bn-zip`, `bn-xml`, `bn-epub` and `bn-css` over
+every EPUB under a folder, and compares what each says of a book with a
+reading of the same book by Python:
 
 ```
 tools/check-books.py corpus
@@ -870,7 +1051,7 @@ tools/check-books.py --tools build/host ~/books
 ```
 
 ```
-28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries.
+28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1294 rules.
 28 files listed in SHA256SUMS: all there and unchanged.
 The tools and Python agree about every book.
 ```
@@ -887,11 +1068,15 @@ The tools and Python agree about every book.
 - **The table of contents**: every entry of `bn-epub toc`, for the table
   the book is read by and for each kind it has, is the entry a reading of
   that file by ElementTree comes to, and so is their checksum.
+- **The style sheets**: every sheet `bn-css book` reads has the checksum,
+  the rules, the declarations and the count of things passed over that a
+  second reading of it comes to (Style sheets, above, has what that
+  reading is).
 
 Where they differ it prints a line for each difference, starting
 `DIFFERENT`, and ends with 1. It takes the tools from `build/host-release`
 if they are built there, or else from `build/host`; `--tools` names another
-build, and `--zip`, `--xml` and `--epub` one tool each.
+build, and `--zip`, `--xml`, `--epub` and `--css` one tool each.
 
 A folder with a file named `SHA256SUMS` in it is checked against that file
 as well: every file listed has to be there with that SHA-256, and every
@@ -930,6 +1115,7 @@ call may.
 | `xml` | `epub::XmlParser`, with more or less memory, and a handler that may stop it or try to use it from inside | A step asks its source once, for 1 KB. The parser's heap is in order after every step. Text comes in whole characters, and never more of it than twice the bytes read, which is the most a change of encoding makes of them. A handler that stops the parser is told nothing more. The parser reads a good document rightly afterwards |
 | `package` | `epub::Package`, a step at a time, twice | No step reads more than five blocks from storage. Nothing is said of the book until the reading is over. A book that was read has documents, each found again by its entry's name. A second reading says what the first said |
 | `toc` | `epub::TocReader`, a step at a time, twice, with a handler that may ask for no more | No step reads more than five blocks. Every label is whole characters with its spaces collapsed, within its length; every entry points at a document of the book or at none. A stopped reading says so |
+| `css` | `epub::CssReader`, twice, with the sheet cut up two ways; and the same bytes as a `style` attribute | A step asks its source once, for 1 KB. A rule is told whole and in order. A selector has no more parts or classes than there is room for, and a rank its parts account for. A number is within its bounds, and not below zero where the property cannot be. The reader's counts are the counts of what it told. Both readings tell the same |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
 | `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
 | `svg_tags` | `draw::SvgTagReader`, twice: whole, and cut up, with the ends of the pieces it gives handed back to it | A call takes a byte or tells something. Things are told in an order tags can have, and `Depth()` is how many elements were opened and not closed. No more bytes are told of than were taken, and what an entity stands for is one character. Once reading has failed nothing more is told. Both readings tell the same things |
@@ -984,31 +1170,33 @@ A target is built two ways.
   ```
   $ tools/fuzz.py --time 300
   Building the fuzz targets with /opt/homebrew/opt/llvm@23/bin/clang ...
-  Fuzzing 11 targets in 2 builds, 300 s each, 8 at once ...
+  Fuzzing 12 targets in 2 builds, 300 s each, 8 at once ...
 
   target       build         inputs tried   kept  result
-  inflate      fuzz               581,032    258  nothing found
-  inflate      fuzz-noasan        672,084    262  nothing found
-  zip          fuzz             2,169,668    147  nothing found
-  zip          fuzz-noasan      6,762,738    269  nothing found
-  xml          fuzz             2,730,644   5918  nothing found
-  xml          fuzz-noasan      4,091,601   8139  nothing found
-  package      fuzz               732,579   2536  nothing found
-  package      fuzz-noasan      1,550,742   4598  nothing found
-  toc          fuzz               612,083   2851  nothing found
-  toc          fuzz-noasan      1,114,446   4635  nothing found
-  region_heap  fuzz             1,648,854    829  nothing found
-  region_heap  fuzz-noasan      2,294,609    950  nothing found
-  hyphenator   fuzz               974,051   4127  nothing found
-  hyphenator   fuzz-noasan      1,932,260   5593  nothing found
-  svg_tags     fuzz            21,118,385   1162  nothing found
-  svg_tags     fuzz-noasan     26,408,850   1313  nothing found
-  svg_values   fuzz            44,971,282    123  nothing found
-  svg_values   fuzz-noasan     59,773,214    163  nothing found
-  svg_path     fuzz               428,618    275  nothing found
-  svg_path     fuzz-noasan        503,697    330  nothing found
-  svg          fuzz               488,536   1625  nothing found
-  svg          fuzz-noasan        653,077   2113  nothing found
+  inflate      fuzz               415,866     39  nothing found
+  inflate      fuzz-noasan        341,436     25  nothing found
+  zip          fuzz               892,025     22  nothing found
+  zip          fuzz-noasan      2,719,830     41  nothing found
+  xml          fuzz               802,357    652  nothing found
+  xml          fuzz-noasan      1,268,685    976  nothing found
+  package      fuzz               265,607    373  nothing found
+  package      fuzz-noasan        581,856    798  nothing found
+  toc          fuzz               137,134    259  nothing found
+  toc          fuzz-noasan        267,073    546  nothing found
+  css          fuzz               627,251   1562  nothing found
+  css          fuzz-noasan        753,742   1994  nothing found
+  region_heap  fuzz               756,351     21  nothing found
+  region_heap  fuzz-noasan      1,073,684     54  nothing found
+  hyphenator   fuzz               378,987   1036  nothing found
+  hyphenator   fuzz-noasan        684,571   1453  nothing found
+  svg_tags     fuzz             2,772,529   9065  nothing found
+  svg_tags     fuzz-noasan      3,628,011  10468  nothing found
+  svg_values   fuzz            13,834,975   5042  nothing found
+  svg_values   fuzz-noasan     19,003,463   5714  nothing found
+  svg_path     fuzz               332,478   3393  nothing found
+  svg_path     fuzz-noasan        455,823   4251  nothing found
+  svg          fuzz               145,270   3400  nothing found
+  svg          fuzz-noasan        190,343   4169  nothing found
 
   Nothing found. The inputs kept are in .fuzz/corpus/.
   ```

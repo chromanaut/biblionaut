@@ -1,0 +1,12 @@
+@charset "utf-8";
+@import url("more.css");
+/* The body, and what is in it. */
+body { margin: 0 5%; font: 1em/1.4 Georgia, "Times New Roman", serif; text-align: justify }
+h1, h2, h3.sub { font-weight: bold; text-align: center; page-break-before: always; margin: 2em 0 1em }
+p { text-indent: 1.5em; margin: 0; widows: 2 }
+p.first, h1 + p, blockquote > p:first-child { text-indent: 0 }
+p.first::first-letter { float: left; font-size: 3em; line-height: 1; padding: 0 0.1em 0 0 }
+div#cover img, .full { width: 100%; height: auto }
+a:link, a:visited { text-decoration: none; color: #036 }
+.sc { font-variant: small-caps } sup { vertical-align: super; font-size: 75% }
+table td[colspan], li::before { display: none }

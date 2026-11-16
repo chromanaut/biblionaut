@@ -1,0 +1,8 @@
+@media not amzn-mobi { .k { margin-left: 12pt } }
+@media amzn-kf8 { .k { margin-left: 0 } }
+@media screen and (max-width: 420px) { body { margin: 0 } }
+@media all { @media print { p { display: none } } i { font-style: normal !important } }
+@font-face { font-family: "A Face"; src: url(data:font/ttf;base64,AAAA;BBBB) }
+@page { margin: 1em; @bottom-center { content: counter(page) } }
+@import 'late.css' screen;
+.after { float: right; margin: 1px 2px 3px 4px; break-inside: avoid-page }

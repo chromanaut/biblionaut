@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "draw/fill.h"
@@ -31,7 +33,7 @@ const char* SvgStatusName(SvgStatus status) noexcept;
 enum class SvgLeftOut : std::uint32_t {
   kText = 1U << 0U,             // `text`: not drawn.
   kImage = 1U << 1U,            // `image`: not drawn.
-  kUse = 1U << 2U,              // `use`: not drawn.
+  kUse = 1U << 2U,              // A `use` of something that is not in `defs` before it: not drawn.
   kStyleSheet = 1U << 3U,       // `style`: not read, so nothing is painted as it says.
   kStroke = 1U << 4U,           // A line along an outline: not drawn.
   kPaintServer = 1U << 5U,      // A gradient or a pattern: not drawn, or what was written to stand in for it.
@@ -48,9 +50,12 @@ enum class SvgLeftOut : std::uint32_t {
   kBadPath = 1U << 16U,         // Path data that went wrong: drawn as far as it was right.
   kHeldNumber = 1U << 17U,      // A number too large, held at the largest that fits.
   kGroupOpacity = 1U << 18U,    // `opacity` on a group: given to each shape in it, which differs where they overlap.
-  kViewportClip = 1U << 19U,    // An `svg` inside another: drawn, and not cut off at its edges.
+  kViewportClip = 1U << 19U,    // An `svg` inside another, turned or slanted: drawn, and not cut off at its edges.
   kSwitch = 1U << 20U,          // `switch`: everything in it is drawn, not the first that suits.
   kUnknownEntity = 1U << 21U,   // An entity the file declares for itself: taken as nothing.
+  kNoRoom = 1U << 22U,          // More in `defs` than there was room to keep: a `use` of the rest is not drawn.
+                                // Or names in it one inside another past kDeepestNamed.
+  kUseLimit = 1U << 23U,        // More drawn by `use` than kMostReused, or one inside another past kDeepestUse.
 };
 
 // What a bit of a report says, in a word or two: "text", "a stroke".
@@ -59,11 +64,13 @@ const char* SvgLeftOutName(SvgLeftOut what) noexcept;
 // What became of a file.
 struct SvgReport {
   std::uint32_t leftOut = 0;   // A bit of SvgLeftOut for each thing met.
-  std::uint32_t elements = 0;  // Elements there were.
+  std::uint32_t elements = 0;  // Elements read: one that is used is read again each time.
   std::uint32_t shapes = 0;    // Shapes filled.
   std::uint32_t commands = 0;  // Commands their outlines had,
   std::uint32_t lines = 0;     // and lines those became.
   std::uint32_t deepest = 0;   // The most groups open at once.
+  std::uint32_t kept = 0;      // Bytes of definitions kept,
+  std::uint32_t reused = 0;    // and bytes of them gone through again, for `use`.
 
   bool Has(SvgLeftOut what) const noexcept { return (leftOut & static_cast<std::uint32_t>(what)) != 0; }
 };
@@ -92,9 +99,10 @@ struct SvgSize {
 // It is given the file's bytes, a piece at a time, and a Filler that has
 // been set to the strip. The file is read once from its start to its end
 // for each strip, and nothing of it is kept from one strip to the next:
-// the memory it takes is this object, whatever the file's size. A file's
-// longest attribute, the outline of an engraving of megabytes, goes
-// through as it is read.
+// the memory it takes is this object, whatever the file's size, and what
+// it is given to keep the file's definitions in (below). A file's longest
+// attribute, the outline of an engraving of megabytes, goes through as it
+// is read.
 //
 // What it draws, and how:
 //
@@ -103,7 +111,13 @@ struct SvgSize {
 //   height stretched to the picture's.
 // - `svg`, `g`, `a` and `switch` are groups: a `transform`, and paint that
 //   what is inside them takes unless it has its own. An `svg` inside
-//   another has its own place, size and view box.
+//   another has its own place, size and view box, and what is in it is
+//   cut off at its edges unless its `overflow` is "visible" or "auto". A
+//   pixel an edge passes through keeps the share of it that is inside.
+//   The edges have to be edges of rows and columns of pixels for that: an
+//   `svg` that something has turned or slanted is drawn whole, and
+//   reported.
+// - `use` draws something again that `defs` holds: see below.
 // - `path`, `rect` (with rounded corners), `circle`, `ellipse`, `polygon`
 //   and `polyline` are shapes, filled by `fill`, `fill-rule`,
 //   `fill-opacity` and `opacity`, each written as an attribute or in
@@ -119,14 +133,39 @@ struct SvgSize {
 // data is drawn as it arrives, and if a transform then follows it in the
 // same tag, the shape is left out and reported.
 //
+// What a file defines in one place and uses in another has to be kept
+// until it is used, and that is the one thing here whose size the file
+// decides. So the memory for it is the caller's (KeepDefinitionsIn()).
+// What `defs` holds is copied there as it goes by, as it is written, with
+// a note of where each element that has an `id` begins. A `use` then
+// reads its element again from that copy, as if it stood where the `use`
+// does: moved by the transform of the `use` and then by its `x` and `y`,
+// and painted as the `use` is where it says nothing of its own. A
+// `symbol` is drawn only so, and as an `svg` is: with its view box fitted
+// to the width and height the `use` gives, which an `svg` that is used
+// takes too, and cut off there.
+//
+// Three limits, each reported and none a failure. An element can be used
+// only if it is in `defs` and comes before its use, and is named by "#"
+// and its `id`, written out with no entity in it. What does not fit in
+// the memory given is not kept, nor is an element with a name inside more
+// than kDeepestNamed others that have one. And no more than kMostReused
+// bytes are gone through again in one pass, nor one `use` inside another
+// deeper than kDeepestUse, so that a small file cannot ask for endless
+// work by using things that use things.
+//
 // Step() does a bounded amount of work, so that whoever calls it can keep
 // doing other things between calls: at the most it takes kTokensPerStep
-// things from the file's tags, gives the outline in hand
-// kMostCommandsPerStep commands, and fills one shape.
+// things from the file's tags or from what it has kept, gives the outline
+// in hand kMostCommandsPerStep commands, and fills one shape; of what it
+// has kept it reads no more than kReusedPerStep bytes; and it looks once
+// for what a `use` names, through the records of what is defined, which
+// are no more than the memory given has room for.
 //
 // The file is not trusted. Whatever its bytes, it ends in a status and a
-// report. Used by one task. The object is 2,840 bytes on the device, half
-// of it what each open group hands on and a fifth the path data it holds.
+// report. Used by one task. The object is 4,176 bytes on the device: half
+// of it what each open group hands on, an eighth the path data it holds,
+// and a tenth the readers of what is being used again.
 class SvgRenderer {
  public:
   // The most groups that can be open at once. One more is passed over
@@ -144,12 +183,47 @@ class SvgRenderer {
   // tag can complete, the last of a polygon's points and its closing.
   static constexpr std::uint32_t kCommandsPerStep = 16;
   static constexpr std::uint32_t kMostCommandsPerStep = kCommandsPerStep + 3;
+  // The most bytes of definitions that are gone through again in one pass,
+  // all told: a megabyte, which is twelve times what the most of any
+  // drawing in the books comes to. And how deep one `use` may be inside
+  // what another draws.
+  static constexpr std::uint32_t kMostReused = 1048576;
+  static constexpr std::size_t kDeepestUse = 4;
+  // The longest `id` a `use` can name.
+  static constexpr std::size_t kLongestId = 64;
+  // How many elements with an `id` can be open at once in `defs`, one
+  // inside another. One inside more than that is not kept as something to
+  // use, though what it is inside is.
+  static constexpr std::size_t kDeepestNamed = 8;
+  // The most bytes of what is kept that one call reads.
+  static constexpr std::size_t kReusedPerStep = 1024;
+  // The most memory for definitions that is used: places in it are kept
+  // as numbers of four bytes.
+  static constexpr std::size_t kMostKept = 16777216;
+  // What keeping one element with an `id` costs, beside its own bytes.
+  static constexpr std::size_t kBytesPerDefinition = 8;
 
   SvgRenderer() noexcept;
   ~SvgRenderer() = default;
   // It holds pointers into itself, so there is no copying one.
   SvgRenderer(const SvgRenderer&) = delete;
   SvgRenderer& operator=(const SvgRenderer&) = delete;
+
+  // Gives it memory to keep definitions in: what a file's `defs` holds,
+  // for `use` to draw. It is the caller's, and has to last as long as the
+  // renderer is used; each pass begins it afresh. With none, or with too
+  // little, what did not fit is not drawn where it is used, and the report
+  // says so. The `defs` of a drawing take the length of what is in them,
+  // to the end of the tag that closes them, and kBytesPerDefinition for
+  // each element in them that has an `id`. No more than kMostKept bytes
+  // of the memory are used. It is given before a pass begins: given in
+  // the middle of one, it begins empty, and what the pass has yet to use
+  // of what it kept before is not drawn.
+  void KeepDefinitionsIn(std::span<std::uint8_t> block) noexcept {
+    block_ = block.first(std::min(block.size(), kMostKept));
+    keptBytes_ = 0;
+    definitions_ = 0;
+  }
 
   // Begins a pass over a file. The whole drawing is `width` by `height`
   // pixels, and the part of it in `filler`'s strip is drawn there, over
@@ -162,8 +236,9 @@ class SvgRenderer {
 
   // Takes bytes from the front of `bytes`, and returns how many it took:
   // the rest are for the next call. It may take none and still have
-  // worked, on path data it was holding, so call it until the bytes are
-  // gone. Once the file has gone wrong it takes whatever it is given.
+  // worked, on path data it was holding or on something a `use` draws
+  // again, so call it until the bytes are gone. Once the file has gone
+  // wrong it takes whatever it is given.
   [[nodiscard]] std::size_t Step(std::string_view bytes) noexcept;
 
   // Says that the file has ended.
@@ -187,6 +262,7 @@ class SvgRenderer {
     kPolygon,
     kPolyline,
     kLine,
+    kUse,
   };
 
   // What an attribute is, to the element it is on.
@@ -199,6 +275,8 @@ class SvgRenderer {
     kFit,
     kLength,    // One of the lengths below: `slot_` says which.
     kProperty,  // Something `style` could also say: `property_` says which.
+    kId,        // `id`, of an element that is being kept.
+    kHref,      // What a `use` names.
   };
 
   // The lengths an element can have, each in its place in `lengths_`.
@@ -219,6 +297,7 @@ class SvgRenderer {
     kMask,
     kFilter,
     kMarker,
+    kOverflow,
   };
 
   // What an element hands on to what is inside it.
@@ -235,6 +314,39 @@ class SvgRenderer {
     bool hidden = false;      // `visibility`.
     bool stroked = false;     // `stroke` is something,
     bool strokeless = false;  // though with no width.
+    // What is inside is cut off at the edges of a box, in pixels: an `svg`
+    // inside another does that, and so everything within it.
+    bool boxed = false;
+    Point boxFrom;
+    Point boxTo;
+  };
+
+  // What a shape is filled with, and within what.
+  struct Filling {
+    FillRule rule = FillRule::kNonZero;
+    std::uint8_t gray = 0;
+    std::uint8_t alpha = 0;
+    bool boxed = false;
+    Point boxFrom;
+    Point boxTo;
+  };
+
+  // Something kept that a `use` is drawing again.
+  struct Reuse {
+    SvgTagReader reader;         // Reads it, from where it begins in what was kept.
+    std::uint32_t at = 0;        // How far that reading has got.
+    std::uint32_t open = 0;      // How many of its elements are open.
+    std::uint32_t levels = 0;    // How many groups were open when it began,
+    std::uint32_t skipping = 0;  // and what the file's own reading was passing over.
+    bool over = false;           // It has ended, and waits for one it used to end.
+  };
+
+  // An element in `defs` that has an `id` and is not closed yet: where it
+  // begins among the bytes kept, and where its name does.
+  struct OpenId {
+    std::uint32_t at = 0;
+    std::uint32_t idAt = 0;
+    std::uint32_t skipping = 0;  // How deep in `defs` it is.
   };
 
   // Where lines go when nothing is being drawn.
@@ -259,6 +371,24 @@ class SvgRenderer {
   void EndAttribute() noexcept;
   bool Opened(bool empty) noexcept;
   void Close() noexcept;
+  // Does what one thing from the tags says. `taken` is how many bytes it
+  // was read from, and is made less if some of them are handed back.
+  // Returns whether that is enough work for one call.
+  bool Handle(SvgTagReader& reader, const SvgTagToken& token, std::size_t& taken) noexcept;
+
+  // What is kept. Keep() copies bytes of `defs` as they go by; Define()
+  // notes that an element began at `at` among them whose name is written
+  // at `idAt`; Find() says where the element began that has the name a
+  // `use` gave.
+  void BeginKeeping() noexcept;
+  void Keep(std::string_view bytes) noexcept;
+  void Define(std::uint32_t at, std::uint32_t idAt) noexcept;
+  bool Find(std::uint32_t& at) const noexcept;
+  // A `use`: begins the drawing again of what it names. And the drawing
+  // again itself, a few things at a call, and its end.
+  bool OpenUse(bool empty) noexcept;
+  void ReuseSome() noexcept;
+  void EndReuse() noexcept;
 
   std::size_t TakePathData(std::string_view piece, bool ofInput) noexcept;
   void TakeStyle(std::string_view piece) noexcept;
@@ -272,6 +402,8 @@ class SvgRenderer {
   // Whether the shape in hand shows: `gray` is then what it is filled
   // with, and `alpha` how solid.
   bool Shows(std::uint8_t& gray, std::uint8_t& alpha) const noexcept;
+  // Puts the box an inner `svg` cuts things off at into `pending_`.
+  void BoxIn(const SvgBox& space) noexcept;
   // From the coordinates of the element in hand to pixels.
   Matrix ElementMatrix() noexcept;
   bool DrawShape() noexcept;
@@ -280,7 +412,7 @@ class SvgRenderer {
   // first.
   void BeginOutline(const Matrix& matrix) noexcept;
   void EndOutline() noexcept;
-  void FillOutline(bool shown, FillRule rule, std::uint8_t gray, std::uint8_t alpha) noexcept;
+  void FillOutline(bool shown, const Filling& filling) noexcept;
   void Drain() noexcept;
   // Brings the report's counts up to what the outline in hand has come to.
   void Tally() noexcept;
@@ -308,6 +440,22 @@ class SvgRenderer {
   std::uint32_t skipping_ = 0;  // How deep in something passed over; 0 if not in one.
   bool rootSeen_ = false;
 
+  // What is kept of the file, in the caller's memory: the bytes of `defs`
+  // from its start, and from its end backwards a record for each element
+  // among them that has an `id`, which is where the element begins and
+  // where its name is written.
+  std::span<std::uint8_t> block_;
+  std::uint32_t keptBytes_ = 0;
+  std::uint32_t definitions_ = 0;
+  std::uint32_t keepingFrom_ = 0;  // Where in the file the bytes kept would begin, had they all been in one run.
+  bool keeping_ = false;           // Inside `defs`.
+  bool blockFull_ = false;
+  std::array<OpenId, kDeepestNamed> openIds_{};
+  std::uint32_t openIdCount_ = 0;
+  // What is being drawn again, one inside another.
+  std::array<Reuse, kDeepestUse> reuses_{};
+  std::uint32_t reusing_ = 0;
+
   // The element whose tag is being read.
   Element element_ = Element::kIgnored;
   Level pending_;
@@ -320,6 +468,27 @@ class SvgRenderer {
   bool displayNone_ = false;
   bool lateTransform_ = false;
   bool isInnerSvg_ = false;
+  bool isDefs_ = false;
+  bool overflows_ = false;  // `overflow` says not to cut off what is inside it.
+  // Its `id`, if it is in `defs`: where that is written among the bytes
+  // kept, how long it is, and whether it is written there letter for
+  // letter, with no entity standing for any of it.
+  bool hasId_ = false;
+  bool idPlain_ = true;
+  std::uint32_t idAt_ = 0;
+  std::uint32_t idLength_ = 0;
+  std::uint32_t tagAt_ = 0;  // Where the element begins among the bytes kept.
+  // What a `use` names, and the size it gives what it draws.
+  std::array<char, kLongestId> wanted_{};
+  std::uint32_t wantedSize_ = 0;
+  bool hasWanted_ = false;
+  // The element being read is the one a `use` named. It takes its width
+  // and height from the `use`, where that has them and it is an `svg`.
+  bool firstOfUse_ = false;
+  bool useHasWidth_ = false;
+  bool useHasHeight_ = false;
+  Fixed useWidth_ = 0;
+  Fixed useHeight_ = 0;
   std::uint8_t ownOpacity_ = 255;
   std::uint16_t fromStyle_ = 0;   // A bit for each Property that `style` has set.
   std::uint16_t lengthsSet_ = 0;  // A bit for each Slot that was written.
@@ -356,9 +525,7 @@ class SvgRenderer {
   bool closesOutline_ = false;  // A polygon: its outline is closed when its points end.
   // What an outline whose tag has ended, and whose data is still being
   // gone through, is to be filled with.
-  FillRule drainRule_ = FillRule::kNonZero;
-  std::uint8_t drainGray_ = 0;
-  std::uint8_t drainAlpha_ = 0;
+  Filling drain_;
   // How much of the outline in hand the report has counted.
   std::uint32_t talliedCommands_ = 0;
   std::uint32_t talliedLines_ = 0;

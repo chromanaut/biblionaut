@@ -44,7 +44,7 @@ using bn::draw::SvgStatus;
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s draw FILE [--width W] [--height H] [--rows ROWS] [--tolerance PIXELS]\n"
-               "                 [--pieces BYTES] [--out PICTURE]\n"
+               "                 [--pieces BYTES] [--definitions BYTES] [--out PICTURE]\n"
                "       %s path FILE [--transform TEXT] [--tolerance PIXELS] [--pieces BYTES] [--count]\n"
                "       %s fill FILE --size WxH [--transform TEXT] [--tolerance PIXELS] [--rule RULE]\n"
                "                 [--gray 0-255] [--opacity 0-255] [--rows ROWS] [--out PICTURE]\n"
@@ -65,6 +65,8 @@ void PrintUsage(const char* program) {
                "  --tolerance PIXELS  how far a line may stand from its curve (default: 0.0625)\n"
                "  --pieces BYTES      give the file to the reader this many bytes at a time\n"
                "                      (default: 1024)\n"
+               "  --definitions BYTES how much memory there is for what the file defines, for\n"
+               "                      `use` to draw (default: 32768)\n"
                "  --out PICTURE       write the picture there, as a PGM file: a byte a pixel\n"
                "\n"
                "  path  reads the path data in FILE, which is the value of a `d` attribute and\n"
@@ -197,6 +199,8 @@ struct Options {
   std::uint8_t gray = 0;
   std::uint8_t opacity = 255;
   std::string out;
+  // For `draw`: how much memory there is for what a file defines.
+  std::size_t definitions = 32768;
 };
 
 // The whole of a file. False, having said so, if it cannot be read.
@@ -369,6 +373,8 @@ int Draw(const Options& options) {
   // First the drawing's size, which its first tag says, and from that the
   // picture's.
   SvgRenderer renderer;
+  std::vector<std::uint8_t> definitions(options.definitions);
+  renderer.KeepDefinitionsIn(definitions);
   renderer.Begin(nullptr, 0, 0);
   read(renderer, true);
   if (!renderer.Size().known) {
@@ -439,6 +445,10 @@ int Draw(const Options& options) {
                strips == 1 ? "strip" : "strips", stripRows, static_cast<unsigned>(report.elements),
                static_cast<unsigned>(report.shapes), static_cast<unsigned>(report.commands),
                static_cast<unsigned long long>(lines), cells.size() * sizeof(std::int16_t));
+  if (report.kept != 0) {
+    std::fprintf(stderr, "definitions: %u bytes kept of %zu, and %u gone through again in a strip\n",
+                 static_cast<unsigned>(report.kept), definitions.size(), static_cast<unsigned>(report.reused));
+  }
   if (report.leftOut != 0) {
     std::string list;
     for (unsigned bit = 0; bit < 32; ++bit) {
@@ -526,6 +536,9 @@ int main(int argc, char** argv) {
     } else if (option == "--height" && drawing && value && Whole(value, bn::draw::Filler::kMostRows, whole) &&
                whole > 0) {
       options.height = whole;
+      ++at;
+    } else if (option == "--definitions" && drawing && value && Whole(value, 16777216, whole)) {
+      options.definitions = whole;
       ++at;
     } else if (option == "--transform" && !drawing && value) {
       options.transform = value;

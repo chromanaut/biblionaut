@@ -17,6 +17,10 @@
 //   - a call takes a byte or tells something, so there are no more calls
 //     than twice the bytes: it cannot be made to go round;
 //   - a piece said to be of the input is the last of the bytes just taken;
+//   - until reading fails, Offset() is how many bytes it has taken and
+//     not been handed back, and when an element begins or ends,
+//     TagOffset() is where its tag's `<` is, with the name it tells after
+//     it;
 //   - a name is not empty and no longer than kLongestName, and a piece of
 //     a value or of text is not empty;
 //   - what an entity stands for is one character;
@@ -37,6 +41,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "draw/svg_tags.h"
 #include "fuzz_support.h"
@@ -70,6 +75,8 @@ struct Reading {
   // of text, are joined: where they are cut is the one thing that may
   // differ between two readings.
   std::string told;
+  // Where each tag began that an element began or ended with.
+  std::vector<std::uint32_t> places;
   SvgTagStatus status = SvgTagStatus::kOk;
   std::uint32_t errorOffset = 0;
   std::uint32_t unknownEntities = 0;
@@ -176,8 +183,20 @@ Reading Read(std::string_view file, std::size_t piece, std::size_t taken) {
         reading.told += token.text;
         toldBytes += token.text.size();
       }
+      if (token.kind == Kind::kOpen || token.kind == Kind::kClose) {
+        // Its tag is in the file where the reader says it began: a `<`,
+        // a `/` if the element is ending, and the name.
+        const std::size_t place = reader.TagOffset();
+        const std::string_view tag = place < file.size() ? file.substr(place) : std::string_view();
+        const std::string_view before = token.kind == Kind::kOpen ? "<" : "</";
+        BN_FUZZ_CHECK(tag.starts_with(before) && tag.substr(before.size()).starts_with(token.text),
+                      "a tag is not where the reader says it began");
+        reading.places.push_back(reader.TagOffset());
+      }
       bytes.remove_prefix(took);
       given += took;
+      BN_FUZZ_CHECK(reader.Status() != SvgTagStatus::kOk || reader.Offset() == given,
+                    "the reader's count of bytes is not what it has taken");
       BN_FUZZ_CHECK(reader.Depth() == depth, "the reader's count of open elements is not what was opened and closed");
       BN_FUZZ_CHECK(toldBytes <= given, "more bytes were told of than were taken");
     }
@@ -221,6 +240,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const Reading whole = Read(file, SIZE_MAX, SIZE_MAX);
   const Reading cut = Read(file, kPieces[choices & 7U], kTaken[(choices >> 3U) & 3U]);
   BN_FUZZ_CHECK(cut.told == whole.told, "a file cut up was read differently from the same file whole");
+  BN_FUZZ_CHECK(cut.places == whole.places, "a file cut up had its tags in other places than the same file whole");
   BN_FUZZ_CHECK(cut.status == whole.status && cut.errorOffset == whole.errorOffset &&
                     cut.unknownEntities == whole.unknownEntities,
                 "a file cut up ended differently from the same file whole");

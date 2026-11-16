@@ -28,6 +28,7 @@ enum class Fate : std::uint8_t {
   kPolygon,
   kPolyline,
   kLine,
+  kUse,
   kPassedOver,  // Not drawn, nor anything in it; and reported, if `note` is not nothing.
 };
 
@@ -54,7 +55,7 @@ constexpr ElementName kElements[] = {
     {.name = "line", .fate = Fate::kLine, .note = 0},
     {.name = "a", .fate = Fate::kGroup, .note = 0},
     {.name = "switch", .fate = Fate::kGroup, .note = Noted(SvgLeftOut::kSwitch)},
-    {.name = "use", .fate = Fate::kPassedOver, .note = Noted(SvgLeftOut::kUse)},
+    {.name = "use", .fate = Fate::kUse, .note = 0},
     {.name = "image", .fate = Fate::kPassedOver, .note = Noted(SvgLeftOut::kImage)},
     {.name = "text", .fate = Fate::kPassedOver, .note = Noted(SvgLeftOut::kText)},
     {.name = "style", .fate = Fate::kPassedOver, .note = Noted(SvgLeftOut::kStyleSheet)},
@@ -106,6 +107,20 @@ std::string_view WithoutImportant(std::string_view value) noexcept {
 
 Fixed Sum(Fixed one, Fixed other, bool& clamped) noexcept { return Clamp32(std::int64_t{one} + other, clamped); }
 
+// A number of four bytes, as it is written in the memory for definitions.
+void Write32(std::span<std::uint8_t> to, std::uint32_t value) noexcept {
+  for (std::size_t byte = 0; byte < 4; ++byte) {
+    to[byte] = static_cast<std::uint8_t>(value >> (8U * byte));
+  }
+}
+std::uint32_t Read32(std::span<const std::uint8_t> from) noexcept {
+  std::uint32_t value = 0;
+  for (std::size_t byte = 0; byte < 4; ++byte) {
+    value |= std::uint32_t{from[byte]} << (8U * byte);
+  }
+  return value;
+}
+
 }  // namespace
 
 const char* SvgStatusName(SvgStatus status) noexcept {
@@ -129,7 +144,7 @@ const char* SvgLeftOutName(SvgLeftOut what) noexcept {
     case SvgLeftOut::kImage:
       return "a picture";
     case SvgLeftOut::kUse:
-      return "use";
+      return "use of what is not defined";
     case SvgLeftOut::kStyleSheet:
       return "a style sheet";
     case SvgLeftOut::kStroke:
@@ -163,11 +178,15 @@ const char* SvgLeftOutName(SvgLeftOut what) noexcept {
     case SvgLeftOut::kGroupOpacity:
       return "opacity on a group";
     case SvgLeftOut::kViewportClip:
-      return "the edges of an inner svg";
+      return "the edges of an inner svg that is turned";
     case SvgLeftOut::kSwitch:
       return "a switch";
     case SvgLeftOut::kUnknownEntity:
       return "an unknown entity";
+    case SvgLeftOut::kNoRoom:
+      return "definitions there was no room for";
+    case SvgLeftOut::kUseLimit:
+      return "use past its limit";
   }
   return "unknown";
 }
@@ -215,6 +234,14 @@ void SvgRenderer::Begin(Filler* filler, Fixed width, Fixed height, Fixed toleran
   depth_ = 0;
   skipping_ = 0;
   rootSeen_ = false;
+  keptBytes_ = 0;
+  definitions_ = 0;
+  keepingFrom_ = 0;
+  keeping_ = false;
+  blockFull_ = false;
+  openIdCount_ = 0;
+  reusing_ = 0;
+  firstOfUse_ = false;
   element_ = Element::kIgnored;
   attribute_ = Attribute::kIgnored;
   streaming_ = false;
@@ -231,52 +258,263 @@ std::size_t SvgRenderer::Step(std::string_view bytes) noexcept {
     Drain();
     return 0;
   }
+  // Something a `use` is drawing again is read to its end before any more
+  // of the file is.
+  if (reusing_ > 0) {
+    ReuseSome();
+    return 0;
+  }
   std::size_t taken = 0;
   for (std::uint32_t tokens = 0; tokens < kTokensPerStep && taken < bytes.size(); ++tokens) {
     SvgTagToken token;
+    const std::uint32_t before = tags_.Offset();
     std::size_t used = tags_.Next({bytes.data() + taken, bytes.size() - taken}, token);
-    // Whether enough has been done for one call.
-    bool enough = false;
-    switch (token.kind) {
-      case Kind::kNone:
-      case Kind::kText:
-        break;
-      case Kind::kOpen:
-        Open(token.text);
-        break;
-      case Kind::kAttribute:
-        BeginAttribute(token.text);
-        break;
-      case Kind::kValue: {
-        const std::size_t wanted = TakeValue(token.text, token.ofInput);
-        if (wanted < token.text.size()) {
-          tags_.GiveBack(token.text.size() - wanted);
-          used -= token.text.size() - wanted;
-          enough = true;
-        } else if (streaming_) {
-          enough = true;
-        }
-        break;
-      }
-      case Kind::kOpened:
-        enough = Opened(token.empty);
-        break;
-      case Kind::kClose:
-        Close();
-        break;
+    const bool failed = tags_.Status() != SvgTagStatus::kOk;
+    // What is inside `defs` is kept as it goes by, as it is written, and
+    // before it is acted on, so that an element is all there by the time
+    // its end makes it one that can be used. None of it is handed back:
+    // nothing in `defs` is drawn as it is read, so no value there is taken
+    // less than whole. Where the tags go wrong, what came before the
+    // fault is kept and no more, whatever else the call was given.
+    if (keeping_) {
+      Keep({bytes.data() + taken, failed ? std::min<std::size_t>(tags_.ErrorOffset() - before, used) : used});
     }
+    const bool enough = Handle(tags_, token, used);
     taken += used;
-    if (tags_.Status() != SvgTagStatus::kOk) {
+    if (failed) {
       status_ = SvgStatus::kMalformed;
     }
     if (status_ != SvgStatus::kOk) {
       return bytes.size();
     }
-    if (enough || draining_) {
+    if (enough || draining_ || reusing_ > 0) {
       break;
     }
   }
   return taken;
+}
+
+bool SvgRenderer::Handle(SvgTagReader& reader, const SvgTagToken& token, std::size_t& taken) noexcept {
+  switch (token.kind) {
+    case Kind::kNone:
+    case Kind::kText:
+      break;
+    case Kind::kOpen:
+      // Where it begins among the bytes kept, if they are being kept.
+      tagAt_ = reader.TagOffset() - keepingFrom_;
+      Open(token.text);
+      break;
+    case Kind::kAttribute:
+      BeginAttribute(token.text);
+      break;
+    case Kind::kValue: {
+      if (attribute_ == Attribute::kId) {
+        // Not held: only where it is written among the bytes kept, which
+        // a piece of it straight from the file is the last of so far. An
+        // entity is not kept as what it stands for, so a name written
+        // with one cannot be set beside what a `use` asks for.
+        if (!token.ofInput) {
+          idPlain_ = false;
+        } else if (idLength_ == 0) {
+          idAt_ = reader.Offset() - static_cast<std::uint32_t>(token.text.size()) - keepingFrom_;
+        }
+        idLength_ += static_cast<std::uint32_t>(token.text.size());
+        break;
+      }
+      const std::size_t wanted = TakeValue(token.text, token.ofInput);
+      if (wanted < token.text.size()) {
+        reader.GiveBack(token.text.size() - wanted);
+        taken -= token.text.size() - wanted;
+        return true;
+      }
+      return streaming_;
+    }
+    case Kind::kOpened:
+      return Opened(token.empty);
+    case Kind::kClose:
+      Close();
+      break;
+  }
+  return false;
+}
+
+// ---- What is kept, and drawn again ----
+
+void SvgRenderer::BeginKeeping() noexcept {
+  keeping_ = true;
+  // The bytes kept are a run of the file from here on, after whatever was
+  // kept before: an element that begins at some place in the file begins
+  // that much less than this further on among them.
+  keepingFrom_ = tags_.Offset() - keptBytes_;
+  openIdCount_ = 0;
+}
+
+void SvgRenderer::Keep(std::string_view bytes) noexcept {
+  if (blockFull_) {
+    return;
+  }
+  // As much as there is room for, between what is kept already and the
+  // records at the other end: so how much is kept in the end does not
+  // depend on the pieces the file came in.
+  const std::size_t room = block_.size() - (std::size_t{definitions_} * kBytesPerDefinition) - keptBytes_;
+  const std::size_t fits = std::min(bytes.size(), room);
+  std::copy_n(bytes.begin(), fits, block_.subspan(keptBytes_, fits).begin());
+  keptBytes_ += static_cast<std::uint32_t>(fits);
+  report_.kept = keptBytes_;
+  if (fits < bytes.size()) {
+    // No more is kept from here on. What was kept whole can still be used.
+    blockFull_ = true;
+    Note(SvgLeftOut::kNoRoom);
+  }
+}
+
+void SvgRenderer::Define(std::uint32_t at, std::uint32_t idAt) noexcept {
+  // Its record goes below the last, from the end of the memory backwards.
+  const std::size_t records = (std::size_t{definitions_} + 1) * kBytesPerDefinition;
+  if (blockFull_ || records + keptBytes_ > block_.size()) {
+    blockFull_ = true;
+    Note(SvgLeftOut::kNoRoom);
+    return;
+  }
+  const std::span<std::uint8_t> record = block_.subspan(block_.size() - records, kBytesPerDefinition);
+  Write32(record.first(4), at);
+  Write32(record.last(4), idAt);
+  ++definitions_;
+}
+
+bool SvgRenderer::Find(std::uint32_t& at) const noexcept {
+  for (std::uint32_t index = 0; index < definitions_; ++index) {
+    const std::span<const std::uint8_t> record =
+        block_.subspan(block_.size() - ((std::size_t{index} + 1) * kBytesPerDefinition), kBytesPerDefinition);
+    const std::uint32_t idAt = Read32(record.last(4));
+    // It has that name if the letters are the same and the name ends
+    // there: with the quotation mark it began with, which is the byte
+    // before it.
+    if (idAt == 0 || std::size_t{idAt} + wantedSize_ >= keptBytes_) {
+      continue;
+    }
+    const std::span<const std::uint8_t> written = block_.subspan(idAt, wantedSize_);
+    if (std::equal(written.begin(), written.end(), wanted_.begin(),
+                   [](std::uint8_t one, char other) noexcept { return one == static_cast<std::uint8_t>(other); }) &&
+        block_[idAt + wantedSize_] == block_[idAt - 1]) {
+      at = Read32(record.first(4));
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SvgRenderer::OpenUse(bool empty) noexcept {
+  // What it draws stands where the `use` does, moved by its transform and
+  // then by its `x` and `y`, and takes from the `use` whatever paint it
+  // does not say for itself: the `use` is a group round it.
+  bool clamped = false;
+  pending_.matrix = ElementMatrix();
+  const Fixed x = LengthAt(kX, 0);
+  const Fixed y = LengthAt(kY, 0);
+  if (x != 0 || y != 0) {
+    pending_.matrix = Multiply(pending_.matrix, Translation(x, y), clamped);
+  }
+  if (clamped) {
+    Note(SvgLeftOut::kHeldNumber);
+  }
+  pending_.opacity = Both(Parent().opacity, ownOpacity_);
+  // Whatever is written inside a `use` is not drawn.
+  const std::uint32_t skippingAfter = empty ? 0 : 1;
+  if (displayNone_ || unreadable_) {
+    skipping_ = skippingAfter;
+    return false;
+  }
+  if (!hasWanted_) {
+    Note(SvgLeftOut::kUse);
+    skipping_ = skippingAfter;
+    return false;
+  }
+  // Looking for what it names goes through everything that is defined,
+  // so from here on this is enough work for one call, found or not.
+  std::uint32_t at = 0;
+  if (!Find(at)) {
+    Note(SvgLeftOut::kUse);
+    skipping_ = skippingAfter;
+    return true;
+  }
+  if (reusing_ == kDeepestUse || report_.reused >= kMostReused) {
+    Note(SvgLeftOut::kUseLimit);
+    skipping_ = skippingAfter;
+    return true;
+  }
+  if (depth_ == kDeepest) {
+    Note(SvgLeftOut::kTooDeep);
+    skipping_ = skippingAfter;
+    return true;
+  }
+  if (ownOpacity_ != 255) {
+    Note(SvgLeftOut::kGroupOpacity);
+  }
+  Reuse& reuse = reuses_[reusing_];
+  reuse = Reuse();
+  reuse.at = at;
+  reuse.levels = depth_;
+  // The file's own reading goes on from here once this is over.
+  reuse.skipping = skippingAfter;
+  ++reusing_;
+  skipping_ = 0;
+  ++depth_;
+  levels_[depth_] = pending_;
+  report_.deepest = std::max(report_.deepest, depth_);
+  // What it names is read next. If that is an `svg`, it is as wide and as
+  // high as the `use` says.
+  firstOfUse_ = true;
+  useHasWidth_ = (lengthsSet_ & BitOf(kWidth)) != 0;
+  useHasHeight_ = (lengthsSet_ & BitOf(kHeight)) != 0;
+  useWidth_ = lengths_[kWidth];
+  useHeight_ = lengths_[kHeight];
+  return true;
+}
+
+void SvgRenderer::ReuseSome() noexcept {
+  std::size_t left = kReusedPerStep;
+  for (std::uint32_t tokens = 0; tokens < kTokensPerStep && reusing_ > 0 && left > 0; ++tokens) {
+    const std::uint32_t index = reusing_ - 1;
+    Reuse& reuse = reuses_[index];
+    if (reuse.over || reuse.at >= keptBytes_ || reuse.reader.Status() != SvgTagStatus::kOk) {
+      EndReuse();
+      continue;
+    }
+    SvgTagToken token;
+    const std::span<const std::uint8_t> rest =
+        block_.subspan(reuse.at, std::min<std::size_t>(keptBytes_ - reuse.at, left));
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the bytes kept, as the characters they are.
+    std::size_t used = reuse.reader.Next({reinterpret_cast<const char*>(rest.data()), rest.size()}, token);
+    const bool enough = Handle(reuse.reader, token, used);
+    left -= used;
+    reuse.at += static_cast<std::uint32_t>(used);
+    report_.reused += static_cast<std::uint32_t>(used);
+    // It is over when the element it began with is: at once, if that was
+    // written `<a/>`, and otherwise when as many have closed as opened.
+    if (token.kind == Kind::kOpened && !token.empty) {
+      ++reuse.open;
+    } else if ((token.kind == Kind::kOpened && reuse.open == 0) || (token.kind == Kind::kClose && reuse.open <= 1)) {
+      reuse.over = true;
+    } else if (token.kind == Kind::kClose) {
+      --reuse.open;
+    }
+    // If it has itself begun the drawing of something, it waits for that.
+    if (reuse.over && reusing_ == index + 1) {
+      EndReuse();
+    }
+    if (enough || draining_) {
+      break;
+    }
+  }
+}
+
+void SvgRenderer::EndReuse() noexcept {
+  --reusing_;
+  const Reuse& reuse = reuses_[reusing_];
+  depth_ = reuse.levels;
+  skipping_ = reuse.skipping;
+  firstOfUse_ = false;
 }
 
 SvgStatus SvgRenderer::Finish() noexcept {
@@ -286,6 +524,8 @@ SvgStatus SvgRenderer::Finish() noexcept {
   }
   draining_ = false;
   streaming_ = false;
+  reusing_ = 0;
+  keeping_ = false;
   if (tags_.UnknownEntities() > 0) {
     Note(SvgLeftOut::kUnknownEntity);
   }
@@ -317,6 +557,13 @@ void SvgRenderer::Open(std::string_view name) noexcept {
   displayNone_ = false;
   lateTransform_ = false;
   isInnerSvg_ = false;
+  isDefs_ = false;
+  overflows_ = false;
+  hasId_ = false;
+  idPlain_ = true;
+  idAt_ = 0;
+  idLength_ = 0;
+  hasWanted_ = false;
   ownOpacity_ = 255;
   fromStyle_ = 0;
   lengthsSet_ = 0;
@@ -327,6 +574,12 @@ void SvgRenderer::Open(std::string_view name) noexcept {
   outlineBad_ = false;
   closesOutline_ = false;
   name = Plain(name);
+  // A `symbol` is drawn only where a `use` names it, and there it is an
+  // `svg`: it may have a view box, and what is in it is cut off at its
+  // edges.
+  if (firstOfUse_ && name == "symbol") {
+    name = "svg";
+  }
   if (skipping_ > 0) {
     // Something that moves is reported wherever it is: inside a shape, it
     // is the shape that would have moved.
@@ -365,10 +618,14 @@ void SvgRenderer::Open(std::string_view name) noexcept {
     }
   }
   report_.leftOut |= note;
+  isDefs_ = name == "defs";
   switch (fate) {
     case Fate::kSvg:
       element_ = Element::kSvg;
       isInnerSvg_ = true;
+      break;
+    case Fate::kUse:
+      element_ = Element::kUse;
       break;
     case Fate::kGroup:
       element_ = Element::kGroup;
@@ -404,7 +661,17 @@ void SvgRenderer::BeginAttribute(std::string_view name) noexcept {
   EndAttribute();
   valueSize_ = 0;
   valueTooLong_ = false;
+  // An element's name matters where it is being kept for a `use` to find.
+  if (name == "id" && keeping_ && !hasId_) {
+    hasId_ = true;
+    attribute_ = Attribute::kId;
+    return;
+  }
   if (element_ == Element::kIgnored) {
+    return;
+  }
+  if (element_ == Element::kUse && (name == "href" || name == "xlink:href")) {
+    attribute_ = Attribute::kHref;
     return;
   }
 
@@ -462,8 +729,10 @@ void SvgRenderer::BeginAttribute(std::string_view name) noexcept {
   };
   const bool box = element_ == Element::kSvg || element_ == Element::kRect;
   const bool round = element_ == Element::kCircle || element_ == Element::kEllipse;
+  // A `use` has a place, and a size that only an `svg` it draws takes.
+  const bool placed = element_ == Element::kUse && (name == "x" || name == "y" || name == "width" || name == "height");
   for (const LengthName& length : kLengths) {
-    if (name == length.name && ((box && length.ofBoxes) || (round && length.ofRounds))) {
+    if (name == length.name && ((box && length.ofBoxes) || (round && length.ofRounds) || placed)) {
       attribute_ = Attribute::kLength;
       slot_ = length.slot;
       return;
@@ -498,6 +767,7 @@ SvgRenderer::Property SvgRenderer::PropertyOf(std::string_view name) noexcept {
       {.name = "marker-start", .property = Property::kMarker},
       {.name = "marker-mid", .property = Property::kMarker},
       {.name = "marker-end", .property = Property::kMarker},
+      {.name = "overflow", .property = Property::kOverflow},
   };
   for (const PropertyName& known : kProperties) {
     if (name == known.name) {
@@ -516,6 +786,9 @@ std::size_t SvgRenderer::TakeValue(std::string_view piece, bool ofInput) noexcep
     case Attribute::kStyle:
       TakeStyle(piece);
       break;
+    case Attribute::kId:  // Seen to before this is asked.
+      break;
+    case Attribute::kHref:
     case Attribute::kTransform:
     case Attribute::kViewBox:
     case Attribute::kFit:
@@ -536,11 +809,22 @@ std::size_t SvgRenderer::TakeValue(std::string_view piece, bool ofInput) noexcep
 void SvgRenderer::EndAttribute() noexcept {
   const Attribute attribute = attribute_;
   attribute_ = Attribute::kIgnored;
-  if (attribute == Attribute::kIgnored || attribute == Attribute::kPathData) {
+  if (attribute == Attribute::kIgnored || attribute == Attribute::kPathData || attribute == Attribute::kId) {
     return;
   }
   if (attribute == Attribute::kStyle) {
     EndDeclaration();
+    return;
+  }
+  if (attribute == Attribute::kHref) {
+    // The name of something in this file: "#" and its `id`. Anything
+    // else, or a name too long to hold, names nothing that can be found.
+    const std::string_view name = WithoutSpace({value_.data(), valueSize_});
+    hasWanted_ = !valueTooLong_ && name.size() > 1 && name.size() - 1 <= wanted_.size() && name.front() == '#';
+    if (hasWanted_) {
+      wantedSize_ = static_cast<std::uint32_t>(name.size() - 1);
+      std::copy(name.begin() + 1, name.end(), wanted_.begin());
+    }
     return;
   }
   if (valueTooLong_) {
@@ -586,6 +870,8 @@ void SvgRenderer::EndAttribute() noexcept {
     case Attribute::kIgnored:
     case Attribute::kPathData:
     case Attribute::kStyle:
+    case Attribute::kId:
+    case Attribute::kHref:
       break;
   }
   if (clamped) {
@@ -755,6 +1041,11 @@ void SvgRenderer::SetProperty(Property property, std::string_view value, bool fr
         Note(SvgLeftOut::kMarker);
       }
       break;
+    case Property::kOverflow:
+      // Whether an `svg` inside another lets what is in it show beyond
+      // its edges. It does not unless it says so.
+      overflows_ = IsWord(value, "visible") || IsWord(value, "auto");
+      break;
   }
 }
 
@@ -819,7 +1110,32 @@ void SvgRenderer::EndDeclaration() noexcept {
 
 bool SvgRenderer::Opened(bool empty) noexcept {
   EndAttribute();
+  if (firstOfUse_) {
+    firstOfUse_ = false;
+    if (element_ == Element::kSvg) {
+      if (useHasWidth_) {
+        lengths_[kWidth] = useWidth_;
+        lengthsSet_ |= BitOf(kWidth);
+      }
+      if (useHasHeight_) {
+        lengths_[kHeight] = useHeight_;
+        lengthsSet_ |= BitOf(kHeight);
+      }
+    }
+  }
   if (skipping_ > 0) {
+    if (keeping_ && hasId_ && idPlain_ && idLength_ > 0) {
+      // An element in `defs` with a name: it can be found by it once all
+      // of it has been kept, which for one written `<a/>` is now.
+      if (empty) {
+        Define(tagAt_, idAt_);
+      } else if (openIdCount_ < openIds_.size()) {
+        openIds_[openIdCount_] = {.at = tagAt_, .idAt = idAt_, .skipping = skipping_ + 1};
+        ++openIdCount_;
+      } else {
+        Note(SvgLeftOut::kNoRoom);
+      }
+    }
     if (!empty) {
       ++skipping_;
     }
@@ -828,8 +1144,16 @@ bool SvgRenderer::Opened(bool empty) noexcept {
   if (element_ == Element::kIgnored) {
     if (!empty) {
       skipping_ = 1;
+      // What `defs` holds is kept, unless it is being read from what was
+      // kept already.
+      if (isDefs_ && reusing_ == 0) {
+        BeginKeeping();
+      }
     }
     return false;
+  }
+  if (element_ == Element::kUse) {
+    return OpenUse(empty);
   }
 
   if (element_ != Element::kSvg && element_ != Element::kGroup) {
@@ -873,7 +1197,15 @@ bool SvgRenderer::Opened(bool empty) noexcept {
 
 void SvgRenderer::Close() noexcept {
   if (skipping_ > 0) {
+    // An element with a name that is now over, in `defs`, can be found.
+    if (keeping_ && openIdCount_ > 0 && openIds_[openIdCount_ - 1].skipping == skipping_) {
+      --openIdCount_;
+      Define(openIds_[openIdCount_].at, openIds_[openIdCount_].idAt);
+    }
     --skipping_;
+    if (skipping_ == 0) {
+      keeping_ = false;
+    }
   } else if (depth_ > 0) {
     --depth_;
   }
@@ -934,8 +1266,34 @@ bool SvgRenderer::OpenRoot() noexcept {
   return true;
 }
 
+void SvgRenderer::BoxIn(const SvgBox& space) noexcept {
+  const Level& parent = Parent();
+  // A box that has been turned or slanted is no box of pixels. What is in
+  // it is then drawn whole, and that is reported.
+  if (parent.matrix.b != 0 || parent.matrix.c != 0) {
+    Note(SvgLeftOut::kViewportClip);
+    return;
+  }
+  bool clamped = false;
+  const Point one = Apply(parent.matrix, {.x = space.x, .y = space.y}, clamped);
+  const Point other = Apply(
+      parent.matrix, {.x = Sum(space.x, space.width, clamped), .y = Sum(space.y, space.height, clamped)}, clamped);
+  Point from = {.x = std::min(one.x, other.x), .y = std::min(one.y, other.y)};
+  Point to = {.x = std::max(one.x, other.x), .y = std::max(one.y, other.y)};
+  // Within whatever box it is in already.
+  if (parent.boxed) {
+    from = {.x = std::max(from.x, parent.boxFrom.x), .y = std::max(from.y, parent.boxFrom.y)};
+    to = {.x = std::min(to.x, parent.boxTo.x), .y = std::min(to.y, parent.boxTo.y)};
+  }
+  pending_.boxed = true;
+  pending_.boxFrom = from;
+  pending_.boxTo = to;
+  if (clamped) {
+    Note(SvgLeftOut::kHeldNumber);
+  }
+}
+
 bool SvgRenderer::OpenInnerSvg() noexcept {
-  Note(SvgLeftOut::kViewportClip);
   const Level& parent = Parent();
   const SvgBox space = {.x = LengthAt(kX, 0),
                         .y = LengthAt(kY, 0),
@@ -943,6 +1301,10 @@ bool SvgRenderer::OpenInnerSvg() noexcept {
                         .height = LengthAt(kHeight, parent.viewHeight)};
   if (space.width <= 0 || space.height <= 0) {
     return false;
+  }
+  // What is in it is cut off at its edges, unless it says otherwise.
+  if (!overflows_) {
+    BoxIn(space);
   }
   bool clamped = false;
   Matrix place = Translation(space.x, space.y);
@@ -1001,7 +1363,12 @@ bool SvgRenderer::DrawShape() noexcept {
   std::uint8_t gray = 0;
   std::uint8_t alpha = 0;
   const bool shown = Shows(gray, alpha);
-  const FillRule rule = pending_.evenOdd ? FillRule::kEvenOdd : FillRule::kNonZero;
+  const Filling filling = {.rule = pending_.evenOdd ? FillRule::kEvenOdd : FillRule::kNonZero,
+                           .gray = gray,
+                           .alpha = alpha,
+                           .boxed = pending_.boxed,
+                           .boxFrom = pending_.boxFrom,
+                           .boxTo = pending_.boxTo};
 
   switch (element_) {
     case Element::kPath:
@@ -1010,7 +1377,7 @@ bool SvgRenderer::DrawShape() noexcept {
       if (streaming_) {
         // Its lines are in the filler already, whether or not it shows.
         EndOutline();
-        FillOutline(shown, rule, gray, alpha);
+        FillOutline(shown, filling);
         return true;
       }
       if (heldSize_ == 0 || !shown) {
@@ -1020,9 +1387,7 @@ bool SvgRenderer::DrawShape() noexcept {
       // the whole of its tag has been read.
       BeginOutline(ElementMatrix());
       draining_ = true;
-      drainRule_ = rule;
-      drainGray_ = gray;
-      drainAlpha_ = alpha;
+      drain_ = filling;
       return true;
     case Element::kRect:
       if (!shown || !DrawRect()) {
@@ -1046,9 +1411,10 @@ bool SvgRenderer::DrawShape() noexcept {
     case Element::kIgnored:
     case Element::kSvg:
     case Element::kGroup:
+    case Element::kUse:
       return false;
   }
-  FillOutline(true, rule, gray, alpha);
+  FillOutline(true, filling);
   return true;
 }
 
@@ -1090,13 +1456,18 @@ void SvgRenderer::Tally() noexcept {
   talliedLines_ = flattener_.Lines();
 }
 
-void SvgRenderer::FillOutline(bool shown, FillRule rule, std::uint8_t gray, std::uint8_t alpha) noexcept {
+void SvgRenderer::FillOutline(bool shown, const Filling& filling) noexcept {
   if (flattener_.Clamped()) {
     Note(SvgLeftOut::kHeldNumber);
   }
   Tally();
   // With nothing of it to show, this only clears the outline away.
-  filler_->Fill(rule, gray, shown ? alpha : 0);
+  const std::uint8_t alpha = shown ? filling.alpha : 0;
+  if (filling.boxed) {
+    filler_->Fill(filling.rule, filling.gray, alpha, filling.boxFrom, filling.boxTo);
+  } else {
+    filler_->Fill(filling.rule, filling.gray, alpha);
+  }
   if (shown) {
     ++report_.shapes;
   }
@@ -1116,7 +1487,7 @@ void SvgRenderer::Drain() noexcept {
   if (!streaming_) {
     // That was the whole of an outline whose tag has ended.
     EndOutline();
-    FillOutline(true, drainRule_, drainGray_, drainAlpha_);
+    FillOutline(true, drain_);
   }
 }
 

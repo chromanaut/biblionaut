@@ -8,6 +8,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -338,6 +339,61 @@ TEST(SvgTags, TheEndOfAPieceCanBeHandedBackAndComesAgain) {
     // handing back.
     EXPECT_EQ(reader.Finish(), SvgTagStatus::kTruncated);
     EXPECT_EQ(reader.ErrorOffset(), document.size()) << piece;
+  }
+}
+
+TEST(SvgTags, SaysWhereTheTagItLastBeganStarts) {
+  const std::string_view document =
+      "<?xml version='1.0'?>\n<a x='1'>text &amp; <b y=\"2\" z='&lt;'/><!-- <c> --><![CDATA[<e>]]><d\n></d></a>";
+  // The `<` of each element's start and of each end.
+  const std::vector<std::size_t> expected = {document.find("<a"), document.find("<b"), document.find("<d"),
+                                             document.find("</d"), document.find("</a")};
+  for (const std::size_t piece : {SIZE_MAX, std::size_t{1}, std::size_t{2}, std::size_t{7}}) {
+    SvgTagReader reader;
+    std::vector<std::size_t> places;
+    std::size_t taken = 0;
+    for (std::size_t at = 0; at < document.size();) {
+      std::string_view bytes = document.substr(at, piece);
+      at += bytes.size();
+      while (!bytes.empty()) {
+        SvgTagToken token;
+        const std::size_t used = reader.Next(bytes, token);
+        taken += used;
+        // It counts what it has taken, whatever the pieces.
+        ASSERT_EQ(reader.Offset(), taken) << piece;
+        if (token.kind == Kind::kOpen || token.kind == Kind::kClose) {
+          places.push_back(reader.TagOffset());
+        }
+        bytes.remove_prefix(used);
+      }
+    }
+    EXPECT_EQ(reader.Finish(), SvgTagStatus::kOk);
+    EXPECT_EQ(places, expected) << piece;
+  }
+}
+
+TEST(SvgTags, APieceOfAValueStraightFromTheBytesIsTheLastOfWhatWasTaken) {
+  // So whoever keeps the bytes can say where a value is written in them:
+  // it ends where the count of bytes taken has got to.
+  const std::string_view document = "<a id='name' other=\"x&amp;yz\"/>";
+  for (const std::size_t piece : {SIZE_MAX, std::size_t{1}, std::size_t{3}}) {
+    SvgTagReader reader;
+    std::string found;
+    for (std::size_t at = 0; at < document.size();) {
+      std::string_view bytes = document.substr(at, piece);
+      at += bytes.size();
+      while (!bytes.empty()) {
+        SvgTagToken token;
+        const std::size_t used = reader.Next(bytes, token);
+        if (token.kind == Kind::kValue && token.ofInput) {
+          const std::size_t from = reader.Offset() - token.text.size();
+          ASSERT_EQ(document.substr(from, token.text.size()), token.text) << piece;
+          found += token.text;
+        }
+        bytes.remove_prefix(used);
+      }
+    }
+    EXPECT_EQ(found, "namexyz") << piece;
   }
 }
 

@@ -33,7 +33,9 @@ namespace bn::reader {
 //      first opens it as a reader would: finds its directory, reads its
 //      package (epub/package.h), which says what the book is called and
 //      where its documents are, and then reads its table of contents
-//      (epub/toc.h). Then closes it again;
+//      (epub/toc.h). Then, before closing it again, reads a little at
+//      sixteen places far apart in the file, to and fro, which is what
+//      going to a place in a file costs on this card;
 //   4. opens it afresh, reads every entry to its end, which checks the
 //      entry's size and checksum, and looks each entry up by its name;
 //   5. parses every entry with an XML file's name as it is read, counting
@@ -54,7 +56,13 @@ namespace bn::reader {
 // which is the processor inflating and checksumming; parsing XML, with the
 // reading and inflating of it taken off; and all of it. Reading the
 // package and reading the table of contents are each counted by
-// themselves, in time and in reads, and are in none of those.
+// themselves, in time and in reads, and are in none of those; nor is the
+// going from place to place.
+//
+// A brief check stops at step 3 for each book and reads none through: it
+// takes seconds where the whole takes minutes, and still says of each
+// book whether it opens, what its package and table of contents are, and
+// what opening it and going about in it cost.
 //
 // It works for about 20 ms each Tick() and then lets the application
 // carry on, so a run takes longer by the clock than the times it reports,
@@ -140,6 +148,13 @@ class BookCheck final : public DeviceCheck {
     std::uint32_t opens = 0;
     std::uint64_t openUs = 0;
     std::uint64_t openLongestUs = 0;  // The longest one opening took.
+
+    // Going to kPlaces places far apart in the file and reading a block
+    // at each. None of this is in the figures above.
+    std::uint32_t placeReads = 0;      // Reads of storage, which are fewer than the places in a small file,
+    std::uint64_t placeReadBytes = 0;  // and the bytes they read.
+    std::uint64_t placeUs = 0;         // All the time the goings took,
+    std::uint64_t placeLongestUs = 0;  // and the longest one took.
   };
 
   // How much of an entry is read out at a time.
@@ -154,8 +169,13 @@ class BookCheck final : public DeviceCheck {
   // The memory the package reader is given for a book's files and
   // documents: 16 bytes a file and 28 a document.
   static constexpr std::size_t kPackageMemoryBytes = 24576;
+  // How many places in a book's file are gone to: its start, its end, and
+  // fourteen between, in an order that makes each a long way from the one
+  // before.
+  static constexpr std::size_t kPlaces = 16;
 
-  BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream) noexcept;
+  // With `brief`, no book is read through: see above.
+  BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream, bool brief = false) noexcept;
 
   BookCheck(const BookCheck&) = delete;
   BookCheck& operator=(const BookCheck&) = delete;
@@ -275,6 +295,7 @@ class BookCheck final : public DeviceCheck {
     kNextBook,
     kReadPackage,
     kReadToc,
+    kReadPlaces,
     kOpenBook,
     kNextEntry,
     kParseEntry,
@@ -290,6 +311,7 @@ class BookCheck final : public DeviceCheck {
   void NextBook() noexcept;
   void ReadPackage() noexcept;
   void ReadToc() noexcept;
+  void ReadPlaces() noexcept;
   void OpenBook() noexcept;
   void NextEntry() noexcept;
   void ParseEntry() noexcept;
@@ -321,6 +343,7 @@ class BookCheck final : public DeviceCheck {
   core::Clock& clock_;
   core::TraceStream& stream_;
   Meter meter_;
+  bool brief_ = false;
 
   State state_ = State::kIdle;
   Step step_ = Step::kNone;

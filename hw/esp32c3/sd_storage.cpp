@@ -14,6 +14,7 @@
 #include <span>
 #include <string_view>
 
+#include "core/metrics.h"
 #include "core/storage.h"
 #include "core/trace.h"
 #include "esp32c3/spi_bus.h"
@@ -39,6 +40,35 @@ using core::StorageStatus;
 // CONFIG_FATFS_FS_LOCK is set to match: FatFS keeps a record of each open
 // file and each directory being listed, and has room for that many.
 constexpr std::size_t kMaxOpenFiles = core::Storage::kMaxOpen;
+
+// FatFS's map of a file (see MakeMap() below) takes two numbers for each
+// run of the file that lies in one piece on the card, and two more: this
+// is room for a file in 63 pieces, and is half a kilobyte for each file
+// that can be open.
+constexpr std::size_t kMapItems = 128;
+
+// A file is given a map if its chain is longer than this many clusters,
+// which is what one sector of a FAT32 card's table holds: a shorter chain
+// is one read of the table however it is followed, and a map of it would
+// cost that read at every opening for nothing.
+constexpr std::uint32_t kMapFromClusters = 128;
+
+// Files given a map, files in too many pieces to have one, and how many
+// numbers the map of each file needed: the most is the room that would
+// have done for all of them. And the size of the card's clusters.
+core::Counter sdMaps{"sd_maps"};
+core::Counter sdMapsRefused{"sd_maps_refused"};
+core::Gauge sdMapItems{"sd_map_items"};
+core::Gauge sdClusterBytes{"sd_cluster_bytes"};
+
+// The size of a cluster of a mounted file system, in bytes.
+std::uint32_t ClusterBytes(const FATFS& fileSystem) noexcept {
+#if FF_MAX_SS == FF_MIN_SS
+  return std::uint32_t{fileSystem.csize} * static_cast<std::uint32_t>(FF_MAX_SS);
+#else
+  return std::uint32_t{fileSystem.csize} * std::uint32_t{fileSystem.ssize};
+#endif
+}
 
 // What a FatFS result comes to.
 StorageStatus FromFatFs(FRESULT result) noexcept {
@@ -108,6 +138,9 @@ class SdCardStorage final : public core::Storage {
       return FromFatFs(result);
     }
     place->writable = create;
+    if (!create && f_size(&place->file) > std::uint64_t{kMapFromClusters} * ClusterBytes(fileSystem_)) {
+      MakeMap(*place);
+    }
     file = static_cast<core::FileHandle>(place - open_.data());
     return StorageStatus::kOk;
   }
@@ -303,7 +336,32 @@ class SdCardStorage final : public core::Storage {
     FIL file;
     bool inUse = false;
     bool writable = false;
+    std::array<DWORD, kMapItems> map;
   };
+
+  // Has FatFS make its map of a file just opened to be read: where each
+  // run of the file lies on the card. To go to a place in a file FatFS
+  // otherwise follows the file's chain of clusters, from the file's start
+  // if the place is behind where it is, reading the card's table of
+  // chains as it goes, which takes longer the larger the file. With the
+  // map it reads nothing. Making the map follows the chain once, here. A
+  // file in more runs than the map has room for goes without one, and is
+  // read as it would have been.
+  static void MakeMap(OpenFile& place) noexcept {
+    place.map[0] = static_cast<DWORD>(place.map.size());
+    place.file.cltbl = place.map.data();
+    const FRESULT mapped = f_lseek(&place.file, CREATE_LINKMAP);
+    if (mapped == FR_OK || mapped == FR_NOT_ENOUGH_CORE) {
+      // Either way FatFS has said how many numbers the map needs.
+      sdMapItems.Set(static_cast<std::uint32_t>(place.map[0]));
+    }
+    if (mapped == FR_OK) {
+      sdMaps.Add();
+    } else {
+      place.file.cltbl = nullptr;
+      sdMapsRefused.Add();
+    }
+  }
 
   struct ListedDirectory {
     FF_DIR directory;
@@ -363,6 +421,7 @@ class SdCardStorage final : public core::Storage {
       return StorageStatus::kFailed;
     }
     BN_TRACE_INSTANT(kInstantSdFileSystem, fileSystem_.fs_type);
+    sdClusterBytes.Set(ClusterBytes(fileSystem_));
     return StorageStatus::kOk;
   }
 

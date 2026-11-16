@@ -257,6 +257,10 @@ void Add(BookCheck::Figures& total, const BookCheck::Figures& book) noexcept {
   total.opens += book.opens;
   total.openUs += book.openUs;
   total.openLongestUs = std::max(total.openLongestUs, book.openLongestUs);
+  total.placeReads += book.placeReads;
+  total.placeReadBytes += book.placeReadBytes;
+  total.placeUs += book.placeUs;
+  total.placeLongestUs = std::max(total.placeLongestUs, book.placeLongestUs);
   total.packageMostMemory = std::max(total.packageMostMemory, book.packageMostMemory);
   total.tocsRead += book.tocsRead;
   total.tocsNav += book.tocsNav;
@@ -397,10 +401,11 @@ std::ptrdiff_t BookCheck::Feeder::Read(std::span<std::uint8_t> dst) noexcept {
   return static_cast<std::ptrdiff_t>(count);
 }
 
-BookCheck::BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream) noexcept
+BookCheck::BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream, bool brief) noexcept
     : clock_(clock),
       stream_(stream),
       meter_(storage, clock),
+      brief_(brief),
       directoryFile_(directoryBuffer_),
       entriesFile_(entriesBuffer_),
       entryReader_(window_),
@@ -447,6 +452,8 @@ const char* BookCheck::LongestStepName() const noexcept {
       return "reading a package";
     case Step::kReadToc:
       return "reading a table of contents";
+    case Step::kReadPlaces:
+      return "going to a place in a book";
     case Step::kOpenBook:
       return "opening a book";
     case Step::kNextEntry:
@@ -532,6 +539,9 @@ void BookCheck::DoStep() noexcept {
       break;
     case Step::kReadToc:
       ReadToc();
+      break;
+    case Step::kReadPlaces:
+      ReadPlaces();
       break;
     case Step::kOpenBook:
       OpenBook();
@@ -724,20 +734,25 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
   if (failedBooks_ != 0) {
     line.Number(failedBooks_).Text(" of ");
   }
-  line.Count(books_, " book, ", " books, ");
-  if (totals_.failedEntries != 0) {
-    line.Number(totals_.failedEntries).Text(" of ");
+  if (brief_) {
+    line.Count(books_, " book", " books").Text(" opened, none read through.");
+    (void)stream_.SendText(line.View());
+  } else {
+    line.Count(books_, " book, ", " books, ");
+    if (totals_.failedEntries != 0) {
+      line.Number(totals_.failedEntries).Text(" of ");
+    }
+    line.Count(totals_.entries, " entry, ", " entries, ")
+        .Number(totals_.bytesOut)
+        .Text(" bytes out of ")
+        .Number(totals_.bytesIn)
+        .Text(".");
+    (void)stream_.SendText(line.View());
+    Line times;
+    times.Text("book check: ");
+    AddTimes(times, totals_);
+    (void)stream_.SendText(times.View());
   }
-  line.Count(totals_.entries, " entry, ", " entries, ")
-      .Number(totals_.bytesOut)
-      .Text(" bytes out of ")
-      .Number(totals_.bytesIn)
-      .Text(".");
-  (void)stream_.SendText(line.View());
-  Line times;
-  times.Text("book check: ");
-  AddTimes(times, totals_);
-  (void)stream_.SendText(times.View());
   if (totals_.xmlDocuments != 0) {
     Line xml;
     xml.Text("book check: ");
@@ -788,6 +803,14 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
       .Number(totals_.openLongestUs)
       .Text(" us.");
   (void)stream_.SendText(opening.View());
+  Line places;
+  places.Text("book check: places: ")
+      .Count(totals_.placeReads, " read in ", " reads in ")
+      .Number(totals_.placeUs / 1000)
+      .Text(" ms; the longest ")
+      .Number(totals_.placeLongestUs)
+      .Text(" us.");
+  (void)stream_.SendText(places.View());
   Line longest;
   longest.Text("book check: the longest step: ").Number(longestStepUs_).Text(" us, ").Text(LongestStepName()).Text(".");
   (void)stream_.SendText(longest.View());
@@ -836,8 +859,7 @@ void BookCheck::ReadPackage() noexcept {
   // the package put there.
   Line line;
   if (read != epub::PackageStatus::kOk) {
-    CloseBook();
-    MoveTo(Step::kOpenBook);
+    MoveTo(Step::kReadPlaces);
     book_.packagesNotRead = 1;
     line.Text("book ").Number(books_).Text(": package: NOT READ: ").Text(epub::PackageStatusName(read)).Text(". ");
     AddPackageCost(line, book_);
@@ -925,10 +947,8 @@ void BookCheck::ReadToc() noexcept {
     return;
   }
 
-  // It is over, well or badly. The book is closed, so that the reading
-  // of its entries starts as it would have without any of this.
-  CloseBook();
-  MoveTo(Step::kOpenBook);
+  // It is over, well or badly. The book stays open for one thing more.
+  MoveTo(Step::kReadPlaces);
   book_.tocLongestUs = book_.tocUs;
   const epub::TocStatus status = toc_.Status();
   Line line;
@@ -967,6 +987,47 @@ void BookCheck::ReadToc() noexcept {
     line.Text(" Cut short.");
   }
   (void)stream_.SendText(line.View());
+}
+
+void BookCheck::ReadPlaces() noexcept {
+  // A byte at each of sixteen places in the file, one a step: the start,
+  // the end, the middle, and so on by halves, each a long way from the
+  // one before and as often behind it as ahead. On a card that is a
+  // going to the place and a read of the 4 KB block it is in. In a file
+  // of fewer than sixteen blocks a place can be in the block the one
+  // before it was in, and then storage is not asked for anything.
+  constexpr std::array<std::uint8_t, kPlaces> kSixteenths = {0, 16, 8, 4, 12, 2, 14, 6, 10, 1, 15, 7, 9, 3, 13, 5};
+  const std::uint32_t size = directoryFile_.Size();
+  if (count_ < kPlaces && size != 0) {
+    const auto place = static_cast<std::uint32_t>((static_cast<std::uint64_t>(size - 1) * kSixteenths[count_]) / 16);
+    const Meter::Counts before = meter_.Now();
+    const std::uint64_t began = clock_.NowUs();
+    std::array<std::uint8_t, 1> byte{};
+    (void)directoryFile_.ReadAt(place, byte);
+    const std::uint64_t took = clock_.NowUs() - began;
+    book_.placeReads += meter_.Now().reads - before.reads;
+    book_.placeReadBytes += meter_.Now().readBytes - before.readBytes;
+    book_.placeUs += took;
+    book_.placeLongestUs = std::max(book_.placeLongestUs, took);
+    ++count_;
+    return;
+  }
+  Line line;
+  line.Text("book ")
+      .Number(books_)
+      .Text(": places: ")
+      .Number(kPlaces)
+      .Text(" far apart, ")
+      .Count(book_.placeReads, " read in ", " reads in ")
+      .Number(book_.placeUs)
+      .Text(" us, the longest ")
+      .Number(book_.placeLongestUs)
+      .Text(" us.");
+  (void)stream_.SendText(line.View());
+  // The book is closed, so that the reading of its entries starts as it
+  // would have without any of this; or, in a brief check, for good.
+  CloseBook();
+  MoveTo(brief_ ? Step::kEndBook : Step::kOpenBook);
 }
 
 void BookCheck::OpenBook() noexcept {
@@ -1105,27 +1166,33 @@ void BookCheck::FindEntry() noexcept {
 void BookCheck::EndBook() noexcept {
   CloseBook();
   const bool sound = book_.failedEntries == 0;
-  Line line;
-  line.Text("book ").Number(books_).Text(sound ? ": ok. " : ": FAILED. ");
-  if (!sound) {
-    line.Number(book_.failedEntries).Text(" of ");
+  if (brief_) {
+    Line line;
+    line.Text("book ").Number(books_).Text(": ok. Not read through.");
+    (void)stream_.SendText(line.View());
+  } else {
+    Line line;
+    line.Text("book ").Number(books_).Text(sound ? ": ok. " : ": FAILED. ");
+    if (!sound) {
+      line.Number(book_.failedEntries).Text(" of ");
+    }
+    line.Count(book_.entries, " entry, ", " entries, ")
+        .Number(book_.bytesOut)
+        .Text(" bytes out of ")
+        .Number(book_.bytesIn)
+        .Text(". Directory found in ")
+        .Count(openReads_, " read, ", " reads, ")
+        .Number(openUs_ / 1000)
+        .Text(" ms.");
+    if (!sound) {
+      line.Text(" First to fail: entry ").Number(firstFailedEntry_).Text(", ").Text(epub::ZipStatusName(firstFailure_));
+    }
+    (void)stream_.SendText(line.View());
+    Line times;
+    times.Text("book ").Number(books_).Text(": ");
+    AddTimes(times, book_);
+    (void)stream_.SendText(times.View());
   }
-  line.Count(book_.entries, " entry, ", " entries, ")
-      .Number(book_.bytesOut)
-      .Text(" bytes out of ")
-      .Number(book_.bytesIn)
-      .Text(". Directory found in ")
-      .Count(openReads_, " read, ", " reads, ")
-      .Number(openUs_ / 1000)
-      .Text(" ms.");
-  if (!sound) {
-    line.Text(" First to fail: entry ").Number(firstFailedEntry_).Text(", ").Text(epub::ZipStatusName(firstFailure_));
-  }
-  (void)stream_.SendText(line.View());
-  Line times;
-  times.Text("book ").Number(books_).Text(": ");
-  AddTimes(times, book_);
-  (void)stream_.SendText(times.View());
   // What opening its file took, each time, and where its name comes in the
   // listing of its folder: the further down, the more names to go past.
   book_.opens = meter_.Now().opens - bookBegan_.opens;

@@ -77,9 +77,9 @@ void App::CheckStorage() noexcept {
   }
 }
 
-void App::CheckBooks() noexcept {
+void App::CheckBooks(bool brief) noexcept {
   if (bookCheck_ == nullptr) {
-    bookCheck_ = new (std::nothrow) BookCheck(services_.storage, services_.clock, stream_);
+    bookCheck_ = new (std::nothrow) BookCheck(services_.storage, services_.clock, stream_, brief);
     checks_[1] = bookCheck_;
   }
 }

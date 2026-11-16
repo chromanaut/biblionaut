@@ -50,6 +50,13 @@ option(BN_STORAGE_CHECK "Put the SD card through its paces at start and at each 
 # Not together with BN_STORAGE_CHECK.
 option(BN_BOOK_CHECK "Read every book on the SD card at start and at each press of Power" OFF)
 
+# With BN_BOOK_CHECK, a check that takes seconds and not minutes: each book
+# is opened, its package and its table of contents are read and sixteen
+# places in it gone to, and no book is read through.
+#
+#   tools/idf -DBN_BOOK_CHECK=ON -DBN_BOOK_CHECK_BRIEF=ON build flash
+option(BN_BOOK_CHECK_BRIEF "With BN_BOOK_CHECK: open every book and read none through" OFF)
+
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
 set(COMPONENTS main)

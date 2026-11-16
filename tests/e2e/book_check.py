@@ -10,7 +10,9 @@ module. A book should come to the same entries, the same bytes and the
 same number of reads of storage in the application as it does in bn-zip,
 its XML to the same events as in bn-xml, and its package and its table of
 contents to the same checksums in the same number of reads as in bn-epub,
-which is how a run on a device is compared with the desktop.
+which is how a run on a device is compared with the desktop. A brief
+check of the same card should come to the same packages and tables of
+contents, and read no book through.
 
 usage: book_check.py APP BN_TRACE BN_ZIP BN_XML BN_EPUB WORK_DIR
 """
@@ -107,11 +109,14 @@ def make_book(path: Path, seed: int, chapters: int) -> None:
         archive.writestr("OEBPS/empty.css", b"", zipfile.ZIP_DEFLATED)
 
 
-def run_application(app: str, card: Path, capture: Path, milliseconds: int) -> None:
+def run_application(app: str, card: Path, capture: Path, milliseconds: int, brief: bool = False) -> None:
     capture.unlink(missing_ok=True)
     environment = dict(os.environ, BN_SERIAL_OUT=str(capture), BN_STORAGE=str(card), BN_BOOK_CHECK="1",
                        BN_DISPLAY_SPEED="20")
     environment.pop("BN_STORAGE_CHECK", None)
+    environment.pop("BN_BOOK_CHECK_BRIEF", None)
+    if brief:
+        environment["BN_BOOK_CHECK_BRIEF"] = "1"
     result = subprocess.run([app, "--run-ms", str(milliseconds)], env=environment, capture_output=True, check=False)
     expect(result.returncode == 0, f"the desktop application ended with {result.returncode}: {result.stderr!r}")
 
@@ -126,6 +131,12 @@ def log_lines(trace_tool: str, capture: Path) -> list[str]:
         if match:
             lines.append(match.group(1))
     return lines
+
+
+def blocks_gone_to(size: int) -> int:
+    """How many times the sixteen places of a file of `size` bytes are in another 4 KB block than the place before."""
+    blocks = [((size - 1) * sixteenth // 16) // 4096 for sixteenth in (0, 16, 8, 4, 12, 2, 14, 6, 10, 1, 15, 7, 9, 3, 13, 5)]
+    return 1 + sum(1 for before, after in zip(blocks, blocks[1:]) if before != after)
 
 
 def zip_check(zip_tool: str, path: Path) -> dict[str, int]:
@@ -207,6 +218,10 @@ def reported(lines: list[str]) -> dict[str, dict]:
                                 rest):
             book.update(opens=int(opened[1]), open_us=int(opened[2]), open_longest=int(opened[3]),
                         listed_at=int(opened[4]))
+        elif went := re.match(r"places: 16 far apart, (\d+) reads? in (\d+) us, the longest (\d+) us\.$", rest):
+            book.update(place_reads=int(went[1]), place_us=int(went[2]), place_longest=int(went[3]))
+        elif rest == "ok. Not read through.":
+            book.update(ok=True, not_read_through=True)
         elif unread := re.match(r"FAILED\. It cannot be read: (.*)$", rest):
             book.update(ok=False, unreadable=unread[1])
         elif names := re.match(r"package: (title \".*\"|no title), (author \".*\"|no author), "
@@ -419,10 +434,45 @@ def main() -> int:
                found["/books/more/In a Folder.epub"]["listed_at"] <= 3, f"where the books come in their folders:\n{said}")
         expect(any(re.match(r"book check: files opened 16 times in \d+ ms; the longest \d+ us\.$", line)
                    for line in lines), f"the line about opening files:\n{said}")
+        # Each was gone about in: a read of storage for every place that is not in the block the place before was
+        # in, but perhaps for the first, whose block the file may hold already.
+        for book in opened:
+            most = blocks_gone_to(book["size"])
+            expect(most - 1 <= book["place_reads"] <= most and book["place_us"] >= book["place_longest"],
+                   f"{book['path']}: going to sixteen places should take {most} reads or one fewer:\n{said}")
+        place_reads = sum(book["place_reads"] for book in opened)
+        expect(any(re.match(rf"book check: places: {place_reads} reads in \d+ ms; the longest \d+ us\.$", line)
+                   for line in lines), f"the line about going to places, with {place_reads} reads:\n{said}")
         expect("top.epub" not in said and "too-deep" not in said,
                f"only /books and the folders in it are read:\n{said}")
         expect("book check: 1 folder inside a folder not looked in: only one level down is." in lines,
                f"the folder two levels down should be mentioned:\n{said}")
+
+        # A brief check opens the same books and reads none through: it comes to the same packages and tables of
+        # contents, opens each file twice and not four times, and does not find the damage inside an entry.
+        brief_lines: list[str] = []
+        for milliseconds in (1_500, 6_000, 30_000):
+            run_application(app, card, capture, milliseconds, brief=True)
+            brief_lines = log_lines(trace_tool, capture)
+            if any(line.startswith("book check: the longest step: ") for line in brief_lines):
+                break
+        brief_said = "\n".join(brief_lines)
+        expect("book check: FAILED. 1 of 5 books opened, none read through." in brief_lines,
+               f"what a brief check comes to:\n{brief_said}")
+        briefly = reported(brief_lines)
+        expect(set(briefly) == names, f"the books a brief check opened were {sorted(briefly)}:\n{brief_said}")
+        for name in sorted(names - {"/books/not-a-book.epub"}):
+            book, whole = briefly[name], found[name]
+            expect(book.get("not_read_through") is True and "entries" not in book and "xml_documents" not in book,
+                   f"{name}: a brief check should not read it through:\n{brief_said}")
+            expect(book["opens"] == 2, f"{name}: a brief check should open the file twice:\n{brief_said}")
+            for figure in ("package_checksum", "package_reads", "toc_checksum", "toc_reads", "toc_entries",
+                           "place_reads"):
+                expect(book[figure] == whole[figure],
+                       f"{name}: {figure} is {book[figure]} in a brief check and {whole[figure]} in a whole one")
+        expect("unreadable" in briefly["/books/not-a-book.epub"], f"the file that is no book:\n{brief_said}")
+        expect(not any(line.startswith(("book check: card ", "book check: XML")) for line in brief_lines),
+               f"a brief check has nothing to say of reading or of XML:\n{brief_said}")
 
         # With no /books, the top directory is where it looks.
         shutil.rmtree(books)

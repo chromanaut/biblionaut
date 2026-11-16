@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -1720,10 +1720,10 @@ that the caller provides, in whatever unit the lines' widths are in.
 
 `bn-lines` (`tools/lines`) sets a file of paragraphs by this code. There
 are no fonts yet to measure text with, so it measures in a made-up face
-whose widths it states (a small letter is 36 quarters of a pixel, an `i`
-18, an `m` 54), which lets a reader add a line up. Text between two
-asterisks is in a second style, a little wider. With the table made above
-from the nine patterns that "hyphenation" meets:
+whose widths it states (`layout/made_up_face.h`: a small letter is 36
+quarters of a pixel, an `i` 18, an `m` 54), which lets a reader add a line
+up. Text between two asterisks is in a second style, a little wider. With
+the table made above from the nine patterns that "hyphenation" meets:
 
 ```
 $ cat text.txt
@@ -1740,7 +1740,9 @@ $ ./build/host/tools/lines/bn-lines text.txt --table table.bnhy --width 640
 Each line is where it begins and ends in the paragraph's text, its width,
 its places between words, what is true of it (`h`: a hyphen is shown; `l`:
 it is a last line; `w`: it is too wide) and its text. `--figures` prints
-what setting the paragraphs took instead:
+what setting the paragraphs took instead, with a checksum of all the lines
+(`layout/line_digest.h`: where each begins and ends, its width, its number,
+its places between words and what is true of it):
 
 ```
 $ ./build/host/tools/lines/bn-lines text.txt --table table.bnhy --width 640 --figures
@@ -1750,6 +1752,7 @@ words the hyphenator was asked about 18, places made as a last resort 0
 lines given out early 0, in 0 paragraphs; ended for want of records 0
 nodes in use at the most 22 of 256
 calls 98; the most work in one, by the setter 36 of 1533, by the breaker 17 of 37888
+bytes measured 82; checksum of the lines 65aeed32
 ```
 
 Its tests set paragraphs written out by hand for each rule, and compare it
@@ -1770,6 +1773,103 @@ inside and the places between them, with a made-up language's hyphenation,
 and finds what the cheapest way of ending the lines costs by trying, for
 every place, every place a line ending there could have begun. Over 480
 paragraphs the lines `bn-lines` prints cost exactly that.
+
+### Timing layout on a device
+
+The breaker, the hyphenator and the setter each state a bound on the work
+one call does, in nodes, edges or bytes. A firmware built with
+`-DBN_LAYOUT_CHECK=ON` says what that work is in time on the device, and
+sets the text of real books there to show that it comes to the same lines
+as on the desktop: at start, and again at each press of the Power button.
+(On the desktop, set `BN_LAYOUT_CHECK`, with `BN_STORAGE` naming the
+folder that stands for the card.) It writes nothing to the card, and goes
+with neither the storage check nor the book check.
+
+The text is a file of paragraphs at `/layout/paragraphs.txt`, made from
+books on a computer by `tools/layout-text.py`. It reads each book's
+documents in the order of its spine, takes a paragraph to be the text of a
+block element (`p`, `div`, a heading, a list item, a cell), and writes
+them as `bn-lines` reads a file: a `br` is a line end inside a paragraph,
+and `i`, `em`, `b`, `strong` and `cite` are the second style. It is a
+plain reading of a book's text and not the importer. Beside it goes a
+hyphenation table, at `/layout/hyphenation.bnhy`, as `bn-hyphen pack`
+makes them; without one the text is set unhyphenated only.
+
+```
+tools/layout-text.py ~/Books/card/books --out paragraphs.txt
+./build/host/tools/hyphen/bn-hyphen pack hyph-en-us.tex --out hyphenation.bnhy
+# copy both to /layout on the card
+tools/idf -DBN_LAYOUT_CHECK=ON build flash
+./build/host/tools/trace/bn-trace | tee layout.log
+tools/idf -DBN_LAYOUT_CHECK=OFF build flash     # back to the normal firmware
+```
+
+What it does, in order (`reader/layout_check.h`):
+
+1. Times the made-up face alone over 64 KB of text in memory, as the book
+   check times its checksum: the face is what the text is measured in.
+2. Breaks the paragraph that brings a call of the breaker's closest to its
+   bound, with 64, 256 and 1,024 nodes, timing every call: the longest is
+   the bound in time.
+3. Reads the table.
+4. Sets text made to be awkward for the setter (5,000 letters with no
+   space, soft hyphens end to end, line feeds and hyphens and spaces by the
+   thousand) at two widths, timing every call; and has the hyphenator find
+   the places in eight long words.
+5. Sets the text on the card three times: hyphenated, then not, then
+   hyphenated again with every call timed, which finds the longest call
+   and costs a reading of the clock round each. The lines are 1,760
+   quarter pixels wide (440 pixels), with 256 nodes, 768 records and a
+   hyphen at 12,100, which are `bn-lines`'s defaults.
+
+What it finds goes out as log text. Over the text of the 28 books in
+`corpus/`, on a desktop (`tools/layout-text.py corpus`, and the table for
+American English):
+
+```
+layout check: the made-up face alone, 65536 bytes in 440 us (145454 KB/s).
+layout check: breaker, 64 nodes: the dearest call 6 us, 2146 of 3328 work; 388 calls in 33 us.
+layout check: breaker, 256 nodes: the dearest call 62 us, 33154 of 37888 work; 1540 calls in 267 us.
+layout check: breaker, 1024 nodes: the dearest call 898 us, 525826 of 544768 work; 6148 calls in 3711 us.
+layout check: table: 38049 bytes, read in 0 ms; no break before 2 letters or after 3 letters.
+layout check: setter, awkward text: the dearest call 26 us, the most work 504 of 1533, the breaker's 11361 of 37888; 35666 calls in 4927 us.
+layout check: hyphenator, 8 long words: the dearest 119 us for 64 (1859 ns a word), 2083 of 81915 work.
+layout check: text: 17350039 bytes in /layout/paragraphs.txt.
+layout check: hyphenated: 50313 paragraphs, 17233557 bytes, 329876 lines (30747 with a hyphen, 0 too wide); checksum 8ee4f78b.
+layout check: hyphenated: setting 1093 ms (15386 KB/s), 99 us for 30 lines; the face about 98 ms of it; card 5 ms.
+layout check: hyphenated: the longest paragraph 1794 us, 141354 bytes in 1585 lines; the most work in a call: setter 494, breaker 3242, hyphenator 1638.
+layout check: hyphenated: 2435592 words asked about, 104 last resort, 76811 lines early in 2397, 0 cut short; 256 nodes; 14704031 bytes measured.
+layout check: hyphenated: 13872034 calls.
+...
+layout check: hyphenated, every call timed: 13872034 calls, the longest 52 us.
+layout check: passed.
+layout check: the longest step: 925 us, breaking the dearest paragraph.
+```
+
+The lines for each setting say what it came to, with the checksum of its
+lines; how long setting it took, and so a page of 30 lines, beside the
+card's time in reading it and the face's share, worked out from the bytes
+measured at the rate found first; the paragraph that took longest, from
+its start; the counts `bn-lines --figures` prints; and how many calls it
+took. `bn-lines` prints the same paragraphs, bytes,
+lines, hyphens, words asked about, bytes measured and checksum for the
+same file and table with its defaults, so a device's lines can be shown to
+be the desktop's. The run passes if the text could be set every way and
+the first setting and the last, which differ only in being timed call by
+call, came to the same lines. A missing table is said and passed over; a
+missing text fails the run, after everything that does not need it.
+
+It is also in the metrics (`layout_check=1` if it passed,
+`layout_kb_per_s` for the first setting, and `layout_longest_call_us`) and
+in the trace (`reader/layout_check`, and `reader/layout_check_pass` for each
+setting).
+
+What it does not say: what a real face's measuring costs, which waits for
+the fonts; nor what reading a paragraph out of a book costs, which waits for
+the format books will be imported into. `e2e.LayoutCheck` runs the check
+in the desktop application against `bn-lines` on text made from books the
+test writes, and holds `tools/layout-text.py` to a book whose paragraphs it
+writes out by hand.
 
 ## Choosing the lines of a page
 

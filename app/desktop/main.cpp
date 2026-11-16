@@ -34,7 +34,9 @@ void PrintUsage(const char* program) {
                "of Power.\n"
                "Set BN_BOOK_CHECK instead to have every EPUB in that folder's books folder\n"
                "read from end to end, at the same moments; and BN_BOOK_CHECK_BRIEF with it\n"
-               "to have each only opened, and none read through.\n",
+               "to have each only opened, and none read through.\n"
+               "Set BN_LAYOUT_CHECK instead to have the layout code timed, and the text in\n"
+               "that folder's layout folder set in lines, at the same moments.\n",
                program);
 }
 
@@ -95,8 +97,12 @@ int main(int argc, char** argv) {
   const bool checkStorage = std::getenv("BN_STORAGE_CHECK") != nullptr;
   // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
   const bool checkBooks = std::getenv("BN_BOOK_CHECK") != nullptr;
-  if (checkStorage && checkBooks) {
-    std::fprintf(stderr, "BN_STORAGE_CHECK and BN_BOOK_CHECK would get in each other's way: set one of them.\n");
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
+  const bool checkLayout = std::getenv("BN_LAYOUT_CHECK") != nullptr;
+  if (static_cast<int>(checkStorage) + static_cast<int>(checkBooks) + static_cast<int>(checkLayout) > 1) {
+    std::fprintf(stderr,
+                 "BN_STORAGE_CHECK, BN_BOOK_CHECK and BN_LAYOUT_CHECK would get in each other's way: set one of "
+                 "them.\n");
     return 2;
   }
   if (checkStorage) {
@@ -105,6 +111,9 @@ int main(int argc, char** argv) {
   if (checkBooks) {
     // NOLINTNEXTLINE(concurrency-mt-unsafe): as above.
     app.CheckBooks(std::getenv("BN_BOOK_CHECK_BRIEF") != nullptr);
+  }
+  if (checkLayout) {
+    app.CheckLayout();
   }
   app.Start();
   std::printf("Biblionaut %s (%s)\n", bn::reader::Version(), bn::hw::PortName());

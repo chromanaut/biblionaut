@@ -21,6 +21,7 @@
 namespace bn::reader {
 
 class BookCheck;
+class LayoutCheck;
 
 // Everything the application needs from the device, as interfaces. Tests
 // pass fakes; the real set comes from DefaultServices().
@@ -103,6 +104,15 @@ class App {
   // The check, if CheckBooks() was called; null otherwise.
   const BookCheck* BookChecker() const noexcept { return bookCheck_; }
 
+  // Has the layout code timed (reader/layout_check.h), and the text on the
+  // card set: once at start, and again whenever the Power button is
+  // pressed, as the book check is. Call before Start(). Not together with
+  // CheckStorage() or CheckBooks(), which would take the card's time while
+  // this is being timed.
+  void CheckLayout() noexcept;
+  // The check, if CheckLayout() was called; null otherwise.
+  const LayoutCheck* LayoutChecker() const noexcept { return layoutCheck_; }
+
  private:
   void SampleMemory() noexcept;
   void SendCrashReport() noexcept;
@@ -115,14 +125,15 @@ class App {
   core::TraceStream stream_;
   PatternViewer viewer_;
   // The checks, each on the heap and only when asked for: the storage
-  // check is 9 KB and the book check 81 KB. They are kept twice. These
-  // two are for telling callers about them,
+  // check is 9 KB, the book check 109 KB and the layout check 93 KB. They
+  // are kept twice. These are for telling callers about them,
   StorageCheck* storageCheck_ = nullptr;
   BookCheck* bookCheck_ = nullptr;
-  // and these are the same two as the application uses them: it reaches
-  // a check's code only through DeviceCheck, so that a build which asks
-  // for neither has neither in it.
-  std::array<DeviceCheck*, 2> checks_{};
+  LayoutCheck* layoutCheck_ = nullptr;
+  // and these are the same as the application uses them: it reaches a
+  // check's code only through DeviceCheck, so that a build which asks for
+  // none has none in it.
+  std::array<DeviceCheck*, 3> checks_{};
   bool storageReady_ = false;
   std::uint64_t startedAtUs_ = 0;
   std::uint64_t nextHeartbeatUs_ = 0;

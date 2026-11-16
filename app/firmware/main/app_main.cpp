@@ -86,6 +86,13 @@ extern "C" void app_main() {
     esp_rom_printf("There is not the memory for the book check: it will not run.\n");
   }
 #endif
+#ifdef BN_LAYOUT_CHECK
+  esp_rom_printf("Layout check build: the layout code is timed at start and at each press of Power.\n");
+  app.CheckLayout();
+  if (app.LayoutChecker() == nullptr) {
+    esp_rom_printf("There is not the memory for the layout check: it will not run.\n");
+  }
+#endif
   app.Start();
 
   // From here on the loop is watched. Each turn reports to the watchdog,

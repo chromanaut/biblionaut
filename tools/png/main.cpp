@@ -14,6 +14,12 @@
 // reader would have to be given); PASSED how many chunks were passed over,
 // and BAD how many of those had a wrong checksum. For an EPUB each line
 // ends with the entry's name, and a last line adds them up.
+//
+// Given a new size, `read` puts the rows through the scaler as well, as
+// the firmware will to show a picture at the size layout gives it: CRC and
+// ROWS are then the new picture's, and the line ends with
+//
+//   scaled NEWWIDTH NEWHEIGHT
 
 #include <algorithm>
 #include <array>
@@ -32,6 +38,7 @@
 #include "core/checksum.h"
 #include "core/storage.h"
 #include "draw/png.h"
+#include "draw/scale.h"
 #include "epub/zip.h"
 #include "support/one_file.h"
 
@@ -40,6 +47,8 @@ namespace {
 using bn::core::StorageStatus;
 using bn::draw::PngReader;
 using bn::draw::PngStatus;
+using bn::draw::Scaler;
+using bn::draw::ScaleStatus;
 using bn::epub::ZipStatus;
 
 // The most memory for rows this tool will give a reader: a picture that
@@ -48,7 +57,7 @@ constexpr std::uint64_t kMostRoom = 268435456;
 
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
-               "usage: %s read FILE [--pieces BYTES] [--rows BYTES] [--out PICTURE]\n"
+               "usage: %s read FILE [--pieces BYTES] [--rows BYTES] [--width W] [--height H] [--out PICTURE]\n"
                "       %s header FILE\n"
                "       %s book FILE [--rows BYTES]\n"
                "\n"
@@ -65,6 +74,10 @@ void PrintUsage(const char* program) {
                "                  4096, as the card's driver does)\n"
                "  --rows BYTES    how much memory the reader has for rows (default: what the\n"
                "                  picture needs, if that is no more than 256 MB)\n"
+               "  --width W       make the picture W pixels wide, and\n"
+               "  --height H      H high, as the firmware's scaler does: with one of them, the\n"
+               "                  other keeps the picture's shape. The CRC and the rows are then\n"
+               "                  the new picture's, and the line ends with `scaled W H`\n"
                "  --out PICTURE   write the rows it gave there, as a PGM file: a byte a pixel\n"
                "\n"
                "  header  reads no more of the picture in FILE than its header, with no memory\n"
@@ -128,7 +141,7 @@ class Pieces final : public bn::core::ByteSource {
 };
 
 // Keeps the rows, and their checksum.
-class Rows final : public bn::draw::PngRowSink {
+class Rows final : public bn::draw::RowSink {
  public:
   explicit Rows(bool keep) : keep_(keep) {}
 
@@ -151,8 +164,18 @@ class Rows final : public bn::draw::PngRowSink {
   std::vector<std::uint8_t> pixels_;
 };
 
+// A size asked for; 0 for a side that is not.
+struct Size {
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+
+  bool Asked() const { return width > 0 || height > 0; }
+};
+
 struct Result {
   PngStatus status = PngStatus::kOk;
+  // The size the picture was scaled to, if it was.
+  Size scaled;
   bool headerKnown = false;
   bn::draw::PngHeader header;
   std::uint32_t crc = 0;
@@ -176,14 +199,33 @@ std::string Line(const Result& result) {
                   static_cast<unsigned long long>(result.room), static_cast<unsigned>(result.passed),
                   static_cast<unsigned>(result.bad));
   }
-  return text.data();
+  std::string line = text.data();
+  if (result.scaled.Asked()) {
+    line += " scaled " + std::to_string(result.scaled.width) + " " + std::to_string(result.scaled.height);
+  }
+  return line;
+}
+
+// The size a picture is made: what was asked, with a side that was not
+// asked for keeping the picture's shape, rounded to the nearest pixel and
+// at least one.
+Size NewSize(const bn::draw::PngHeader& header, Size asked) {
+  Size size = asked;
+  if (size.width == 0) {
+    size.width = static_cast<std::uint32_t>(std::max<std::uint64_t>(
+        1, ((std::uint64_t{asked.height} * header.width * 2) + header.height) / (std::uint64_t{header.height} * 2)));
+  } else if (size.height == 0) {
+    size.height = static_cast<std::uint32_t>(std::max<std::uint64_t>(
+        1, ((std::uint64_t{asked.width} * header.height * 2) + header.width) / (std::uint64_t{header.width} * 2)));
+  }
+  return size;
 }
 
 // Reads the picture that `open` gives a source for, twice: once for its
 // header, to know what its rows need, and once through. `open` is called
 // once for each reading.
 template <typename Open>
-Result ReadPicture(Open open, std::size_t pieces, std::size_t rowLimit, Rows& rows) {
+Result ReadPicture(Open open, std::size_t pieces, std::size_t rowLimit, Size asked, Rows& rows) {
   Result result;
   {
     PngReader peek({}, {});
@@ -209,11 +251,40 @@ Result ReadPicture(Open open, std::size_t pieces, std::size_t rowLimit, Rows& ro
     return result;
   }
   Pieces piecewise(*source, pieces);
-  result.status = reader.Read(piecewise, &rows);
+  // Scaled, the reader's rows go through the scaler on their way to `rows`.
+  if (asked.Asked() && result.headerKnown) {
+    result.scaled = NewSize(result.header, asked);
+  }
+  const std::uint32_t scaledWidth = std::min(result.scaled.width, Scaler::kMaxSide);
+  std::vector<std::uint32_t> sums(Scaler::SumsFor(scaledWidth));
+  std::vector<std::uint8_t> scaledRow(scaledWidth);
+  Scaler scaler(sums, scaledRow);
+  bn::draw::RowSink* sink = &rows;
+  if (result.scaled.Asked()) {
+    const ScaleStatus begun =
+        scaler.Begin(result.header.width, result.header.height, result.scaled.width, result.scaled.height, rows);
+    if (begun != ScaleStatus::kOk) {
+      std::fprintf(stderr, "error: cannot scale to %ux%u: %s\n", static_cast<unsigned>(result.scaled.width),
+                   static_cast<unsigned>(result.scaled.height), bn::draw::ScaleStatusName(begun));
+      result.status = PngStatus::kNoRoom;
+      return result;
+    }
+    sink = &scaler;
+  }
+  reader.Begin(piecewise, sink);
+  // The new rows a step of the reader makes ready are taken out after it,
+  // the last step's too.
+  bool more = true;
+  while (more) {
+    more = reader.Step();
+    while (scaler.Step()) {
+    }
+  }
+  result.status = reader.Status();
   result.headerKnown = reader.HeaderKnown();
   result.header = reader.Header();
   result.crc = rows.Crc();
-  result.rows = reader.RowsGiven();
+  result.rows = result.scaled.Asked() ? scaler.RowsGiven() : reader.RowsGiven();
   result.passed = reader.ChunksPassedOver();
   result.bad = reader.BadChecksumsPassedOver();
   return result;
@@ -253,16 +324,17 @@ class FileOnDisk {
   bool started_ = false;
 };
 
-int Read(const std::string& path, std::size_t pieces, std::size_t rowLimit, const std::string& out) {
+int Read(const std::string& path, std::size_t pieces, std::size_t rowLimit, Size asked, const std::string& out) {
   FileOnDisk file(path);
   if (file.Open() == nullptr) {
     std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
     return 1;
   }
   Rows rows(!out.empty());
-  const Result result = ReadPicture([&] { return file.Open(); }, pieces, rowLimit, rows);
+  const Result result = ReadPicture([&] { return file.Open(); }, pieces, rowLimit, asked, rows);
   std::printf("%s\n", Line(result).c_str());
-  if (!out.empty() && !WritePgm(out, result.headerKnown ? result.header.width : 0, result.rows, rows.Pixels())) {
+  const std::uint32_t width = result.scaled.Asked() ? result.scaled.width : result.header.width;
+  if (!out.empty() && !WritePgm(out, result.headerKnown ? width : 0, result.rows, rows.Pixels())) {
     std::fprintf(stderr, "error: cannot write %s\n", out.c_str());
     return 1;
   }
@@ -345,7 +417,7 @@ int Book(const std::string& path, std::size_t rowLimit) {
           opened = opened && entryReader.Open(entries, entry) == ZipStatus::kOk;
           return opened ? &entryReader : nullptr;
         },
-        4096, rowLimit, rows);
+        4096, rowLimit, Size{}, rows);
     // A picture that stopped where its entry could not be read further is
     // the ZIP file's fault, and said to be so.
     const bool entryFailed = !opened || entryReader.Status() != ZipStatus::kOk;
@@ -387,6 +459,8 @@ int main(int argc, char** argv) {
   const std::string path = argv[2];
   std::size_t pieces = 4096;
   std::size_t rowLimit = 0;
+  std::size_t width = 0;
+  std::size_t height = 0;
   std::string out;
   // Each option is followed by its value.
   for (int i = 3; i < argc; i += 2) {
@@ -399,6 +473,10 @@ int main(int argc, char** argv) {
       understood = Number(value, pieces);
     } else if (option == "--rows" && command != "header") {
       understood = Number(value, rowLimit);
+    } else if (option == "--width" && command == "read") {
+      understood = Number(value, width) && width > 0 && width <= UINT32_MAX;
+    } else if (option == "--height" && command == "read") {
+      understood = Number(value, height) && height > 0 && height <= UINT32_MAX;
     } else if (option == "--out" && command == "read") {
       out = value;
       understood = true;
@@ -409,7 +487,8 @@ int main(int argc, char** argv) {
     }
   }
   if (command == "read") {
-    return Read(path, pieces, rowLimit, out);
+    return Read(path, pieces, rowLimit, Size{static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)},
+                out);
   }
   if (command == "header") {
     return Header(path);

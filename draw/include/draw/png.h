@@ -7,13 +7,14 @@
 
 #include "core/byte_source.h"
 #include "core/inflate.h"
+#include "draw/row_sink.h"
 
 // Reading a PNG picture, as the W3C's specification of PNG has it.
 //
 // A picture is read from a ByteSource a piece at a time and never held
 // whole: first its header, which says how large it is and what kind of
 // picture, and then, if they are wanted, its rows, top first, each given
-// to a PngRowSink as soon as it is whole. All that is kept of the picture
+// to a RowSink as soon as it is whole. All that is kept of the picture
 // is the row being read and the one above it, which PNG's filters refer
 // back to.
 //
@@ -131,20 +132,8 @@ struct PngHeader {
   std::uint64_t Stride() const noexcept;
 };
 
-// Is given the rows of a picture, as they are read.
-class PngRowSink {
- public:
-  // Row `y` of the picture, counted from 0 at the top. `gray` is its
-  // pixels from the left, a byte each: as many as the picture is wide.
-  // They are the reader's, and stay as they are only until the next call
-  // of Step().
-  virtual void Row(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept = 0;
-
- protected:
-  ~PngRowSink() = default;  // Never destroyed through the interface.
-};
-
-// Reads one PNG picture after another.
+// Reads one PNG picture after another. The rows it gives a RowSink stay as
+// they are until the next call of Step().
 class PngReader final {
  public:
   // The window it needs for reading rows: exactly this much, or more.
@@ -196,7 +185,7 @@ class PngReader final {
   // picture's rows and gives each to it. Without one it stops once the
   // header has been read and checked: Header() then says what it says.
   // Reads nothing yet.
-  void Begin(core::ByteSource& source, PngRowSink* sink) noexcept;
+  void Begin(core::ByteSource& source, RowSink* sink) noexcept;
 
   // Does the next piece of the reading, a bounded amount (see above).
   // Returns true if there is more to do, false once the header has been
@@ -205,7 +194,7 @@ class PngReader final {
   [[nodiscard]] bool Step() noexcept;
 
   // Begin(), and Step() until there is no more.
-  PngStatus Read(core::ByteSource& source, PngRowSink* sink) noexcept;
+  PngStatus Read(core::ByteSource& source, RowSink* sink) noexcept;
 
   PngStatus Status() const noexcept { return status_; }
 
@@ -301,7 +290,7 @@ class PngReader final {
   core::Inflater inflater_;
 
   core::ByteSource* source_ = nullptr;
-  PngRowSink* sink_ = nullptr;
+  RowSink* sink_ = nullptr;
   PngStatus status_ = PngStatus::kOk;
   Stage stage_ = Stage::kDone;
 

@@ -86,6 +86,7 @@ TARGETS = {
     "svg_path": 2048,
     "svg": 8192,
     "png": 8192,
+    "scale": 4096,
 }
 
 # Pieces of XML, of CSS, of SVG and of PNG that the readers look for, which

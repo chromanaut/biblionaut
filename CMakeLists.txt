@@ -78,6 +78,9 @@ include(BnVersion)
 include(BnOptions)
 include(BnParts)
 
+# The hyphenation table the parts are given is made by the bn-hyphen this
+# build makes (tools/hyphen).
+set(BN_HYPHEN bn-hyphen)
 bn_add_portable_parts("${CMAKE_BINARY_DIR}/parts")
 if(BN_DESKTOP_WINDOW)
   add_subdirectory(third_party/sdl)

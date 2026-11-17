@@ -10,7 +10,7 @@ Biblionaut is EPUB reader firmware for the Xteink X4 (ESP32-C3, no PSRAM, 800x48
 
 ## Commands
 
-Host build (needs CMake 3.25+, Ninja, a C++20 compiler; expat and GoogleTest are downloaded at configure time):
+Host build (needs CMake 3.25+, Ninja, a C++20 compiler; expat, TeX's American English hyphenation patterns and GoogleTest are downloaded at configure time):
 
 ```
 cmake --preset host                # once, and after changes to CMake files
@@ -53,7 +53,7 @@ Nor does CI fuzz: it only takes the fuzz targets through their kept inputs. `too
 
 The format check and clang-tidy need the LLVM major version in `tools/llvm-version`. The Linux check catches what a macOS build does not, such as a header that libc++ pulls in by itself and libstdc++ does not, or code that only GCC parses differently. If Docker is not running, say that the check was not run.
 
-Firmware: `tools/setup-idf.sh` once installs the pinned ESP-IDF into `.esp/`; `tools/idf` runs `idf.py` on `app/firmware` with it and passes its arguments through, so build options go first: `tools/idf -DBN_BOOK_CHECK=ON build`. Flashing replaces what is on the device, bootloader included: do not flash unless asked.
+Firmware: `tools/setup-idf.sh` once installs the pinned ESP-IDF into `.esp/`; `tools/idf` runs `idf.py` on `app/firmware` with it and passes its arguments through, so build options go first: `tools/idf -DBN_BOOK_CHECK=ON build`. The firmware build also compiles `bn-hyphen` with the computer's own compilers (in `app/firmware/build/host-tools`), to make the hyphenation table it compiles in (`third_party/hyph-en-us`). Flashing replaces what is on the device, bootloader included: do not flash unless asked.
 
 The firmware is compiled at `-O2` (`app/firmware/sdkconfig.defaults`), and a timing from a device is only worth recording from such a build: ESP-IDF's default is `-Og`, at which the inflater runs a third slower. ESP-IDF writes a build's settings to `app/firmware/sdkconfig` the first time and keeps them, so after a change to `sdkconfig.defaults` that file has to be deleted before the change is taken up (`grep OPTIMIZATION app/firmware/sdkconfig` says what a build is using).
 

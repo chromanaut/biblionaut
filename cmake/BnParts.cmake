@@ -14,9 +14,13 @@
 # (app/firmware/components/bn_hw).
 #
 # Before them comes what they use that is not ours, fetched and built by
-# the files under third_party/: expat, for epub.
+# the files under third_party/: expat, for epub; and the table of American
+# English's hyphenation patterns, for reader, which bn-hyphen makes as the
+# build goes. Whoever calls this sets BN_HYPHEN to the bn-hyphen to run
+# (third_party/hyph-en-us/CMakeLists.txt).
 function(bn_add_portable_parts binary_root)
   add_subdirectory("${BN_ROOT}/third_party/expat" "${binary_root}/third_party/expat")
+  add_subdirectory("${BN_ROOT}/third_party/hyph-en-us" "${binary_root}/third_party/hyph-en-us")
   foreach(part core epub draw layout reader)
     add_subdirectory("${BN_ROOT}/${part}" "${binary_root}/${part}")
   endforeach()

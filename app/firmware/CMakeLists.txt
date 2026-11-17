@@ -64,8 +64,9 @@ option(BN_BOOK_CHECK_BRIEF "With BN_BOOK_CHECK: open every book and read none th
 #   tools/idf -DBN_LAYOUT_CHECK=ON build flash    (back to normal: -DBN_LAYOUT_CHECK=OFF)
 #
 # Such a firmware does it at start, and again at each press of the Power
-# button. It reads /layout/paragraphs.txt and /layout/hyphenation.bnhy, and
-# writes nothing to the card. Not together with BN_STORAGE_CHECK or
+# button. It reads /layout/paragraphs.txt, and /layout/hyphenation.bnhy if
+# it is there (otherwise it uses the built-in table for American English),
+# and writes nothing to the card. Not together with BN_STORAGE_CHECK or
 # BN_BOOK_CHECK.
 option(BN_LAYOUT_CHECK "Time the layout code, and set the text on the SD card, at start and at each press of Power" OFF)
 
@@ -98,7 +99,37 @@ include(BnParts)
 add_library(bn_hw INTERFACE)
 target_link_libraries(bn_hw INTERFACE idf::bn_hw)
 
+# The table of American English's hyphenation patterns is made as the build
+# goes, by bn-hyphen (third_party/hyph-en-us). That is a program for the
+# computer doing the building, not for the device, so it is compiled here a
+# second time with that computer's own C and C++ compilers: by the host
+# build's CMake files, in a build of their own that makes bn-hyphen and
+# nothing else, under this one's build directory. It takes the files this
+# build downloads, and downloads nothing itself.
+set(bn_host_tools "${CMAKE_BINARY_DIR}/host-tools")
+set(BN_HYPHEN "${bn_host_tools}/tools/hyphen/bn-hyphen")
+set(BN_HYPHEN_DEPENDS bn_host_tools)
 bn_add_portable_parts("${CMAKE_BINARY_DIR}/bn")
+
+include(ExternalProject)
+include(FetchContent)
+# Nothing is installed from that build; this only keeps CMake from asking
+# where it would go.
+if(POLICY CMP0225)
+  cmake_policy(SET CMP0225 NEW)
+endif()
+FetchContent_GetProperties(expat SOURCE_DIR bn_expat_source)
+ExternalProject_Add(bn_host_tools
+  SOURCE_DIR "${BN_ROOT}"
+  BINARY_DIR "${bn_host_tools}"
+  CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DBN_BUILD_TESTS=OFF -DBN_WERROR=OFF
+             "-DFETCHCONTENT_SOURCE_DIR_EXPAT=${bn_expat_source}" "-DBN_HYPH_EN_US_DIR=${BN_HYPH_EN_US_DIR}"
+  BUILD_COMMAND ${CMAKE_COMMAND} --build "${bn_host_tools}" --target bn-hyphen
+  # Built each time, so that a change to bn-hyphen's sources is taken up;
+  # when there is none, that is a moment's work.
+  BUILD_ALWAYS ON
+  BUILD_BYPRODUCTS "${BN_HYPHEN}"
+  INSTALL_COMMAND "")
 
 # Keep a copy of every firmware's ELF file, named by its SHA-256. A crash
 # report carries the start of that hash, so tools/bn-symbolize can find the

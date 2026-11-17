@@ -46,10 +46,11 @@ clang-tidy enforces this.
 
 ## Host build
 
-Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Two
+Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Three
 things are downloaded when CMake configures, each checked against a hash:
-expat, the XML parser, which is C and is why a C compiler is needed, and
-GoogleTest. The tests also link zlib, to check the inflater against and to
+expat, the XML parser, which is C and is why a C compiler is needed;
+TeX's hyphenation patterns for American English, which the build makes
+into a table (see Where a word may be broken); and GoogleTest. The tests also link zlib, to check the inflater against and to
 make their ZIP files with: macOS has it, and on Linux it is the `zlib1g-dev`
 package. Eight of the end-to-end
 tests are run only if Python 3 is found, and one of them makes more of its
@@ -1599,10 +1600,15 @@ allow a break and a longer one forbid it again.
   kept. Nothing is copied out of it and nothing is allocated. The patterns
   are a tree, read a letter at a time, and branches that are alike are
   kept once.
-- **No patterns are in this repository**, and no table is in the firmware
-  yet. Made from the patterns TeX has for American English (4,938 of
-  them, and 14 words written out), a table is 38,049 bytes; from those for
-  German (36,709), 234,154 bytes.
+- **American English is built in.** No patterns are in this repository:
+  the build downloads TeX's for American English (4,938 patterns, and 14
+  words written out with their breaks) and makes them into a table of
+  38,049 bytes, which is compiled in as constant data
+  (`hyphenation/american_english.h`). On the device it stays in flash and
+  is read there. It is only in a program that asks for it: so far the
+  layout check (`reader/layout_check.h`), and not yet a normal firmware,
+  in which nothing sets text. Its copyright notice is compiled in with it.
+  A table made from TeX's patterns for German (36,709) is 234,154 bytes.
 - **A word** is given as UTF-8, and the places come back as how many bytes
   of it come before each break. Capitals count as their small letters. A
   character the language has no letter for divides the word, and each side
@@ -1646,6 +1652,18 @@ table 199 bytes
 
 `words` prints each word of a file, or of what it is given to read, with
 a `-` at every place it may be broken: `hy-phen-ation`.
+
+The build makes the American English table the same way, from the
+plain-text files that TeX's hyphenation package (hyph-utf8) keeps beside
+each language's TeX file: `hyph-en-us.pat.txt` for the patterns and
+`hyph-en-us.hyp.txt` for `--exceptions`. The TeX file itself will not do,
+as its patterns are inside `\patterns{...}`, which `pack` does not read.
+`third_party/hyph-en-us/CMakeLists.txt` names the commit they are taken
+from and the hash of each. The table is left in the build, at
+`build/host/parts/third_party/hyph-en-us/american_english.bnhy`, for
+`bn-lines` or `bn-hyphen words` to be given; a unit test holds what is
+compiled in to that file, byte for byte, and to words whose breaks TeX
+gives.
 
 Its tests write tables of their own, the plain way and with nothing
 shared, and compare the places found with laying every pattern over every
@@ -1856,14 +1874,15 @@ documents in the order of its spine, takes a paragraph to be the text of a
 block element (`p`, `div`, a heading, a list item, a cell), and writes
 them as `bn-lines` reads a file: a `br` is a line end inside a paragraph,
 and `i`, `em`, `b`, `strong` and `cite` are the second style. It is a
-plain reading of a book's text and not the importer. Beside it goes a
-hyphenation table, at `/layout/hyphenation.bnhy`, as `bn-hyphen pack`
-makes them; without one the text is set unhyphenated only.
+plain reading of a book's text and not the importer. The text is
+hyphenated by the table for American English that is built in, unless
+there is a table on the card, at `/layout/hyphenation.bnhy`, as
+`bn-hyphen pack` makes them: that one is taken instead, which is how
+another language's table, or another version of English's, is timed.
 
 ```
 tools/layout-text.py ~/Books/card/books --out paragraphs.txt
-./build/host/tools/hyphen/bn-hyphen pack hyph-en-us.tex --out hyphenation.bnhy
-# copy both to /layout on the card
+# copy it to /layout on the card
 tools/idf -DBN_LAYOUT_CHECK=ON build flash
 ./build/host/tools/trace/bn-trace | tee layout.log
 tools/idf -DBN_LAYOUT_CHECK=OFF build flash     # back to the normal firmware
@@ -1876,7 +1895,8 @@ What it does, in order (`reader/layout_check.h`):
 2. Breaks the paragraph that brings a call of the breaker's closest to its
    bound, with 64, 256 and 1,024 nodes, timing every call: the longest is
    the bound in time.
-3. Reads the table.
+3. Reads the table on the card, if there is one, and otherwise takes the
+   one that is built in.
 4. Sets text made to be awkward for the setter (5,000 letters with no
    space, soft hyphens end to end, line feeds and hyphens and spaces by the
    thousand) at two widths, timing every call; and has the hyphenator find
@@ -1888,27 +1908,27 @@ What it does, in order (`reader/layout_check.h`):
    hyphen at 12,100, which are `bn-lines`'s defaults.
 
 What it finds goes out as log text. Over the text of the 28 books in
-`corpus/`, on a desktop (`tools/layout-text.py corpus`, and the table for
-American English):
+`corpus/`, on a desktop (`tools/layout-text.py corpus`, and no table on
+the card, so the one built in):
 
 ```
-layout check: the made-up face alone, 65536 bytes in 440 us (145454 KB/s).
-layout check: breaker, 64 nodes: the dearest call 6 us, 2146 of 3328 work; 388 calls in 33 us.
-layout check: breaker, 256 nodes: the dearest call 62 us, 33154 of 37888 work; 1540 calls in 267 us.
-layout check: breaker, 1024 nodes: the dearest call 898 us, 525826 of 544768 work; 6148 calls in 3711 us.
-layout check: table: 38049 bytes, read in 0 ms; no break before 2 letters or after 3 letters.
-layout check: setter, awkward text: the dearest call 26 us, the most work 504 of 1533, the breaker's 11361 of 37888; 35666 calls in 4927 us.
-layout check: hyphenator, 8 long words: the dearest 119 us for 64 (1859 ns a word), 2083 of 81915 work.
+layout check: the made-up face alone, 65536 bytes in 509 us (125736 KB/s).
+layout check: breaker, 64 nodes: the dearest call 8 us, 2146 of 3328 work; 388 calls in 33 us.
+layout check: breaker, 256 nodes: the dearest call 78 us, 33154 of 37888 work; 1540 calls in 338 us.
+layout check: breaker, 1024 nodes: the dearest call 1112 us, 525826 of 544768 work; 6148 calls in 4533 us.
+layout check: no table at /layout/hyphenation.bnhy (not found): the built-in table, 38049 bytes; no break before 2 letters or after 3 letters.
+layout check: setter, awkward text: the dearest call 32 us, the most work 504 of 1533, the breaker's 11361 of 37888; 35666 calls in 5730 us.
+layout check: hyphenator, 8 long words: the dearest 146 us for 64 (2281 ns a word), 2083 of 81915 work.
 layout check: text: 17350039 bytes in /layout/paragraphs.txt.
 layout check: hyphenated: 50313 paragraphs, 17233557 bytes, 329876 lines (30747 with a hyphen, 0 too wide); checksum 8ee4f78b.
-layout check: hyphenated: setting 1093 ms (15386 KB/s), 99 us for 30 lines; the face about 98 ms of it; card 5 ms.
-layout check: hyphenated: the longest paragraph 1794 us, 141354 bytes in 1585 lines; the most work in a call: setter 494, breaker 3242, hyphenator 1638.
+layout check: hyphenated: setting 1272 ms (13230 KB/s), 115 us for 30 lines; the face about 114 ms of it; card 6 ms.
+layout check: hyphenated: the longest paragraph 2027 us, 141354 bytes in 1585 lines; the most work in a call: setter 494, breaker 3242, hyphenator 1638.
 layout check: hyphenated: 2435592 words asked about, 104 last resort, 76811 lines early in 2397, 0 cut short; 256 nodes; 14704031 bytes measured.
 layout check: hyphenated: 13872034 calls.
 ...
-layout check: hyphenated, every call timed: 13872034 calls, the longest 52 us.
+layout check: hyphenated, every call timed: 13872034 calls, the longest 57 us.
 layout check: passed.
-layout check: the longest step: 925 us, breaking the dearest paragraph.
+layout check: the longest step: 1146 us, breaking the dearest paragraph.
 ```
 
 The lines for each setting say what it came to, with the checksum of its
@@ -1921,8 +1941,9 @@ lines, hyphens, words asked about, bytes measured and checksum for the
 same file and table with its defaults, so a device's lines can be shown to
 be the desktop's. The run passes if the text could be set every way and
 the first setting and the last, which differ only in being timed call by
-call, came to the same lines. A missing table is said and passed over; a
-missing text fails the run, after everything that does not need it.
+call, came to the same lines. A table on the card that cannot be used is
+said, and the built-in one taken; a missing text fails the run, after
+everything that does not need it.
 
 It is also in the metrics (`layout_check=1` if it passed,
 `layout_kb_per_s` for the first setting, and `layout_longest_call_us`) and
@@ -1933,8 +1954,8 @@ What it does not say: what a real face's measuring costs, which waits for
 the fonts; nor what reading a paragraph out of a book costs, which waits for
 the format books will be imported into. `e2e.LayoutCheck` runs the check
 in the desktop application against `bn-lines` on text made from books the
-test writes, and holds `tools/layout-text.py` to a book whose paragraphs it
-writes out by hand.
+test writes, with a table on the card and with the built-in one, and holds
+`tools/layout-text.py` to a book whose paragraphs it writes out by hand.
 
 ## Choosing the lines of a page
 
@@ -2423,6 +2444,14 @@ tools/idf flash monitor
 
 `tools/idf` runs `idf.py` on `app/firmware` with that local install, and
 passes its arguments through.
+
+The build also needs the computer's own C and C++ compilers, the ones the
+host build uses. The table of American English's hyphenation patterns is
+made as the firmware is built, by `bn-hyphen`, which is a program for the
+computer and not for the device: the firmware build compiles it with the
+host build's CMake files, in a build of its own under
+`app/firmware/build/host-tools` that makes nothing else. It takes the
+patterns the firmware build downloaded, and downloads nothing itself.
 
 The firmware is compiled for speed (`-O2`), with ESP-IDF's assertions left
 on: `app/firmware/sdkconfig.defaults` sets both. Every figure in this

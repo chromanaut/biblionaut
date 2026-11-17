@@ -426,6 +426,9 @@ TEST(App, CanHaveTheLayoutCodeTimedAtStartAndAtEachPressOfPower) {
   fixture.RunFor(5'100'000);
   EXPECT_EQ(fixture.app.LayoutChecker()->CurrentState(), LayoutState::kPassed);
   EXPECT_EQ(fixture.app.LayoutChecker()->PassFigures(0).paragraphs, 2U);
+  // With no table on the card, the check is given American English's.
+  EXPECT_TRUE(fixture.app.LayoutChecker()->HyphenatingBuiltIn());
+  EXPECT_EQ(fixture.app.LayoutChecker()->Passes(), 3U);
   EXPECT_NE(fixture.Metrics().find("layout_check=1["), std::string::npos) << fixture.Metrics();
   EXPECT_EQ(fixture.storage.changes, 0) << "it writes nothing";
 

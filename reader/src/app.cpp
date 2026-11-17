@@ -4,6 +4,7 @@
 
 #include "core/metrics.h"
 #include "hw/platform.h"
+#include "hyphenation/american_english.h"
 #include "reader/book_check.h"
 #include "reader/layout_check.h"
 #include "reader/trace_ids.h"
@@ -88,7 +89,9 @@ void App::CheckBooks(bool brief) noexcept {
 
 void App::CheckLayout() noexcept {
   if (layoutCheck_ == nullptr) {
-    layoutCheck_ = new (std::nothrow) LayoutCheck(services_.storage, services_.clock, stream_);
+    // Without a table on the card, the check uses the one that is built in.
+    layoutCheck_ = new (std::nothrow)
+        LayoutCheck(services_.storage, services_.clock, stream_, hyphenation::AmericanEnglish().table);
     checks_[2] = layoutCheck_;
   }
 }

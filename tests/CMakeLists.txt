@@ -119,15 +119,20 @@ target_link_libraries(epub_tests PRIVATE ZLIB::ZLIB)
 # the tests write themselves, and checked against laying every pattern over
 # every place in a word. The page chooser is given runs of lines the tests
 # make up, and checked against adding their heights up over the whole run.
+# The table for American English that the build makes is checked against
+# the file it was made from, and against words whose breaks TeX gives.
 bn_add_unit_test(layout_tests
   SOURCES
+    unit/layout/american_english_test.cpp
     unit/layout/hyphenator_test.cpp
     unit/layout/line_breaker_test.cpp
     unit/layout/line_digest_test.cpp
     unit/layout/made_up_face_test.cpp
     unit/layout/page_chooser_test.cpp
     unit/layout/paragraph_setter_test.cpp
-  LIBS bn_layout)
+  LIBS bn_layout bn_hyph_en_us)
+target_compile_definitions(layout_tests PRIVATE
+  "BN_AMERICAN_ENGLISH_TABLE=\"$<TARGET_PROPERTY:bn_hyph_en_us,BN_TABLE_FILE>\"")
 
 # The desktop port, which the other host programs run on. Its own headers
 # are reached the way its sources reach them, as "desktop/...".
@@ -308,7 +313,8 @@ if(Python3_Interpreter_FOUND)
     NAME e2e.LayoutCheck
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/layout_check.py
       $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-trace> $<TARGET_FILE:bn-lines> $<TARGET_FILE:bn-hyphen>
-      ${PROJECT_SOURCE_DIR}/tools/layout-text.py ${CMAKE_CURRENT_BINARY_DIR}/layout_check)
+      ${PROJECT_SOURCE_DIR}/tools/layout-text.py $<TARGET_PROPERTY:bn_hyph_en_us,BN_TABLE_FILE>
+      ${CMAKE_CURRENT_BINARY_DIR}/layout_check)
   set_tests_properties(e2e.LayoutCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,

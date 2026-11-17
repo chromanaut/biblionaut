@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 
 #include "core/block_file.h"
@@ -19,6 +20,8 @@
 
 namespace bn::reader {
 
+class LogLine;
+
 // Times the layout code on a device: the line breaker, the hyphenator and
 // the paragraph setter. Their bounds are stated in work, and this says what
 // that work is in time. It writes nothing to the card.
@@ -29,7 +32,10 @@ namespace bn::reader {
 //   2. breaks the paragraph that brings one of the breaker's calls closest
 //      to its bound (LineBreaker::MostWorkFor()) with 64, 256 and 1,024
 //      nodes, timing every call;
-//   3. reads the hyphenation table at kTablePath, if there is one;
+//   3. reads the hyphenation table at kTablePath, if there is one, and
+//      otherwise takes the one it was given, if it was given one (the
+//      application gives it the table for American English that is built
+//      in);
 //   4. sets text made to be awkward for the setter, timing every call, and
 //      has the hyphenator find the places in some long words;
 //   5. sets the text at kTextPath (paragraphs.txt, made from books on a
@@ -37,7 +43,7 @@ namespace bn::reader {
 //      empty line ends a paragraph, a line end inside one is a line the
 //      text ends, and what is between two asterisks is in the second
 //      style. It is set three times: hyphenated, then not, then
-//      hyphenated again with every call timed (without a table, not
+//      hyphenated again with every call timed (with no table at all, not
 //      hyphenated, then again with every call timed);
 //   6. says what it found, in lines of text on the diagnostic stream.
 //
@@ -138,7 +144,10 @@ class LayoutCheck final : public DeviceCheck {
     std::uint64_t longestCallUs = 0;  // When every call was timed.
   };
 
-  LayoutCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream) noexcept;
+  // `builtIn` is the table to use when the card has none, or none that
+  // can be used. It has to stay where it is for as long as the check does.
+  LayoutCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream,
+              std::span<const std::uint8_t> builtIn = {}) noexcept;
 
   LayoutCheck(const LayoutCheck&) = delete;
   LayoutCheck& operator=(const LayoutCheck&) = delete;
@@ -158,8 +167,10 @@ class LayoutCheck final : public DeviceCheck {
   const Dearest& Breaker(std::size_t which) const noexcept { return breakerRuns_[which]; }
   const Dearest& Setter() const noexcept { return setterRun_; }
   const Dearest& Words() const noexcept { return wordRun_; }
-  // Whether a table was found and opened.
+  // Whether a table was found and opened,
   bool Hyphenating() const noexcept { return tableOpen_; }
+  // and whether it was the one the check was given rather than the card's.
+  bool HyphenatingBuiltIn() const noexcept { return tableBuiltIn_; }
   // The settings of the text so far, in the order they are made.
   std::size_t Passes() const noexcept { return passCount_; }
   const Pass& PassFigures(std::size_t which) const noexcept { return passes_[which]; }
@@ -205,6 +216,9 @@ class LayoutCheck final : public DeviceCheck {
   void Break() noexcept;
   void OpenTable() noexcept;
   void ReadTable() noexcept;
+  // The card's table cannot be used: opens the one the check was given, if
+  // any, and finishes `line` with what came of that.
+  void OpenBuiltIn(LogLine& line) noexcept;
   void SetAwkward() noexcept;
   void FindWords() noexcept;
   void OpenText() noexcept;
@@ -258,7 +272,9 @@ class LayoutCheck final : public DeviceCheck {
   std::size_t breakerItems_ = 0;  // How many items the paragraph in hand has been given.
 
   // Steps 3 and 4.
+  std::span<const std::uint8_t> builtIn_;
   bool tableOpen_ = false;
+  bool tableBuiltIn_ = false;
   std::uint32_t tableSize_ = 0;
   std::uint64_t tableUs_ = 0;  // Reading it.
   layout::Hyphenator hyphenator_;

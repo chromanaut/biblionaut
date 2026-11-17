@@ -85,10 +85,12 @@ void LayoutCheck::Lines::OnLine(const layout::TextLine& line) noexcept {
   tooWide += line.overfull ? 1U : 0U;
 }
 
-LayoutCheck::LayoutCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream) noexcept
+LayoutCheck::LayoutCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream,
+                         std::span<const std::uint8_t> builtIn) noexcept
     : storage_(storage),
       clock_(clock),
       stream_(stream),
+      builtIn_(builtIn),
       setter_(std::span(nodes_).first(kNodes), records_),
       file_(fileBuffer_) {}
 
@@ -104,6 +106,7 @@ void LayoutCheck::Begin() noexcept {
   breakerRuns_ = {};
   breaker_.reset();
   tableOpen_ = false;
+  tableBuiltIn_ = false;
   tableSize_ = 0;
   tableUs_ = 0;
   setterRun_ = {};
@@ -341,13 +344,8 @@ void LayoutCheck::OpenTable() noexcept {
   LogLine line;
   line.Text("layout check: ");
   if (status != StorageStatus::kOk) {
-    line.Text("no table at ")
-        .Text(kTablePath)
-        .Text(" (")
-        .Text(core::StorageStatusName(status))
-        .Text("): the text is set without hyphenation.");
-    (void)stream_.SendText(line.View());
-    MoveTo(Step::kSetAwkward);
+    line.Text("no table at ").Text(kTablePath).Text(" (").Text(core::StorageStatusName(status)).Text("): ");
+    OpenBuiltIn(line);
     return;
   }
   if (file_.Size() > table_.size()) {
@@ -357,10 +355,9 @@ void LayoutCheck::OpenTable() noexcept {
         .Number(file_.Size())
         .Text(" bytes, and there is room for ")
         .Number(table_.size())
-        .Text(": the text is set without hyphenation.");
-    (void)stream_.SendText(line.View());
+        .Text(": ");
     file_.Close();
-    MoveTo(Step::kSetAwkward);
+    OpenBuiltIn(line);
     return;
   }
   tableSize_ = file_.Size();
@@ -373,10 +370,9 @@ void LayoutCheck::ReadTable() noexcept {
     LogLine line;
     line.Text("layout check: the table could not be read (")
         .Text(core::StorageStatusName(file_.LastStatus()))
-        .Text("): the text is set without hyphenation.");
-    (void)stream_.SendText(line.View());
+        .Text("): ");
     file_.Close();
-    MoveTo(Step::kSetAwkward);
+    OpenBuiltIn(line);
     return;
   }
   count_ += want;
@@ -392,14 +388,36 @@ void LayoutCheck::ReadTable() noexcept {
         .Text(kTablePath)
         .Text(" is not a table (")
         .Text(layout::HyphenStatusName(status))
+        .Text("): ");
+    OpenBuiltIn(line);
+    return;
+  }
+  tableOpen_ = true;
+  line.Text("table: ")
+      .Number(tableSize_)
+      .Text(" bytes, read in ")
+      .Number(tableUs_ / 1000)
+      .Text(" ms; no break before ")
+      .Count(hyphenator_.LeftMin(), " letter", " letters")
+      .Text(" or after ")
+      .Count(hyphenator_.RightMin(), " letter.", " letters.");
+  (void)stream_.SendText(line.View());
+  MoveTo(Step::kSetAwkward);
+}
+
+void LayoutCheck::OpenBuiltIn(LogLine& line) noexcept {
+  if (builtIn_.empty()) {
+    line.Text("the text is set without hyphenation.");
+  } else if (const layout::HyphenStatus status = hyphenator_.Open(builtIn_); status != layout::HyphenStatus::kOk) {
+    line.Text("the built-in table is not one (")
+        .Text(layout::HyphenStatusName(status))
         .Text("): the text is set without hyphenation.");
   } else {
     tableOpen_ = true;
-    line.Text("table: ")
-        .Number(tableSize_)
-        .Text(" bytes, read in ")
-        .Number(tableUs_ / 1000)
-        .Text(" ms; no break before ")
+    tableBuiltIn_ = true;
+    line.Text("the built-in table, ")
+        .Number(builtIn_.size())
+        .Text(" bytes; no break before ")
         .Count(hyphenator_.LeftMin(), " letter", " letters")
         .Text(" or after ")
         .Count(hyphenator_.RightMin(), " letter.", " letters.");

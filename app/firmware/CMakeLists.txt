@@ -80,6 +80,25 @@ option(BN_LAYOUT_CHECK "Time the layout code, and set the text on the SD card, a
 # together with BN_STORAGE_CHECK, BN_BOOK_CHECK or BN_LAYOUT_CHECK.
 option(BN_DRAWING_VIEWER "Show the SVG files in /drawings on the SD card in place of the test pattern" OFF)
 
+# For checking, on a device, a partition table with a data partition for
+# fonts in it, and what reading that partition costs
+# (main/partition_check.h says what is done):
+#
+#   tools/idf -B app/firmware/build-partition-check -DBN_PARTITION_CHECK=ON build flash
+#
+# Such a build has a partition table of its own (partitions_fonts.csv),
+# which sdkconfig.partition_check chooses, and keeps its settings in its
+# own build directory rather than in app/firmware/sdkconfig, so the normal
+# build is left as it was. Flashing it writes the new table, and fills the
+# fonts partition with what the check expects to find there (12 MB, about
+# a minute over USB). To go back, flash a normal build: it writes ESP-IDF's
+# own partition table again.
+option(BN_PARTITION_CHECK "Use a partition table with a fonts partition, and check it at start" OFF)
+if(BN_PARTITION_CHECK)
+  set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
+  set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults;${CMAKE_CURRENT_LIST_DIR}/sdkconfig.partition_check")
+endif()
+
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
 set(COMPONENTS main)
@@ -140,6 +159,24 @@ ExternalProject_Add(bn_host_tools
   BUILD_ALWAYS ON
   BUILD_BYPRODUCTS "${BN_HYPHEN}"
   INSTALL_COMMAND "")
+
+# The partition check's pattern for the fonts partition, made to the size
+# the table gives the partition, and written to it with the rest by
+# `flash`.
+if(BN_PARTITION_CHECK)
+  idf_build_get_property(bn_python PYTHON)
+  partition_table_get_partition_info(bn_fonts_size "--partition-name fonts" "size")
+  set(bn_fonts_pattern "${CMAKE_BINARY_DIR}/fonts_pattern.bin")
+  add_custom_command(
+    OUTPUT "${bn_fonts_pattern}"
+    COMMAND ${bn_python} "${CMAKE_CURRENT_LIST_DIR}/partition_pattern.py" "${bn_fonts_size}" "${bn_fonts_pattern}"
+    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/partition_pattern.py" "${CMAKE_CURRENT_LIST_DIR}/partitions_fonts.csv"
+    COMMENT "Making the pattern for the fonts partition"
+    VERBATIM)
+  add_custom_target(bn_fonts_pattern ALL DEPENDS "${bn_fonts_pattern}")
+  esptool_py_flash_to_partition(flash fonts "${bn_fonts_pattern}")
+  add_dependencies(flash bn_fonts_pattern)
+endif()
 
 # Keep a copy of every firmware's ELF file, named by its SHA-256. A crash
 # report carries the start of that hash, so tools/bn-symbolize can find the

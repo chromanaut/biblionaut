@@ -73,6 +73,9 @@ class DrawingViewer final : public Screen {
   // Bytes of a file read at a time, and kept for what a drawing defines.
   static constexpr std::size_t kReadBytes = 1024;
   static constexpr std::size_t kDefinitionBytes = 24576;
+  // The thinnest a stroke is drawn: a pixel, in 4,096ths. One much thinner
+  // would be a light gray, which black and white show as a broken line.
+  static constexpr draw::Fixed kThinnestStroke = 4096;
   // The most drawings in the folder that are shown, and the longest name.
   static constexpr std::size_t kMostDrawings = 256;
   static constexpr std::size_t kLongestName = 255;

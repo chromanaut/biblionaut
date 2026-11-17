@@ -1122,8 +1122,9 @@ def svg_seeds() -> None:
     clear("svg")
 
     def seed(name: str, file: bytes, piece: int = 0, rows: int = 0, size: int = 0, tolerance: int = 0,
-             room: int = 0, turn: int = 0) -> None:
-        write("svg", name, bytes([piece | (rows << 3) | (size << 6), tolerance | (room << 2) | (turn << 5)]) + file)
+             room: int = 0, turn: int = 0, thinnest: int = 0) -> None:
+        write("svg", name, bytes([piece | (rows << 3) | (size << 6),
+                                  tolerance | (room << 2) | (turn << 5) | (thinnest << 7)]) + file)
 
     def drawing(body: bytes, attributes: bytes = b"width='40' height='24'") -> bytes:
         return b"<svg xmlns='http://www.w3.org/2000/svg' " + attributes + b">" + body + b"</svg>"
@@ -1318,6 +1319,11 @@ def svg_seeds() -> None:
          drawing(b"<path fill='none' stroke='#000' stroke-width='3' stroke-linejoin='round' d='" + LONG_DATA + b"'/>"
                  b"<path stroke='#444' d='" + LONG_DATA + b"'/>"
                  b"<path fill='none' stroke='#000' d='" + LONG_DATA + b"' stroke-width='4'/>"), piece=5, rows=2)
+    seed("hairlines-a-pixel-wide",
+         drawing(b"<g stroke='#000' fill='none' stroke-width='.05'><path d='M2 2h36l-30 18'/>"
+                 b"<g transform='scale(6 .5)'><line x1='1' y1='40' x2='5' y2='44'/></g>"
+                 b"<circle cx='30' cy='14' r='6' stroke-width='3'/></g>"), piece=3, rows=2, thinnest=1)
+    seed("hairlines-a-pixel-wide-turned", drawing(strokes), piece=2, rows=3, turn=2, thinnest=1)
     seed("dashes-more-than-an-outline-may-have",
          drawing(b"<path d='M0 12c10-20 30 20 40 0' fill='none' stroke='#000' stroke-dasharray='.001 .002'/>"),
          piece=4, rows=3)

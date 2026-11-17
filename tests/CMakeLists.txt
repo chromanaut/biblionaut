@@ -89,6 +89,7 @@ target_link_libraries(core_tests PRIVATE ZLIB::ZLIB)
 bn_add_unit_test(draw_tests
   SOURCES
     unit/draw/dither_test.cpp
+    unit/draw/divide_test.cpp
     unit/draw/fill_test.cpp
     unit/draw/fixed_test.cpp
     unit/draw/flatten_test.cpp

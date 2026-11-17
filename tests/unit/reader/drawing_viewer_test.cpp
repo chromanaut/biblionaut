@@ -259,6 +259,32 @@ TEST(DrawingViewer, ATourShowsEachDrawingOnceByItselfAndStops) {
   EXPECT_EQ(fixture.Lines(true).size(), 6U);
 }
 
+TEST(DrawingViewer, ATourPassesOverWhatItCannotShowAndGoesOn) {
+  // The first, one in the middle and the last cannot be shown: each line
+  // says why, and the tour goes on to the end.
+  Fixture fixture;
+  const std::string text = "Not a picture.";
+  for (const char* name : {"a.png", "c.png", "e.png"}) {
+    fixture.storage.Put(std::string("/drawings/") + name, {text.begin(), text.end()});
+  }
+  fixture.Put("b.svg", Svg(40, 24, ""));
+  fixture.Put("d.svg", Svg(40, 24, ""));
+  fixture.Start(true);
+  for (int settled = 0; settled < 8; ++settled) {
+    fixture.Settle();
+  }
+  EXPECT_EQ(fixture.viewer->Shown(), 2U);
+  EXPECT_EQ(fixture.viewer->Current(), 4U);
+  const std::vector<std::string> lines = fixture.Lines();
+  ASSERT_EQ(lines.size(), 6U);
+  EXPECT_EQ(lines[0], "picture 1 of 5: a.png, not shown: not png");
+  EXPECT_EQ(lines[1].find("drawing 2 of 5: b.svg, ok"), 0U) << lines[1];
+  EXPECT_EQ(lines[2], "picture 3 of 5: c.png, not shown: not png");
+  EXPECT_EQ(lines[3].find("drawing 4 of 5: d.svg, ok"), 0U) << lines[3];
+  EXPECT_EQ(lines[4], "picture 5 of 5: e.png, not shown: not png");
+  EXPECT_EQ(lines[5], "drawings: the tour is over, 2 shown");
+}
+
 TEST(DrawingViewer, DownAndUpGoFromOneToTheNextAndRoundAndBackAndConfirmRedraw) {
   Fixture fixture;
   for (const char* name : {"1.svg", "2.svg", "3.svg"}) {
@@ -510,18 +536,15 @@ TEST(DrawingViewer, TurnsAPictureTheWayThePanelIsTurnedToBeRead) {
   }
 }
 
-TEST(DrawingViewer, ReadsAPictureOnceForEachBandOfThePanel) {
-  // A panel of 400 rows takes three bands of 160 rows at the most, and so
-  // three readings of the picture. Black down to the middle of the second
-  // band, white below: each band has its part.
+TEST(DrawingViewer, SetsAPictureIntoTheWholePanelAndWritesItOnce) {
+  // A panel of 400 rows, black down to the middle and white below: set from
+  // one reading of the picture, and written whole to both planes.
   Fixture fixture;
   fixture.display.Resize({.width = 40, .height = 400});
   fixture.storage.Put("/drawings/p.png", GrayPng(4, 40, [](auto, std::uint32_t y) { return y < 20 ? 0 : 255; }));
   fixture.Start();
   fixture.Settle();
   ASSERT_EQ(fixture.viewer->Shown(), 1U);
-  ASSERT_FALSE(fixture.Lines().empty());
-  EXPECT_NE(fixture.Lines().back().find(", 3 passes: "), std::string::npos) << fixture.Lines().back();
   for (std::size_t y = 0; y < 400; ++y) {
     // Away from the edge, where black and white are blended and dithered.
     if (y < 180 || y >= 220) {
@@ -530,14 +553,40 @@ TEST(DrawingViewer, ReadsAPictureOnceForEachBandOfThePanel) {
       }
     }
   }
-  // Each band to both planes: 0, 160 and 320.
-  std::vector<std::uint16_t> tops;
+  std::vector<FakeDisplay::Call> writes;
   for (const FakeDisplay::Call& call : fixture.display.calls) {
-    if (call.op == Op::kWrite && call.plane == bn::core::DisplayPlane::kNew) {
-      tops.push_back(call.firstRow);
+    if (call.op == Op::kWrite) {
+      writes.push_back(call);
     }
   }
-  EXPECT_EQ(tops, (std::vector<std::uint16_t>{0, 160, 320}));
+  ASSERT_EQ(writes.size(), 2U);
+  EXPECT_EQ(writes[0].plane, bn::core::DisplayPlane::kNew);
+  EXPECT_EQ(writes[1].plane, bn::core::DisplayPlane::kOld);
+  for (const FakeDisplay::Call& write : writes) {
+    EXPECT_EQ(write.firstRow, 0U);
+    EXPECT_EQ(write.rowCount, 400U);
+  }
+}
+
+TEST(DrawingViewer, ReadsAPictureThroughOnce) {
+  // Its header, and then the whole file once, on a panel that the picture
+  // would once have been read three times for.
+  Fixture fixture;
+  fixture.display.Resize({.width = 40, .height = 400});
+  const std::vector<std::uint8_t> file = GrayPng(300, 300, [](std::uint32_t x, std::uint32_t y) {
+    // Grays that do not compress.
+    return static_cast<std::uint8_t>(((x * 2654435761U) ^ (y * 2246822519U)) >> 24U);
+  });
+  ASSERT_GT(file.size(), 32768U);
+  fixture.storage.Put("/drawings/p.png", file);
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  std::size_t asked = 0;
+  for (const auto& read : fixture.storage.reads) {
+    asked += read.size;
+  }
+  EXPECT_LT(asked, file.size() + 16384) << "of " << file.size();
 }
 
 TEST(DrawingViewer, AGrayPictureComesOutAsDotsAsDarkOnTheWhole) {
@@ -557,7 +606,7 @@ TEST(DrawingViewer, SaysWhatEachPictureCameToAndWhatItTook) {
   fixture.Settle();
   ASSERT_FALSE(fixture.Lines().empty());
   const std::string line = fixture.Lines().back();
-  EXPECT_EQ(line.rfind("picture 1 of 1: p.png, ok, 20x10 gray shown 40x20, 1 pass: reading ", 0), 0U) << line;
+  EXPECT_EQ(line.rfind("picture 1 of 1: p.png, ok, 20x10 gray shown 40x20: reading ", 0), 0U) << line;
   for (const char* part : {" ms, scaling ", " ms, dithering ", " ms, writing "}) {
     EXPECT_NE(line.find(part), std::string::npos) << part << " in " << line;
   }

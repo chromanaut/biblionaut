@@ -219,7 +219,8 @@ the checks can be asked for with it. With `-DBN_DRAWING_TOUR=ON` as well,
 or `BN_DRAWING_TOUR` set on the desktop, it goes round the drawings once by
 itself, each begun as its last refresh ends, as if Down had been pressed
 then, and a line says when the tour is over: for timing them with nobody
-at the buttons.
+at the buttons. One that cannot be shown is passed over in the same way,
+once its line has said why.
 
 ```
 tools/idf -DBN_DRAWING_VIEWER=ON -DBN_DRAWING_TOUR=ON build flash
@@ -284,28 +285,32 @@ refresh is as long as the X4's.
 
 A picture's rows come from its file in the order the page is read, which
 is not the panel's order when the panel is turned to be read, as the X4's
-is. So a picture is set into the panel 160 of the panel's rows at a time,
-a bit a pixel, its file read through once for each such band: three times
-on the X4. Each time its rows are read, made the size they are shown at,
-and dithered, which comes out the same each time, and the pixels that fall
-in the band are kept; then the band is written to both planes. A picture
-whose rows would need more than 16 KB of the reader's memory, an
-interlaced one, and a file that is not a picture are not shown, and a line
-says why. For each picture shown, a line says what it was, the size it
-was shown at, and how long the reading, the scaling, the dithering (with
-the setting of the band's bits) and the writing took, over all the
-passes, and then from the press to its refresh:
+is. So the whole panel is kept while a picture is read, a bit a pixel, and
+its file is read through once: its rows are read, made the size they are
+shown at and dithered, and each pixel is set where it falls on the panel;
+then the whole panel is written to both planes. A picture whose rows would
+need more than 16 KB of the reader's memory, an interlaced one, and a file
+that is not a picture are not shown, and a line says why. For each picture
+shown, a line says what it was, the size it was shown at, and how long the
+reading, the scaling, the dithering (with the setting of the panel's bits)
+and the writing took, and then from the press to its refresh:
 
 ```
-picture 3 of 3: c-gutenberg.png, ok, 332x500 palette shown 480x723, 3 passes: reading 4 ms, scaling 3 ms, dithering 20 ms, writing 0 ms; 113 ms
+picture 3 of 3: c-gutenberg.png, ok, 332x500 palette shown 480x723: reading 1 ms, scaling 0 ms, dithering 6 ms, writing 0 ms; 8 ms
 ```
 
 That is an illustration from a Project Gutenberg book in `corpus/`, made
-larger to fill the page, on the optimised desktop application; on a device
-it has not been timed. What a picture needs is taken from the heap the
-first time one is shown, and kept: about 78 KB, 32 KB of it the reader's
-window, 16 KB the reader's rows, 16 KB the band of bits, 6 KB the scaler's
-sums, 4 KB a buffer to read the file through and 3 KB the reader itself.
+larger to fill the page, on the optimised desktop application. On the X4,
+an engraving of 600 by 825 pixels in 16 colours from another book in
+`corpus/`, made 480 by 660, takes 714 ms from the press to its refresh: a
+third of it reading, a quarter scaling and a third dithering. A title page
+of 2,800 by 880 takes 1.6 s, three quarters of it reading. A colour
+photograph of 4 megapixels takes 13 s, nearly all of it the inflater
+giving out its 12 MB of rows. What a picture needs is taken from the heap
+the first time one is shown, and kept: about 110 KB, 47 KB of it the
+panel's bits, 32 KB the reader's window, 16 KB the reader's rows, 6 KB the
+scaler's sums, 4 KB a buffer to read the file through and 3 KB the reader
+itself.
 
 What the desktop simulates of a device is described once, in a profile
 (`hw/desktop/device_profile.h`): the panel's size, how long it takes over
@@ -3061,6 +3066,14 @@ need: two rows of the new width at the most.
   256ths of a gray, and each new pixel to a gray. Every new pixel is within
   a gray of the same working-out in real numbers. The sums stay inside 32
   bits for sides of up to 65,535.
+- **No division for each pixel**: each number that every pixel of a row
+  is divided by (the old width, the units of a new row, twice the new size
+  for a blend's weight) is made once into a multiplier and two shifts
+  (`draw/divide.h`), by Torbjörn Granlund and Peter L. Montgomery's method,
+  which gives the quotient division gives for every 32-bit number. The old
+  row is walked once, by a loop for each way of scaling, with nothing
+  decided again for each pixel. On the X4 that made scaling twice as fast,
+  every pixel coming out as before.
 - **Memory**: the caller's, nine bytes for each pixel of the new width
   (4,320 for the panel's 480).
 - **One call's work**: `Row()` goes over the old row once and the new width
@@ -3079,7 +3092,11 @@ the same. A picture of one gray stays that gray at any size, the same size
 is the picture byte for byte, and the largest sides keep their sums inside
 32 bits. The end-to-end test scales 82 of its pictures with `bn-png` and
 holds every pixel within a gray of a working-out in Python. The scaler has
-a fuzz target ("Fuzzing", above).
+a fuzz target ("Fuzzing", above). The divisions' multipliers are held to
+division itself: for every divisor up to 70,000 at the numbers where a
+quotient changes, for every number up to 2^22 and a step through the rest
+by eight divisors, for every power of two and the numbers either side of
+it, and for a million divisions at random.
 
 Set against 21 faults put into it on purpose, one at a time, the unit tests
 found 19. Three of those, a rounding left out on the way, moved pixels by

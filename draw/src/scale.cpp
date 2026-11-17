@@ -44,6 +44,7 @@ void Scaler::Blend::Begin(std::uint32_t oldSize, std::uint32_t newSize) noexcept
   newSize_ = newSize;
   before_ = -1;
   remainder_ = oldSize + newSize;
+  twiceNew_ = Divider(2U * newSize);
 }
 
 void Scaler::Blend::Next() noexcept {
@@ -56,53 +57,66 @@ void Scaler::Blend::Next() noexcept {
   }
 }
 
-std::uint32_t Scaler::Blend::Weight() const noexcept {
-  return ((remainder_ * kWeightOne) + newSize_) / (2U * newSize_);
-}
+std::uint32_t Scaler::Blend::Weight() const noexcept { return twiceNew_.Divide((remainder_ * kWeightOne) + newSize_); }
 
 // ---- An old row, made the new width ----
 
-void Scaler::Across::Begin(std::span<const std::uint8_t> gray, std::uint32_t newWidth) noexcept {
-  gray_ = gray;
-  newWidth_ = newWidth;
-  at_ = 0;
-  used_ = 0;
-  if (gray.size() < newWidth) {
-    blend_.Begin(static_cast<std::uint32_t>(gray.size()), newWidth);
-  }
-}
-
-std::uint32_t Scaler::Across::Next() noexcept {
-  const auto oldWidth = static_cast<std::uint32_t>(gray_.size());
-  if (oldWidth == newWidth_) {
-    return std::uint32_t{gray_[at_++]} << 8U;
-  }
-  if (oldWidth < newWidth_) {
-    const std::int32_t before = blend_.Before();
-    const std::uint32_t weight = blend_.Weight();
-    blend_.Next();
-    const std::uint32_t left = gray_[before < 0 ? 0U : static_cast<std::uint32_t>(before)];
-    const std::uint32_t right = gray_[std::min(static_cast<std::uint32_t>(before + 1), oldWidth - 1U)];
-    // In 4096ths of a gray, rounded to 256ths.
-    return ((left * (kWeightOne - weight)) + (right * weight) + 8U) >> 4U;
-  }
-  // Smaller. A new pixel covers `oldWidth` units and an old one `newWidth_`:
-  // the old pixels it covers are added up, each by how many of its units it
-  // covers, and the sum divided by the new pixel's units. `used_` is how
-  // many units of old pixel `at_` earlier new pixels have had.
-  std::uint32_t sum = 0;
-  std::uint32_t left = oldWidth;
-  while (left > 0) {
-    const std::uint32_t take = std::min(newWidth_ - used_, left);
-    sum += gray_[at_] * take;
-    left -= take;
-    used_ += take;
-    if (used_ == newWidth_) {
-      ++at_;
-      used_ = 0;
+template <typename Put>
+void Scaler::Across(std::span<const std::uint8_t> gray, Put put) const noexcept {
+  if (oldWidth_ == newWidth_) {
+    for (std::uint32_t x = 0; x < newWidth_; ++x) {
+      put(x, std::uint32_t{gray[x]} << 8U);
     }
+    return;
   }
-  return ((sum * 256U) + (oldWidth / 2U)) / oldWidth;
+  if (oldWidth_ < newWidth_) {
+    Blend blend = across_;
+    const std::uint32_t last = oldWidth_ - 1U;
+    for (std::uint32_t x = 0; x < newWidth_; ++x) {
+      const std::int32_t before = blend.Before();
+      const std::uint32_t weight = blend.Weight();
+      blend.Next();
+      const std::uint32_t left = gray[before < 0 ? 0U : static_cast<std::uint32_t>(before)];
+      const std::uint32_t right = gray[std::min(static_cast<std::uint32_t>(before + 1), last)];
+      // In 4096ths of a gray, rounded to 256ths.
+      put(x, ((left * (kWeightOne - weight)) + (right * weight) + 8U) >> 4U);
+    }
+    return;
+  }
+  // Smaller. A new pixel covers `oldWidth_` units and an old one
+  // `newWidth_`: the old pixels it covers are added up, each by how many of
+  // its units it covers, and the sum divided by the new pixel's units. `at`
+  // is the old pixel the next new one begins in, and `used` how many of its
+  // units earlier new pixels have had.
+  std::uint32_t at = 0;
+  std::uint32_t used = 0;
+  const std::uint32_t half = oldWidth_ / 2U;
+  for (std::uint32_t x = 0; x < newWidth_; ++x) {
+    std::uint32_t sum = 0;
+    std::uint32_t left = oldWidth_;
+    if (used > 0) {
+      // The rest of the old pixel the last new one ended in, which is less
+      // than this one covers.
+      const std::uint32_t take = newWidth_ - used;
+      sum = gray[at] * take;
+      left -= take;
+      ++at;
+    }
+    // The old pixels it covers whole, added up as they are, and the sum
+    // counted by their units once.
+    std::uint32_t whole = 0;
+    for (; left >= newWidth_; left -= newWidth_) {
+      whole += gray[at];
+      ++at;
+    }
+    sum += whole * newWidth_;
+    // The start of the one it ends in, if it ends inside one.
+    if (left > 0) {
+      sum += gray[at] * left;
+    }
+    used = left;
+    put(x, byOldWidth_.Divide((sum * 256U) + half));
+  }
 }
 
 // ---- The scaler ----
@@ -130,10 +144,15 @@ ScaleStatus Scaler::Begin(std::uint32_t oldWidth, std::uint32_t oldHeight, std::
   oldHeight_ = oldHeight;
   newWidth_ = newWidth;
   newHeight_ = newHeight;
+  if (oldWidth < newWidth) {
+    across_.Begin(oldWidth, newWidth);
+  }
+  byOldWidth_ = Divider(oldWidth);
   if (newHeight == oldHeight) {
     vertical_ = Vertical::kSame;
   } else if (newHeight < oldHeight) {
     vertical_ = Vertical::kSmaller;
+    byUnits_ = Divider(oldHeight * 256U);
     std::fill_n(sums_.begin(), SumsFor(newWidth), 0U);
   } else {
     vertical_ = Vertical::kLarger;
@@ -170,14 +189,11 @@ void Scaler::Row(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept {
     Fail(ScaleStatus::kOutOfTurn);
     return;
   }
-  across_.Begin(gray, newWidth_);
   const std::span<std::uint32_t> first = sums_.first(newWidth_);
   const std::span<std::uint32_t> second = sums_.subspan(newWidth_, newWidth_);
   switch (vertical_) {
     case Vertical::kSame:
-      for (std::uint32_t x = 0; x < newWidth_; ++x) {
-        first[x] = across_.Next();
-      }
+      Across(gray, [first](std::uint32_t x, std::uint32_t pixel) { first[x] = pixel; });
       break;
     case Vertical::kSmaller: {
       // A new row covers `oldHeight_` units and an old one `newHeight_`. This
@@ -187,10 +203,13 @@ void Scaler::Row(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept {
       const std::uint32_t rest = newHeight_ - take;
       const std::span<std::uint32_t> making = current_ == 0 ? first : second;
       const std::span<std::uint32_t> next = current_ == 0 ? second : first;
-      for (std::uint32_t x = 0; x < newWidth_; ++x) {
-        const std::uint32_t pixel = across_.Next();
-        making[x] += pixel * take;
-        next[x] += pixel * rest;
+      if (rest == 0) {
+        Across(gray, [making, take](std::uint32_t x, std::uint32_t pixel) { making[x] += pixel * take; });
+      } else {
+        Across(gray, [making, next, take, rest](std::uint32_t x, std::uint32_t pixel) {
+          making[x] += pixel * take;
+          next[x] += pixel * rest;
+        });
       }
       filled_ += take;
       if (filled_ == oldHeight_) {
@@ -205,9 +224,7 @@ void Scaler::Row(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept {
     case Vertical::kLarger: {
       // Kept by the row's number, odd or even: the two last taken.
       const std::span<std::uint32_t> into = (y & 1U) == 0 ? first : second;
-      for (std::uint32_t x = 0; x < newWidth_; ++x) {
-        into[x] = across_.Next();
-      }
+      Across(gray, [into](std::uint32_t x, std::uint32_t pixel) { into[x] = pixel; });
       break;
     }
   }
@@ -231,9 +248,9 @@ bool Scaler::Step() noexcept {
       // The whole row is the one that is not being made; it is emptied for
       // the row after next.
       const std::span<std::uint32_t> whole = current_ == 0 ? second : first;
-      const std::uint32_t units = oldHeight_ * 256U;
+      const std::uint32_t half = oldHeight_ * 128U;
       for (std::uint32_t x = 0; x < newWidth_; ++x) {
-        row[x] = static_cast<std::uint8_t>((whole[x] + (units / 2U)) / units);
+        row[x] = static_cast<std::uint8_t>(byUnits_.Divide(whole[x] + half));
         whole[x] = 0;
       }
       waiting_ = false;

@@ -318,16 +318,8 @@ void DrawingViewer::TickSome() noexcept {
         return;
       }
       if (picture_) {
-        if (!WritePictureBand()) {
+        if (!WritePicture()) {
           Fail();
-          return;
-        }
-        bandTop_ += kPictureBandRows;
-        if (bandTop_ < display_.Size().height) {
-          phase_ = Phase::kPicturing;
-          if (!StartPicturePass()) {
-            Fail();
-          }
           return;
         }
         Refresh(now);
@@ -370,18 +362,25 @@ void DrawingViewer::TickSome() noexcept {
       drawingsShown.Add();
       SayTimes(now - phaseStartedUs_);
       phase_ = Phase::kIdle;
-      if (touring_ && shown_ < names_.size()) {
-        wanted_ = (current_ + 1) % names_.size();
-        drawingStartedUs_ = now;
-      } else if (touring_) {
-        LogLine line;
-        line.Text("drawings: the tour is over, ").Count(shown_, " shown", " shown");
-        stream_.SendText(line.View());
-        touring_ = false;
-      }
+      TourOn(now);
       phaseStartedUs_ = now;
       return;
   }
+}
+
+void DrawingViewer::TourOn(std::uint64_t now) noexcept {
+  if (!touring_) {
+    return;
+  }
+  if (current_ + 1 < names_.size()) {
+    wanted_ = current_ + 1;
+    drawingStartedUs_ = now;
+    return;
+  }
+  LogLine line;
+  line.Text("drawings: the tour is over, ").Count(shown_, " shown", " shown");
+  stream_.SendText(line.View());
+  touring_ = false;
 }
 
 void DrawingViewer::Refresh(std::uint64_t now) noexcept {
@@ -420,6 +419,7 @@ void DrawingViewer::Begin(std::size_t index) noexcept {
       CloseFile();
       redrawWanted_ = false;
       phase_ = Phase::kIdle;
+      TourOn(clock_.NowUs());
     }
     return;
   }
@@ -432,6 +432,7 @@ void DrawingViewer::Begin(std::size_t index) noexcept {
     CloseFile();
     redrawWanted_ = false;
     phase_ = Phase::kIdle;
+    TourOn(clock_.NowUs());
     return;
   }
   readingUs_ = 0;
@@ -767,13 +768,14 @@ bool DrawingViewer::PictureMemory() noexcept {
   }
   const core::DisplaySize size = display_.Size();
   const auto widest = static_cast<std::uint32_t>(std::max<std::size_t>(size.width, size.height));
-  fileBuffer_.reset(new (std::nothrow) std::uint8_t[kFileBufferBytes]);
+  // The largest first, while the heap has the most room in one piece.
+  panelBits_.reset(new (std::nothrow) std::uint8_t[size.RowBytes() * size.height]);
   window_.reset(new (std::nothrow) std::uint8_t[draw::PngReader::kWindowBytes]);
   pngRows_.reset(new (std::nothrow) std::uint8_t[kPictureRowBytes]);
+  fileBuffer_.reset(new (std::nothrow) std::uint8_t[kFileBufferBytes]);
   sums_.reset(new (std::nothrow) std::uint32_t[draw::Scaler::SumsFor(widest)]);
   scaledRow_.reset(new (std::nothrow) std::uint8_t[widest]);
-  bandBits_.reset(new (std::nothrow) std::uint8_t[size.RowBytes() * kPictureBandRows]);
-  if (fileBuffer_ && window_ && pngRows_ && sums_ && scaledRow_ && bandBits_) {
+  if (fileBuffer_ && window_ && pngRows_ && sums_ && scaledRow_ && panelBits_) {
     pictureFile_.reset(new (std::nothrow) core::BlockFile({fileBuffer_.get(), kFileBufferBytes}));
     png_.reset(new (std::nothrow)
                    draw::PngReader({window_.get(), draw::PngReader::kWindowBytes}, {pngRows_.get(), kPictureRowBytes}));
@@ -790,7 +792,7 @@ bool DrawingViewer::PictureMemory() noexcept {
     pngRows_.reset();
     sums_.reset();
     scaledRow_.reset();
-    bandBits_.reset();
+    panelBits_.reset();
     return false;
   }
   return true;
@@ -846,36 +848,29 @@ bool DrawingViewer::BeginPicture(std::size_t index) noexcept {
   }
   left_ = (pageWidth_ - shownWidth_) / 2;
   top_ = (pageHeight_ - shownHeight_) / 2;
-  passes_ = (size.height + kPictureBandRows - 1) / kPictureBandRows;
   readingUs_ = 0;
   scalingUs_ = 0;
   ditheringUs_ = 0;
   writingUs_ = 0;
-  bandTop_ = 0;
-  if (!StartPicturePass()) {
+  // White, until the picture's dark pixels are cleared; and the picture
+  // read through from its start.
+  std::fill_n(panelBits_.get(), size.RowBytes() * size.height, std::uint8_t{0xFF});
+  if (!pictureFile_->Seek(0)) {
+    SayNotShown("cannot read it");
+    return false;
+  }
+  png_->Begin(*pictureFile_, &timed_);
+  const std::size_t widest = std::max<std::size_t>(size.width, size.height);
+  if (scaler_->Begin(header_.width, header_.height, shownWidth_, shownHeight_, pictureRows_) !=
+          draw::ScaleStatus::kOk ||
+      !ditherer_.Begin(shownWidth_, static_cast<std::uint32_t>(levels_),
+                       {errors_.get(), draw::Ditherer::ErrorsFor(widest)})) {
     SayNotShown("it cannot be scaled");
     return false;
   }
   phase_ = Phase::kPicturing;
   phaseStartedUs_ = clock_.NowUs();
   return true;
-}
-
-bool DrawingViewer::StartPicturePass() noexcept {
-  const core::DisplaySize size = display_.Size();
-  const std::size_t rows = std::min<std::size_t>(kPictureBandRows, size.height - bandTop_);
-  // White, until the picture's dark pixels are set.
-  const std::span<std::uint8_t> band(bandBits_.get(), rows * size.RowBytes());
-  std::fill(band.begin(), band.end(), std::uint8_t{0xFF});
-  if (!pictureFile_->Seek(0)) {
-    return false;
-  }
-  png_->Begin(*pictureFile_, &timed_);
-  const std::size_t widest = std::max<std::size_t>(size.width, size.height);
-  return scaler_->Begin(header_.width, header_.height, shownWidth_, shownHeight_, pictureRows_) ==
-             draw::ScaleStatus::kOk &&
-         ditherer_.Begin(shownWidth_, static_cast<std::uint32_t>(levels_),
-                         {errors_.get(), draw::Ditherer::ErrorsFor(widest)});
 }
 
 bool DrawingViewer::FeedPicture(std::uint64_t until) noexcept {
@@ -915,9 +910,7 @@ void DrawingViewer::TakeRow(std::uint32_t y, std::span<const std::uint8_t> gray)
   const std::span<std::uint8_t> row(gray_.get(), gray.size());
   std::copy(gray.begin(), gray.end(), row.begin());
   if (ditherer_.Row(row)) {
-    const core::DisplaySize size = display_.Size();
-    const std::size_t rowBytes = size.RowBytes();
-    const std::size_t rows = std::min<std::size_t>(kPictureBandRows, size.height - bandTop_);
+    const std::size_t rowBytes = display_.Size().RowBytes();
     const core::PanelTurn turn = display_.ReadingTurn();
     // A clear bit is black, the leftmost pixel the top bit of the first byte.
     for (std::size_t x = 0; x < row.size(); ++x) {
@@ -925,23 +918,19 @@ void DrawingViewer::TakeRow(std::uint32_t y, std::span<const std::uint8_t> gray)
         continue;
       }
       const PanelPixel at = OnPanel(turn, pageWidth_, pageHeight_, left_ + x, top_ + y);
-      if (at.y >= bandTop_ && at.y < bandTop_ + rows) {
-        std::uint8_t& byte = bandBits_[((at.y - bandTop_) * rowBytes) + (at.x / 8)];
-        byte = static_cast<std::uint8_t>(byte & ~(0x80U >> (at.x % 8)));
-      }
+      std::uint8_t& byte = panelBits_[(at.y * rowBytes) + (at.x / 8)];
+      byte = static_cast<std::uint8_t>(byte & ~(0x80U >> (at.x % 8)));
     }
   }
   ditheringUs_ += clock_.NowUs() - started;
 }
 
-bool DrawingViewer::WritePictureBand() noexcept {
+bool DrawingViewer::WritePicture() noexcept {
   const std::uint64_t started = clock_.NowUs();
   const core::DisplaySize size = display_.Size();
-  const std::size_t rows = std::min<std::size_t>(kPictureBandRows, size.height - bandTop_);
-  const std::span<const std::uint8_t> bits(bandBits_.get(), rows * size.RowBytes());
-  const auto top = static_cast<std::uint16_t>(bandTop_);
-  const bool written = display_.WriteRows(core::DisplayPlane::kNew, top, bits) &&
-                       display_.WriteRows(core::DisplayPlane::kOld, top, bits);
+  const std::span<const std::uint8_t> bits(panelBits_.get(), size.RowBytes() * size.height);
+  const bool written =
+      display_.WriteRows(core::DisplayPlane::kNew, 0, bits) && display_.WriteRows(core::DisplayPlane::kOld, 0, bits);
   writingUs_ += clock_.NowUs() - started;
   return written;
 }
@@ -951,8 +940,8 @@ void DrawingViewer::SayPicture() noexcept {
   line.Text("picture ").Number(current_ + 1).Text(" of ").Number(names_.size()).Text(": ").Text(names_[current_]);
   line.Text(", ").Text(draw::PngStatusName(pictureStatus_)).Text(", ");
   line.Number(header_.width).Text("x").Number(header_.height).Text(" ").Text(draw::PngColourName(header_.colour));
-  line.Text(" shown ").Number(shownWidth_).Text("x").Number(shownHeight_).Text(", ");
-  line.Count(passes_, " pass", " passes").Text(": reading ").Number(readingUs_ / 1000);
+  line.Text(" shown ").Number(shownWidth_).Text("x").Number(shownHeight_);
+  line.Text(": reading ").Number(readingUs_ / 1000);
   line.Text(" ms, scaling ").Number(scalingUs_ / 1000).Text(" ms, dithering ").Number(ditheringUs_ / 1000);
   line.Text(" ms, writing ").Number(writingUs_ / 1000).Text(" ms; ");
   line.Number((clock_.NowUs() - drawingStartedUs_) / 1000).Text(" ms");

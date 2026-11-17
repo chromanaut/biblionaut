@@ -1058,6 +1058,8 @@ def svg_values_seeds() -> None:
 
     for index, text in enumerate(["12", "1.5px", "50%", "2em", "1e2pt", "-4.25mm", "3PC", "9999999in"]):
         seed(f"a-length-{index}", 0, text)
+    for index, text in enumerate(["5, 3", "1 2 3 4 5 6 7 8", "4 -2,1e2% 3mm", "1,,2", "1 2 3 4 5 6 7 8 9"]):
+        seed(f"a-list-of-lengths-{index}", 0, text)
     for index, text in enumerate(["#abc", "#A1b2C3", "#ff000080", "rgb(255, 0, 0)", "rgba(10% 20% 30% / 50%)", "Black",
                                   "transparent", "rgb(300,-5,1e1)"]):
         seed(f"a-colour-{index}", 1, text)
@@ -1298,6 +1300,27 @@ def svg_seeds() -> None:
                  + b"{fill:#444}</style><linearGradient id='many' spreadMethod='pad' x2='9e9' gradientTransform='scale(2047)'>"
                  + b"".join(b"<stop offset='%d%%' stop-color='currentColor' stop-opacity='lots'/>" % (n * 10) for n in range(10))
                  + b"</linearGradient><rect class='a c3' width='30' height='20' fill='url(#many)'/>"), piece=3, rows=2)
+    # Strokes: every corner and end, dashes, what is stroked and filled, and long data stroked as it arrives.
+    strokes = (b"<g fill='none' stroke='#000' stroke-width='2'>"
+               b"<path d='M2 2l8 6 8-6' stroke-linejoin='miter' stroke-miterlimit='2'/>"
+               b"<path d='M2 10l8 6 8-6' stroke-linejoin='round' stroke-linecap='round'/>"
+               b"<path d='M2 18l8 4 8-4' stroke-linejoin='bevel' stroke-linecap='square'/>"
+               b"<polyline points='22,2 38,2 22,6 38,6' style='stroke-dasharray:3 1 0 1;stroke-dashoffset:-2'/>"
+               b"<line x1='22' y1='10' x2='38' y2='22' stroke-dasharray='1' stroke-linecap='round' stroke-opacity='.5'/>"
+               b"<circle cx='30' cy='16' r='4' stroke='#888' stroke-width='10%' fill='#ccc'/>"
+               b"<path d='M30 9Z M33 9h0' stroke-linecap='round'/></g>")
+    seed("strokes", drawing(strokes), piece=3, rows=3)
+    seed("strokes-a-byte-at-a-time-in-strips-of-one-row", drawing(strokes), piece=1, rows=1)
+    seed("strokes-stretched-and-turned",
+         drawing(b"<g transform='scale(4 1) rotate(10)' stroke='#000' stroke-dasharray='2 1'>" + strokes + b"</g>"),
+         piece=4, rows=2, turn=1)
+    seed("long-path-data-stroked",
+         drawing(b"<path fill='none' stroke='#000' stroke-width='3' stroke-linejoin='round' d='" + LONG_DATA + b"'/>"
+                 b"<path stroke='#444' d='" + LONG_DATA + b"'/>"
+                 b"<path fill='none' stroke='#000' d='" + LONG_DATA + b"' stroke-width='4'/>"), piece=5, rows=2)
+    seed("dashes-more-than-an-outline-may-have",
+         drawing(b"<path d='M0 12c10-20 30 20 40 0' fill='none' stroke='#000' stroke-dasharray='.001 .002'/>"),
+         piece=4, rows=3)
     seed("a-gradient-in-an-svg-that-cuts-off-what-is-in-it",
          drawing(b"<linearGradient id='g' gradientUnits='userSpaceOnUse' x2='30'><stop/><stop offset='1' stop-color='#ccc'/>"
                  b"</linearGradient><svg x='6.5' y='3.25' width='20' height='10'>"

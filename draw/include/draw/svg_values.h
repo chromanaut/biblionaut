@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "draw/fixed.h"
@@ -38,6 +40,13 @@ struct SvgLength {
 // Reads "12", "1.5px", "50%", "2em". False if the text is not a number
 // with nothing after it or one of those units.
 [[nodiscard]] bool ParseSvgLength(std::string_view text, SvgLength& length, bool& clamped) noexcept;
+
+// Reads a list of lengths with commas or space between them, as
+// `stroke-dasharray` is written: "5, 3", "2px 1 4%". `count` is how many
+// there were. False if anything in it is not a length, or there are more
+// than `lengths` has room for, or none.
+[[nodiscard]] bool ParseSvgLengths(std::string_view text, std::span<SvgLength> lengths, std::size_t& count,
+                                   bool& clamped) noexcept;
 
 // A length in units of the drawing. `whole` is what a percentage is of.
 Fixed LengthIn(const SvgLength& length, Fixed whole, bool& clamped) noexcept;

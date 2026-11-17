@@ -159,7 +159,7 @@ class App {
   // none has none in it.
   std::array<DeviceCheck*, 3> checks_{};
   // In place of the test pattern, if asked for: the drawing viewer, kept
-  // twice for the same reason as the checks, and 74 KB of its own memory.
+  // twice for the same reason as the checks, and 77 KB of its own memory.
   DrawingViewer* drawingViewer_ = nullptr;
   Screen* screen_ = nullptr;
   bool storageReady_ = false;

@@ -233,6 +233,39 @@ bool ParseSvgLength(std::string_view text, SvgLength& length, bool& clamped) noe
   return true;
 }
 
+bool ParseSvgLengths(std::string_view text, std::span<SvgLength> lengths, std::size_t& count, bool& clamped) noexcept {
+  count = 0;
+  std::size_t at = 0;
+  bool comma = true;  // Where a comma may come: not first, nor two in a row.
+  while (true) {
+    while (at < text.size() && IsSvgSpace(text[at])) {
+      ++at;
+    }
+    if (at == text.size()) {
+      // Nor last.
+      return count > 0 && !comma;
+    }
+    if (text[at] == ',') {
+      if (comma) {
+        return false;
+      }
+      comma = true;
+      ++at;
+      continue;
+    }
+    std::size_t end = at;
+    while (end < text.size() && !IsSvgSpace(text[end]) && text[end] != ',') {
+      ++end;
+    }
+    if (count == lengths.size() || !ParseSvgLength({text.data() + at, end - at}, lengths[count], clamped)) {
+      return false;
+    }
+    ++count;
+    comma = false;
+    at = end;
+  }
+}
+
 Fixed LengthIn(const SvgLength& length, Fixed whole, bool& clamped) noexcept {
   const std::int64_t units = InFixed(length.value);
   switch (length.unit) {

@@ -395,6 +395,7 @@ void DrawingViewer::Say() noexcept {
   line.Text("drawing ").Number(current_ + 1).Text(" of ").Number(names_.size()).Text(": ").Text(names_[current_]);
   line.Text(", ").Text(draw::SvgStatusName(renderer_->Status())).Text(", ");
   line.Count(report.shapes, " shape", " shapes").Text(", ");
+  line.Count(report.strokes, " stroke", " strokes").Text(", ");
   line.Number((clock_.NowUs() - drawingStartedUs_) / 1000).Text(" ms");
   if (fileFailed_) {
     line.Text(", the file could not all be read");

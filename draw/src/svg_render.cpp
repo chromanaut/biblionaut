@@ -304,7 +304,8 @@ void SvgSize::Natural(Fixed& naturalWidth, Fixed& naturalHeight) const noexcept 
   naturalHeight = down;
 }
 
-SvgRenderer::SvgRenderer() noexcept : flattener_(nowhere_, Matrix()), reader_(flattener_) {}
+SvgRenderer::SvgRenderer() noexcept
+    : flattener_(nowhere_, Matrix()), reader_(flattener_), strokeOut_(nowhere_, Matrix()) {}
 
 void SvgRenderer::Begin(Filler* filler, Fixed width, Fixed height, Fixed tolerance) noexcept {
   tags_ = SvgTagReader();
@@ -346,6 +347,8 @@ void SvgRenderer::Begin(Filler* filler, Fixed width, Fixed height, Fixed toleran
   attribute_ = Attribute::kIgnored;
   streaming_ = false;
   draining_ = false;
+  stroking_ = false;
+  strokeNext_ = false;
   heldSize_ = 0;
   heldAt_ = 0;
 }
@@ -356,6 +359,10 @@ std::size_t SvgRenderer::Step(std::string_view bytes) noexcept {
   }
   if (draining_) {
     Drain();
+    return 0;
+  }
+  if (strokeNext_) {
+    StrokeNext();
     return 0;
   }
   // Something a `use` is drawing again is read to its end before any more
@@ -387,7 +394,7 @@ std::size_t SvgRenderer::Step(std::string_view bytes) noexcept {
     if (status_ != SvgStatus::kOk) {
       return bytes.size();
     }
-    if (enough || draining_ || reusing_ > 0) {
+    if (enough || draining_ || strokeNext_ || reusing_ > 0) {
       break;
     }
   }
@@ -1087,7 +1094,7 @@ void SvgRenderer::ReuseSome() noexcept {
     if (reuse.over && reusing_ == index + 1) {
       EndReuse();
     }
-    if (enough || draining_) {
+    if (enough || draining_ || strokeNext_) {
       break;
     }
   }
@@ -1108,6 +1115,8 @@ SvgStatus SvgRenderer::Finish() noexcept {
   }
   draining_ = false;
   streaming_ = false;
+  stroking_ = false;
+  strokeNext_ = false;
   reusing_ = 0;
   keeping_ = false;
   if (inSheet_) {
@@ -1379,26 +1388,33 @@ void SvgRenderer::BeginAttribute(std::string_view name) noexcept {
   struct LengthName {
     std::string_view name;
     Slot slot;
-    bool ofBoxes;   // `svg` and `rect` have it,
-    bool ofRounds;  // or `circle` and `ellipse`.
+    bool ofBoxes = false;   // `svg` and `rect` have it,
+    bool ofRounds = false;  // or `circle` and `ellipse`,
+    bool ofLines = false;   // or `line`.
   };
   constexpr LengthName kLengths[] = {
-      {.name = "x", .slot = kX, .ofBoxes = true, .ofRounds = false},
-      {.name = "y", .slot = kY, .ofBoxes = true, .ofRounds = false},
-      {.name = "width", .slot = kWidth, .ofBoxes = true, .ofRounds = false},
-      {.name = "height", .slot = kHeight, .ofBoxes = true, .ofRounds = false},
+      {.name = "x", .slot = kX, .ofBoxes = true},
+      {.name = "y", .slot = kY, .ofBoxes = true},
+      {.name = "width", .slot = kWidth, .ofBoxes = true},
+      {.name = "height", .slot = kHeight, .ofBoxes = true},
       {.name = "rx", .slot = kRadiusX, .ofBoxes = true, .ofRounds = true},
       {.name = "ry", .slot = kRadiusY, .ofBoxes = true, .ofRounds = true},
-      {.name = "cx", .slot = kMiddleX, .ofBoxes = false, .ofRounds = true},
-      {.name = "cy", .slot = kMiddleY, .ofBoxes = false, .ofRounds = true},
-      {.name = "r", .slot = kRadius, .ofBoxes = false, .ofRounds = true},
+      {.name = "cx", .slot = kMiddleX, .ofRounds = true},
+      {.name = "cy", .slot = kMiddleY, .ofRounds = true},
+      {.name = "r", .slot = kRadius, .ofRounds = true},
+      {.name = "x1", .slot = kX, .ofLines = true},
+      {.name = "y1", .slot = kY, .ofLines = true},
+      {.name = "x2", .slot = kWidth, .ofLines = true},
+      {.name = "y2", .slot = kHeight, .ofLines = true},
   };
   const bool box = element_ == Element::kSvg || element_ == Element::kRect;
   const bool round = element_ == Element::kCircle || element_ == Element::kEllipse;
+  const bool line = element_ == Element::kLine;
   // A `use` has a place, and a size that only an `svg` it draws takes.
   const bool placed = element_ == Element::kUse && (name == "x" || name == "y" || name == "width" || name == "height");
   for (const LengthName& length : kLengths) {
-    if (name == length.name && ((box && length.ofBoxes) || (round && length.ofRounds) || placed)) {
+    if (name == length.name &&
+        ((box && length.ofBoxes) || (round && length.ofRounds) || (line && length.ofLines) || placed)) {
       attribute_ = Attribute::kLength;
       slot_ = length.slot;
       return;
@@ -1426,6 +1442,12 @@ SvgRenderer::Property SvgRenderer::PropertyOf(std::string_view name) noexcept {
       {.name = "visibility", .property = Property::kVisibility},
       {.name = "stroke", .property = Property::kStroke},
       {.name = "stroke-width", .property = Property::kStrokeWidth},
+      {.name = "stroke-opacity", .property = Property::kStrokeOpacity},
+      {.name = "stroke-linejoin", .property = Property::kStrokeJoin},
+      {.name = "stroke-linecap", .property = Property::kStrokeCap},
+      {.name = "stroke-miterlimit", .property = Property::kMiterLimit},
+      {.name = "stroke-dasharray", .property = Property::kDashArray},
+      {.name = "stroke-dashoffset", .property = Property::kDashOffset},
       {.name = "clip-path", .property = Property::kClipPath},
       {.name = "mask", .property = Property::kMask},
       {.name = "filter", .property = Property::kFilter},
@@ -1711,24 +1733,21 @@ void SvgRenderer::SetProperty(Property property, std::string_view value, bool fr
       if (!ParseSvgPaint(value, paint)) {
         Note(SvgLeftOut::kBadValue);
       } else if (paint.kind == SvgPaint::Kind::kInherit) {
-        pending_.stroked = parent.stroked;
+        pending_.stroke = parent.stroke;
       } else {
-        pending_.stroked = paint.kind != SvgPaint::Kind::kNone || paint.server;
+        pending_.stroke = paint;
       }
       break;
     }
-    case Property::kStrokeWidth: {
-      SvgLength width;
-      bool clamped = false;
-      if (inherit) {
-        pending_.strokeless = parent.strokeless;
-      } else if (ParseSvgLength(value, width, clamped)) {
-        pending_.strokeless = width.value == 0;
-      } else {
-        Note(SvgLeftOut::kBadValue);
-      }
+    case Property::kStrokeWidth:
+    case Property::kStrokeOpacity:
+    case Property::kStrokeJoin:
+    case Property::kStrokeCap:
+    case Property::kMiterLimit:
+    case Property::kDashArray:
+    case Property::kDashOffset:
+      SetStrokeProperty(property, value, inherit);
       break;
-    }
     case Property::kClipPath:
       if (!none) {
         Note(SvgLeftOut::kClip);
@@ -1754,6 +1773,120 @@ void SvgRenderer::SetProperty(Property property, std::string_view value, bool fr
       // its edges. It does not unless it says so.
       overflows_ = IsWord(value, "visible") || IsWord(value, "auto");
       break;
+  }
+}
+
+void SvgRenderer::SetStrokeProperty(Property property, std::string_view value, bool inherit) noexcept {
+  const Level& parent = Parent();
+  StrokeStyle& style = pending_.strokeStyle;
+  // A percentage of a width or a length along the stroke is of the
+  // diagonal over the square root of two, as a radius's is.
+  const auto across = static_cast<std::uint64_t>(std::max<Fixed>(parent.viewWidth, 0));
+  const auto down = static_cast<std::uint64_t>(std::max<Fixed>(parent.viewHeight, 0));
+  const auto whole = static_cast<Fixed>(SquareRoot(((across * across) + (down * down)) / 2));
+  bool clamped = false;
+  bool bad = false;
+  switch (property) {
+    case Property::kStrokeWidth: {
+      SvgLength width;
+      if (inherit) {
+        style.width = parent.strokeStyle.width;
+      } else if (ParseSvgLength(value, width, clamped) && width.value >= 0) {
+        style.width = LengthIn(width, whole, clamped);
+      } else {
+        bad = true;
+      }
+      break;
+    }
+    case Property::kStrokeOpacity:
+      if (inherit) {
+        pending_.strokeOpacity = parent.strokeOpacity;
+      } else {
+        bad = !ParseSvgOpacity(value, pending_.strokeOpacity);
+      }
+      break;
+    case Property::kStrokeJoin:
+      // SVG 2's "miter-clip" and "arcs" are drawn as a miter.
+      if (inherit) {
+        style.join = parent.strokeStyle.join;
+      } else if (IsWord(value, "miter") || IsWord(value, "miter-clip") || IsWord(value, "arcs")) {
+        style.join = StrokeJoin::kMiter;
+      } else if (IsWord(value, "round")) {
+        style.join = StrokeJoin::kRound;
+      } else if (IsWord(value, "bevel")) {
+        style.join = StrokeJoin::kBevel;
+      } else {
+        bad = true;
+      }
+      break;
+    case Property::kStrokeCap:
+      if (inherit) {
+        style.cap = parent.strokeStyle.cap;
+      } else if (IsWord(value, "butt")) {
+        style.cap = StrokeCap::kButt;
+      } else if (IsWord(value, "round")) {
+        style.cap = StrokeCap::kRound;
+      } else if (IsWord(value, "square")) {
+        style.cap = StrokeCap::kSquare;
+      } else {
+        bad = true;
+      }
+      break;
+    case Property::kMiterLimit: {
+      const std::string_view text = WithoutSpace(value);
+      std::size_t at = 0;
+      Number limit = 0;
+      if (inherit) {
+        style.miterLimit = parent.strokeStyle.miterLimit;
+      } else if (ScanNumber(text, at, limit, clamped) && at == text.size() && limit >= kNumberOne) {
+        style.miterLimit = FixedOf(limit, clamped);
+      } else {
+        bad = true;
+      }
+      break;
+    }
+    case Property::kDashArray: {
+      std::array<SvgLength, StrokeStyle::kMostDashes> lengths{};
+      std::size_t count = 0;
+      if (inherit) {
+        style.dashes = parent.strokeStyle.dashes;
+        style.dashCount = parent.strokeStyle.dashCount;
+      } else if (IsWord(value, "none")) {
+        style.dashCount = 0;
+      } else if (ParseSvgLengths(value, lengths, count, clamped)) {
+        // A length less than nothing makes the stroke solid, as does a
+        // list of more lengths than are kept, which is reported as one that
+        // could not be read.
+        style.dashCount = static_cast<std::uint8_t>(count);
+        for (std::size_t i = 0; i < count; ++i) {
+          style.dashes[i] = LengthIn(lengths[i], whole, clamped);
+          bad = bad || lengths[i].value < 0;
+        }
+      } else {
+        style.dashCount = 0;
+        bad = true;
+      }
+      break;
+    }
+    case Property::kDashOffset: {
+      SvgLength offset;
+      if (inherit) {
+        style.dashOffset = parent.strokeStyle.dashOffset;
+      } else if (ParseSvgLength(value, offset, clamped)) {
+        style.dashOffset = LengthIn(offset, whole, clamped);
+      } else {
+        bad = true;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  if (bad) {
+    Note(SvgLeftOut::kBadValue);
+  }
+  if (clamped) {
+    Note(SvgLeftOut::kHeldNumber);
   }
 }
 
@@ -1936,7 +2069,9 @@ bool SvgRenderer::OpenedElement(bool empty) noexcept {
   if (element_ == Element::kGroup) {
     pending_.matrix = ElementMatrix();
   } else if (isInnerSvg_) {
-    shows = OpenInnerSvg() && shows;
+    // One that is hidden is not laid out, nor is what it would cut off
+    // reported.
+    shows = shows && OpenInnerSvg();
   } else {
     shows = OpenRoot() && shows;
   }
@@ -2140,9 +2275,38 @@ bool SvgRenderer::Shows(std::uint8_t& gray, std::uint8_t& alpha) const noexcept 
   return alpha != 0;
 }
 
+bool SvgRenderer::StrokeShows(Filling& filling) const noexcept {
+  if (filler_ == nullptr || displayNone_ || unreadable_ || lateTransform_ || outlineBad_ || pending_.hidden ||
+      pending_.strokeStyle.width <= 0) {
+    return false;
+  }
+  const SvgPaint& paint = pending_.stroke;
+  std::uint8_t gray = paint.gray;
+  std::uint8_t solid = paint.alpha;
+  if (paint.kind == SvgPaint::Kind::kCurrent) {
+    gray = pending_.color;
+    solid = pending_.colorAlpha;
+  } else if (paint.kind != SvgPaint::Kind::kGray) {
+    return false;
+  }
+  filling = {.rule = FillRule::kNonZero,
+             .gray = gray,
+             .alpha = Both(Both(solid, pending_.strokeOpacity), Both(Parent().opacity, ownOpacity_)),
+             .boxed = pending_.boxed,
+             .boxFrom = pending_.boxFrom,
+             .boxTo = pending_.boxTo,
+             .gradient = 0,
+             .matrix = Matrix(),
+             .viewWidth = 0,
+             .viewHeight = 0};
+  return filling.alpha != 0;
+}
+
 bool SvgRenderer::DrawShape() noexcept {
   if (!displayNone_ && !pending_.hidden) {
-    if (pending_.stroked && !pending_.strokeless) {
+    // A stroke painted with a gradient or a pattern: what stands in for it
+    // is drawn.
+    if (pending_.stroke.server && pending_.strokeStyle.width > 0) {
       Note(SvgLeftOut::kStroke);
     }
     if (pending_.fill.server && pending_.gradient == 0) {
@@ -2154,7 +2318,8 @@ bool SvgRenderer::DrawShape() noexcept {
   }
   std::uint8_t gray = 0;
   std::uint8_t alpha = 0;
-  const bool shown = Shows(gray, alpha);
+  // A line has no inside to fill.
+  const bool shown = element_ != Element::kLine && Shows(gray, alpha);
   const Filling filling = {.rule = pending_.evenOdd ? FillRule::kEvenOdd : FillRule::kNonZero,
                            .gray = gray,
                            .alpha = alpha,
@@ -2165,62 +2330,124 @@ bool SvgRenderer::DrawShape() noexcept {
                            .matrix = pending_.gradient != 0 && shown ? ElementMatrix() : Matrix(),
                            .viewWidth = pending_.viewWidth,
                            .viewHeight = pending_.viewHeight};
+  Filling stroke;
+  const bool stroked = StrokeShows(stroke);
 
   switch (element_) {
     case Element::kPath:
     case Element::kPolygon:
     case Element::kPolyline:
       if (streaming_) {
-        // Its lines are in the filler already, whether or not it shows.
+        // Its lines are in the filler already, whether or not it shows:
+        // its stroke's, if it was being stroked, or else its own.
         EndOutline();
-        FillOutline(shown, filling);
+        if (stroking_) {
+          const bool same = pending_.strokeStyle == streamStyle_;
+          if (shown || (stroked && !same)) {
+            Note(SvgLeftOut::kStroke);
+          }
+          FillOutline(stroked && same, stroke);
+        } else {
+          if (stroked) {
+            Note(SvgLeftOut::kStroke);
+          }
+          FillOutline(shown, filling);
+        }
         return true;
       }
-      if (heldSize_ == 0 || !shown) {
+      if (heldSize_ == 0 || (!shown && !stroked)) {
         return false;
       }
       // Its data was short enough to hold, and is gone through now that
-      // the whole of its tag has been read.
-      BeginOutline(ElementMatrix());
+      // the whole of its tag has been read: for its fill, and then for its
+      // stroke.
+      if (shown) {
+        BeginOutline(ElementMatrix());
+        drain_ = filling;
+        StrokeLater(stroked, stroke);
+      } else {
+        BeginStroke(ElementMatrix(), pending_.strokeStyle);
+        drain_ = stroke;
+      }
       draining_ = true;
-      drain_ = filling;
       return true;
     case Element::kRect:
-      if (!shown || !DrawRect()) {
-        return false;
-      }
-      break;
-    case Element::kCircle: {
-      const Fixed radius = LengthAt(kRadius, 0);
-      if (!shown || !DrawEllipse(LengthAt(kMiddleX, 0), LengthAt(kMiddleY, 0), radius, radius)) {
-        return false;
-      }
-      break;
-    }
+    case Element::kCircle:
     case Element::kEllipse:
-      if (!shown ||
-          !DrawEllipse(LengthAt(kMiddleX, 0), LengthAt(kMiddleY, 0), LengthAt(kRadiusX, 0), LengthAt(kRadiusY, 0))) {
+    case Element::kLine:
+      if ((!shown && !stroked) || !HasOutline()) {
         return false;
       }
-      break;
-    case Element::kLine:  // Has no inside to fill.
+      if (shown) {
+        BeginOutline(ElementMatrix());
+        Outline();
+        FillOutline(true, filling);
+        StrokeLater(stroked, stroke);
+      } else {
+        BeginStroke(ElementMatrix(), pending_.strokeStyle);
+        Outline();
+        FillOutline(true, stroke);
+      }
+      return true;
     case Element::kIgnored:
     case Element::kSvg:
     case Element::kGroup:
     case Element::kUse:
       return false;
   }
-  FillOutline(true, filling);
-  return true;
+  return false;
+}
+
+void SvgRenderer::StrokeLater(bool stroked, const Filling& stroke) noexcept {
+  strokeNext_ = stroked;
+  if (stroked) {
+    strokeFilling_ = stroke;
+    strokeMatrix_ = ElementMatrix();
+  }
+}
+
+void SvgRenderer::StrokeNext() noexcept {
+  strokeNext_ = false;
+  BeginStroke(strokeMatrix_, pending_.strokeStyle);
+  if (element_ == Element::kPath || element_ == Element::kPolygon || element_ == Element::kPolyline) {
+    // The data held is gone through again.
+    heldAt_ = 0;
+    draining_ = true;
+    drain_ = strokeFilling_;
+    return;
+  }
+  Outline();
+  FillOutline(true, strokeFilling_);
 }
 
 void SvgRenderer::BeginOutline(const Matrix& matrix) noexcept {
+  stroking_ = false;
   flattener_ = PathFlattener(*filler_, matrix, tolerance_);
   // What lies outside the strip needs no cutting up.
   bool clamped = false;
   const auto pixels = [&clamped](std::int64_t count) noexcept { return Clamp32(count * kFixedOne, clamped); };
   flattener_.KeepTo({.x = 0, .y = pixels(filler_->Top())},
                     {.x = pixels(filler_->Width()), .y = pixels(std::int64_t{filler_->Top()} + filler_->Rows())});
+  StartReading();
+}
+
+void SvgRenderer::BeginStroke(const Matrix& matrix, const StrokeStyle& style) noexcept {
+  stroking_ = true;
+  strokeOut_ = PathFlattener(*filler_, matrix, tolerance_);
+  stroker_.Begin(strokeOut_, style);
+  // The outline is cut into lines in its own coordinates, as finely as it
+  // would be in pixels: the tolerance there is the tolerance in pixels
+  // over how much the matrix makes things larger. Not more than a 4,096th
+  // of what a position can be, which keeps its square in range.
+  constexpr std::int64_t kLoosest = 16777216;
+  const std::int64_t scale = std::max<Coefficient>(LargestScale(matrix), 1);
+  const std::int64_t tolerance =
+      std::clamp<std::int64_t>((std::int64_t{tolerance_} * kCoefficientOne) / scale, 1, kLoosest);
+  flattener_ = PathFlattener(stroker_, Matrix(), static_cast<Fixed>(tolerance));
+  StartReading();
+}
+
+void SvgRenderer::StartReading() noexcept {
   reader_.Reset();
   talliedCommands_ = 0;
   talliedLines_ = 0;
@@ -2248,11 +2475,22 @@ void SvgRenderer::EndOutline() noexcept {
 void SvgRenderer::Tally() noexcept {
   report_.commands += reader_.Commands() - talliedCommands_;
   talliedCommands_ = reader_.Commands();
-  report_.lines += flattener_.Lines() - talliedLines_;
-  talliedLines_ = flattener_.Lines();
+  // The lines that went into the filler: a stroke's, if it is one.
+  const std::uint32_t lines = stroking_ ? strokeOut_.Lines() : flattener_.Lines();
+  report_.lines += lines - talliedLines_;
+  talliedLines_ = lines;
 }
 
 void SvgRenderer::FillOutline(bool shown, const Filling& filling) noexcept {
+  if (stroking_) {
+    stroker_.Finish();
+    if (stroker_.Clamped() || strokeOut_.Clamped()) {
+      Note(SvgLeftOut::kHeldNumber);
+    }
+    if (stroker_.DashesCut()) {
+      Note(SvgLeftOut::kStroke);
+    }
+  }
   if (flattener_.Clamped()) {
     Note(SvgLeftOut::kHeldNumber);
   }
@@ -2275,9 +2513,12 @@ void SvgRenderer::FillOutline(bool shown, const Filling& filling) noexcept {
   } else {
     filler_->Fill(filling.rule, filling.gray, alpha);
   }
-  if (shown) {
+  if (shown && stroking_) {
+    ++report_.strokes;
+  } else if (shown) {
     ++report_.shapes;
   }
+  stroking_ = false;
 }
 
 void SvgRenderer::Drain() noexcept {
@@ -2289,13 +2530,18 @@ void SvgRenderer::Drain() noexcept {
     return;
   }
   draining_ = false;
-  heldSize_ = 0;
-  heldAt_ = 0;
   if (!streaming_) {
     // That was the whole of an outline whose tag has ended.
     EndOutline();
     FillOutline(true, drain_);
+    if (strokeNext_) {
+      // Its data is gone through again, for its stroke.
+      heldAt_ = 0;
+      return;
+    }
   }
+  heldSize_ = 0;
+  heldAt_ = 0;
 }
 
 std::size_t SvgRenderer::TakePathData(std::string_view piece, bool ofInput) noexcept {
@@ -2347,20 +2593,81 @@ std::size_t SvgRenderer::TakePathData(std::string_view piece, bool ofInput) noex
     heldSize_ = 0;
     return piece.size();
   }
+  // It is stroked if by then it has a stroke and no fill, and filled
+  // otherwise. A fill that names a paint is taken to have one, since what it
+  // names is not looked for until the tag ends.
   streaming_ = true;
-  BeginOutline(ElementMatrix());
+  Filling unused;
+  std::uint8_t gray = 0;
+  std::uint8_t alpha = 0;
+  if (StrokeShows(unused) && !Shows(gray, alpha) && !pending_.fill.server) {
+    streamStyle_ = pending_.strokeStyle;
+    BeginStroke(ElementMatrix(), streamStyle_);
+  } else {
+    BeginOutline(ElementMatrix());
+  }
   draining_ = true;
   return from + fits;
 }
 
-bool SvgRenderer::DrawRect() noexcept {
+bool SvgRenderer::HasOutline() const noexcept {
+  switch (element_) {
+    case Element::kRect:
+      return LengthAt(kWidth, 0) > 0 && LengthAt(kHeight, 0) > 0;
+    case Element::kCircle:
+      return LengthAt(kRadius, 0) > 0;
+    case Element::kEllipse:
+      return LengthAt(kRadiusX, 0) > 0 && LengthAt(kRadiusY, 0) > 0;
+    case Element::kLine:
+      return true;
+    case Element::kIgnored:
+    case Element::kSvg:
+    case Element::kGroup:
+    case Element::kPath:
+    case Element::kPolygon:
+    case Element::kPolyline:
+    case Element::kUse:
+      break;
+  }
+  return false;
+}
+
+void SvgRenderer::Outline() noexcept {
+  switch (element_) {
+    case Element::kRect:
+      OutlineRect();
+      break;
+    case Element::kCircle: {
+      const Fixed radius = LengthAt(kRadius, 0);
+      OutlineEllipse(LengthAt(kMiddleX, 0), LengthAt(kMiddleY, 0), radius, radius);
+      break;
+    }
+    case Element::kEllipse:
+      OutlineEllipse(LengthAt(kMiddleX, 0), LengthAt(kMiddleY, 0), LengthAt(kRadiusX, 0), LengthAt(kRadiusY, 0));
+      break;
+    case Element::kLine:
+      // From (x1, y1) to (x2, y2), which are in the places of x, y, width
+      // and height.
+      flattener_.MoveTo({.x = LengthAt(kX, 0), .y = LengthAt(kY, 0)});
+      flattener_.LineTo({.x = LengthAt(kWidth, 0), .y = LengthAt(kHeight, 0)});
+      report_.commands += 2;
+      break;
+    case Element::kIgnored:
+    case Element::kSvg:
+    case Element::kGroup:
+    case Element::kPath:
+    case Element::kPolygon:
+    case Element::kPolyline:
+    case Element::kUse:
+      break;
+  }
+}
+
+void SvgRenderer::OutlineRect() noexcept {
   const Fixed x = LengthAt(kX, 0);
   const Fixed y = LengthAt(kY, 0);
   const Fixed width = LengthAt(kWidth, 0);
   const Fixed height = LengthAt(kHeight, 0);
-  if (width <= 0 || height <= 0) {
-    return false;
-  }
   // A corner's radius that is written one way only is the same the other
   // way, and neither is more than half the side it is on.
   const bool hasX = (lengthsSet_ & BitOf(kRadiusX)) != 0;
@@ -2373,7 +2680,6 @@ bool SvgRenderer::DrawRect() noexcept {
   bool clamped = false;
   const Fixed right = Sum(x, width, clamped);
   const Fixed bottom = Sum(y, height, clamped);
-  BeginOutline(ElementMatrix());
   if (radiusX == 0 || radiusY == 0) {
     flattener_.MoveTo({.x = x, .y = y});
     flattener_.LineTo({.x = right, .y = y});
@@ -2402,19 +2708,14 @@ bool SvgRenderer::DrawRect() noexcept {
   if (clamped) {
     Note(SvgLeftOut::kHeldNumber);
   }
-  return true;
 }
 
-bool SvgRenderer::DrawEllipse(Fixed middleX, Fixed middleY, Fixed radiusX, Fixed radiusY) noexcept {
-  if (radiusX <= 0 || radiusY <= 0) {
-    return false;
-  }
+void SvgRenderer::OutlineEllipse(Fixed middleX, Fixed middleY, Fixed radiusX, Fixed radiusY) noexcept {
   bool clamped = false;
   const Fixed left = Sum(middleX, -radiusX, clamped);
   const Fixed right = Sum(middleX, radiusX, clamped);
   const Fixed top = Sum(middleY, -radiusY, clamped);
   const Fixed bottom = Sum(middleY, radiusY, clamped);
-  BeginOutline(ElementMatrix());
   // Four quarters, from its right-hand end round by the bottom.
   flattener_.MoveTo({.x = right, .y = middleY});
   flattener_.ArcTo(radiusX, radiusY, 0, false, true, {.x = middleX, .y = bottom});
@@ -2426,7 +2727,6 @@ bool SvgRenderer::DrawEllipse(Fixed middleX, Fixed middleY, Fixed radiusX, Fixed
   if (clamped) {
     Note(SvgLeftOut::kHeldNumber);
   }
-  return true;
 }
 
 }  // namespace bn::draw

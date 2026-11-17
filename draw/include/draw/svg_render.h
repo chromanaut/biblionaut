@@ -10,6 +10,7 @@
 #include "draw/fill.h"
 #include "draw/fixed.h"
 #include "draw/flatten.h"
+#include "draw/stroke.h"
 #include "draw/svg_path.h"
 #include "draw/svg_sheet.h"
 #include "draw/svg_tags.h"
@@ -37,7 +38,10 @@ enum class SvgLeftOut : std::uint32_t {
   kUse = 1U << 2U,              // A `use` of something that is not in `defs` before it: not drawn.
   kStyleSheet = 1U << 3U,       // What a style sheet says that is not read (see SvgSheetReader), or a sheet that
                                 // comes after something it would style: that much of it is not used.
-  kStroke = 1U << 4U,           // A line along an outline: not drawn.
+  kStroke = 1U << 4U,           // A stroke not drawn as written: one painted with a gradient or a pattern (what
+                                // was written to stand in for it is drawn, or nothing); the stroke or the fill of
+                                // a shape whose path data is too long to hold (see SvgRenderer); or dashes past
+                                // Stroker::kMostDashesPerOutline in one outline (the rest of it is solid).
   kPaintServer = 1U << 5U,      // A paint that names something other than a linear gradient before it, such as a
                                 // pattern: what was written to stand in for it is drawn, or nothing. Or a
                                 // gradient's stops past kMostStops, which are left out.
@@ -70,7 +74,8 @@ const char* SvgLeftOutName(SvgLeftOut what) noexcept;
 struct SvgReport {
   std::uint32_t leftOut = 0;    // A bit of SvgLeftOut for each thing met.
   std::uint32_t elements = 0;   // Elements read: one that is used is read again each time.
-  std::uint32_t shapes = 0;     // Shapes filled.
+  std::uint32_t shapes = 0;     // Shapes filled,
+  std::uint32_t strokes = 0;    // and stroked.
   std::uint32_t commands = 0;   // Commands their outlines had,
   std::uint32_t lines = 0;      // and lines those became.
   std::uint32_t deepest = 0;    // The most groups open at once.
@@ -146,16 +151,28 @@ struct SvgSize {
 //   than the curve. A gradient takes what it does not say from the one
 //   its `href` names. It can be anywhere in the file before what it
 //   fills.
+// - Shapes, and `line`, are stroked as Stroker strokes an outline: by
+//   `stroke`, `stroke-width`, `stroke-opacity`, `stroke-linejoin`,
+//   `stroke-linecap`, `stroke-miterlimit`, `stroke-dasharray` and
+//   `stroke-dashoffset`, in the shape's own coordinates. The stroke goes
+//   over the fill. A stroke painted with a gradient is not drawn.
 // - `display` and `visibility` hide things.
 // - Everything else is passed over, and Report() says what there was: see
-//   SvgLeftOut. A drawing with strokes, text or pictures in it comes out
-//   without them.
+//   SvgLeftOut. A drawing with text or pictures in it comes out without
+//   them.
 //
-// Attributes may come in any order, with one limit. A `transform` written
-// after its own shape's path data is used if the data is no longer than
-// kHeldPathData, since data that short is held until the tag ends. Longer
-// data is drawn as it arrives, and if a transform then follows it in the
-// same tag, the shape is left out and reported.
+// Attributes may come in any order, with limits for path data longer than
+// kHeldPathData. Data that short is held until the tag ends, and gone
+// through once for the fill and again for the stroke. Longer data is drawn
+// as it arrives, with what the tag has said by then, and so:
+//
+// - If a transform follows it in the same tag, the shape is left out and
+//   reported.
+// - It is either filled or stroked. It is stroked if by then it has a
+//   stroke and no fill, and if its stroke is then changed, by its own tag or
+//   by a rule of the style sheet, the stroke is left out. Otherwise it is
+//   filled, and a stroke it turns out to have is left out. Either is
+//   reported.
 //
 // What a file defines in one place and uses in another has to be kept
 // until it is used, and that is the one thing here whose size the file
@@ -182,7 +199,9 @@ struct SvgSize {
 // Step() does a bounded amount of work, so that whoever calls it can keep
 // doing other things between calls: at the most it takes kTokensPerStep
 // things from the file's tags or from what it has kept, gives the outline
-// in hand kMostCommandsPerStep commands, and fills one shape; of what it
+// in hand kMostCommandsPerStep commands, and fills one shape or one stroke
+// (what each line of an outline that is stroked comes to is Stroker's
+// bound, and a stroke's dashes are bounded for each outline); of what it
 // has kept it reads no more than kReusedPerStep bytes; and it goes through
 // the records of what it has kept twice at the most, which are no more
 // than the memory given has room for: to find what a `use` names, or
@@ -191,11 +210,12 @@ struct SvgSize {
 // the call it comes in.
 //
 // The file is not trusted. Whatever its bytes, it ends in a status and a
-// report. Used by one task. The object is 5,600 bytes on the device: two
-// fifths of it what each open group hands on, a tenth the path data it
-// holds, a tenth the reading of a style sheet, a twelfth the reading of a
-// gradient and the ramp a shape is filled with from it, and a fourteenth
-// the readers of what is being used again.
+// report. Used by one task. The object is 8,128 bytes on the device: half
+// of it what each open group hands on, 124 bytes a group, of which the
+// style of a stroke is 52; a thirteenth the stroking; a fifteenth each the
+// path data it holds and the reading of a style sheet; a seventeenth the
+// reading of a gradient and the ramp a shape is filled with from it; and a
+// twentieth the readers of what is being used again.
 class SvgRenderer {
  public:
   // The most groups that can be open at once. One more is passed over
@@ -213,6 +233,15 @@ class SvgRenderer {
   // tag can complete, the last of a polygon's points and its closing.
   static constexpr std::uint32_t kCommandsPerStep = 16;
   static constexpr std::uint32_t kMostCommandsPerStep = kCommandsPerStep + 3;
+  // The most lines one call can give the filler. Each command becomes
+  // kMostLinesPerArc lines at the most. If the outline is stroked, each of
+  // those becomes Stroker's kMostLinesPerLine, a command can end a part of
+  // the outline, and every dash the outline may have can begin and end
+  // in the one call.
+  static constexpr std::uint64_t kMostLinesPerStep =
+      (std::uint64_t{kMostCommandsPerStep} *
+       ((std::uint64_t{PathFlattener::kMostLinesPerArc} * Stroker::kMostLinesPerLine) + Stroker::kMostLinesPerEnd)) +
+      (std::uint64_t{Stroker::kMostDashesPerOutline} * (Stroker::kMostLinesPerLine + Stroker::kMostLinesPerEnd));
   // The most bytes of definitions that are gone through again in one pass,
   // all told: a megabyte, which is twelve times what the most of any
   // drawing in the books comes to. And how deep one `use` may be inside
@@ -338,7 +367,9 @@ class SvgRenderer {
   // What is being read that a gradient is made of.
   enum class PaintElement : std::uint8_t { kNone, kGradient, kStop };
 
-  // The lengths an element can have, each in its place in `lengths_`.
+  // The lengths an element can have, each in its place in `lengths_`. A
+  // `line`'s ends, `x1`, `y1`, `x2` and `y2`, are in the places of `x`,
+  // `y`, `width` and `height`, which a percentage is of the same thing in.
   enum Slot : std::uint8_t { kX, kY, kWidth, kHeight, kRadiusX, kRadiusY, kMiddleX, kMiddleY, kRadius, kSlots };
 
   enum class Property : std::uint8_t {
@@ -352,6 +383,12 @@ class SvgRenderer {
     kVisibility,
     kStroke,
     kStrokeWidth,
+    kStrokeOpacity,
+    kStrokeJoin,
+    kStrokeCap,
+    kMiterLimit,
+    kDashArray,
+    kDashOffset,
     kClipPath,
     kMask,
     kFilter,
@@ -373,9 +410,10 @@ class SvgRenderer {
     std::uint8_t fillOpacity = 255;
     std::uint8_t opacity = 255;  // Every `opacity` from here outwards, multiplied together.
     bool evenOdd = false;
-    bool hidden = false;      // `visibility`.
-    bool stroked = false;     // `stroke` is something,
-    bool strokeless = false;  // though with no width.
+    bool hidden = false;  // `visibility`.
+    SvgPaint stroke = {.kind = SvgPaint::Kind::kNone};
+    std::uint8_t strokeOpacity = 255;
+    StrokeStyle strokeStyle;
     // What is inside is cut off at the edges of a box, in pixels: an `svg`
     // inside another does that, and so everything within it.
     bool boxed = false;
@@ -523,6 +561,7 @@ class SvgRenderer {
   void TakeStyle(std::string_view piece) noexcept;
   void EndDeclaration() noexcept;
   void SetProperty(Property property, std::string_view value, bool fromStyle) noexcept;
+  void SetStrokeProperty(Property property, std::string_view value, bool inherit) noexcept;
   void SetLength(std::string_view value) noexcept;
 
   // Each says whether what is inside the element is to be drawn.
@@ -536,18 +575,31 @@ class SvgRenderer {
   // From the coordinates of the element in hand to pixels.
   Matrix ElementMatrix() noexcept;
   bool DrawShape() noexcept;
-  // An outline goes to the flattener between BeginOutline() and
-  // FillOutline(); one that came as path data is ended by EndOutline()
-  // first.
+  // Whether the shape in hand has a stroke that shows, and what it is
+  // filled with.
+  bool StrokeShows(Filling& filling) const noexcept;
+  // An outline goes to the flattener between BeginOutline(), or
+  // BeginStroke() for its stroke, and FillOutline(); one that came as path
+  // data is ended by EndOutline() first.
   void BeginOutline(const Matrix& matrix) noexcept;
+  void BeginStroke(const Matrix& matrix, const StrokeStyle& style) noexcept;
+  void StartReading() noexcept;
   void EndOutline() noexcept;
   void FillOutline(bool shown, const Filling& filling) noexcept;
   void Drain() noexcept;
+  // The stroke of the shape whose fill the call before filled: whether
+  // there is one, and drawing it.
+  void StrokeLater(bool stroked, const Filling& stroke) noexcept;
+  void StrokeNext() noexcept;
   // Brings the report's counts up to what the outline in hand has come to.
   void Tally() noexcept;
-  // Each says whether there was anything to outline.
-  bool DrawRect() noexcept;
-  bool DrawEllipse(Fixed middleX, Fixed middleY, Fixed radiusX, Fixed radiusY) noexcept;
+  // The outline of a `rect`, `circle`, `ellipse` or `line`, from its
+  // lengths, to the flattener. Each says whether there was anything to
+  // outline.
+  bool HasOutline() const noexcept;
+  void Outline() noexcept;
+  void OutlineRect() noexcept;
+  void OutlineEllipse(Fixed middleX, Fixed middleY, Fixed radiusX, Fixed radiusY) noexcept;
   Fixed LengthAt(Slot slot, Fixed otherwise) const noexcept;
 
   SvgTagReader tags_;
@@ -694,6 +746,19 @@ class SvgRenderer {
   // What an outline whose tag has ended, and whose data is still being
   // gone through, is to be filled with.
   Filling drain_;
+  // A stroke: the outline in hand goes through the stroker, `flattener_`
+  // having no matrix and giving its lines to `stroker_`, which gives what
+  // it makes to `strokeOut_`, which has the matrix. A shape's stroke waits
+  // for the call after its fill (`strokeNext_`), with what it is filled
+  // with and the matrix. An outline stroked as its data arrives keeps the
+  // style it began with, to see that it has not changed.
+  Stroker stroker_;
+  PathFlattener strokeOut_;
+  bool stroking_ = false;
+  bool strokeNext_ = false;
+  Filling strokeFilling_;
+  Matrix strokeMatrix_;
+  StrokeStyle streamStyle_;
   // How much of the outline in hand the report has counted.
   std::uint32_t talliedCommands_ = 0;
   std::uint32_t talliedLines_ = 0;

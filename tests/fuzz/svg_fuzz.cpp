@@ -66,7 +66,6 @@ namespace {
 using bn::draw::Filler;
 using bn::draw::Fixed;
 using bn::draw::kFixedOne;
-using bn::draw::PathFlattener;
 using bn::draw::SvgRenderer;
 using bn::draw::SvgReport;
 using bn::draw::SvgSize;
@@ -153,11 +152,11 @@ bool SameSize(const SvgSize& one, const SvgSize& other) {
 bool SameFile(const Reading& one, const Reading& other) {
   return one.status == other.status && one.errorOffset == other.errorOffset &&
          one.report.leftOut == other.report.leftOut && one.report.elements == other.report.elements &&
-         one.report.shapes == other.report.shapes && one.report.commands == other.report.commands &&
-         one.report.deepest == other.report.deepest && one.report.kept == other.report.kept &&
-         one.report.reused == other.report.reused && one.report.rules == other.report.rules &&
-         one.report.gradients == other.report.gradients && one.report.looked == other.report.looked &&
-         SameSize(one.size, other.size);
+         one.report.shapes == other.report.shapes && one.report.strokes == other.report.strokes &&
+         one.report.commands == other.report.commands && one.report.deepest == other.report.deepest &&
+         one.report.kept == other.report.kept && one.report.reused == other.report.reused &&
+         one.report.rules == other.report.rules && one.report.gradients == other.report.gradients &&
+         one.report.looked == other.report.looked && SameSize(one.size, other.size);
 }
 
 // Gives the renderer the file, `piece` bytes at a time, with `filler` to
@@ -194,7 +193,8 @@ Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::
       const std::uint64_t made = after.lines - before.lines;
       BN_FUZZ_CHECK(commands <= SvgRenderer::kMostCommandsPerStep,
                     "a call gave an outline more commands than a call may");
-      BN_FUZZ_CHECK(after.shapes - before.shapes <= 1, "a call filled more than one shape");
+      BN_FUZZ_CHECK((after.shapes - before.shapes) + (after.strokes - before.strokes) <= 1,
+                    "a call filled more than one shape or stroke");
       const std::uint64_t again = after.reused - before.reused;
       BN_FUZZ_CHECK(after.elements - before.elements <= SvgRenderer::kTokensPerStep,
                     "a call began more elements than a call may");
@@ -204,17 +204,18 @@ Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::
       BN_FUZZ_CHECK(took == 0 || again == 0, "a call read the file and what is kept of it");
       BN_FUZZ_CHECK(after.kept >= before.kept && after.kept <= room.Size(),
                     "more is kept than there is memory for, or less than was");
-      BN_FUZZ_CHECK(made <= std::uint64_t{SvgRenderer::kMostCommandsPerStep} * PathFlattener::kMostLinesPerArc,
-                    "a call made more lines than its commands can come to");
+      BN_FUZZ_CHECK(made <= SvgRenderer::kMostLinesPerStep, "a call made more lines than its commands can come to");
       if (filler != nullptr) {
         // Each line, and each closing of an outline, which the filler
-        // makes a line of for itself.
-        BN_FUZZ_CHECK(filler->CellsTouched() - cellsBefore <= (made + commands + 2) * cellsALine,
+        // makes a line of for itself: one for each command, and one for
+        // each of a stroke's pieces, which have more lines than that.
+        BN_FUZZ_CHECK(filler->CellsTouched() - cellsBefore <= ((2 * made) + commands + 2) * cellsALine,
                       "a call added to more cells than its lines may");
         BN_FUZZ_CHECK(filler->PixelsVisited() - visitedBefore <= pixels,
                       "a call looked at more pixels than the strip has");
       } else {
-        BN_FUZZ_CHECK(commands == 0 && made == 0 && after.shapes == 0, "something was drawn with nothing to draw into");
+        BN_FUZZ_CHECK(commands == 0 && made == 0 && after.shapes == 0 && after.strokes == 0,
+                      "something was drawn with nothing to draw into");
       }
       if (failed) {
         BN_FUZZ_CHECK(took == bytes.size() && after.elements == before.elements && commands == 0 && made == 0 &&

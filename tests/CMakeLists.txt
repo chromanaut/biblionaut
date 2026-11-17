@@ -91,6 +91,7 @@ bn_add_unit_test(draw_tests
     unit/draw/fill_test.cpp
     unit/draw/fixed_test.cpp
     unit/draw/flatten_test.cpp
+    unit/draw/png_test.cpp
     unit/draw/svg_number_test.cpp
     unit/draw/svg_path_test.cpp
     unit/draw/svg_render_test.cpp
@@ -100,6 +101,9 @@ bn_add_unit_test(draw_tests
     unit/draw/svg_values_test.cpp
     unit/draw/test_pattern_test.cpp
   LIBS bn_draw)
+# The PNG reader's tests make their files with zlib doing the compressing
+# and the checksums.
+target_link_libraries(draw_tests PRIVATE ZLIB::ZLIB)
 
 # The ZIP reader's tests make their ZIP files with zlib doing the
 # compressing and the checksums.
@@ -289,6 +293,15 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-svg> ${CMAKE_CURRENT_BINARY_DIR}/svg_draw)
   set_tests_properties(e2e.SvgDraw PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
+  # bn-png, and through it the PNG reader, against a second reading of the
+  # same pictures: the file taken apart all at once, its data decompressed
+  # by Python's zlib, and each pixel turned to gray the plain way.
+  add_test(
+    NAME e2e.PngTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/png_tool.py
+      $<TARGET_FILE:bn-png> ${CMAKE_CURRENT_BINARY_DIR}/png_tool)
+  set_tests_properties(e2e.PngTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
   # bn-hyphen, and through it the hyphenator and the tables it reads,
   # against a second way of breaking the same words: the patterns kept as
   # they were written, and every piece of a word looked up among them.
@@ -327,14 +340,14 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-epub> ${CMAKE_CURRENT_BINARY_DIR}/book_check)
   set_tests_properties(e2e.BookCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
-  # bn-zip, bn-xml, bn-epub and bn-css over the real books in corpus/, each against
-  # a reading of the same book by Python; and the books themselves against
-  # the list of what they should be.
+  # bn-zip, bn-xml, bn-epub, bn-css and bn-png over the real books in corpus/,
+  # each against a reading of the same book by Python; and the books
+  # themselves against the list of what they should be.
   add_test(
     NAME e2e.Corpus
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check-books.py
       --zip $<TARGET_FILE:bn-zip> --xml $<TARGET_FILE:bn-xml> --epub $<TARGET_FILE:bn-epub>
-      --css $<TARGET_FILE:bn-css>
+      --css $<TARGET_FILE:bn-css> --png $<TARGET_FILE:bn-png>
       ${PROJECT_SOURCE_DIR}/corpus)
   set_tests_properties(e2e.Corpus PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

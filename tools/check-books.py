@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Checks what the book tools make of real books against a reading of each by Python.
 
-bn-zip, bn-xml, bn-epub and bn-css run the firmware's own code on one file.
-This runs them over every EPUB under the folders it is given and compares,
-book by book:
+bn-zip, bn-xml, bn-epub, bn-css and bn-png run the firmware's own code on one
+file. This runs them over every EPUB under the folders it is given and
+compares, book by book:
 
   - bn-zip with Python's zipfile: every entry of the directory, every
     entry's contents by its checksum, and a few entries byte for byte;
@@ -13,11 +13,13 @@ book by book:
   - bn-css with a second reading of every style sheet, line for line;
   - bn-css cascade with a second working-out of what the rules come to
     for each element, on the first few documents of the book, each given
-    the style sheets it links and those they import.
+    the style sheets it links and those they import;
+  - bn-png book with a second reading of every PNG picture: its header, how
+    the reading ended, and the checksum of every row of gray.
 
-The readings of the ZIP file, the documents, the package and the style
-sheets, and the working-out of the cascade, are the ones the end-to-end
-tests use on the books they make (tests/e2e). The reading of a table of
+The readings of the ZIP file, the documents, the package, the style sheets
+and the pictures, and the working-out of the cascade, are the ones the
+end-to-end tests use on the books they make (tests/e2e). The reading of a table of
 contents is written here, since real tables do things the tests' own do
 not; so is which sheets a document links.
 
@@ -32,10 +34,10 @@ file: every file it lists has to be there and unchanged, and every EPUB
 beside or below it has to be listed.
 
 usage: tools/check-books.py [--tools BUILD] [--zip BN_ZIP] [--xml BN_XML] [--epub BN_EPUB] [--css BN_CSS]
-                            [--css-report] [--jobs N] FOLDER_OR_FILE...
+                            [--png BN_PNG] [--css-report] [--jobs N] FOLDER_OR_FILE...
 
 BUILD is a build folder to take the tools from: build/host-release if it
-has them, or else build/host. Each of the four can be named by itself.
+has them, or else build/host. Each of the five can be named by itself.
 
 It ends with 0 if everything agreed, 1 if anything did not, 2 if it could
 not start.
@@ -64,6 +66,7 @@ sys.dont_write_bytecode = True  # Or Python leaves compiled copies of the tests'
 import css_cascade_tool  # noqa: E402  (found through the path set just above)
 import css_tool  # noqa: E402
 import epub_tool  # noqa: E402
+import png_tool  # noqa: E402
 import xml_tool  # noqa: E402
 import zip_tool  # noqa: E402
 
@@ -514,8 +517,50 @@ def check_cascade(tool: str, path: Path, figures: dict) -> list[str]:
     return problems[:4]
 
 
-def check_book(arguments: tuple[str, str, str, str, str]) -> tuple[str, list[str], dict]:
-    zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, name = arguments
+def check_png(tool: str, path: Path, figures: dict) -> list[str]:
+    result = run(tool, "book", str(path))
+    lines = result.stdout.decode("utf-8", "replace").splitlines()
+    if not lines or not lines[-1].startswith("png_files="):
+        return [f"bn-png: ended with {result.returncode} and its last line is {lines[-1:]!r}: {result.stderr[-120:]!r}"]
+    said = {}
+    for line in lines[:-1]:
+        if line.startswith("unreadable "):
+            said[line[len("unreadable "):]] = "unreadable"
+        else:
+            fields = line.split(" ", 10)
+            said[fields[10]] = " ".join(fields[:10])
+    problems = []
+    pictures = 0
+    pixels = 0
+    most_room = 0
+    with zipfile.ZipFile(path) as archive:
+        wanted = [info for info in archive.infolist() if info.filename.lower().endswith(".png")]
+        named = {info.filename: zip_tool.name_bytes(info).decode("utf-8", "replace") for info in wanted}
+        if set(said) != set(named.values()) or len(said) != len(wanted):
+            return [f"bn-png: it read {len(said)} pictures, and Python finds {len(wanted)} by their names, not all the "
+                    "same"]
+        for info in wanted:
+            expected = png_tool.read_png(archive.read(info))
+            theirs = said[named[info.filename]]
+            if expected.exact and theirs != expected.line():
+                problems.append(f"bn-png: {info.filename}: {theirs}; the second reading has {expected.line()}")
+            elif not expected.exact and theirs.split(" ", 1)[0] == "ok" and expected.status != "ok":
+                problems.append(f"bn-png: {info.filename}: {theirs}; the second reading has {expected.line()}")
+            pictures += 1
+            if expected.header:
+                pixels += expected.header[0] * expected.header[1]
+                most_room = max(most_room, expected.room)
+            if expected.status != "ok":
+                figures[f"png {expected.status}"] = figures.get(f"png {expected.status}", 0) + 1
+    figures["pngs"] = pictures
+    figures["png_pixels"] = pixels
+    if pictures:
+        figures["png room"] = [most_room]
+    return problems[:4]
+
+
+def check_book(arguments: tuple[str, str, str, str, str, str]) -> tuple[str, list[str], dict]:
+    zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, png_tool_path, name = arguments
     path = Path(name)
     # A number is added up over the books; a list is kept, a book to an item.
     figures: dict = {}
@@ -527,6 +572,7 @@ def check_book(arguments: tuple[str, str, str, str, str]) -> tuple[str, list[str
         problems += check_tables(epub_tool_path, path, figures)
         problems += check_css(css_tool_path, path, figures)
         problems += check_cascade(css_tool_path, path, figures)
+        problems += check_png(png_tool_path, path, figures)
     except Exception as error:  # A book that the comparison itself trips over is a finding, not a crash.
         problems.append(f"the comparison failed: {error!r}")
     return name, problems, figures
@@ -617,15 +663,17 @@ def main() -> int:
     parser.add_argument("--xml")
     parser.add_argument("--epub")
     parser.add_argument("--css")
+    parser.add_argument("--png")
     parser.add_argument("--css-report", action="store_true")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     parser.add_argument("places", nargs="+")
     options = parser.parse_args()
     tools = [find_tool(options.zip, options.tools, "zip", "bn-zip"), find_tool(options.xml, options.tools, "xml", "bn-xml"),
-             find_tool(options.epub, options.tools, "epub", "bn-epub"), find_tool(options.css, options.tools, "css", "bn-css")]
+             find_tool(options.epub, options.tools, "epub", "bn-epub"), find_tool(options.css, options.tools, "css", "bn-css"),
+             find_tool(options.png, options.tools, "png", "bn-png")]
     if None in tools:
-        print("check-books: bn-zip, bn-xml, bn-epub and bn-css are not all built: cmake --build --preset host-release",
-              file=sys.stderr)
+        print("check-books: bn-zip, bn-xml, bn-epub, bn-css and bn-png are not all built: "
+              "cmake --build --preset host-release", file=sys.stderr)
         return 2
     places = [Path(place) for place in options.places]
     missing = [place for place in places if not place.exists()]
@@ -666,7 +714,12 @@ def main() -> int:
           f"{totals.get('tables', 0)} readings of tables of contents with {totals.get('toc_entries', 0)} entries, "
           f"{totals.get('sheets', 0)} style sheets with {totals.get('css_rules', 0)} rules, {totals.get('cascade_set', 0)} "
           f"properties set for {totals.get('cascade_elements', 0)} elements of {totals.get('cascade_documents', 0)} "
-          "documents.")
+          f"documents, {totals.get('pngs', 0)} PNG pictures of {totals.get('png_pixels', 0)} pixels.")
+    if totals.get("png room"):
+        print(f"Memory for the rows of a book's widest PNG picture, in bytes: {spread(totals['png room'])}; over the "
+              f"{len(totals['png room'])} books that have one.")
+    for key in sorted(key for key in totals if key.startswith("png ") and key != "png room"):
+        print(f"{totals[key]} PNG pictures end as {key[4:]}, by the tool and by Python alike.")
     if options.css_report:
         print_css_report(totals, len(books))
     if totals.get("cascade_not_compared"):

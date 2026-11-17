@@ -1,0 +1,38 @@
+# Pieces of PNG that the reader of a picture looks for: given to the
+# fuzzing engine (tools/fuzz.py) for the PNG target, which would be a long
+# time coming to them by changing bytes. One piece a line, in quotes.
+
+# The signature
+"\x89PNG\x0d\x0a\x1a\x0a"
+
+# Chunks the reader knows
+"IHDR"
+"PLTE"
+"tRNS"
+"IDAT"
+"IEND"
+
+# Chunks it passes over, and names that only differ in the case of a letter
+"bKGD"
+"BKGD"
+"gAMA"
+"sRGB"
+"iCCP"
+"tEXt"
+"zTXt"
+"acTL"
+"idat"
+"Idat"
+
+# A header's length, and the lengths of a palette and of transparency
+"\x00\x00\x00\x0d"
+"\x00\x00\x00\x02"
+"\x00\x00\x00\x06"
+"\x00\x00\x03\x00"
+"\x00\x00\x00\x00"
+
+# zlib's two bytes in front of compressed data
+"\x78\x9c"
+"\x78\x01"
+"\x78\xda"
+"\x08\x1d"

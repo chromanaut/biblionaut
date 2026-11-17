@@ -1396,6 +1396,98 @@ def paragraph_seeds() -> None:
     write("paragraph", "nothing", b"")
 
 
+# ---- png: bytes 0 and 1 (how the file is given and how its data is cut up), then a PNG file ----
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def png_chunk(name: bytes, body: bytes) -> bytes:
+    return struct.pack(">I", len(body)) + name + body + struct.pack(">I", zlib.crc32(name + body))
+
+
+def png_rows(width: int, height: int, colour: int, depth: int, filters: list[int], seed: int) -> bytes:
+    """Rows of made-up samples, each with a filter byte in front of it. The
+    samples are not filtered: with the data given plain, that makes no
+    difference to what the reader is put through."""
+    rng = random.Random(seed)
+    samples = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour]
+    stride = (width * samples * depth + 7) // 8
+    return b"".join(bytes([filters[y % len(filters)]]) + rng.randbytes(stride) for y in range(height))
+
+
+def png_seeds() -> None:
+    clear("png")
+
+    def seed(name: str, file: bytes, *, piece: int = 6, room: int = 0, as_is: bool = False, plain: bool = True,
+             data_piece: int = 7, empty: int = 0, level: int = 3) -> None:
+        first = piece | (room << 3) | (int(as_is) << 5) | (int(plain) << 6)
+        second = data_piece | (empty << 3) | (level << 5)
+        write("png", name, bytes([first, second]) + file)
+
+    def header(width: int, height: int, depth: int, colour: int, interlace: int = 0) -> bytes:
+        return png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, interlace))
+
+    end = png_chunk(b"IEND", b"")
+    every_filter = [0, 1, 2, 3, 4]
+    kinds = [(0, 1), (0, 2), (0, 4), (0, 8), (0, 16), (2, 8), (2, 16), (3, 1), (3, 2), (3, 4), (3, 8), (4, 8), (4, 16),
+             (6, 8), (6, 16)]
+    for number, (colour, depth) in enumerate(kinds):
+        extra = b""
+        if colour == 3:
+            entries = 1 << depth
+            extra = png_chunk(b"PLTE", bytes((i * 37) & 255 for i in range(3 * entries)))
+            # Alphas for the first half of the entries, from none to nearly solid.
+            extra += png_chunk(b"tRNS", bytes(i * 255 // entries for i in range(max(1, entries // 2))))
+        elif colour == 0:
+            extra = png_chunk(b"tRNS", struct.pack(">H", 1))
+        elif colour == 2:
+            extra = png_chunk(b"tRNS", struct.pack(">3H", 1, 2, 3))
+        data = png_chunk(b"IDAT", png_rows(13, 7, colour, depth, every_filter, number))
+        seed(f"kind-{colour}-depth-{depth}", PNG_SIGNATURE + header(13, 7, depth, colour) + extra + data + end)
+
+    # A file as an encoder writes it, taken as it is: compressed, with
+    # chunks to pass over before the data and after.
+    rows = png_rows(40, 30, 2, 8, [1, 4, 2], 100)
+    stream = zlib.compress(rows, 9)
+    sound = (PNG_SIGNATURE + header(40, 30, 8, 2) + png_chunk(b"gAMA", struct.pack(">I", 45455)) +
+             png_chunk(b"tEXt", b"Comment\x00the harbour") + png_chunk(b"IDAT", stream[:200]) +
+             png_chunk(b"IDAT", stream[200:]) + png_chunk(b"tIME", bytes(7)) + end)
+    seed("a-file-as-it-is", sound, as_is=True, plain=False)
+    seed("a-file-as-it-is-a-byte-at-a-time", sound, piece=0, as_is=True, plain=False)
+    seed("a-file-as-it-is-cut-short", sound[: len(sound) // 2], as_is=True, plain=False)
+    seed("a-file-with-a-wrong-checksum", sound[:60] + bytes([sound[60] ^ 1]) + sound[61:], as_is=True, plain=False)
+    # A chunk of data after the first that says it is longer than a chunk may be.
+    cut = sound.index(b"IDAT", sound.index(b"IDAT") + 4) - 4
+    seed("a-later-chunk-of-data-too-long", sound[:cut] + b"\x80\x00\x00\x00IDAT" + sound[cut + 8:], as_is=True,
+         plain=False)
+
+    # The data in chunks of a byte, with empty ones between: as many as are
+    # passed over, and one more.
+    long_rows = png_rows(300, 4, 2, 8, [0], 101)
+    seed("data-a-byte-to-a-chunk", PNG_SIGNATURE + header(300, 4, 8, 2) + png_chunk(b"IDAT", long_rows) + end,
+         data_piece=0, empty=2, level=0)
+    seed("too-many-empty-chunks", PNG_SIGNATURE + header(300, 4, 8, 2) + png_chunk(b"IDAT", long_rows) + end,
+         data_piece=2, empty=3)
+    # Room: a byte less than the picture needs, and 64 bytes.
+    seed("a-byte-less-room", PNG_SIGNATURE + header(20, 3, 8, 6) + png_chunk(b"IDAT", png_rows(20, 3, 6, 8, [4], 102)),
+         room=1)
+    seed("little-room", PNG_SIGNATURE + header(5, 3, 1, 0) + png_chunk(b"IDAT", png_rows(5, 3, 0, 1, [1], 103)), room=2)
+    # What is refused.
+    seed("interlaced", PNG_SIGNATURE + header(8, 8, 8, 0, 1) + png_chunk(b"IDAT", png_rows(8, 8, 0, 8, [0], 104)) + end)
+    seed("a-filter-there-is-not", PNG_SIGNATURE + header(8, 4, 8, 0) + png_chunk(b"IDAT", png_rows(8, 4, 0, 8, [0, 5], 105)))
+    seed("a-palette-picture-without-a-palette",
+         PNG_SIGNATURE + header(8, 4, 8, 3) + png_chunk(b"IDAT", png_rows(8, 4, 3, 8, [0], 106)))
+    seed("a-chunk-it-must-know-and-does-not",
+         PNG_SIGNATURE + header(8, 4, 8, 0) + png_chunk(b"ABCD", b"x") + png_chunk(b"IDAT", png_rows(8, 4, 0, 8, [0], 107)))
+    seed("a-palette-of-the-wrong-length",
+         PNG_SIGNATURE + header(8, 4, 8, 3) + png_chunk(b"PLTE", bytes(5)) + png_chunk(b"IDAT", png_rows(8, 4, 3, 8, [0], 108)))
+    seed("two-headers", PNG_SIGNATURE + header(8, 4, 8, 0) + header(8, 4, 8, 0))
+    seed("a-header-of-a-kind-there-is-not", PNG_SIGNATURE + header(8, 4, 3, 2))
+    seed("a-wide-picture", PNG_SIGNATURE + header(0x7FFFFFFF, 1, 1, 0) + png_chunk(b"IDAT", b"\x00" * 64))
+    seed("not-a-png", b"GIF89a" + bytes(20), as_is=True, plain=False)
+    seed("nothing", b"")
+
+
 def main() -> None:
     inflate_seeds()
     zip_seeds()
@@ -1412,6 +1504,7 @@ def main() -> None:
     svg_path_seeds()
     svg_seeds()
     paragraph_seeds()
+    png_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

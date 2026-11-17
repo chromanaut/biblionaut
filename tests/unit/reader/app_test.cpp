@@ -13,6 +13,7 @@
 #include "display_fakes.h"
 #include "input_fakes.h"
 #include "memory_fakes.h"
+#include "power_fakes.h"
 #include "reader/book_check.h"
 #include "reader/layout_check.h"
 #include "reader/trace_ids.h"
@@ -35,6 +36,7 @@ struct AppFixture {
   bn::test::FakeDisplay display;  // Absent unless a test says otherwise.
   bn::test::FakeInput input;
   bn::test::FakeStorage storage;  // A card with nothing on it.
+  bn::test::FakePower power;      // Cannot sleep unless a test says otherwise.
   bn::reader::App app{bn::reader::Services{.clock = clock,
                                            .traceSync = sync,
                                            .serial = sink,
@@ -43,6 +45,7 @@ struct AppFixture {
                                            .display = display,
                                            .input = input,
                                            .storage = storage,
+                                           .power = power,
                                            .startCause = bn::core::StartCause::kWatchdog}};
 
   // The bytes of every crash frame sent so far, joined, after checking that
@@ -442,6 +445,106 @@ TEST(App, CanHaveTheLayoutCodeTimedAtStartAndAtEachPressOfPower) {
   EXPECT_EQ(passedLines(), 2);
 }
 
+TEST(App, PutsTheDeviceToSleepWhenPowerIsPressed) {
+  using Op = bn::test::FakeDisplay::Op;
+  AppFixture fixture;
+  fixture.display.present = true;
+  fixture.power.canSleep = true;
+  fixture.app.Start();
+  fixture.display.busy = false;
+  fixture.RunFor(100'000);
+
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(50'000);
+  // The voltages are on after the first picture: they go off first.
+  EXPECT_EQ(fixture.display.Count(Op::kPowerOff), 1u);
+  EXPECT_EQ(fixture.power.sleeps, 0);
+  EXPECT_FALSE(fixture.app.Asleep());
+
+  fixture.display.busy = false;
+  fixture.RunFor(50'000);
+  EXPECT_EQ(fixture.display.Count(Op::kSleep), 1u);
+  EXPECT_EQ(fixture.app.Viewer().CurrentState(), bn::reader::PatternViewer::State::kAsleep);
+  EXPECT_EQ(fixture.power.sleeps, 1);
+  EXPECT_TRUE(fixture.app.Asleep());
+  // The trace went out before it slept, the time from the press to sleep
+  // among it.
+  int traced = 0;
+  for (const auto& [id, arg] : fixture.TraceRecords()) {
+    traced += id == static_cast<std::uint16_t>(bn::reader::kSpanPressToSleep) ? 1 : 0;
+  }
+  EXPECT_EQ(traced, 1);
+
+  // Its run is over: nothing more happens.
+  const std::size_t sent = fixture.sink.received.size();
+  const std::size_t calls = fixture.display.calls.size();
+  fixture.input.Press(bn::core::Button::kDown, fixture.clock.now);
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(6'000'000);
+  EXPECT_EQ(fixture.sink.received.size(), sent);
+  EXPECT_EQ(fixture.display.calls.size(), calls);
+  EXPECT_EQ(fixture.power.sleeps, 1);
+}
+
+TEST(App, LetsTheRefreshInProgressFinishBeforeSleeping) {
+  AppFixture fixture;
+  fixture.display.present = true;
+  fixture.power.canSleep = true;
+  fixture.app.Start();
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(1'000'000);
+  EXPECT_EQ(fixture.power.sleeps, 0) << "the first picture is still on its way";
+
+  fixture.display.busy = false;
+  fixture.RunFor(50'000);
+  fixture.display.busy = false;
+  fixture.RunFor(50'000);
+  EXPECT_EQ(fixture.power.sleeps, 1);
+  EXPECT_EQ(fixture.display.refused, 0);
+}
+
+TEST(App, StaysAwakeWhereTheDeviceCannotSleep) {
+  AppFixture fixture;
+  fixture.display.present = true;
+  fixture.app.Start();
+  fixture.display.busy = false;
+  fixture.RunFor(100'000);
+
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(100'000);
+  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kSleep), 0u);
+  EXPECT_FALSE(fixture.app.Asleep());
+  fixture.input.Press(bn::core::Button::kDown, fixture.clock.now);
+  fixture.RunFor(100'000);
+  EXPECT_EQ(fixture.app.Viewer().Picture(), 2);
+}
+
+TEST(App, LeavesPowerToTheChecksWhenThereAreAny) {
+  AppFixture fixture;
+  fixture.power.canSleep = true;
+  fixture.app.CheckStorage();
+  fixture.app.Start();
+  fixture.RunFor(15'000'000);
+  ASSERT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kPassed);
+
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(100'000);
+  EXPECT_EQ(fixture.app.StorageChecker()->CurrentState(), bn::reader::StorageCheck::State::kRunning);
+  EXPECT_EQ(fixture.power.sleeps, 0);
+  EXPECT_FALSE(fixture.app.Asleep());
+}
+
+TEST(App, SleepsWhenThereIsNoPanelToPutToSleepFirst) {
+  AppFixture fixture;  // The panel cannot be set up.
+  fixture.power.canSleep = true;
+  fixture.app.Start();
+  fixture.RunFor(100'000);
+  fixture.input.Press(bn::core::Button::kPower, fixture.clock.now);
+  fixture.RunFor(100'000);
+  EXPECT_EQ(fixture.power.sleeps, 1);
+  EXPECT_TRUE(fixture.app.Asleep());
+}
+
 TEST(App, ReportsButtonsThatCannotBeRead) {
   AppFixture fixture;
   fixture.input.present = false;
@@ -590,6 +693,8 @@ TEST(App, DefaultServicesUseTheLinkedHardwarePort) {
   EXPECT_EQ(services.crash.Saved(), nullptr);
   // Its panel is a simulation of the X4's.
   EXPECT_EQ(services.display.Size().width, 800u);
+  // And it can sleep, in its way: the desktop application ends the run.
+  EXPECT_TRUE(services.power.CanSleep());
   EXPECT_EQ(services.display.Size().height, 480u);
   // And nobody is pressing its buttons, unless a script says so.
   bn::core::InputEvent event{};

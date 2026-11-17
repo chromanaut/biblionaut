@@ -88,12 +88,13 @@ std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std:
   return png;
 }
 
-SimDisplay::SimDisplay(core::Clock& clock, std::string outputPrefix, std::uint32_t speed)
+SimDisplay::SimDisplay(core::Clock& clock, const DeviceProfile& device, std::string outputPrefix, std::uint32_t speed)
     : clock_(clock),
+      device_(device),
       outputPrefix_(std::move(outputPrefix)),
       speed_(speed < 1 ? 1 : speed),
-      memory_{std::vector<std::uint8_t>(kSize.RowBytes() * kSize.height, 0xFF),
-              std::vector<std::uint8_t>(kSize.RowBytes() * kSize.height, 0xFF)},
+      memory_{std::vector<std::uint8_t>(device.panel.RowBytes() * device.panel.height, 0xFF),
+              std::vector<std::uint8_t>(device.panel.RowBytes() * device.panel.height, 0xFF)},
       shown_(memory_[0]),
       shownBefore_(memory_[0]) {}
 
@@ -124,9 +125,9 @@ bool SimDisplay::Start() noexcept {
 
 bool SimDisplay::WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
                            std::span<const std::uint8_t> rows) noexcept {
-  const std::size_t rowBytes = kSize.RowBytes();
+  const std::size_t rowBytes = device_.panel.RowBytes();
   if (!started_ || Busy() || rows.empty() || rows.size() % rowBytes != 0 ||
-      firstRow + (rows.size() / rowBytes) > kSize.height) {
+      firstRow + (rows.size() / rowBytes) > device_.panel.height) {
     return false;
   }
   BN_TRACE_SCOPE_ARG(kSpanPanelWrite, static_cast<std::uint32_t>(rows.size()));
@@ -135,9 +136,9 @@ bool SimDisplay::WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
 }
 
 bool SimDisplay::ReadRows(core::DisplayPlane plane, std::uint16_t firstRow, std::span<std::uint8_t> rows) noexcept {
-  const std::size_t rowBytes = kSize.RowBytes();
+  const std::size_t rowBytes = device_.panel.RowBytes();
   if (!started_ || Busy() || rows.empty() || rows.size() % rowBytes != 0 ||
-      firstRow + (rows.size() / rowBytes) > kSize.height) {
+      firstRow + (rows.size() / rowBytes) > device_.panel.height) {
     return false;
   }
   BN_TRACE_SCOPE_ARG(kSpanPanelRead, static_cast<std::uint32_t>(rows.size()));
@@ -152,7 +153,7 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
   shownBefore_ = shown_;
   const std::vector<std::uint8_t>& newPlane = Memory(core::DisplayPlane::kNew);
   const std::vector<std::uint8_t>& oldPlane = Memory(core::DisplayPlane::kOld);
-  std::uint64_t durationUs = kFullRefreshUs;
+  std::uint64_t durationUs = device_.times.fullRefreshUs;
   core::SpanId span = kSpanRefreshFull;
   if (mode == core::RefreshMode::kFast) {
     // Where both planes say white (a set bit) the panel is left as it is,
@@ -165,12 +166,12 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
     // image. (The moment within the refresh cannot matter: nothing can be
     // written or read until it is over.)
     newIs_ = 1 - newIs_;
-    durationUs = kFastRefreshUs;
+    durationUs = device_.times.fastRefreshUs;
     span = kSpanRefreshFast;
   } else {
     shown_ = newPlane;
     if (mode == core::RefreshMode::kHalf) {
-      durationUs = kHalfRefreshUs;
+      durationUs = device_.times.halfRefreshUs;
       span = kSpanRefreshHalf;
     }
   }
@@ -183,7 +184,7 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
   powered_ = !powerOff;
   const std::uint64_t now = clock_.NowUs();
   lastRefresh_ = Refresh{.mode = mode, .startUs = now, .doneUs = now + (durationUs / speed_)};
-  BeginBusy(durationUs + (powerOff ? kPowerOffUs : 0), span, powerOff ? 1 : 0);
+  BeginBusy(durationUs + (powerOff ? device_.times.powerOffUs : 0), span, powerOff ? 1 : 0);
   ++refreshCount_;
   SavePicture();
   return true;
@@ -212,7 +213,7 @@ bool SimDisplay::PowerOff() noexcept {
   if (powered_) {
     powered_ = false;
     newIs_ = 0;  // The planes go back to their first places.
-    BeginBusy(kPowerOffUs, kSpanPanelPowerOff, 0);
+    BeginBusy(device_.times.powerOffUs, kSpanPanelPowerOff, 0);
   }
   return true;
 }
@@ -233,7 +234,7 @@ void SimDisplay::SavePicture() {
   std::array<char, 16> suffix{};
   std::snprintf(suffix.data(), suffix.size(), "-%03d.png", refreshCount_);
   const std::string path = outputPrefix_ + suffix.data();
-  const std::vector<std::uint8_t> png = EncodePng(kSize, shown_);
+  const std::vector<std::uint8_t> png = EncodePng(device_.panel, shown_);
   std::FILE* file = std::fopen(path.c_str(), "wb");
   if (file == nullptr || std::fwrite(png.data(), 1, png.size(), file) != png.size()) {
     std::fprintf(stderr, "warning: cannot write the panel picture to '%s'\n", path.c_str());

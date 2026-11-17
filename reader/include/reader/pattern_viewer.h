@@ -20,6 +20,9 @@ namespace bn::reader {
 //   Confirm          the same picture again, by a half refresh
 //   Back             the same picture again, by a full refresh
 //
+// Power is the application's, which uses it to sleep, and has the panel put
+// to sleep through Sleep().
+//
 // It is the smallest thing that goes all the way from a button to the panel,
 // so the trace of it is the first measure of how long that takes: each press
 // that leads to a refresh is recorded from the moment the button went down
@@ -48,6 +51,7 @@ class PatternViewer {
     kNotStarted,
     kReady,
     kFailed,  // The panel could not be set up, refused something, or never finished what it was doing.
+    kAsleep,  // Asked to sleep, and the panel is asleep (Sleep()).
   };
 
   PatternViewer(core::Display& display, core::Clock& clock) noexcept : display_(display), clock_(clock) {}
@@ -60,6 +64,13 @@ class PatternViewer {
 
   // Moves on when the panel and the clock allow. Call often.
   void Tick() noexcept;
+
+  // Puts the panel to sleep, for the device to sleep. Once the refresh in
+  // progress, if there is one, is over, the voltages are switched off and
+  // the controller put to sleep (core::Display::Sleep()), and the state is
+  // kAsleep. The picture stays on the panel. Presses not yet acted on are
+  // dropped, and none is taken from now on.
+  void Sleep() noexcept;
 
   State CurrentState() const noexcept { return state_; }
   // The picture most recently sent to the panel, 1 to 4: 0 before the first.
@@ -98,6 +109,8 @@ class PatternViewer {
   };
 
   void Act(const Request& request) noexcept;
+  // Switches the voltages off, or once they are, puts the panel to sleep.
+  void GoToSleep() noexcept;
   // Renders `picture` band by band, each band going to the new-image plane,
   // the old-image plane, or one and then the other.
   bool WriteBands(std::uint8_t picture, bool toNew, bool toOld) noexcept;
@@ -130,6 +143,7 @@ class PatternViewer {
   // known to, and is to be written with it.
   bool oldPlaneDue_ = false;
   bool powered_ = false;  // The panel's drive voltages are on.
+  bool sleepAsked_ = false;
   std::uint64_t phaseStartedUs_ = 0;
   Request request_;
   std::array<std::uint8_t, kBandBytes> band_{};

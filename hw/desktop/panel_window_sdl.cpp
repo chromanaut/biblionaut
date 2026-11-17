@@ -61,9 +61,9 @@ std::uint64_t OnClock(std::uint64_t eventNs, std::uint64_t ticksNs, std::uint64_
   return nowUs > agoUs ? nowUs - agoUs : 0;
 }
 
-const char* TitleFor(RefreshStage stage, core::RefreshMode mode) {
+const char* TitleFor(RefreshStage stage, core::RefreshMode mode, bool asleep) {
   if (stage == RefreshStage::kAfter) {
-    return "Biblionaut";
+    return asleep ? "Biblionaut (asleep)" : "Biblionaut";
   }
   switch (mode) {
     case core::RefreshMode::kFast:
@@ -85,12 +85,13 @@ SDL_FRect ToFRect(const Rect& rect) {
 
 class SdlWindow final : public PanelWindow {
  public:
-  SdlWindow(core::Clock& clock, SimDisplay& display, core::Input& script)
+  SdlWindow(core::Clock& clock, SimDisplay& display, const SimPower& power, core::Input& script)
       : clock_(clock),
         display_(display),
+        power_(power),
         input_(clock, script),
-        view_(display.Size()),
-        layout_(display.Size(), view_.Turn()) {}
+        view_(display.Device().panel, display.Device().turn),
+        layout_(display.Device(), view_.Turn()) {}
 
   ~SdlWindow() override {
     if (texture_ != nullptr) {
@@ -115,8 +116,9 @@ class SdlWindow final : public PanelWindow {
       return false;
     }
     const core::DisplaySize size = layout_.Size();
-    if (!SDL_CreateWindowAndRenderer(TitleFor(RefreshStage::kAfter, core::RefreshMode::kFull), size.width, size.height,
-                                     SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY, &window_, &renderer_)) {
+    if (!SDL_CreateWindowAndRenderer(TitleFor(RefreshStage::kAfter, core::RefreshMode::kFull, false), size.width,
+                                     size.height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY, &window_,
+                                     &renderer_)) {
       std::fprintf(stderr, "cannot open a window: %s\n", SDL_GetError());
       return false;
     }
@@ -170,8 +172,12 @@ class SdlWindow final : public PanelWindow {
                              static_cast<int>(size.width * sizeof(std::uint32_t)))) {
         std::fprintf(stderr, "warning: cannot update the window: %s\n", SDL_GetError());
       }
-      SDL_SetWindowTitle(window_, TitleFor(view_.Stage(), display_.LastRefresh().mode));
       stale_ = true;
+    }
+    const char* title = TitleFor(view_.Stage(), display_.LastRefresh().mode, power_.Asleep());
+    if (title_ == nullptr || std::strcmp(title, title_) != 0) {
+      SDL_SetWindowTitle(window_, title);
+      title_ = title;
     }
     if (input_.Told() != drawnDown_) {
       stale_ = true;
@@ -216,7 +222,8 @@ class SdlWindow final : public PanelWindow {
     SDL_RenderTexture(renderer_, texture_, nullptr, &panel);
 
     drawnDown_ = input_.Told();
-    for (const ButtonPlace& place : layout_.Buttons()) {
+    // A button at several places is lit at all of them.
+    for (const ButtonPlace& place : layout_.Places()) {
       const bool down = (drawnDown_ & core::ButtonBit(place.button)) != 0;
       SetColour(down ? kButtonDown : kButton);
       const SDL_FRect button = ToFRect(place.rect);
@@ -239,7 +246,8 @@ class SdlWindow final : public PanelWindow {
     if (key.key == SDLK_R) {
       return key.down ? Turn() : true;
     }
-    if (const std::optional<core::Button> button = ButtonFor(key.key)) {
+    // Only the device's own buttons can be pressed.
+    if (const std::optional<core::Button> button = ButtonFor(key.key); button && layout_.Has(*button)) {
       const unsigned bit = core::ButtonBit(*button);
       keys_ = static_cast<core::ButtonSet>(key.down ? (keys_ | bit) : (keys_ & ~bit));
       input_.Hold(static_cast<core::ButtonSet>(keys_ | mouse_), timeUs);
@@ -266,7 +274,7 @@ class SdlWindow final : public PanelWindow {
   bool Turn() {
     const ViewTurn turn = view_.Turn() == ViewTurn::kAsRead ? ViewTurn::kAsPanel : ViewTurn::kAsRead;
     view_.SetTurn(turn);
-    layout_ = DeviceLayout(display_.Size(), turn);
+    layout_ = DeviceLayout(display_.Device(), turn);
     int width = 0;
     int height = 0;
     if (SDL_GetWindowSize(window_, &width, &height)) {
@@ -277,6 +285,7 @@ class SdlWindow final : public PanelWindow {
 
   core::Clock& clock_;
   SimDisplay& display_;
+  const SimPower& power_;
   WindowInput input_;
   PanelView view_;
   DeviceLayout layout_;
@@ -287,6 +296,7 @@ class SdlWindow final : public PanelWindow {
   core::ButtonSet mouse_ = 0;      // Held by the mouse.
   core::ButtonSet drawnDown_ = 0;  // Drawn as held.
   bool stale_ = true;              // The window needs drawing again.
+  const char* title_ = nullptr;    // The one TitleFor() gave that the window has.
 };
 
 }  // namespace
@@ -294,11 +304,12 @@ class SdlWindow final : public PanelWindow {
 const char* PanelWindow::KeysHelp() noexcept {
   return "Click the buttons, or use the keys: the arrows for Left, Right, Up and Down; Page Up and\n"
          "Page Down for Up and Down too; Return for Confirm; Escape or Backspace for Back; P for Power.\n"
-         "R turns the device.\n";
+         "R turns the device. Power puts it to sleep, and wakes it again.\n";
 }
 
-std::unique_ptr<PanelWindow> PanelWindow::Open(core::Clock& clock, SimDisplay& display, core::Input& script) {
-  auto window = std::make_unique<SdlWindow>(clock, display, script);
+std::unique_ptr<PanelWindow> PanelWindow::Open(core::Clock& clock, SimDisplay& display, const SimPower& power,
+                                               core::Input& script) {
+  auto window = std::make_unique<SdlWindow>(clock, display, power, script);
   if (!window->Open()) {
     return nullptr;
   }

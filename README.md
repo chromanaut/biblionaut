@@ -8,7 +8,7 @@ a desktop.
 
 | Directory | Contents |
 |---|---|
-| `core/` | Shared foundation: arenas, a heap within a fixed block of memory, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the inflater, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display, buttons) |
+| `core/` | Shared foundation: arenas, a heap within a fixed block of memory, the timing trace, counters and gauges, the framed diagnostic stream, checksums, the inflater, the heap-failure hook, and the interfaces the portable parts use to reach the outside world (clock, byte source, byte sink, display, buttons, power) |
 | `hw/` | Hardware abstraction layer. `hw/include` is the interface. `hw/desktop` implements it for the host; on a device, `hw/esp32c3` holds what the chip provides and `hw/x4` what is specific to the X4 |
 | `epub/` | Book parsing: zip, XML, OPF / TOC, CSS, the importer and the intermediate format |
 | `draw/` | Fonts and drawing: glyphs, metrics, the display-list format, the band renderer, images |
@@ -150,6 +150,7 @@ buttons step through its four pictures (`reader/pattern_viewer.h`):
 | Up, Left | The previous picture, by a fast refresh |
 | Confirm | The same picture again, by a half refresh |
 | Back | The same picture again, by a full refresh |
+| Power | Puts the device to sleep, where it can sleep (see Sleep, below) |
 
 The pattern is in the panel's own orientation, which on the X4 is with the
 device turned a quarter-turn anticlockwise from the way a book is read.
@@ -169,7 +170,7 @@ there after the last refresh, so the press has only to start the refresh.
 On the desktop a simulation stands in for the panel, working out what a
 real one would show after each refresh, including the stale pixels a fast
 refresh leaves if the two images are allowed to fall out of step. Buttons
-are scripted. Three environment variables control them:
+are scripted. Four environment variables control them:
 
 ```
 BN_DISPLAY_OUT=panel BN_INPUT=4000:down,5000:down,6000:confirm \
@@ -184,6 +185,21 @@ open panel-001.png          # one picture per refresh
   are `back`, `confirm`, `left`, `right`, `up`, `down` and `power`.
 - `BN_DISPLAY_SPEED=20` makes the simulated panel twenty times quicker than
   a real one, which takes 3.6 s over a full refresh.
+- `BN_DEVICE` names the device simulated. `x4` is the only one, and what
+  is simulated without it.
+
+What the desktop simulates of a device is described once, in a profile
+(`hw/desktop/device_profile.h`): the panel's size, how long it takes over
+each kind of refresh and over switching off, which way the panel is
+turned to be read, and which buttons the device has, on which edges and
+where along them. A button wired to more than one spot, as Up and Down
+are where a device has them on both sides, is listed once for each: it
+is the same button whichever is pressed, and is lit at all of them. The
+simulated panel and the window take everything they need from it. The X4's times are as measured on one, and its
+buttons' places along the edges are drawn near enough. A profile does
+not say how many shades a panel can show, or how its controller keeps
+its two planes: everything that drives a panel (`core/display.h`) is
+black and white, and keeps to the rules found on the X4.
 
 ### A window on the desktop
 
@@ -200,10 +216,11 @@ cmake --build --preset window
 ./build/window/app/desktop/biblionaut-desktop --window
 ```
 
-The buttons are on the edges they are on on an X4 held for reading: Back,
-Confirm, Left and Right in a row under the panel, and Power, Up and Down
-down the right edge (`hw/desktop/device_layout.h`). Clicking one presses
-it, and holding the mouse down holds it. The keys press them too:
+The buttons are where the device's profile puts them. On an X4 held for
+reading, that is Back, Confirm, Left and Right in a row under the panel,
+and Power, Up and Down down the right edge (`hw/desktop/device_layout.h`).
+Clicking one presses it, and holding the mouse down holds it. The keys
+press them too, those the device has:
 
 | Key | Button |
 |---|---|
@@ -242,6 +259,54 @@ It runs the application twice with the same scripted presses, with its
 window and without, the window on SDL's stand-in for a screen (the `dummy`
 video driver, which needs none), and checks that the panel was given the
 same pictures both times.
+
+### Sleep
+
+Power puts the device to sleep, where the device can sleep
+(`core/power.h`), unless the storage check, the book check or the layout
+check is built in: those run again at each press of Power instead (see
+Storage and Timing layout on a device, below). The
+refresh in progress is allowed to finish, the panel's voltages are
+switched off and its controller put to sleep, with the picture left on
+it, the trace is sent, and then the device is put to sleep. Waking is a new start: the application begins
+again as it does when power comes on, and the stream's hello says it was
+started by waking from deep sleep.
+
+No device can sleep yet. On the X4 Power leaves it awake: which of its
+pins can wake it, and what of it has to be switched off first for it to
+draw little, have not been found out.
+
+The desktop simulates it. Once the device has been put to sleep, the run
+is over, as it would be on a device, and the next press of Power, from
+the window, the keyboard or `BN_INPUT`, begins a new run, woken from deep
+sleep. In between, every other button is passed over, and the window's
+title says the device is asleep. What a device would lose in its sleep,
+the desktop keeps: the panel's simulation, the presses still to come in
+the script, and the counters in the metrics, which go on from where they
+were.
+
+```
+BN_SERIAL_OUT=capture.bin BN_DISPLAY_SPEED=20 BN_INPUT=400:down,1000:power,2000:power,2600:down \
+  ./build/host/app/desktop/biblionaut-desktop --run-ms 3200
+./build/host/tools/trace/bn-trace capture.bin
+```
+
+Among what it prints:
+
+```
+=== boot 1: 0.1.0-dev+4f85335 (stream protocol 3), started by power on ===
+[     1.009856] task 0  hw/panel_power_off  12.631 ms
+[     1.001023] task 0  reader/press_to_sleep  21.469 ms
+=== boot 2: 0.1.0-dev+4f85335 (stream protocol 3), started by waking from deep sleep ===
+[     2.006892] task 0  hw/refresh_full power_off_after=0  187.639 ms
+```
+
+`reader/press_to_sleep` runs from Power going down to the device being
+put to sleep. The second run shows its first picture by a full refresh,
+as any start does. The end-to-end test `e2e.PowerSleep` makes this run
+and checks the two runs in the trace, and that the panel was given the
+first picture, the step, the first picture again on waking, and the step
+again.
 
 ### The panel's two planes
 

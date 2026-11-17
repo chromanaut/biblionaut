@@ -61,7 +61,11 @@
   /* each setting of the text on the card within it: its number, */            \
   /* from 1. What was found is in the log text. */                             \
   X(15, kSpanLayoutCheck, "layout_check", "passed")                            \
-  X(16, kSpanLayoutCheckPass, "layout_check_pass", "pass")
+  X(16, kSpanLayoutCheckPass, "layout_check_pass", "pass")                     \
+  /* From the Power button going down to the device being put to */            \
+  /* sleep: the panel coming to rest, its voltages going off and */            \
+  /* its controller going to sleep, and the trace before this. */              \
+  X(17, kSpanPressToSleep, "press_to_sleep", "")
 
 namespace bn::reader {
 

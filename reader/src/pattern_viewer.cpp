@@ -75,7 +75,7 @@ void PatternViewer::OnInput(const core::InputEvent& event) noexcept {
     return;
   }
   buttonPresses.Add();
-  if (state_ != State::kReady) {
+  if (state_ != State::kReady || sleepAsked_) {
     return;
   }
   switch (event.button) {
@@ -133,6 +133,11 @@ void PatternViewer::Tick() noexcept {
     BeginCheck();
   }
 
+  if (sleepAsked_) {
+    GoToSleep();
+    return;
+  }
+
   // The next fast refresh compares against the old-image plane: it has to
   // hold what the panel shows.
   if (oldPlaneDue_) {
@@ -175,6 +180,32 @@ void PatternViewer::Tick() noexcept {
     phase_ = Phase::kPoweringOff;
     phaseStartedUs_ = now;
   }
+}
+
+void PatternViewer::Sleep() noexcept {
+  sleepAsked_ = true;
+  request_ = Request{};
+  checkDue_ = false;
+}
+
+void PatternViewer::GoToSleep() noexcept {
+  // The panel is at rest. The voltages go off first, as they would two
+  // seconds after a refresh, and then the controller goes to sleep.
+  if (powered_) {
+    if (!display_.PowerOff()) {
+      Fail();
+      return;
+    }
+    powered_ = false;
+    phase_ = Phase::kPoweringOff;
+    phaseStartedUs_ = clock_.NowUs();
+    return;
+  }
+  if (!display_.Sleep()) {
+    Fail();
+    return;
+  }
+  state_ = State::kAsleep;
 }
 
 void PatternViewer::Act(const Request& request) noexcept {

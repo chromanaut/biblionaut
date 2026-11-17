@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/display.h"
+#include "desktop/device_profile.h"
 #include "desktop/sim_display.h"
 
 // What a window on the desktop shows of the simulated panel.
@@ -13,9 +14,9 @@ namespace bn::hw {
 
 // Which way up the panel is shown.
 enum class ViewTurn : std::uint8_t {
-  // As a book is read on an X4, which is the panel turned a quarter-turn
-  // clockwise from its own orientation: its rows run down the window, the
-  // first of them on the right.
+  // As a book is read on the device: the panel turned as its ReadingTurn
+  // says. On an X4 that is a quarter-turn clockwise, so the panel's rows run
+  // down the window, the first of them on the right.
   kAsRead = 0,
   // In the panel's own orientation, as the pictures BN_DISPLAY_OUT saves are.
   kAsPanel = 1,
@@ -44,7 +45,9 @@ class PanelView {
   static constexpr std::uint32_t kWhite = 0xFFFFFFFF;
   static constexpr std::uint32_t kBlack = 0xFF000000;
 
-  explicit PanelView(core::DisplaySize panel, ViewTurn turn = ViewTurn::kAsRead);
+  // A view of a panel of `panel`'s size, in its own orientation, on a device
+  // read with the panel turned by `reading`.
+  PanelView(core::DisplaySize panel, ReadingTurn reading, ViewTurn turn = ViewTurn::kAsRead);
 
   // The picture's width and height.
   core::DisplaySize Size() const noexcept;
@@ -65,7 +68,11 @@ class PanelView {
   void Paint(std::span<const std::uint8_t> rows, bool inverted);
   void Fill(std::uint32_t pixel);
 
+  // Quarter-turns clockwise from the panel's own orientation to the one shown.
+  unsigned QuarterTurns() const noexcept;
+
   core::DisplaySize panel_;
+  ReadingTurn reading_;
   ViewTurn turn_;
   std::vector<std::uint32_t> pixels_;
   // What the picture was last made from, so that Update() can tell whether

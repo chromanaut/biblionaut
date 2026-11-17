@@ -10,6 +10,7 @@
 #include "core/clock.h"
 #include "core/display.h"
 #include "core/trace.h"
+#include "desktop/device_profile.h"
 
 // The desktop's stand-in for the e-ink panel.
 
@@ -19,11 +20,11 @@ namespace bn::hw {
 // bytes of a PNG file: 1 bit per pixel, not compressed.
 std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std::uint8_t> rows);
 
-// Behaves like the X4's panel as far as the code driving it can tell: it
-// keeps the two planes, refuses work while a refresh is "running" (for about
-// as long as a real one takes), and works out what the panel would show
-// afterwards. It follows what was measured on an X4 by reading the planes
-// back, as set out in core/display.h:
+// Behaves like a device's panel as far as the code driving it can tell: it
+// is the device's size, keeps the two planes, refuses work while a refresh
+// is "running" (for as long as the device's takes), and works out what the
+// panel would show afterwards. It follows the rules core/display.h sets out
+// for every port, which were found by reading an X4's planes back:
 //
 //  - a fast refresh leaves alone the pixels where both planes say white,
 //    and drives the rest to what the new-image plane says;
@@ -35,18 +36,16 @@ std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std:
 // wrong pixels here that it would on a device.
 class SimDisplay final : public core::Display {
  public:
-  // How long each operation keeps the panel busy, as measured on an X4.
-  static constexpr std::uint64_t kFullRefreshUs = 3'579'000;
-  static constexpr std::uint64_t kHalfRefreshUs = 1'571'000;
-  static constexpr std::uint64_t kFastRefreshUs = 418'000;
-  static constexpr std::uint64_t kPowerOffUs = 139'000;
+  // The panel of `device`, which must stay alive as long as this does. If
+  // `outputPrefix` is not empty, the picture after each refresh is saved as
+  // <outputPrefix>-001.png, -002.png, and so on. `speed` divides the
+  // device's times, for tests that cannot wait as long as a real panel
+  // takes.
+  SimDisplay(core::Clock& clock, const DeviceProfile& device, std::string outputPrefix, std::uint32_t speed = 1);
 
-  // If `outputPrefix` is not empty, the picture after each refresh is saved
-  // as <outputPrefix>-001.png, -002.png, and so on. `speed` divides the
-  // times above, for tests that cannot wait as long as a real panel takes.
-  SimDisplay(core::Clock& clock, std::string outputPrefix, std::uint32_t speed = 1);
+  const DeviceProfile& Device() const noexcept { return device_; }
 
-  core::DisplaySize Size() const noexcept override { return kSize; }
+  core::DisplaySize Size() const noexcept override { return device_.panel; }
   [[nodiscard]] bool Start() noexcept override;
   [[nodiscard]] bool WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
                                std::span<const std::uint8_t> rows) noexcept override;
@@ -80,8 +79,6 @@ class SimDisplay final : public core::Display {
   bool Powered() const noexcept { return powered_; }
 
  private:
-  static constexpr core::DisplaySize kSize{.width = 800, .height = 480};
-
   void SavePicture();
   // The memory now in the role of `plane`.
   std::vector<std::uint8_t>& Memory(core::DisplayPlane plane) noexcept;
@@ -89,6 +86,7 @@ class SimDisplay final : public core::Display {
   void BeginBusy(std::uint64_t durationUs, core::SpanId span, std::uint32_t argument) noexcept;
 
   core::Clock& clock_;
+  const DeviceProfile& device_;
   std::string outputPrefix_;
   std::uint32_t speed_;
   // The controller's two memories, and which of them is the new-image

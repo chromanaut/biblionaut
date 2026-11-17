@@ -6,6 +6,7 @@
 #include "core/display.h"
 #include "core/input.h"
 #include "core/memory_probe.h"
+#include "core/power.h"
 #include "core/start.h"
 #include "core/storage.h"
 #include "core/trace.h"
@@ -41,9 +42,10 @@ core::CrashStore& SystemCrashStore() noexcept;
 // The e-ink panel. On the desktop it is a simulation that keeps the two
 // planes in memory and works out what a real panel would show; when the
 // BN_DISPLAY_OUT environment variable is set, it saves that picture at every
-// refresh as BN_DISPLAY_OUT-001.png, -002.png and so on. It takes as long
-// over a refresh as a real panel does; BN_DISPLAY_SPEED=20 makes it twenty
-// times quicker.
+// refresh as BN_DISPLAY_OUT-001.png, -002.png and so on. It is the panel of
+// the device BN_DEVICE names, an X4 by default (hw/desktop/device_profile.h),
+// and takes as long over a refresh as that device's does;
+// BN_DISPLAY_SPEED=20 makes it twenty times quicker.
 core::Display& SystemDisplay() noexcept;
 
 // The buttons. The desktop has none: there the BN_INPUT environment variable
@@ -61,6 +63,12 @@ core::Storage& SystemStorage() noexcept;
 // Why this run began: what the hardware says ended the one before. On the
 // desktop every run begins with power coming on.
 core::StartCause WhyStarted() noexcept;
+
+// Putting the device to sleep. No device can be yet: on the X4 it stays
+// awake. On the desktop sleep is simulated: Sleep() notes that the device is
+// asleep, and the desktop application ends the run and, when Power is
+// pressed, begins a new one as after a deep sleep (app/desktop/main.cpp).
+core::Power& SystemPower() noexcept;
 
 // Short name of the port, for the boot banner and diagnostics.
 const char* PortName() noexcept;

@@ -29,7 +29,7 @@ The test programs are `core_tests`, `draw_tests`, `epub_tests`, `layout_tests`, 
 
 `host-release` is the optimised preset without sanitizers (`build/host-release`): use it for timing anything and for running the tools over many files. Its tests are run as well (`ctest --preset host-release`): a few things are built differently when a sanitizer is there, the heap inside a block among them, and the firmware has none.
 
-`window` (`build/window`) is the desktop application alone with a window, made with SDL, which that build fetches (`BN_DESKTOP_WINDOW`): `./build/window/app/desktop/biblionaut-desktop --window` draws the X4 with the simulated panel and the buttons, which are clicked or pressed from the keyboard. Its one test is `e2e.Window` (`ctest --preset window`). Opening the window puts it on the screen of whoever is at the computer; the test uses SDL's `dummy` video driver, which needs no screen, and `SDL_VIDEO_DUMMY_SAVE_FRAMES=1` with that driver saves each frame the window would show as a BMP in the current folder.
+`window` (`build/window`) is the desktop application alone with a window, made with SDL, which that build fetches (`BN_DESKTOP_WINDOW`): `./build/window/app/desktop/biblionaut-desktop --window` draws the X4 with the simulated panel and the buttons, which are clicked or pressed from the keyboard. Its one test is `e2e.Window` (`ctest --preset window`). What the desktop simulates of a device (panel size, refresh times, the turn for reading, where the buttons are) is described once, in `hw/desktop/device_profile.h`, and `BN_DEVICE` chooses it; `x4` is the only one so far. Opening the window puts it on the screen of whoever is at the computer; the test uses SDL's `dummy` video driver, which needs no screen, and `SDL_VIDEO_DUMMY_SAVE_FRAMES=1` with that driver saves each frame the window would show as a BMP in the current folder.
 
 `tools/check-books.py FOLDER` runs `bn-zip`, `bn-xml`, `bn-epub` and `bn-css` over every EPUB under a folder and compares each with a reading of the same book by Python. CTest runs it over `corpus/` as `e2e.Corpus`; run it over any larger collection of books a change could affect, with the `host-release` tools.
 
@@ -70,7 +70,7 @@ hw                  ->  core
 
 Each part is a library with its own include directory (`<part>/include/<part>/`, sources in `<part>/src/`), so a part can only include what it links. `cmake/BnParts.cmake` defines the portable parts once for both builds: the host build (root `CMakeLists.txt`, with `hw/desktop`) and the firmware (`app/firmware`, an ESP-IDF project that adds `hw/esp32c3` and `hw/x4` through the component `app/firmware/components/bn_hw`). Only `hw/` and `app/firmware` may include ESP-IDF or FreeRTOS headers.
 
-`core` holds the interfaces everything else reaches the outside world through (`Clock`, `Storage`, `Display`, `Input`, `ByteSource`, `ByteSink`, `CrashStore`, `MemoryProbe`). `reader::App` is given them as a `Services` struct: `DefaultServices()` supplies the linked port's, and tests pass the fakes in `tests/support/`.
+`core` holds the interfaces everything else reaches the outside world through (`Clock`, `Storage`, `Display`, `Input`, `Power`, `ByteSource`, `ByteSink`, `CrashStore`, `MemoryProbe`). `reader::App` is given them as a `Services` struct: `DefaultServices()` supplies the linked port's, and tests pass the fakes in `tests/support/`.
 
 ### The rules of the portable parts
 

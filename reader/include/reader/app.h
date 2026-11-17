@@ -10,6 +10,7 @@
 #include "core/display.h"
 #include "core/input.h"
 #include "core/memory_probe.h"
+#include "core/power.h"
 #include "core/start.h"
 #include "core/storage.h"
 #include "core/trace.h"
@@ -34,6 +35,7 @@ struct Services {
   core::Display& display;
   core::Input& input;
   core::Storage& storage;
+  core::Power& power;
   // Why this run began, to be told at the head of the stream.
   core::StartCause startCause = core::StartCause::kUnknown;
 };
@@ -74,6 +76,14 @@ class App {
 
   // Sends whatever trace is still buffered, for an orderly exit.
   void Flush() noexcept;
+
+  // Power puts the device to sleep, where it can sleep (core/power.h) and
+  // no device check has the button. Once the panel is at rest, with its
+  // voltages off and its controller asleep, the trace is sent and the
+  // device put to sleep, where a device stays until it starts again. Where
+  // that comes back (on the desktop), this says so, and Tick() does nothing
+  // more: the run is over.
+  bool Asleep() const noexcept { return asleep_; }
 
   // Microseconds since Start(); 0 before it.
   std::uint64_t UptimeUs() const noexcept;
@@ -118,6 +128,8 @@ class App {
   void SendCrashReport() noexcept;
   void StartStorage() noexcept;
   void BeginChecks() noexcept;
+  void OnPower(std::uint64_t pressedAtUs) noexcept;
+  void GoToSleep() noexcept;
 
   Services services_;
   std::array<core::TraceRecord, kTraceRecordCount> traceStorage_{};
@@ -141,6 +153,10 @@ class App {
   const core::CrashReport* crashReport_ = nullptr;  // Being sent; null when there is none or it is done.
   std::size_t crashSent_ = 0;                       // Bytes of its encoded form sent so far.
   bool started_ = false;
+  // Power was pressed to sleep, at this time; and the device was put to sleep.
+  bool sleepAsked_ = false;
+  std::uint64_t sleepPressedAtUs_ = 0;
+  bool asleep_ = false;
 };
 
 // Version of this build, for example "0.1.0-dev+5e068ca".

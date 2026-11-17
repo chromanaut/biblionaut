@@ -234,7 +234,9 @@ drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 657 
 ```
 
 That is an engraving of 932 KB from a public book, drawn by the optimised
-desktop application; on a device it has not been timed. The viewer takes
+desktop application; on a device it has not been timed. No stroke is drawn
+thinner than a pixel (`SetThinnestStroke()`, below): one much thinner would
+be a light gray, which black and white show as a broken line. The viewer takes
 about 77 KB of the heap when it starts: 26 KB for the filler's cells, 24 KB
 for what a drawing defines, 13 KB for a band of grays, 8 KB for the
 renderer, and 6 KB for what is carried in dithering, a band of bits and a
@@ -2517,7 +2519,7 @@ strip only what it defines for later use.
 - **How fine**: curves are cut to a sixteenth of a pixel, not the
   flattener's own quarter, because the edges are gray ("How exact",
   above).
-- **Memory**: the renderer is 8,128 bytes on the device. Half of it is
+- **Memory**: the renderer is 8,136 bytes on the device. Half of it is
   what each of up to 32 open groups hands on to what is inside it, 124
   bytes a group, of which the style of a stroke is 52; a thirteenth the
   stroking, the stroker and what it draws through; a fifteenth each the
@@ -2530,13 +2532,26 @@ strip only what it defines for later use.
 - **Flash**: as compiled for the device, the renderer is 32 KB, the
   stroker 8 KB and the reader of style sheets 3 KB. Laying a gradient out
   is 4.7 KB of the renderer.
+- **Thinnest stroke**: `SetThinnestStroke()` says how thin a stroke may be
+  drawn, in pixels. One that would come out thinner, across the way its
+  shape's matrix makes things smallest, is drawn that wide; the report
+  counts it (`widened`). Under a matrix that stretches one way more than
+  the other, that widens it the other way more than it needs. With
+  nothing asked for, the default, every stroke is as wide as it is, and a
+  stroke under a pixel comes out a light gray, which a panel of two or
+  four grays shows as a broken line. Drawn 480 pixels wide, as a page of
+  the X4 holds one, 190 of the public books' 195 strokes and 7,040 of the
+  library's 7,143 are under a pixel.
 - **Speed**: not yet measured on a device. What is used is read again for
-  every use and every strip, tags and path data both. A stroked outline's
-  curves are cut into lines in every strip, where a filled one's are cut
-  only in the strips they cross, and each line comes to some ten lines of
-  the stroke: the stroked drawing in the books that takes longest, with
-  2,632 strokes, comes to 5.8 million lines and 449 ms on the desktop,
-  480 pixels wide in strips of 16 rows.
+  every use and every strip, tags and path data both, and that is most of
+  what a drawing costs. A stroked outline's curves are cut into lines in
+  every strip, where a filled one's are cut only in the strips they
+  cross, and each line comes to some ten lines of the stroke: the stroked
+  drawing in the books that takes longest, with 2,632 strokes, comes to
+  5.8 million lines and 540 ms on the desktop, 480 pixels wide in strips
+  of 16 rows, and 25 ms in one strip. Without its strokes it takes 300 ms
+  in those strips, and 21 ms in one; and the lines its strokes give the
+  filler cost a tenth of the rest.
 - **What a call can cost**: `Step()` takes sixteen things from the tags at
   the most, the file's or those of something it kept, and of what it kept
   it reads no more than 1,024 bytes. It gives the outline in hand nineteen
@@ -2633,6 +2648,26 @@ a drawing of 60 by 40, as 240 by 160 in 5 strips of 32 rows: 5 elements, 3 shape
 The road's path data has no inside, and its fill covers nothing. Of the
 38,400 pixels, 37,423 are the same as `rsvg-convert`'s, all but 7 are
 within 8 parts in 255, and the worst is 11 out.
+
+`--thinnest` says how thin a stroke may be drawn, in pixels, and a line
+says how many were drawn wider. Drawn 240 pixels wide, this page's rules,
+a tenth of a unit, are 0.4 of a pixel, and its frame 4 pixels:
+
+```
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40">
+  <path d="M4 10h52M4 20h52M4 30h52" stroke="#000" stroke-width=".1"/>
+  <rect x="20" y="5" width="20" height="30" fill="none" stroke="#000"/>
+</svg>
+```
+
+```
+./build/host/tools/svg/bn-svg draw ruled.svg --width 240 --rows 32 --thinnest 1 --out ruled.pgm
+```
+
+```
+a drawing of 60 by 40, as 240 by 160 in 5 strips of 32 rows: 3 elements, 1 shapes filled, 2 stroked, 17 commands, 220 lines in all, 15488 bytes of cells
+strokes: 1 of 2 drawn wider, as thin as they may be
+```
 
 A file that defines things and uses them is also told how much of it was
 kept, and how much of that was read again for a strip. This one defines a

@@ -14,6 +14,8 @@
 //            bits 5 to 6: how the picture is turned into the strips'
 //                         rows (SvgRenderer::PlaceOn()): not at all, a
 //                         quarter either way, or a half
+//            bit 7:       whether no stroke is drawn thinner than a
+//                         pixel (SvgRenderer::SetThinnestStroke())
 //   the rest a file, or what passes for one
 //
 // The file is gone through three times: once with nothing to draw into,
@@ -290,7 +292,7 @@ PictureSize TurnedSize(unsigned turn, PictureSize page) {
 }
 
 Drawing Draw(std::string_view file, PictureSize page, unsigned turn, std::size_t stripRows, std::size_t piece,
-             Fixed tolerance, std::size_t roomSize) {
+             Fixed tolerance, std::size_t roomSize, Fixed thinnest) {
   const PictureSize size = TurnedSize(turn, page);
   Drawing drawing;
   drawing.picture.assign(size.width * size.height, 255);
@@ -298,6 +300,7 @@ Drawing Draw(std::string_view file, PictureSize page, unsigned turn, std::size_t
   SvgRenderer renderer;
   renderer.KeepDefinitionsIn(room.Block());
   renderer.PlaceOn(Turned(turn, page));
+  renderer.SetThinnestStroke(thinnest);
   Work work;
   for (std::size_t top = 0; top < size.height; top += stripRows) {
     const std::size_t rows = std::min(stripRows, size.height - top);
@@ -350,20 +353,22 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const Fixed tolerance = kTolerances[second & 3U];
   const std::size_t roomSize = kRooms[(second >> 2U) & 7U];
   const unsigned turn = (second >> 5U) & 3U;
+  const Fixed thinnest = (second & 0x80U) != 0 ? kFixedOne : 0;
 
   // With nothing to draw into.
   Room room(roomSize);
   SvgRenderer renderer;
   renderer.KeepDefinitionsIn(room.Block());
   renderer.PlaceOn(Turned(turn, picture));
+  renderer.SetThinnestStroke(thinnest);
   Work nothing;
   const Reading read = Read(renderer, nullptr, file, piece, picture, tolerance, room, nothing);
   BN_FUZZ_CHECK(read.report.shapes == 0 && read.report.commands == 0 && read.report.lines == 0,
                 "a reading with nothing to draw into drew something");
 
   const std::size_t turnedRows = TurnedSize(turn, picture).height;
-  const Drawing whole = Draw(file, picture, turn, turnedRows, SIZE_MAX, tolerance, roomSize);
-  const Drawing cut = Draw(file, picture, turn, std::min(stripRows, turnedRows), piece, tolerance, roomSize);
+  const Drawing whole = Draw(file, picture, turn, turnedRows, SIZE_MAX, tolerance, roomSize, thinnest);
+  const Drawing cut = Draw(file, picture, turn, std::min(stripRows, turnedRows), piece, tolerance, roomSize, thinnest);
   if (read.leftOff || whole.reading.leftOff || cut.reading.leftOff) {
     return 0;
   }

@@ -120,6 +120,7 @@ void DrawingViewer::Start() noexcept {
     return;
   }
   renderer_->KeepDefinitionsIn({definitions_.get(), kDefinitionBytes});
+  renderer_->SetThinnestStroke(kThinnestStroke);
   state_ = State::kReady;
 
   // The drawings: every file in the folder named as one, in the order of

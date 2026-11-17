@@ -2434,13 +2434,30 @@ void SvgRenderer::BeginOutline(const Matrix& matrix) noexcept {
 void SvgRenderer::BeginStroke(const Matrix& matrix, const StrokeStyle& style) noexcept {
   stroking_ = true;
   strokeOut_ = PathFlattener(*filler_, matrix, tolerance_);
-  stroker_.Begin(strokeOut_, style);
+  const std::int64_t scale = std::max<Coefficient>(LargestScale(matrix), 1);
+  // A stroke is thinnest in pixels across the way the matrix makes things
+  // smallest, which is at least its determinant over how much it makes
+  // them larger: in kCoefficientOne-ths, from the four coefficients each
+  // multiplied out and brought back to that.
+  StrokeStyle drawn = style;
+  widening_ = false;
+  if (thinnest_ > 0) {
+    const std::int64_t determinant = ShiftDown(std::int64_t{matrix.a} * matrix.d, kCoefficientBits) -
+                                     ShiftDown(std::int64_t{matrix.b} * matrix.c, kCoefficientBits);
+    const std::int64_t smallest = (((determinant < 0 ? -determinant : determinant) * 1024) / scale) * 1024;
+    const std::int64_t pixels = ShiftDown(std::int64_t{style.width} * smallest, kCoefficientBits);
+    if (smallest > 0 && pixels < thinnest_) {
+      bool clamped = false;
+      drawn.width = Clamp32((std::int64_t{thinnest_} * kCoefficientOne) / smallest, clamped);
+      widening_ = true;
+    }
+  }
+  stroker_.Begin(strokeOut_, drawn);
   // The outline is cut into lines in its own coordinates, as finely as it
   // would be in pixels: the tolerance there is the tolerance in pixels
   // over how much the matrix makes things larger. Not more than a 4,096th
   // of what a position can be, which keeps its square in range.
   constexpr std::int64_t kLoosest = 16777216;
-  const std::int64_t scale = std::max<Coefficient>(LargestScale(matrix), 1);
   const std::int64_t tolerance =
       std::clamp<std::int64_t>((std::int64_t{tolerance_} * kCoefficientOne) / scale, 1, kLoosest);
   flattener_ = PathFlattener(stroker_, Matrix(), static_cast<Fixed>(tolerance));
@@ -2515,6 +2532,9 @@ void SvgRenderer::FillOutline(bool shown, const Filling& filling) noexcept {
   }
   if (shown && stroking_) {
     ++report_.strokes;
+    if (widening_) {
+      ++report_.widened;
+    }
   } else if (shown) {
     ++report_.shapes;
   }

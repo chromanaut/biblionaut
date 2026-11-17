@@ -188,6 +188,18 @@ TEST(DrawingViewer, FitsADrawingToThePageAsLargeAsItGoesInTheMiddle) {
   EXPECT_EQ(fixture.BlackCount(), 24U * 24U);
 }
 
+TEST(DrawingViewer, DrawsAHairlineAPixelWideAndSolid) {
+  // A tenth of a pixel as it is, which dithered would be a few dots.
+  Fixture fixture;
+  fixture.Put("a.svg", Svg(40, 24, "<line x1='2' y1='12.5' x2='38' y2='12.5' stroke='#000' stroke-width='.1'/>"));
+  fixture.Start();
+  fixture.Settle();
+  for (std::size_t x = 0; x < 40; ++x) {
+    EXPECT_EQ(fixture.Black(x, 12), x >= 2 && x < 38) << x;
+  }
+  EXPECT_EQ(fixture.BlackCount(), 36U);
+}
+
 TEST(DrawingViewer, TurnsTheDrawingTheWayThePanelIsTurnedToBeRead) {
   // The panel's picture is turned a quarter clockwise to be read: a page
   // 24 wide and 40 high, whose top is the panel's left.

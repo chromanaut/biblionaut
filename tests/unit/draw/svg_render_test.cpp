@@ -2321,6 +2321,67 @@ TEST(SvgRender, AStrokeGoesOverTheFillHalfInsideTheOutlineAndHalfOut) {
   EXPECT_NEAR(faint.At(2, 6), 191, 1);
 }
 
+// `body` drawn 40 by 20 in one strip, with no stroke thinner than
+// `thinnest` pixels.
+Drawing DrawThinnest(std::string_view body, double thinnest) {
+  Drawing drawing;
+  drawing.width = 40;
+  drawing.height = 20;
+  drawing.gray.assign(std::size_t{40} * 20, kWhite);
+  std::vector<std::int16_t> cells(Filler::CellsFor(40, 20));
+  Filler filler;
+  EXPECT_TRUE(filler.Begin(drawing.gray, 40, 0, cells));
+  SvgRenderer renderer;
+  renderer.SetThinnestStroke(static_cast<Fixed>(thinnest * kFixedOne));
+  renderer.Begin(&filler, Pixels(40), Pixels(20));
+  const std::string file = Svg(40, 20, body);
+  std::string_view bytes = file;
+  while (!bytes.empty()) {
+    bytes.remove_prefix(renderer.Step(bytes));
+  }
+  drawing.status = renderer.Finish();
+  drawing.report = renderer.Report();
+  return drawing;
+}
+
+TEST(SvgRender, AStrokeThinnerThanAskedForIsDrawnThatWide) {
+  const std::string_view hairline = "<line x1='4' y1='10.5' x2='36' y2='10.5' stroke='#000' stroke-width='.1'/>";
+  // As it is, a tenth of a pixel: a light gray.
+  const Drawing asItIs = DrawThinnest(hairline, 0);
+  EXPECT_NEAR(asItIs.Covered(), 3.2, 0.1);
+  EXPECT_GT(asItIs.At(20, 10), 200);
+  EXPECT_EQ(asItIs.report.widened, 0u);
+  // A pixel wide, and black where it covers a whole pixel.
+  const Drawing widened = DrawThinnest(hairline, 1);
+  EXPECT_NEAR(widened.Covered(), 32, 0.1);
+  EXPECT_EQ(widened.At(20, 10), 0);
+  EXPECT_EQ(widened.report.strokes, 1u);
+  EXPECT_EQ(widened.report.widened, 1u);
+  // A stroke as wide as that already, or wider, is drawn as it is.
+  const std::string_view wide = "<line x1='4' y1='10' x2='36' y2='10' stroke='#000' stroke-width='2'/>";
+  EXPECT_EQ(DrawThinnest(wide, 1).gray, DrawThinnest(wide, 0).gray);
+  EXPECT_EQ(DrawThinnest(wide, 1).report.widened, 0u);
+  // What a drawing's own scale makes thin counts: a line a unit wide in a
+  // drawing drawn at a fifth of its size is a fifth of a pixel.
+  const Drawing small =
+      DrawThinnest("<g transform='scale(.2)'><line x1='20' y1='52.5' x2='180' y2='52.5' stroke='#000'/></g>", 1);
+  // A fifth is not exact in 2^20ths, and the width comes out a little over.
+  EXPECT_NEAR(small.Covered(), 32, 0.2);
+  EXPECT_EQ(small.report.widened, 1u);
+}
+
+TEST(SvgRender, AStrokeIsWidenedByWhereItsMatrixMakesThingsSmallest) {
+  // Stretched four times across: a line along the stretch, a tenth of a
+  // unit thick, is a tenth of a pixel, and is made a unit, a pixel; so is
+  // one down it, which a unit makes four pixels wide.
+  const Drawing drawing = DrawThinnest(
+      "<g transform='scale(4 1)'><line x1='1' y1='5.5' x2='9' y2='5.5' stroke='#000' stroke-width='.1'/>"
+      "<line x1='2' y1='8' x2='2' y2='16' stroke='#000' stroke-width='.1'/></g>",
+      1);
+  EXPECT_NEAR(drawing.Covered(), 32 + 32, 0.1);
+  EXPECT_EQ(drawing.report.widened, 2u);
+}
+
 TEST(SvgRender, AStrokeIsAsWideAsItIsInItsShapesOwnUnits) {
   // Stretched four times across: a line along it is as thick as it was, and
   // one down it four times as thick.

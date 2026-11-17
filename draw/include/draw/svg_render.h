@@ -75,7 +75,8 @@ struct SvgReport {
   std::uint32_t leftOut = 0;    // A bit of SvgLeftOut for each thing met.
   std::uint32_t elements = 0;   // Elements read: one that is used is read again each time.
   std::uint32_t shapes = 0;     // Shapes filled,
-  std::uint32_t strokes = 0;    // and stroked.
+  std::uint32_t strokes = 0;    // and stroked,
+  std::uint32_t widened = 0;    // of which drawn wider, to the thinnest asked for.
   std::uint32_t commands = 0;   // Commands their outlines had,
   std::uint32_t lines = 0;      // and lines those became.
   std::uint32_t deepest = 0;    // The most groups open at once.
@@ -155,7 +156,8 @@ struct SvgSize {
 //   `stroke`, `stroke-width`, `stroke-opacity`, `stroke-linejoin`,
 //   `stroke-linecap`, `stroke-miterlimit`, `stroke-dasharray` and
 //   `stroke-dashoffset`, in the shape's own coordinates. The stroke goes
-//   over the fill. A stroke painted with a gradient is not drawn.
+//   over the fill. A stroke painted with a gradient is not drawn. No
+//   stroke is drawn thinner than SetThinnestStroke() asks.
 // - `display` and `visibility` hide things.
 // - Everything else is passed over, and Report() says what there was: see
 //   SvgLeftOut. A drawing with text or pictures in it comes out without
@@ -210,7 +212,7 @@ struct SvgSize {
 // the call it comes in.
 //
 // The file is not trusted. Whatever its bytes, it ends in a status and a
-// report. Used by one task. The object is 8,128 bytes on the device: half
+// report. Used by one task. The object is 8,136 bytes on the device: half
 // of it what each open group hands on, 124 bytes a group, of which the
 // style of a stroke is 52; a thirteenth the stroking; a fifteenth each the
 // path data it holds and the reading of a style sheet; a seventeenth the
@@ -305,6 +307,14 @@ class SvgRenderer {
   // they still run along rows and columns of pixels, as they do after a
   // quarter turn. Kept from one pass to the next; nothing, until given.
   void PlaceOn(const Matrix& matrix) noexcept { place_ = matrix; }
+
+  // The thinnest a stroke is drawn, in pixels: one that would come out
+  // thinner than this, where its shape's matrix makes it thinnest, is drawn
+  // that wide, and counted in the report. A stroke far under a pixel comes
+  // out a light gray, which a panel of few grays shows broken. Nothing, the
+  // default, draws every stroke as wide as it is. Kept from one pass to the
+  // next.
+  void SetThinnestStroke(Fixed pixels) noexcept { thinnest_ = std::max<Fixed>(pixels, 0); }
 
   // Begins a pass over a file. The whole drawing is `width` by `height`
   // pixels, and the part of it in `filler`'s strip is drawn there, over
@@ -614,7 +624,8 @@ class SvgRenderer {
   Fixed width_ = 0;
   Fixed height_ = 0;
   Fixed tolerance_ = kDefaultTolerance;
-  Matrix place_;  // Where the fitted picture goes (PlaceOn()).
+  Matrix place_;        // Where the fitted picture goes (PlaceOn()).
+  Fixed thinnest_ = 0;  // The thinnest stroke, in pixels (SetThinnestStroke()).
   SvgStatus status_ = SvgStatus::kOk;
   SvgReport report_;
   SvgSize size_;
@@ -756,6 +767,7 @@ class SvgRenderer {
   PathFlattener strokeOut_;
   bool stroking_ = false;
   bool strokeNext_ = false;
+  bool widening_ = false;  // The stroke in hand is drawn wider, to the thinnest asked for.
   Filling strokeFilling_;
   Matrix strokeMatrix_;
   StrokeStyle streamStyle_;

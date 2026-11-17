@@ -20,6 +20,7 @@
 #include "draw/png.h"
 #include "draw/row_sink.h"
 #include "draw/scale.h"
+#include "draw/spool.h"
 #include "draw/svg_render.h"
 #include "reader/screen.h"
 
@@ -69,9 +70,14 @@ namespace bn::reader {
 // each picture, what it was, the size it was shown at, and how long the
 // reading, the scaling, the dithering and the writing took.
 //
-// The memory for the bands, for the renderer and for what a drawing
-// defines is taken from the heap at Start(): about 77 KB for the X4's
-// panel, most of it the filler's cells and the definitions. What a picture
+// A drawing is read once and kept on the card (kSpoolPath), and each band
+// drawn from what was kept; if it cannot be kept, it is read again for each
+// band, and a line says why.
+//
+// The memory for the bands, for the renderer, for what a drawing defines
+// and for the links of what is kept is taken from the heap at Start():
+// about 94 KB for the X4's panel, most of it the filler's cells, the
+// definitions and the links. What a picture
 // needs besides is taken the first time one is shown: about 78 KB, the
 // reader's window, its rows and the band of bits the most of it.
 class DrawingViewer final : public Screen {
@@ -103,6 +109,11 @@ class DrawingViewer final : public Screen {
   // The thinnest a stroke is drawn: a pixel, in 4,096ths. One much thinner
   // would be a light gray, which black and white show as a broken line.
   static constexpr draw::Fixed kThinnestStroke = 4096;
+  // Where a drawing is kept while it is shown, once read, to be drawn a
+  // band at a time (draw/spool.h): a hidden file at the top of the card,
+  // made again for each drawing. And how many chunks it may have: 4 MB.
+  static constexpr std::string_view kSpoolPath = "/.drawing-spool";
+  static constexpr std::size_t kSpoolChunks = 8192;
   // The most drawings in the folder that are shown, and the longest name.
   static constexpr std::size_t kMostDrawings = 256;
   static constexpr std::size_t kLongestName = 255;
@@ -135,12 +146,19 @@ class DrawingViewer final : public Screen {
   std::size_t Drawings() const noexcept { return names_.size(); }
   std::size_t Current() const noexcept { return current_; }
   std::size_t Shown() const noexcept { return shown_; }
+  // Goes round the drawings once by itself, for timing them with nobody at
+  // the buttons: once each is shown, the next is begun as if Down had been
+  // pressed then, and after the last a line says the tour is over. Call
+  // before Start().
+  void TourOnce() noexcept { touring_ = true; }
 
  private:
   enum class Phase : std::uint8_t {
     kIdle,        // A drawing is on the panel, or there is none.
     kSizing,      // Reading the file's first tag, for its size.
-    kDrawing,     // Drawing a band.
+    kRecording,   // Reading the file once, and keeping what it draws for each band.
+    kDrawing,     // Drawing a band from the file, when it was not kept.
+    kReplaying,   // Drawing a band from what was kept.
     kPicturing,   // Reading a picture through, for a band.
     kWriting,     // A band drawn, to be written once the panel is free.
     kRefreshing,  // The panel is showing what was drawn.
@@ -188,8 +206,19 @@ class DrawingViewer final : public Screen {
   void SayPicture() noexcept;
   void SayNotShown(std::string_view why) noexcept;
   // Gives the renderer the file for up to the time left: true when the
-  // file is over, or reading it failed.
+  // file is over, or reading it failed. FeedSome() does it, and Feed()
+  // times it.
   bool Feed(std::uint64_t until) noexcept;
+  bool FeedSome(std::uint64_t until) noexcept;
+  // The file read once into the spool: false, and why in spoolFailure_, if
+  // it cannot be. A band given back from it, for up to the time left: true
+  // when the band is all there.
+  bool StartRecording() noexcept;
+  bool StartReplay() noexcept;
+  bool Replay(std::uint64_t until) noexcept;
+  // Once the refresh is over, a second line for what was shown: where the
+  // time went, the refresh's included.
+  void SayTimes(std::uint64_t refreshUs) noexcept;
   // Starts a pass over the file: for its size if `filler` is null.
   bool StartPass(draw::Filler* filler) noexcept;
   // Fits the drawing to the page and puts it into the panel's rows.
@@ -216,8 +245,10 @@ class DrawingViewer final : public Screen {
   core::RefreshMode redrawMode_ = core::RefreshMode::kHalf;  // by this.
   bool firstRefresh_ = true;
   bool sleepAsked_ = false;
+  bool touring_ = false;
   std::uint64_t phaseStartedUs_ = 0;
   std::uint64_t drawingStartedUs_ = 0;
+  std::uint64_t pressToRefreshUs_ = 0;  // From the press to the refresh's start: a press during it moves the first.
 
   // The file being read.
   core::FileHandle file_ = core::kNoFile;
@@ -245,6 +276,32 @@ class DrawingViewer final : public Screen {
   draw::Filler filler_;
   draw::Ditherer ditherer_;
 
+  // The spool: a file on the card, timed as it is written and read.
+  class CardSpool final : public draw::SpoolStore {
+   public:
+    CardSpool(core::Storage& storage, core::Clock& clock) noexcept : storage_(storage), clock_(clock) {}
+    [[nodiscard]] bool Open(std::string_view path) noexcept;
+    void Close() noexcept;
+    [[nodiscard]] bool Append(std::span<const std::uint8_t> bytes) noexcept override;
+    [[nodiscard]] bool ReadAt(std::uint32_t offset, std::span<std::uint8_t> bytes) noexcept override;
+    std::uint64_t writingUs = 0;
+    std::uint64_t readingUs = 0;
+    std::uint64_t bytesWritten = 0;
+    std::uint64_t bytesRead = 0;
+
+   private:
+    core::Storage& storage_;
+    core::Clock& clock_;
+    core::FileHandle file_ = core::kNoFile;
+    std::uint32_t size_ = 0;
+  };
+  CardSpool spoolStore_{storage_, clock_};
+  std::unique_ptr<draw::SpoolWriter> spool_;
+  std::unique_ptr<std::uint16_t[]> links_;
+  bool spooling_ = false;               // The drawing in hand is drawn from the spool.
+  const char* spoolFailure_ = nullptr;  // Why it is not, if it was tried.
+  std::uint64_t replayingUs_ = 0;
+
   // A picture: what its header says, where it goes on the page, and which
   // band of the panel it is being set into.
   bool picture_ = false;
@@ -257,11 +314,18 @@ class DrawingViewer final : public Screen {
   std::size_t top_ = 0;
   std::size_t passes_ = 0;
   draw::PngStatus pictureStatus_ = draw::PngStatus::kOk;
-  // How long each stage took, over all the passes.
+  // How long each stage took, over all the passes, a drawing's or a
+  // picture's: reading the file, drawing or scaling what it holds, making
+  // the panel's levels of it, writing it to the panel, and waiting for the
+  // panel to be ready for a band. And how much of a drawing's file was read
+  // in all.
   std::uint64_t readingUs_ = 0;
+  std::uint64_t renderingUs_ = 0;
   std::uint64_t scalingUs_ = 0;
   std::uint64_t ditheringUs_ = 0;
   std::uint64_t writingUs_ = 0;
+  std::uint64_t waitingUs_ = 0;
+  std::uint64_t bytesRead_ = 0;
   std::uint64_t timedUs_ = 0;  // The scaler's share of the reader's last step.
 
   // The memory a picture takes, the first time one is shown.

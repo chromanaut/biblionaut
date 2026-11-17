@@ -42,7 +42,8 @@ void PrintUsage(const char* program) {
                "that folder's layout folder set in lines, at the same moments.\n"
                "Set BN_DRAWINGS instead to have the SVG and PNG files in that folder's\n"
                "drawings folder shown in place of the test pattern, Down and Up going from\n"
-               "one to the next.\n",
+               "one to the next; and BN_DRAWING_TOUR as well to have it go round them once\n"
+               "by itself.\n",
                program);
 }
 
@@ -70,6 +71,7 @@ struct Checks {
   bool booksBrief = false;
   bool layout = false;
   bool drawings = false;
+  bool drawingTour = false;
 };
 
 // How long the application runs: until the window is closed, or until a
@@ -103,7 +105,7 @@ Ended Run(const bn::reader::Services& services, const Checks& checks, bn::hw::Pa
     app.CheckLayout();
   }
   if (checks.drawings) {
-    app.ViewDrawings(bn::reader::DrawingViewer::kFolder);
+    app.ViewDrawings(bn::reader::DrawingViewer::kFolder, checks.drawingTour);
   }
   app.Start();
   while (!limit.Over()) {
@@ -171,7 +173,8 @@ int main(int argc, char** argv) {
                       .books = std::getenv("BN_BOOK_CHECK") != nullptr,
                       .booksBrief = std::getenv("BN_BOOK_CHECK_BRIEF") != nullptr,
                       .layout = std::getenv("BN_LAYOUT_CHECK") != nullptr,
-                      .drawings = std::getenv("BN_DRAWINGS") != nullptr};
+                      .drawings = std::getenv("BN_DRAWINGS") != nullptr,
+                      .drawingTour = std::getenv("BN_DRAWING_TOUR") != nullptr};
   // NOLINTEND(concurrency-mt-unsafe)
   if (static_cast<int>(checks.storage) + static_cast<int>(checks.books) + static_cast<int>(checks.layout) +
           static_cast<int>(checks.drawings) >

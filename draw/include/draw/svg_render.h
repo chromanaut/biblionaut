@@ -235,7 +235,7 @@ class SvgRenderer {
   // tag can complete, the last of a polygon's points and its closing.
   static constexpr std::uint32_t kCommandsPerStep = 16;
   static constexpr std::uint32_t kMostCommandsPerStep = kCommandsPerStep + 3;
-  // The most lines one call can give the filler. Each command becomes
+  // The most lines one call can give the canvas. Each command becomes
   // kMostLinesPerArc lines at the most. If the outline is stroked, each of
   // those becomes Stroker's kMostLinesPerLine, a command can end a part of
   // the outline, and every dash the outline may have can begin and end
@@ -317,13 +317,14 @@ class SvgRenderer {
   void SetThinnestStroke(Fixed pixels) noexcept { thinnest_ = std::max<Fixed>(pixels, 0); }
 
   // Begins a pass over a file. The whole drawing is `width` by `height`
-  // pixels, and the part of it in `filler`'s strip is drawn there, over
-  // what the strip holds.
+  // pixels, and it is drawn into `canvas`: a Filler draws the part of it
+  // in its strip there, over what the strip holds, and a SpoolWriter keeps
+  // all of it to be drawn later (draw/spool.h).
   //
-  // With no filler nothing is drawn and no outline is read: the pass finds
+  // With no canvas nothing is drawn and no outline is read: the pass finds
   // the drawing's size, which is known as soon as its first tag has been
   // read, and what a report can say without drawing.
-  void Begin(Filler* filler, Fixed width, Fixed height, Fixed tolerance = kDefaultTolerance) noexcept;
+  void Begin(Canvas* canvas, Fixed width, Fixed height, Fixed tolerance = kDefaultTolerance) noexcept;
 
   // Takes bytes from the front of `bytes`, and returns how many it took:
   // the rest are for the next call. It may take none and still have
@@ -613,7 +614,7 @@ class SvgRenderer {
   Fixed LengthAt(Slot slot, Fixed otherwise) const noexcept;
 
   SvgTagReader tags_;
-  Filler* filler_ = nullptr;
+  Canvas* canvas_ = nullptr;
   Nowhere nowhere_;
   PathFlattener flattener_;
   SvgPathReader reader_;

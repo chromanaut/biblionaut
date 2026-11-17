@@ -52,15 +52,21 @@ struct Fixture {
   void Put(const std::string& name, const std::string& contents) {
     storage.Put("/drawings/" + name, {contents.begin(), contents.end()});
   }
-  void Start() {
+  void Start(bool tour = false) {
     ASSERT_EQ(storage.Start(), bn::core::StorageStatus::kOk);
     viewer = std::make_unique<DrawingViewer>(display, clock, storage, stream, DrawingViewer::kFolder);
+    if (tour) {
+      viewer->TourOnce();
+    }
     viewer->Start();
   }
   // Turns of the loop until the panel is shown something and done with it,
   // and nothing more is to be drawn; the panel finishes what it is given
   // at once. Returns the turns it took.
   int Settle(int most = 100000) {
+    // Quiet within this settling: not since the last.
+    quietTurns_ = 0;
+    lastCalls_ = display.calls.size();
     for (int turn = 0; turn < most; ++turn) {
       display.busy = false;
       const std::size_t calls = display.calls.size();
@@ -98,10 +104,13 @@ struct Fixture {
     }
     return count;
   }
-  std::vector<std::string> Lines() const {
+  // The lines of log text the viewer sent: those that say what each
+  // drawing came to, or those that say where its time went.
+  std::vector<std::string> Lines(bool timed = false) const {
     std::vector<std::string> lines;
     for (const bn::test::StreamItem& item : bn::test::ParseStream(sink.received)) {
-      if (item.isFrame && item.type == bn::core::FrameType::kText) {
+      if (item.isFrame && item.type == bn::core::FrameType::kText &&
+          (item.Text().find(" timed: ") != std::string::npos) == timed) {
         lines.push_back(item.Text());
       }
     }
@@ -136,6 +145,9 @@ TEST(DrawingViewer, ShowsTheDrawingsInItsFolderInTheOrderOfTheirNames) {
   fixture.Put("a.SVG", Svg(40, 24, ""));
   fixture.Put("notes.txt", "Not a drawing.");
   fixture.Put("inner/c.svg", Svg(40, 24, ""));
+  // Hidden, as what a Mac writes beside each file it copies to a card is.
+  fixture.Put("._b.svg", "Not a drawing.");
+  fixture.Put(".d.png", "Not a picture.");
   fixture.Start();
   ASSERT_EQ(fixture.viewer->CurrentState(), State::kReady);
   EXPECT_EQ(fixture.viewer->Drawings(), 2U);
@@ -226,6 +238,27 @@ TEST(DrawingViewer, AGrayComesOutAsDotsAsDarkOnTheWhole) {
   EXPECT_NEAR(static_cast<double>(black), (40.0 * 24.0) / 2, 20.0);
 }
 
+TEST(DrawingViewer, ATourShowsEachDrawingOnceByItselfAndStops) {
+  Fixture fixture;
+  for (const char* name : {"1.svg", "2.svg", "3.svg"}) {
+    fixture.Put(name, Svg(40, 24, ""));
+  }
+  fixture.Start(true);
+  for (int settled = 0; settled < 6; ++settled) {
+    fixture.Settle();
+  }
+  EXPECT_EQ(fixture.viewer->Shown(), 3U);
+  EXPECT_EQ(fixture.viewer->Current(), 2U);
+  const std::vector<std::string> lines = fixture.Lines();
+  ASSERT_EQ(lines.size(), 4U);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(lines[i].find("drawing " + std::to_string(i + 1) + " of 3: "), 0U) << lines[i];
+  }
+  EXPECT_EQ(lines[3], "drawings: the tour is over, 3 shown");
+  // Each is timed.
+  EXPECT_EQ(fixture.Lines(true).size(), 6U);
+}
+
 TEST(DrawingViewer, DownAndUpGoFromOneToTheNextAndRoundAndBackAndConfirmRedraw) {
   Fixture fixture;
   for (const char* name : {"1.svg", "2.svg", "3.svg"}) {
@@ -308,6 +341,69 @@ TEST(DrawingViewer, SaysWhatEachDrawingCameToAndWhatWasLeftOut) {
   const std::string line = fixture.Lines().back();
   EXPECT_NE(line.find("drawing 1 of 1: words.svg, ok, 1 shape, 2 strokes,"), std::string::npos) << line;
   EXPECT_NE(line.find("left out: text,"), std::string::npos) << line;
+}
+
+TEST(DrawingViewer, SaysWhereEachDrawingsTimeWentOnceItIsShown) {
+  Fixture fixture;
+  fixture.Put("a.svg", Svg(40, 24, "<rect width='40' height='24'/>"));
+  fixture.Start();
+  fixture.Settle();
+  const std::vector<std::string> timed = fixture.Lines(true);
+  ASSERT_EQ(timed.size(), 2U);
+  // 24 rows in bands of 16 is two bands.
+  EXPECT_EQ(timed[0].find("drawing 1 timed: 2 bands, 0 KB read in "), 0U) << timed[0];
+  for (const std::string_view part : {" ms; rendering ", " ms, dithering ", " ms, writing ", " ms, waiting ",
+                                      " ms, between turns ", " ms, refreshing "}) {
+    EXPECT_NE(timed[0].find(part), std::string::npos) << part << " in " << timed[0];
+  }
+  // What was kept for the two bands, a chunk of 512 bytes each, written
+  // and read back.
+  EXPECT_EQ(timed[1].find("drawing 1 timed: spool 1 KB written in "), 0U) << timed[1];
+  EXPECT_NE(timed[1].find(" ms, 1 KB read in "), std::string::npos) << timed[1];
+  EXPECT_NE(timed[1].find(" ms; replaying "), std::string::npos) << timed[1];
+  // A drawing given up for another is not timed.
+  EXPECT_EQ(fixture.Lines().size(), 1U);
+}
+
+TEST(DrawingViewer, ReadsADrawingOnceForItsSizeAndOnceToKeepWhatItDraws) {
+  // A file of several kilobytes, read a kilobyte at a time: through once to
+  // its first tag, and once whole, however many bands the panel has.
+  Fixture fixture;
+  std::string body;
+  for (int i = 0; i < 200; ++i) {
+    body += "<circle cx='" + std::to_string(i % 40) + "' cy='" + std::to_string(i % 24) + "' r='3'/>";
+  }
+  const std::string file = Svg(40, 24, body);
+  fixture.Put("a.svg", file);
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  // Each read of the drawing is a kilobyte; the spool's are 512 bytes, and
+  // add up to what was kept.
+  std::size_t drawingReads = 0;
+  for (const auto& call : fixture.storage.reads) {
+    drawingReads += call.size == DrawingViewer::kReadBytes ? 1 : 0;
+  }
+  EXPECT_EQ(drawingReads, 1 + ((file.size() + DrawingViewer::kReadBytes - 1) / DrawingViewer::kReadBytes));
+}
+
+TEST(DrawingViewer, DrawsAsBeforeWhenTheCardWillNotKeepTheDrawing) {
+  const std::string file = Svg(40, 24, "<circle cx='20' cy='12' r='9'/><rect x='2' y='2' width='9' height='20'/>");
+  Fixture kept;
+  kept.Put("a.svg", file);
+  kept.Start();
+  kept.Settle();
+  Fixture refused;
+  refused.Put("a.svg", file);
+  refused.storage.failWrites = bn::core::StorageStatus::kFailed;
+  refused.Start();
+  refused.Settle();
+  ASSERT_EQ(refused.viewer->Shown(), 1U);
+  EXPECT_EQ(refused.BlackCount(), kept.BlackCount());
+  EXPECT_GT(refused.BlackCount(), 100U);
+  const std::vector<std::string> timed = refused.Lines(true);
+  ASSERT_EQ(timed.size(), 2U);
+  EXPECT_EQ(timed[1], "drawing 1 timed: not spooled: store failed");
 }
 
 TEST(DrawingViewer, WithNoDrawingsLeavesThePanelBlankAndSaysWhy) {

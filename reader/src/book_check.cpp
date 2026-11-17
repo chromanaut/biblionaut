@@ -628,7 +628,9 @@ void BookCheck::NextBook() noexcept {
     MoveTo(Step::kOpenFolder);
     return;
   }
-  if (!IsBookName(found)) {
+  // A file whose name begins with a dot is hidden, as the `._` files a Mac
+  // writes beside each file it copies to a card are.
+  if (found.front() == '.' || !IsBookName(found)) {
     return;
   }
   pathLength_ = prefixLength + length;

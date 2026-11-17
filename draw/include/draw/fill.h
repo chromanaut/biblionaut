@@ -63,6 +63,27 @@ struct GrayRamp {
   std::array<std::int64_t, kMostStops> alphaRates_{};
 };
 
+// What a drawing is drawn into: the lines of each shape's outline, in
+// pixels of the picture, and then the shape's filling, which uses up the
+// lines given since the last. A Filler draws them into a strip of the
+// picture as they come; a SpoolWriter (draw/spool.h) keeps them, to be
+// drawn into each strip later. Width(), Top() and Rows() say which part of
+// the picture is wanted, so that what lies outside it need not be cut up
+// finely.
+class Canvas : public LineSink {
+ public:
+  virtual void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity) noexcept = 0;
+  virtual void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity, Point from, Point to) noexcept = 0;
+  virtual void Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity) noexcept = 0;
+  virtual void Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity, Point from, Point to) noexcept = 0;
+  virtual std::int32_t Width() const noexcept = 0;
+  virtual std::int32_t Top() const noexcept = 0;
+  virtual std::int32_t Rows() const noexcept = 0;
+
+ protected:
+  ~Canvas() = default;  // Never destroyed through the interface.
+};
+
 // Fills outlines with a gray, a strip of a picture at a time.
 //
 // It is a LineSink, so it can be what a PathFlattener gives its lines to.
@@ -108,7 +129,7 @@ struct GrayRamp {
 // multiple of 256 times.
 //
 // Used by one task. The object is 68 bytes on the device.
-class Filler final : public LineSink {
+class Filler final : public Canvas {
  public:
   // The widest a strip can be, and the most rows it can have.
   static constexpr std::size_t kMostWidth = 16384;
@@ -144,27 +165,41 @@ class Filler final : public LineSink {
 
   // Lays everything outlined since the last Fill() over the strip, in
   // `gray`. With an `opacity` under 255, what was there shows through.
-  void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity = 255) noexcept;
+  void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity = 255) noexcept override;
 
   // The same, cut off at the edges of a box of the picture, from `from` to
   // `to` in pixels: nothing outside the box is drawn, and a pixel an edge
   // of it passes through takes as much less as lies outside. A box with
   // nothing in it draws nothing. Everything outlined is used up all the
   // same.
-  void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity, Point from, Point to) noexcept;
+  void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity, Point from, Point to) noexcept override;
 
   // The same two, with a gray for each pixel from `ramp`, as solid as the
   // ramp says there and `opacity` together. Each pixel costs a few more
   // additions and a look in the ramp.
-  void Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity) noexcept;
-  void Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity, Point from, Point to) noexcept;
+  void Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity) noexcept override;
+  void Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity, Point from, Point to) noexcept override;
 
   // The strip that was set: how many pixels wide it is, which row of the
   // picture its first row is, and how many rows it has. No rows, if
   // Begin() refused it.
-  std::int32_t Width() const noexcept { return width_; }
-  std::int32_t Top() const noexcept { return top_ / 256; }
-  std::int32_t Rows() const noexcept { return rows_; }
+  std::int32_t Width() const noexcept override { return width_; }
+  std::int32_t Top() const noexcept override { return top_ / 256; }
+  std::int32_t Rows() const noexcept override { return rows_; }
+
+  // A place in 256ths of a pixel, which is how finely lines are placed:
+  // where MoveTo() and LineTo() put a point.
+  struct Place {
+    std::int32_t x = 0;
+    std::int32_t y = 0;
+
+    friend bool operator==(const Place&, const Place&) = default;
+  };
+  static Place PlaceOf(Point point) noexcept;
+
+  // A line already placed, as LineTo() would add it, with nothing to do
+  // with the outline in hand: how a recording of lines is given back.
+  void AddPlaced(Place from, Place to) noexcept { AddLine(from, to); }
 
   // How many times a cell has been added to, and a pixel looked at, since
   // Begin(): what the work so far has come to.
@@ -172,15 +207,6 @@ class Filler final : public LineSink {
   std::uint32_t PixelsVisited() const noexcept { return pixelsVisited_; }
 
  private:
-  // A place in 256ths of a pixel, which is how finely lines are placed.
-  struct Place {
-    std::int32_t x = 0;
-    std::int32_t y = 0;
-
-    friend bool operator==(const Place&, const Place&) = default;
-  };
-
-  static Place PlaceOf(Point point) noexcept;
   void CloseOutline() noexcept;
   // Fill(), within the box from `from` to `to` if there is one.
   void FillWithin(FillRule rule, std::uint8_t gray, const GrayRamp* ramp, std::uint8_t opacity, const Place* from,

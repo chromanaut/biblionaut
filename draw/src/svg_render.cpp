@@ -307,9 +307,9 @@ void SvgSize::Natural(Fixed& naturalWidth, Fixed& naturalHeight) const noexcept 
 SvgRenderer::SvgRenderer() noexcept
     : flattener_(nowhere_, Matrix()), reader_(flattener_), strokeOut_(nowhere_, Matrix()) {}
 
-void SvgRenderer::Begin(Filler* filler, Fixed width, Fixed height, Fixed tolerance) noexcept {
+void SvgRenderer::Begin(Canvas* canvas, Fixed width, Fixed height, Fixed tolerance) noexcept {
   tags_ = SvgTagReader();
-  filler_ = (filler != nullptr && filler->Rows() > 0) ? filler : nullptr;
+  canvas_ = (canvas != nullptr && canvas->Rows() > 0) ? canvas : nullptr;
   width_ = width;
   height_ = height;
   tolerance_ = tolerance;
@@ -1110,8 +1110,8 @@ void SvgRenderer::EndReuse() noexcept {
 
 SvgStatus SvgRenderer::Finish() noexcept {
   // A shape the file ended in the middle of is not drawn.
-  if (filler_ != nullptr) {
-    filler_->Fill(FillRule::kNonZero, 0, 0);
+  if (canvas_ != nullptr) {
+    canvas_->Fill(FillRule::kNonZero, 0, 0);
   }
   draining_ = false;
   streaming_ = false;
@@ -2256,7 +2256,7 @@ Fixed SvgRenderer::LengthAt(Slot slot, Fixed otherwise) const noexcept {
 // ---- Shapes ----
 
 bool SvgRenderer::Shows(std::uint8_t& gray, std::uint8_t& alpha) const noexcept {
-  if (filler_ == nullptr || displayNone_ || unreadable_ || lateTransform_ || outlineBad_ || pending_.hidden) {
+  if (canvas_ == nullptr || displayNone_ || unreadable_ || lateTransform_ || outlineBad_ || pending_.hidden) {
     return false;
   }
   std::uint8_t solid = pending_.fill.alpha;
@@ -2276,7 +2276,7 @@ bool SvgRenderer::Shows(std::uint8_t& gray, std::uint8_t& alpha) const noexcept 
 }
 
 bool SvgRenderer::StrokeShows(Filling& filling) const noexcept {
-  if (filler_ == nullptr || displayNone_ || unreadable_ || lateTransform_ || outlineBad_ || pending_.hidden ||
+  if (canvas_ == nullptr || displayNone_ || unreadable_ || lateTransform_ || outlineBad_ || pending_.hidden ||
       pending_.strokeStyle.width <= 0) {
     return false;
   }
@@ -2338,7 +2338,7 @@ bool SvgRenderer::DrawShape() noexcept {
     case Element::kPolygon:
     case Element::kPolyline:
       if (streaming_) {
-        // Its lines are in the filler already, whether or not it shows:
+        // Its lines are in the canvas already, whether or not it shows:
         // its stroke's, if it was being stroked, or else its own.
         EndOutline();
         if (stroking_) {
@@ -2422,18 +2422,18 @@ void SvgRenderer::StrokeNext() noexcept {
 
 void SvgRenderer::BeginOutline(const Matrix& matrix) noexcept {
   stroking_ = false;
-  flattener_ = PathFlattener(*filler_, matrix, tolerance_);
+  flattener_ = PathFlattener(*canvas_, matrix, tolerance_);
   // What lies outside the strip needs no cutting up.
   bool clamped = false;
   const auto pixels = [&clamped](std::int64_t count) noexcept { return Clamp32(count * kFixedOne, clamped); };
-  flattener_.KeepTo({.x = 0, .y = pixels(filler_->Top())},
-                    {.x = pixels(filler_->Width()), .y = pixels(std::int64_t{filler_->Top()} + filler_->Rows())});
+  flattener_.KeepTo({.x = 0, .y = pixels(canvas_->Top())},
+                    {.x = pixels(canvas_->Width()), .y = pixels(std::int64_t{canvas_->Top()} + canvas_->Rows())});
   StartReading();
 }
 
 void SvgRenderer::BeginStroke(const Matrix& matrix, const StrokeStyle& style) noexcept {
   stroking_ = true;
-  strokeOut_ = PathFlattener(*filler_, matrix, tolerance_);
+  strokeOut_ = PathFlattener(*canvas_, matrix, tolerance_);
   const std::int64_t scale = std::max<Coefficient>(LargestScale(matrix), 1);
   // A stroke is thinnest in pixels across the way the matrix makes things
   // smallest, which is at least its determinant over how much it makes
@@ -2492,7 +2492,7 @@ void SvgRenderer::EndOutline() noexcept {
 void SvgRenderer::Tally() noexcept {
   report_.commands += reader_.Commands() - talliedCommands_;
   talliedCommands_ = reader_.Commands();
-  // The lines that went into the filler: a stroke's, if it is one.
+  // The lines that went into the canvas: a stroke's, if it is one.
   const std::uint32_t lines = stroking_ ? strokeOut_.Lines() : flattener_.Lines();
   report_.lines += lines - talliedLines_;
   talliedLines_ = lines;
@@ -2521,14 +2521,14 @@ void SvgRenderer::FillOutline(bool shown, const Filling& filling) noexcept {
   const std::uint8_t alpha = shown ? filling.alpha : 0;
   if (shown && graded) {
     if (filling.boxed) {
-      filler_->Fill(filling.rule, ramp_, alpha, filling.boxFrom, filling.boxTo);
+      canvas_->Fill(filling.rule, ramp_, alpha, filling.boxFrom, filling.boxTo);
     } else {
-      filler_->Fill(filling.rule, ramp_, alpha);
+      canvas_->Fill(filling.rule, ramp_, alpha);
     }
   } else if (filling.boxed) {
-    filler_->Fill(filling.rule, filling.gray, alpha, filling.boxFrom, filling.boxTo);
+    canvas_->Fill(filling.rule, filling.gray, alpha, filling.boxFrom, filling.boxTo);
   } else {
-    filler_->Fill(filling.rule, filling.gray, alpha);
+    canvas_->Fill(filling.rule, filling.gray, alpha);
   }
   if (shown && stroking_) {
     ++report_.strokes;
@@ -2567,7 +2567,7 @@ void SvgRenderer::Drain() noexcept {
 std::size_t SvgRenderer::TakePathData(std::string_view piece, bool ofInput) noexcept {
   // With nothing to draw into, or once the outline has been given up, the
   // data is not read.
-  if (filler_ == nullptr || outlineBad_) {
+  if (canvas_ == nullptr || outlineBad_) {
     return piece.size();
   }
   if (streaming_) {

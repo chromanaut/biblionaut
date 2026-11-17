@@ -88,6 +88,7 @@ target_link_libraries(core_tests PRIVATE ZLIB::ZLIB)
 
 bn_add_unit_test(draw_tests
   SOURCES
+    unit/draw/dither_test.cpp
     unit/draw/fill_test.cpp
     unit/draw/fixed_test.cpp
     unit/draw/flatten_test.cpp
@@ -157,6 +158,7 @@ bn_add_unit_test(reader_tests
   SOURCES
     unit/reader/app_test.cpp
     unit/reader/book_check_test.cpp
+    unit/reader/drawing_viewer_test.cpp
     unit/reader/layout_check_test.cpp
     unit/reader/pattern_viewer_test.cpp
     unit/reader/storage_check_test.cpp
@@ -330,6 +332,15 @@ if(Python3_Interpreter_FOUND)
       ${PROJECT_SOURCE_DIR}/tools/layout-text.py $<TARGET_PROPERTY:bn_hyph_en_us,BN_TABLE_FILE>
       ${CMAKE_CURRENT_BINARY_DIR}/layout_check)
   set_tests_properties(e2e.LayoutCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # The drawing viewer, run by the desktop application over a folder of
+  # drawings, against bn-svg's drawing of each, turned onto the panel.
+  add_test(
+    NAME e2e.DrawingViewer
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/drawing_viewer.py
+      $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-svg> $<TARGET_FILE:bn-trace>
+      ${CMAKE_CURRENT_BINARY_DIR}/drawing_viewer)
+  set_tests_properties(e2e.DrawingViewer PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
   # against bn-zip, bn-xml, bn-epub and zipfile on the same files.

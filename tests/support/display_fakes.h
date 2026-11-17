@@ -45,6 +45,7 @@ class FakeDisplay final : public core::Display {
   }
 
   core::DisplaySize Size() const noexcept override { return size; }
+  core::PanelTurn ReadingTurn() const noexcept override { return turn; }
 
   [[nodiscard]] bool Start() noexcept override {
     calls.push_back({.op = Op::kStart});
@@ -154,6 +155,7 @@ class FakeDisplay final : public core::Display {
 
   core::DisplaySize size{.width = 800, .height = 480};
   bool present = false;
+  core::PanelTurn turn = core::PanelTurn::kNone;  // How it is turned to be read.
   bool started = false;
   bool powered = false;  // The drive voltages are on.
   bool busy = false;

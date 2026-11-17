@@ -1,0 +1,343 @@
+#include "reader/drawing_viewer.h"
+
+#include <gtest/gtest.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "display_fakes.h"
+#include "storage_fakes.h"
+#include "stream_fakes.h"
+#include "trace_fakes.h"
+
+namespace {
+
+using bn::core::InputEvent;
+using bn::core::InputEventKind;
+using bn::reader::DrawingViewer;
+using bn::test::FakeDisplay;
+using Op = FakeDisplay::Op;
+using State = DrawingViewer::State;
+
+// A clock that moves on a little every time it is read, so that whatever
+// is timed takes some time.
+class SteppingClock final : public bn::core::Clock {
+ public:
+  std::uint64_t NowUs() noexcept override {
+    now += step;
+    return now;
+  }
+  std::uint64_t now = 0;
+  std::uint64_t step = 10;
+};
+
+// A drawing `width` by `height` holding `body`.
+std::string Svg(int width, int height, const std::string& body) {
+  return "<svg xmlns='http://www.w3.org/2000/svg' width='" + std::to_string(width) + "' height='" +
+         std::to_string(height) + "'>" + body + "</svg>";
+}
+
+struct Fixture {
+  Fixture() {
+    display.present = true;
+    display.Resize({.width = 40, .height = 24});
+  }
+
+  void Put(const std::string& name, const std::string& contents) {
+    storage.Put("/drawings/" + name, {contents.begin(), contents.end()});
+  }
+  void Start() {
+    ASSERT_EQ(storage.Start(), bn::core::StorageStatus::kOk);
+    viewer = std::make_unique<DrawingViewer>(display, clock, storage, stream, DrawingViewer::kFolder);
+    viewer->Start();
+  }
+  // Turns of the loop until the panel is shown something and done with it,
+  // and nothing more is to be drawn; the panel finishes what it is given
+  // at once. Returns the turns it took.
+  int Settle(int most = 100000) {
+    for (int turn = 0; turn < most; ++turn) {
+      display.busy = false;
+      const std::size_t calls = display.calls.size();
+      viewer->Tick();
+      if (display.calls.size() == calls && !display.busy && viewer->CurrentState() != State::kReady) {
+        return turn;
+      }
+      if (display.calls.size() == calls && !display.busy && turn > 2 && Quiet()) {
+        return turn;
+      }
+    }
+    ADD_FAILURE() << "never settled";
+    return most;
+  }
+  // Nothing was asked of the panel in the last few turns.
+  bool Quiet() {
+    quietTurns_ = display.calls.size() == lastCalls_ ? quietTurns_ + 1 : 0;
+    lastCalls_ = display.calls.size();
+    return quietTurns_ > 50;
+  }
+  void Press(bn::core::Button button) {
+    viewer->OnInput(InputEvent{.timeUs = clock.now, .button = button, .kind = InputEventKind::kPress});
+  }
+  // Whether the pixel at (x, y) of what the panel shows is black.
+  bool Black(std::size_t x, std::size_t y) const {
+    const std::size_t rowBytes = display.size.RowBytes();
+    return (display.shown[(y * rowBytes) + (x / 8)] & (0x80U >> (x % 8))) == 0;
+  }
+  std::size_t BlackCount() const {
+    std::size_t count = 0;
+    for (std::size_t y = 0; y < display.size.height; ++y) {
+      for (std::size_t x = 0; x < display.size.width; ++x) {
+        count += Black(x, y) ? 1 : 0;
+      }
+    }
+    return count;
+  }
+  std::vector<std::string> Lines() const {
+    std::vector<std::string> lines;
+    for (const bn::test::StreamItem& item : bn::test::ParseStream(sink.received)) {
+      if (item.isFrame && item.type == bn::core::FrameType::kText) {
+        lines.push_back(item.Text());
+      }
+    }
+    return lines;
+  }
+  std::vector<bn::core::RefreshMode> Refreshes() const {
+    std::vector<bn::core::RefreshMode> modes;
+    for (const FakeDisplay::Call& call : display.calls) {
+      if (call.op == Op::kRefresh) {
+        modes.push_back(call.mode);
+      }
+    }
+    return modes;
+  }
+
+  bn::test::TraceFixture<64> trace;
+  bn::test::FakeSink sink;
+  bn::core::TraceStream stream{trace.tracer, sink};
+  bn::test::FakeStorage storage;
+  SteppingClock clock;
+  FakeDisplay display;
+  std::unique_ptr<DrawingViewer> viewer;
+
+ private:
+  std::size_t lastCalls_ = 0;
+  int quietTurns_ = 0;
+};
+
+TEST(DrawingViewer, ShowsTheDrawingsInItsFolderInTheOrderOfTheirNames) {
+  Fixture fixture;
+  fixture.Put("b.svg", Svg(40, 24, "<rect width='40' height='24'/>"));
+  fixture.Put("a.SVG", Svg(40, 24, ""));
+  fixture.Put("notes.txt", "Not a drawing.");
+  fixture.Put("inner/c.svg", Svg(40, 24, ""));
+  fixture.Start();
+  ASSERT_EQ(fixture.viewer->CurrentState(), State::kReady);
+  EXPECT_EQ(fixture.viewer->Drawings(), 2U);
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  ASSERT_FALSE(fixture.Lines().empty());
+  EXPECT_NE(fixture.Lines().back().find("drawing 1 of 2: a.SVG, ok"), std::string::npos) << fixture.Lines().back();
+  // The first is shown by a full refresh, and the panel's voltages then
+  // switched off.
+  ASSERT_EQ(fixture.Refreshes(), std::vector<bn::core::RefreshMode>{bn::core::RefreshMode::kFull});
+  EXPECT_EQ(fixture.BlackCount(), 0U);
+  fixture.Press(bn::core::Button::kDown);
+  fixture.Settle();
+  EXPECT_EQ(fixture.BlackCount(), 40U * 24U);
+  EXPECT_EQ(fixture.viewer->Current(), 1U);
+}
+
+TEST(DrawingViewer, WritesEachBandToBothPlanes) {
+  Fixture fixture;
+  fixture.Put("a.svg", Svg(40, 24, "<rect width='20' height='24'/>"));
+  fixture.Start();
+  fixture.Settle();
+  // Two bands of 16 rows and 8, each to the new-image plane and the old.
+  std::vector<std::pair<bn::core::DisplayPlane, std::uint16_t>> writes;
+  for (const FakeDisplay::Call& call : fixture.display.calls) {
+    if (call.op == Op::kWrite) {
+      writes.emplace_back(call.plane, call.firstRow);
+    }
+  }
+  const std::vector<std::pair<bn::core::DisplayPlane, std::uint16_t>> expected = {{bn::core::DisplayPlane::kNew, 0},
+                                                                                  {bn::core::DisplayPlane::kOld, 0},
+                                                                                  {bn::core::DisplayPlane::kNew, 16},
+                                                                                  {bn::core::DisplayPlane::kOld, 16}};
+  EXPECT_EQ(writes, expected);
+  EXPECT_EQ(fixture.display.memory[0], fixture.display.memory[1]);
+  for (std::size_t y = 0; y < 24; ++y) {
+    EXPECT_TRUE(fixture.Black(0, y) && fixture.Black(19, y) && !fixture.Black(20, y) && !fixture.Black(39, y)) << y;
+  }
+}
+
+TEST(DrawingViewer, FitsADrawingToThePageAsLargeAsItGoesInTheMiddle) {
+  Fixture fixture;
+  fixture.Put("a.svg", Svg(10, 10, "<rect width='10' height='10'/>"));
+  fixture.Start();
+  fixture.Settle();
+  // 24 by 24, with 8 on either side.
+  for (std::size_t x = 0; x < 40; ++x) {
+    EXPECT_EQ(fixture.Black(x, 12), x >= 8 && x < 32) << x;
+  }
+  EXPECT_EQ(fixture.BlackCount(), 24U * 24U);
+}
+
+TEST(DrawingViewer, TurnsTheDrawingTheWayThePanelIsTurnedToBeRead) {
+  // The panel's picture is turned a quarter clockwise to be read: a page
+  // 24 wide and 40 high, whose top is the panel's left.
+  Fixture fixture;
+  fixture.display.turn = bn::core::PanelTurn::kClockwise;
+  fixture.Put("a.svg", Svg(24, 40, "<rect width='24' height='10'/><rect width='6' height='40'/>"));
+  fixture.Start();
+  fixture.Settle();
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 0; x < 40; ++x) {
+      // The page's top ten rows are the panel's first ten columns, and its
+      // left six columns the panel's bottom six rows.
+      EXPECT_EQ(fixture.Black(x, y), x < 10 || y >= 18) << x << "," << y;
+    }
+  }
+}
+
+TEST(DrawingViewer, AGrayComesOutAsDotsAsDarkOnTheWhole) {
+  Fixture fixture;
+  fixture.Put("a.svg", Svg(40, 24, "<rect width='40' height='24' fill='#808080'/>"));
+  fixture.Start();
+  fixture.Settle();
+  const std::size_t black = fixture.BlackCount();
+  EXPECT_NEAR(static_cast<double>(black), (40.0 * 24.0) / 2, 20.0);
+}
+
+TEST(DrawingViewer, DownAndUpGoFromOneToTheNextAndRoundAndBackAndConfirmRedraw) {
+  Fixture fixture;
+  for (const char* name : {"1.svg", "2.svg", "3.svg"}) {
+    fixture.Put(name, Svg(40, 24, ""));
+  }
+  fixture.Start();
+  fixture.Settle();
+  fixture.Press(bn::core::Button::kUp);
+  fixture.Settle();
+  EXPECT_EQ(fixture.viewer->Current(), 2U);
+  fixture.Press(bn::core::Button::kRight);
+  fixture.Settle();
+  EXPECT_EQ(fixture.viewer->Current(), 0U);
+  fixture.Press(bn::core::Button::kBack);
+  fixture.Settle();
+  fixture.Press(bn::core::Button::kConfirm);
+  fixture.Settle();
+  using bn::core::RefreshMode;
+  EXPECT_EQ(fixture.Refreshes(), (std::vector<RefreshMode>{RefreshMode::kFull, RefreshMode::kHalf, RefreshMode::kHalf,
+                                                           RefreshMode::kFull, RefreshMode::kHalf}));
+  EXPECT_EQ(fixture.viewer->Shown(), 5U);
+}
+
+TEST(DrawingViewer, APressWhileADrawingIsBeingDrawnGivesItUpForTheOneAskedFor) {
+  Fixture fixture;
+  std::string many;
+  for (int shape = 0; shape < 400; ++shape) {
+    many += "<rect x='" + std::to_string(shape % 30) + "' width='3' height='3'/>";
+  }
+  fixture.Put("1.svg", Svg(40, 24, many));
+  fixture.Put("2.svg", Svg(40, 24, "<rect width='40' height='24'/>"));
+  fixture.clock.step = 1000;  // So that a turn draws little.
+  fixture.Start();
+  fixture.viewer->Tick();
+  fixture.viewer->Tick();
+  EXPECT_TRUE(fixture.Refreshes().empty());
+  fixture.Press(bn::core::Button::kDown);
+  fixture.clock.step = 10;
+  fixture.Settle();
+  EXPECT_EQ(fixture.Refreshes().size(), 1U);
+  EXPECT_EQ(fixture.viewer->Current(), 1U);
+  EXPECT_EQ(fixture.BlackCount(), 40U * 24U);
+  EXPECT_EQ(fixture.storage.OpenCount(), 0);
+}
+
+TEST(DrawingViewer, ATurnDrawsForAboutItsSliceAndNoMore) {
+  Fixture fixture;
+  std::string many;
+  for (int shape = 0; shape < 2000; ++shape) {
+    many += "<path d='M" + std::to_string(shape % 40) + " 0l3 20-3 4z'/>";
+  }
+  fixture.Put("a.svg", Svg(40, 24, many));
+  // Each reading of the clock a fifth of a millisecond on: enough that a
+  // turn ends on its slice and not on the end of the drawing.
+  fixture.clock.step = 200;
+  fixture.Start();
+  std::uint64_t longest = 0;
+  int turns = 0;
+  while (fixture.viewer->Shown() == 0 && turns < 100000) {
+    fixture.display.busy = false;
+    const std::uint64_t before = fixture.clock.now;
+    fixture.viewer->Tick();
+    longest = std::max(longest, fixture.clock.now - before);
+    ++turns;
+  }
+  EXPECT_EQ(fixture.viewer->Shown(), 1U);
+  EXPECT_GT(turns, 5) << "a drawing this long takes several turns";
+  // The clock is read every sixteen calls of the renderer, each a few
+  // readings of it here.
+  EXPECT_LE(longest, DrawingViewer::kSliceUs + 2000);
+}
+
+TEST(DrawingViewer, SaysWhatEachDrawingCameToAndWhatWasLeftOut) {
+  Fixture fixture;
+  fixture.Put("words.svg", Svg(40, 24, "<rect width='4' height='4'/><text>Words</text>"));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_FALSE(fixture.Lines().empty());
+  const std::string line = fixture.Lines().back();
+  EXPECT_NE(line.find("drawing 1 of 1: words.svg, ok, 1 shape,"), std::string::npos) << line;
+  EXPECT_NE(line.find("left out: text,"), std::string::npos) << line;
+}
+
+TEST(DrawingViewer, WithNoDrawingsLeavesThePanelBlankAndSaysWhy) {
+  Fixture fixture;
+  fixture.Start();
+  fixture.Settle(100);
+  EXPECT_EQ(fixture.viewer->Drawings(), 0U);
+  EXPECT_TRUE(fixture.Refreshes().empty());
+  ASSERT_FALSE(fixture.Lines().empty());
+  EXPECT_EQ(fixture.Lines().back(), "drawings: none in /drawings");
+  // A file that is not a drawing, or a broken one, is drawn as far as it
+  // goes and said to be what it is.
+  Fixture broken;
+  broken.Put("a.svg", "<html/>");
+  broken.Put("b.svg", Svg(40, 24, "<rect width='40' height='24'/><<"));
+  broken.Start();
+  broken.Settle();
+  broken.Press(bn::core::Button::kDown);
+  broken.Settle();
+  const std::vector<std::string> lines = broken.Lines();
+  ASSERT_GE(lines.size(), 2U);
+  EXPECT_NE(lines[lines.size() - 2].find("a.svg, not svg"), std::string::npos) << lines[lines.size() - 2];
+  EXPECT_NE(lines.back().find("b.svg, malformed"), std::string::npos) << lines.back();
+  EXPECT_EQ(broken.BlackCount(), 40U * 24U);
+}
+
+TEST(DrawingViewer, SleepsWhenAskedOnceThePanelIsAtRest) {
+  Fixture fixture;
+  fixture.Put("a.svg", Svg(40, 24, "<rect width='4' height='4'/>"));
+  fixture.Start();
+  fixture.Settle();
+  fixture.viewer->Sleep();
+  EXPECT_FALSE(fixture.viewer->Resting());
+  fixture.viewer->Tick();
+  EXPECT_EQ(fixture.viewer->CurrentState(), State::kAsleep);
+  EXPECT_TRUE(fixture.viewer->Resting());
+  EXPECT_EQ(fixture.display.calls.back().op, Op::kSleep);
+}
+
+TEST(DrawingViewer, FailsWithNoPanel) {
+  Fixture fixture;
+  fixture.display.present = false;
+  fixture.Put("a.svg", Svg(40, 24, ""));
+  fixture.Start();
+  EXPECT_EQ(fixture.viewer->CurrentState(), State::kFailed);
+  EXPECT_TRUE(fixture.viewer->Resting());
+}
+
+}  // namespace

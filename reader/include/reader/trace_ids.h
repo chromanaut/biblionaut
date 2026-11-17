@@ -65,7 +65,11 @@
   /* From the Power button going down to the device being put to */            \
   /* sleep: the panel coming to rest, its voltages going off and */            \
   /* its controller going to sleep, and the trace before this. */              \
-  X(17, kSpanPressToSleep, "press_to_sleep", "")
+  X(17, kSpanPressToSleep, "press_to_sleep", "")                               \
+  /* A drawing shown by the drawing viewer (reader/drawing_viewer.h), */       \
+  /* from the press that asked for it, or the start, to its refresh */         \
+  /* beginning: its number, from 1. */                                         \
+  X(18, kSpanDrawing, "drawing", "number")
 
 namespace bn::reader {
 

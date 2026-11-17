@@ -12,6 +12,7 @@
 #include "desktop/sim_power.h"
 #include "hw/platform.h"
 #include "reader/app.h"
+#include "reader/drawing_viewer.h"
 
 namespace {
 
@@ -38,7 +39,10 @@ void PrintUsage(const char* program) {
                "read from end to end, at the same moments; and BN_BOOK_CHECK_BRIEF with it\n"
                "to have each only opened, and none read through.\n"
                "Set BN_LAYOUT_CHECK instead to have the layout code timed, and the text in\n"
-               "that folder's layout folder set in lines, at the same moments.\n",
+               "that folder's layout folder set in lines, at the same moments.\n"
+               "Set BN_DRAWINGS instead to have the SVG files in that folder's drawings\n"
+               "folder shown in place of the test pattern, Down and Up going from one to\n"
+               "the next.\n",
                program);
 }
 
@@ -65,6 +69,7 @@ struct Checks {
   bool books = false;
   bool booksBrief = false;
   bool layout = false;
+  bool drawings = false;
 };
 
 // How long the application runs: until the window is closed, or until a
@@ -96,6 +101,9 @@ Ended Run(const bn::reader::Services& services, const Checks& checks, bn::hw::Pa
   }
   if (checks.layout) {
     app.CheckLayout();
+  }
+  if (checks.drawings) {
+    app.ViewDrawings(bn::reader::DrawingViewer::kFolder);
   }
   app.Start();
   while (!limit.Over()) {
@@ -162,12 +170,15 @@ int main(int argc, char** argv) {
                       .storage = std::getenv("BN_STORAGE_CHECK") != nullptr,
                       .books = std::getenv("BN_BOOK_CHECK") != nullptr,
                       .booksBrief = std::getenv("BN_BOOK_CHECK_BRIEF") != nullptr,
-                      .layout = std::getenv("BN_LAYOUT_CHECK") != nullptr};
+                      .layout = std::getenv("BN_LAYOUT_CHECK") != nullptr,
+                      .drawings = std::getenv("BN_DRAWINGS") != nullptr};
   // NOLINTEND(concurrency-mt-unsafe)
-  if (static_cast<int>(checks.storage) + static_cast<int>(checks.books) + static_cast<int>(checks.layout) > 1) {
+  if (static_cast<int>(checks.storage) + static_cast<int>(checks.books) + static_cast<int>(checks.layout) +
+          static_cast<int>(checks.drawings) >
+      1) {
     std::fprintf(stderr,
-                 "BN_STORAGE_CHECK, BN_BOOK_CHECK and BN_LAYOUT_CHECK would get in each other's way: set one of "
-                 "them.\n");
+                 "BN_STORAGE_CHECK, BN_BOOK_CHECK, BN_LAYOUT_CHECK and BN_DRAWINGS would get in each other's way: set "
+                 "one of them.\n");
     return 2;
   }
 

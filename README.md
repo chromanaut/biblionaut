@@ -155,6 +155,8 @@ buttons step through its four pictures (`reader/pattern_viewer.h`):
 
 The pattern is in the panel's own orientation, which on the X4 is with the
 device turned a quarter-turn anticlockwise from the way a book is read.
+The panel says which way that is (`Display::ReadingTurn()`), for whatever
+draws a page the way it is read and has to turn it into the panel's rows.
 
 The trace of a press runs from the button to the panel:
 
@@ -189,6 +191,54 @@ open panel-001.png          # one picture per refresh
 - `BN_DEVICE` names the device simulated. `x4` is the only one, and what
   is simulated without it.
 
+In place of the pattern, the application can show the SVG files in the
+card's `drawings` folder (`reader/drawing_viewer.h`), drawn as a drawing in
+a book is: fitted to the page the way the device is held to be read, as
+large as fits and in the middle of it, turned into the panel's rows, and
+its grays dithered to the panel's black and white (`draw/dither.h`). It is
+for seeing the renderer's work on a panel, and the first place it runs in
+the application's loop. On the desktop, with `BN_STORAGE` naming the folder
+that stands for the card:
+
+```
+BN_STORAGE=card BN_DRAWINGS=1 ./build/window/app/desktop/biblionaut-desktop --window
+```
+
+| Button | What it does |
+|---|---|
+| Down, Right | The next drawing, by a half refresh, going round from the last to the first |
+| Up, Left | The one before |
+| Confirm | The same one again, by a half refresh |
+| Back | The same one again, by a full refresh |
+
+A firmware built with `-DBN_DRAWING_VIEWER=ON` does the same with
+`/drawings` on its card. Nothing else drives the panel then, and none of
+the checks can be asked for with it.
+
+A drawing is drawn a band of 16 of the panel's rows at a time, its file
+read from the start for each band, and each band dithered and written to
+both of the panel's planes, so that the half or full refresh that shows it
+leaves both right; the drive voltages go off as the refresh ends. A turn of
+the loop draws for about 20 ms and returns, so a drawing of megabytes takes
+many turns and the buttons are heard throughout: a press while a drawing is
+being drawn gives it up for the one asked for. For each drawing a line of
+log text says what it was, how it ended, how many shapes it filled, how
+long it took from the press to its refresh, and what the renderer left
+out:
+
+```
+drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 693 ms
+```
+
+That is an engraving of 932 KB from a public book, drawn by the optimised
+desktop application; on a device it has not been timed. The viewer takes
+about 74 KB of the heap when it starts: 26 KB for the filler's cells, 24 KB
+for what a drawing defines, 13 KB for a band of grays, 6 KB for the
+renderer, and 6 KB for what is carried in dithering, a band of bits and a
+kilobyte of the file read at a time.
+The trace has a span for each drawing, from the press to the refresh, and
+the metrics the time the last took (`drawing_ms`).
+
 What the desktop simulates of a device is described once, in a profile
 (`hw/desktop/device_profile.h`): the panel's size, how long it takes over
 each kind of refresh and over switching off, which way the panel is
@@ -200,7 +250,9 @@ simulated panel and the window take everything they need from it. The X4's times
 buttons' places along the edges are drawn near enough. A profile does
 not say how many shades a panel can show, or how its controller keeps
 its two planes: everything that drives a panel (`core/display.h`) is
-black and white, and keeps to the rules found on the X4.
+black and white, and keeps to the rules found on the X4. A panel's grays
+are its own business: the drawing code draws in 256 and dithers to as many
+as a panel is driven in, which on the X4 is two for now.
 
 ### A window on the desktop
 
@@ -2148,6 +2200,20 @@ in Python with regular expressions: over paths made up at random in every
 way SVG lets one be written, the commands have to be the same and the lines
 within the tolerance of the true curves.
 
+### Fewer grays
+
+`Ditherer` (`draw/dither.h`) turns rows of 256 grays into as many levels as
+a panel shows, from two up, in place. Each pixel becomes the nearest level
+to its gray and what was carried to it, and what is left over is carried on
+as Floyd and Steinberg did it: seven sixteenths to the next in the row, and
+three, five and one to the three below. So a patch comes out, on the whole,
+as light as it was, and a gray between two levels as a mixture of them.
+Rows are given from the top, as strips make them: what is carried down from
+the last row of one strip goes into the first of the next. The memory it
+carries in is the caller's, two rows of 16-bit numbers. The unit tests hold
+it to patches as light as their grays, a ramp as light as it was column by
+column, levels already levels left alone, and only levels coming out.
+
 ### Filling an outline
 
 `Filler` (`draw/fill.h`) is a `LineSink`, so the flattener's lines go
@@ -2334,14 +2400,20 @@ strip only what it defines for later use.
   markers. Two things are drawn nearly:
   `opacity` on a group or a `use` is given to each shape in it, which
   differs where they overlap, and an `svg` inside another that something
-  has turned or slanted is not cut off at its edges, which are then no
-  edges of pixels.
+  has turned, other than by quarter turns, or slanted is not cut off at its
+  edges, which are then no edges of pixels.
 - **The order of attributes** is free, with one limit. An outline is drawn
   as its data arrives, so a `transform` written after a shape's own path
   data would come too late. Data of up to 512 bytes is therefore held
   until its tag ends. In the public books a transform follows its path
   data on 33 paths, the longest of them 403 bytes. If longer data is
   followed by a transform, the shape is left out and reported.
+- **Where it goes**: the drawing is fitted to the size it is given, and
+  `PlaceOn()` then puts it through a matrix into the strips' pixels: to
+  the middle of a page, or turned into the rows of a panel turned in its
+  device. An `svg` inside another is cut off at its edges after a quarter
+  turn as before it. A picture turned by any quarter is the picture turned,
+  within two parts in 255, the gradients and the cutting off included.
 - **Size**: a drawing's first tag says how large it is, and `Size()` has
   that as soon as the tag has been read, so whoever shows the drawing can
   choose the picture's size before any of it is drawn.
@@ -2519,7 +2591,14 @@ for one gradient under a slanting, stretching transform. `bn-svg`
 has to agree with it, in any strips and any pieces, and to say it left out
 what the drawing was given that it does not draw. The reader of tags, the
 readers of what attributes say, path data and the renderer each have a
-fuzz target ("Fuzzing", above).
+fuzz target ("Fuzzing", above), and the renderer's target places its picture by each
+of the four turns. Another end-to-end test
+(`tests/e2e/drawing_viewer.py`) runs the desktop application over a folder
+of drawings and goes from one to the next and round, and sets each picture
+the simulated panel shows beside `bn-svg`'s drawing of the same file, at
+the size it should be on the page, turned onto the panel: in blocks of 16
+by 16 pixels, each as dark as it should be to within a fifth, and all of
+them to within a hundredth on the whole.
 
 ## Pictures
 

@@ -70,6 +70,16 @@ option(BN_BOOK_CHECK_BRIEF "With BN_BOOK_CHECK: open every book and read none th
 # BN_BOOK_CHECK.
 option(BN_LAYOUT_CHECK "Time the layout code, and set the text on the SD card, at start and at each press of Power" OFF)
 
+# A firmware that shows the SVG files in /drawings on the SD card in place
+# of the test pattern, drawn as a drawing in a book is
+# (reader/drawing_viewer.h says how):
+#
+#   tools/idf -DBN_DRAWING_VIEWER=ON build flash    (back to normal: -DBN_DRAWING_VIEWER=OFF)
+#
+# Down and Up go from one to the next. It writes nothing to the card. Not
+# together with BN_STORAGE_CHECK, BN_BOOK_CHECK or BN_LAYOUT_CHECK.
+option(BN_DRAWING_VIEWER "Show the SVG files in /drawings on the SD card in place of the test pattern" OFF)
+
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
 set(COMPONENTS main)

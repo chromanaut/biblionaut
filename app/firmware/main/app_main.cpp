@@ -11,6 +11,9 @@
 #include "crash_test.h"
 #include "hw/platform.h"
 #include "reader/app.h"
+#ifdef BN_DRAWING_VIEWER
+#include "reader/drawing_viewer.h"
+#endif
 
 namespace {
 
@@ -91,6 +94,15 @@ extern "C" void app_main() {
   app.CheckLayout();
   if (app.LayoutChecker() == nullptr) {
     esp_rom_printf("There is not the memory for the layout check: it will not run.\n");
+  }
+#endif
+#ifdef BN_DRAWING_VIEWER
+  esp_rom_printf(
+      "Drawing viewer build: the SVG files in /drawings on the SD card are shown, Down and Up going "
+      "from one to the next.\n");
+  app.ViewDrawings(bn::reader::DrawingViewer::kFolder);
+  if (app.DrawingsViewer() == nullptr) {
+    esp_rom_printf("There is not the memory for the drawing viewer: it will not run.\n");
   }
 #endif
   app.Start();

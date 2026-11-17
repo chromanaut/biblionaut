@@ -46,6 +46,7 @@ class SimDisplay final : public core::Display {
   const DeviceProfile& Device() const noexcept { return device_; }
 
   core::DisplaySize Size() const noexcept override { return device_.panel; }
+  core::PanelTurn ReadingTurn() const noexcept override { return static_cast<core::PanelTurn>(device_.turn); }
   [[nodiscard]] bool Start() noexcept override;
   [[nodiscard]] bool WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
                                std::span<const std::uint8_t> rows) noexcept override;

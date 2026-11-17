@@ -75,6 +75,15 @@ enum class AfterRefresh : std::uint8_t {
   kPowerOff = 1,
 };
 
+// How the panel's picture is turned, from the panel's own orientation, to
+// stand the way a book is read on the device.
+enum class PanelTurn : std::uint8_t {
+  kNone = 0,
+  kClockwise = 1,      // A quarter-turn clockwise.
+  kHalf = 2,           // Upside down.
+  kAnticlockwise = 3,  // A quarter-turn anticlockwise.
+};
+
 struct DisplaySize {
   std::uint16_t width;   // Pixels in a row.
   std::uint16_t height;  // Rows.
@@ -88,6 +97,11 @@ struct DisplaySize {
 class Display {
  public:
   virtual DisplaySize Size() const noexcept = 0;
+
+  // How the panel is turned in the device, to be read: what a page drawn
+  // the way it is read has to be turned back by to go into the panel's
+  // rows. Nothing, for a panel read as it stands.
+  virtual PanelTurn ReadingTurn() const noexcept { return PanelTurn::kNone; }
 
   // Wakes the panel and prepares it; both planes end up white. Call before
   // anything else, and again after Sleep(). A refresh still in progress is

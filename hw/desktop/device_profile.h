@@ -16,13 +16,8 @@
 namespace bn::hw {
 
 // How the panel's picture is turned, from the panel's own orientation, to
-// stand the way a book is read on the device.
-enum class ReadingTurn : std::uint8_t {
-  kNone = 0,
-  kClockwise = 1,      // A quarter-turn clockwise.
-  kHalf = 2,           // Upside down.
-  kAnticlockwise = 3,  // A quarter-turn anticlockwise.
-};
+// stand the way a book is read on the device: the panel's own word for it.
+using ReadingTurn = core::PanelTurn;
 
 // An edge of the device, held the way a book is read on it.
 enum class Edge : std::uint8_t { kTop, kRight, kBottom, kLeft };

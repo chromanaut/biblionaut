@@ -71,3 +71,14 @@ if(BN_LAYOUT_CHECK)
                   "Configure with -DBN_LAYOUT_CHECK=OFF for a normal build.")
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_LAYOUT_CHECK=1)
 endif()
+
+# A firmware that shows the drawings on the SD card (see BN_DRAWING_VIEWER
+# in the project file).
+if(BN_DRAWING_VIEWER)
+  if(BN_STORAGE_CHECK OR BN_BOOK_CHECK OR BN_LAYOUT_CHECK)
+    message(FATAL_ERROR "BN_DRAWING_VIEWER would take the card's time with the checks: configure with them OFF.")
+  endif()
+  message(WARNING "This firmware shows the SVG files in /drawings on the SD card in place of the test pattern. "
+                  "Configure with -DBN_DRAWING_VIEWER=OFF for a normal build.")
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_DRAWING_VIEWER=1)
+endif()

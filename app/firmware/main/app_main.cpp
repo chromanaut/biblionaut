@@ -100,7 +100,7 @@ extern "C" void app_main() {
 #endif
 #ifdef BN_DRAWING_VIEWER
   esp_rom_printf(
-      "Drawing viewer build: the SVG files in /drawings on the SD card are shown, Down and Up going "
+      "Drawing viewer build: the SVG and PNG files in /drawings on the SD card are shown, Down and Up going "
       "from one to the next.\n");
   app.ViewDrawings(bn::reader::DrawingViewer::kFolder);
   if (app.DrawingsViewer() == nullptr) {

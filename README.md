@@ -191,13 +191,15 @@ open panel-001.png          # one picture per refresh
 - `BN_DEVICE` names the device simulated. `x4` is the only one, and what
   is simulated without it.
 
-In place of the pattern, the application can show the SVG files in the
-card's `drawings` folder (`reader/drawing_viewer.h`), drawn as a drawing in
-a book is: fitted to the page the way the device is held to be read, as
-large as fits and in the middle of it, turned into the panel's rows, and
-its grays dithered to the panel's black and white (`draw/dither.h`). It is
-for seeing the renderer's work on a panel, and the first place it runs in
-the application's loop. On the desktop, with `BN_STORAGE` naming the folder
+In place of the pattern, the application can show the SVG and PNG files in
+the card's `drawings` folder (`reader/drawing_viewer.h`): a drawing drawn
+as a drawing in a book is, and a picture read (`draw/png.h`) and scaled
+(`draw/scale.h`). Each is fitted to the page the way the device is held to
+be read, as large as fits and in the middle of it, turned into the panel's
+rows, and its grays dithered to the panel's black and white
+(`draw/dither.h`). It is for seeing the renderer's and the picture
+reader's work on a panel, and the first place they run in the
+application's loop. On the desktop, with `BN_STORAGE` naming the folder
 that stands for the card:
 
 ```
@@ -206,7 +208,7 @@ BN_STORAGE=card BN_DRAWINGS=1 ./build/window/app/desktop/biblionaut-desktop --wi
 
 | Button | What it does |
 |---|---|
-| Down, Right | The next drawing, by a half refresh, going round from the last to the first |
+| Down, Right | The next drawing or picture, by a half refresh, going round from the last to the first |
 | Up, Left | The one before |
 | Confirm | The same one again, by a half refresh |
 | Back | The same one again, by a full refresh |
@@ -237,8 +239,33 @@ about 77 KB of the heap when it starts: 26 KB for the filler's cells, 24 KB
 for what a drawing defines, 13 KB for a band of grays, 8 KB for the
 renderer, and 6 KB for what is carried in dithering, a band of bits and a
 kilobyte of the file read at a time.
-The trace has a span for each drawing, from the press to the refresh, and
-the metrics the time the last took (`drawing_ms`).
+The trace has a span for each drawing or picture, from the press to the
+refresh, and the metrics the time the last took (`drawing_ms`).
+
+A picture's rows come from its file in the order the page is read, which
+is not the panel's order when the panel is turned to be read, as the X4's
+is. So a picture is set into the panel 160 of the panel's rows at a time,
+a bit a pixel, its file read through once for each such band: three times
+on the X4. Each time its rows are read, made the size they are shown at,
+and dithered, which comes out the same each time, and the pixels that fall
+in the band are kept; then the band is written to both planes. A picture
+whose rows would need more than 16 KB of the reader's memory, an
+interlaced one, and a file that is not a picture are not shown, and a line
+says why. For each picture shown, a line says what it was, the size it
+was shown at, and how long the reading, the scaling, the dithering (with
+the setting of the band's bits) and the writing took, over all the
+passes, and then from the press to its refresh:
+
+```
+picture 3 of 3: c-gutenberg.png, ok, 332x500 palette shown 480x723, 3 passes: reading 4 ms, scaling 3 ms, dithering 20 ms, writing 0 ms; 113 ms
+```
+
+That is an illustration from a Project Gutenberg book in `corpus/`, made
+larger to fill the page, on the optimised desktop application; on a device
+it has not been timed. What a picture needs is taken from the heap the
+first time one is shown, and kept: about 78 KB, 32 KB of it the reader's
+window, 16 KB the reader's rows, 16 KB the band of bits, 6 KB the scaler's
+sums, 4 KB a buffer to read the file through and 3 KB the reader itself.
 
 What the desktop simulates of a device is described once, in a profile
 (`hw/desktop/device_profile.h`): the panel's size, how long it takes over
@@ -2719,9 +2746,10 @@ them to within a hundredth on the whole.
 `PngReader` (`draw/png.h`) reads a PNG picture. It is the first of the
 pieces that will turn a book's pictures into what a panel shows: a reader
 of each format gives rows of 8-bit gray, the scaler (below) makes them the
-size the picture is shown at, and bringing them down to the grays a panel
-has comes after that and is not written yet. JPEG and GIF are not read
-yet. The pieces hand rows on to one another through one interface,
+size the picture is shown at, and the ditherer (`draw/dither.h`) brings
+them down to the grays a panel has. The drawing viewer shows the PNG files
+on its card this way ("The panel and the buttons", above). JPEG and GIF are
+not read yet. The pieces hand rows on to one another through one interface,
 `RowSink` (`draw/row_sink.h`).
 
 A picture is read from a `ByteSource`, such as an entry of the ZIP file, a

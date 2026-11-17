@@ -2,13 +2,15 @@
 """End-to-end check of the drawing viewer in the desktop application, run by CTest.
 
 The desktop application is run with BN_DRAWINGS over a folder standing for
-the card, whose drawings folder holds a few drawings made here, and Down
-is pressed to go from one to the next and round. The simulated X4 saves a
+the card, whose drawings folder holds a few drawings and a picture made
+here, and Down is pressed to go from one to the next and round. The simulated X4 saves a
 picture of its panel at each refresh, and each is set beside what the
 drawing should come to there, worked out here: `bn-svg draw` draws the
 file at the size it should have on the page, which is held as a book is
 read, and that picture is turned a quarter, as the X4's panel is, and put
-in the middle of the page. The panel is black and white, its grays
+in the middle of the page. The picture, a PNG file, is set beside what
+`bn-png read` makes of it at the size it should be shown at, in the same
+way. The panel is black and white, its grays
 dithered, so the two are compared in blocks of pixels: how dark each block
 is, on the whole. The lines of log text the viewer sends are read back
 with bn-trace.
@@ -16,7 +18,7 @@ with bn-trace.
 The presses are timed by the clock, not by the application's turns, and a
 run that has not shown every drawing in time is run again with more.
 
-usage: drawing_viewer.py APP BN_SVG BN_TRACE WORK_DIR
+usage: drawing_viewer.py APP BN_SVG BN_PNG BN_TRACE WORK_DIR
 """
 
 from __future__ import annotations
@@ -65,6 +67,29 @@ DRAWINGS = {
 }
 # What the viewer is to pass over.
 OTHERS = {"notes.txt": "Not a drawing."}
+
+
+def made_picture() -> bytes:
+    """A PNG picture, taller than the page is for its width, so that it is as high as the page and in the middle
+    across: a gradient from black to white down it, and a black bar and a white one across it."""
+    width, height = 90, 200
+    rows = []
+    for y in range(height):
+        row = bytearray(min(255, y * 256 // height) for _ in range(width))
+        if 40 <= y < 60:
+            row[10:80] = bytes(70)
+        if 140 <= y < 160:
+            row[10:80] = bytes([255]) * 70
+        rows.append(b"\x00" + bytes(row))
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))
+
+
+PICTURES = {"d-picture.png": made_picture()}
 
 
 def run(command: list, **more) -> subprocess.CompletedProcess:
@@ -135,6 +160,26 @@ def expected_panel(bn_svg: str, work: Path, name: str) -> list[list[float]]:
     return dark
 
 
+def expected_picture(bn_png: str, work: Path, name: str) -> list[list[float]]:
+    """The same for a picture: as `bn-png` scales it to the size it is shown at, as large as fits on the page and
+    in the middle of it, turned into the panel's rows."""
+    file = work / "card" / "drawings" / name
+    header = run([bn_png, "header", file]).stdout.split()
+    across, down = int(header[1]), int(header[2])
+    fit = ["--width", str(PAGE_WIDTH)] if across * PAGE_HEIGHT >= down * PAGE_WIDTH else ["--height", str(PAGE_HEIGHT)]
+    picture = work / f"{name}.pgm"
+    done = run([bn_png, "read", file, *fit, "--out", picture])
+    expect(done.returncode == 0, f"bn-png could not read {name}: {done.stderr!r}")
+    width, height, grays = read_pgm(picture)
+    left, top = (PAGE_WIDTH - width) // 2, (PAGE_HEIGHT - height) // 2
+    dark = [[0.0] * PANEL_WIDTH for _ in range(PANEL_HEIGHT)]
+    for y in range(height):
+        for x in range(width):
+            panel_x, panel_y = top + y, PANEL_HEIGHT - 1 - (left + x)
+            dark[panel_y][panel_x] = (255 - grays[y * width + x]) / 255
+    return dark
+
+
 def compare(shown: list[list[int]], dark: list[list[float]], what: str) -> float:
     """Sets the panel beside how dark it should be, a block at a time. Returns the largest difference."""
     worst, total, blocks = 0.0, 0.0, 0
@@ -161,44 +206,50 @@ def log_lines(bn_trace: str, capture: Path) -> list[str]:
 
 
 def main() -> int:
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 6:
         print(__doc__, file=sys.stderr)
         return 2
-    app, bn_svg, bn_trace, work = sys.argv[1], sys.argv[2], sys.argv[3], Path(sys.argv[4])
+    app, bn_svg, bn_png, bn_trace, work = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], Path(sys.argv[5])
     shutil.rmtree(work, ignore_errors=True)
     folder = work / "card" / "drawings"
     folder.mkdir(parents=True)
     for name, text in {**DRAWINGS, **OTHERS}.items():
         (folder / name).write_text(text)
-    names = sorted(DRAWINGS)
+    for name, data in PICTURES.items():
+        (folder / name).write_bytes(data)
+    names = sorted([*DRAWINGS, *PICTURES])
     try:
         # Down after each drawing has had its time, and round to the first.
         for seconds in (4, 8, 16):
             for old in work.glob("panel-*.png"):
                 old.unlink()
-            presses = ",".join(f"{seconds * 1000 * step}:down" for step in (1, 2, 3))
+            presses = ",".join(f"{seconds * 1000 * step}:down" for step in (1, 2, 3, 4))
             environment = {**os.environ, "BN_STORAGE": str(work / "card"), "BN_DRAWINGS": "1",
                            "BN_DISPLAY_OUT": str(work / "panel"), "BN_SERIAL_OUT": str(work / "serial.bin"),
                            "BN_INPUT": presses}
-            done = run([app, "--run-ms", str(seconds * 1000 * 4)], env=environment)
+            done = run([app, "--run-ms", str(seconds * 1000 * 5)], env=environment)
             expect(done.returncode == 0, f"the application ended with {done.returncode}: {done.stderr!r}")
             lines = log_lines(bn_trace, work / "serial.bin")
-            if len(list(work.glob("panel-*.png"))) >= 4 and len(lines) >= 4:
+            if len(list(work.glob("panel-*.png"))) >= 5 and len(lines) >= 5:
                 break
         pictures = sorted(work.glob("panel-*.png"))
-        expect(len(pictures) == 4, f"the panel was refreshed {len(pictures)} times, not 4: {lines}")
-        # Each line says which drawing it was, and what it came to.
-        shown = [names[0], names[1], names[2], names[0]]
+        expect(len(pictures) == 5, f"the panel was refreshed {len(pictures)} times, not 5: {lines}")
+        # Each line says which drawing or picture it was, and what it came to.
+        shown = [names[0], names[1], names[2], names[3], names[0]]
         for number, (line, name) in enumerate(zip(lines, shown)):
-            expect(line.startswith(f"drawing {names.index(name) + 1} of 3: {name}, ok, "), f"line {number + 1}: {line!r}")
+            kind = "picture" if name in PICTURES else "drawing"
+            expect(line.startswith(f"{kind} {names.index(name) + 1} of 4: {name}, ok, "), f"line {number + 1}: {line!r}")
         expect("left out: text," in lines[2], f"the text was not said to be left out: {lines[2]!r}")
+        expect(", 90x200 gray shown 360x800, 3 passes: reading " in lines[3], f"the picture's line: {lines[3]!r}")
         worst = 0.0
         for picture, name in zip(pictures, shown):
-            worst = max(worst, compare(read_png(picture), expected_panel(bn_svg, work, name), f"{picture.name} ({name})"))
+            dark = expected_picture(bn_png, work, name) if name in PICTURES else expected_panel(bn_svg, work, name)
+            worst = max(worst, compare(read_png(picture), dark, f"{picture.name} ({name})"))
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
-    print(f"3 drawings shown and gone round, each as bn-svg draws it turned onto the panel, every block of "
+    print(f"3 drawings and a picture shown and gone round, each as bn-svg draws it or bn-png reads it turned onto "
+          f"the panel, every block of "
           f"{BLOCK} by {BLOCK} pixels within {worst:.3f} of as dark as it should be")
     return 0
 

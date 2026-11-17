@@ -215,10 +215,19 @@ BN_STORAGE=card BN_DRAWINGS=1 ./build/window/app/desktop/biblionaut-desktop --wi
 
 A firmware built with `-DBN_DRAWING_VIEWER=ON` does the same with
 `/drawings` on its card. Nothing else drives the panel then, and none of
-the checks can be asked for with it.
+the checks can be asked for with it. With `-DBN_DRAWING_TOUR=ON` as well,
+or `BN_DRAWING_TOUR` set on the desktop, it goes round the drawings once by
+itself, each begun as its last refresh ends, as if Down had been pressed
+then, and a line says when the tour is over: for timing them with nobody
+at the buttons.
+
+```
+tools/idf -DBN_DRAWING_VIEWER=ON -DBN_DRAWING_TOUR=ON build flash
+./build/host/tools/trace/bn-trace --seconds 600 --save tour.bin
+```
 
 A drawing is drawn a band of 16 of the panel's rows at a time, its file
-read from the start for each band, and each band dithered and written to
+read once and what it draws kept (below), and each band dithered and written to
 both of the panel's planes, so that the half or full refresh that shows it
 leaves both right; the drive voltages go off as the refresh ends. A turn of
 the loop draws for about 20 ms and returns, so a drawing of megabytes takes
@@ -230,19 +239,47 @@ renderer left
 out:
 
 ```
-drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 657 ms
+drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 861 ms
 ```
 
 That is an engraving of 932 KB from a public book, drawn by the optimised
 desktop application; on a device it has not been timed. No stroke is drawn
 thinner than a pixel (`SetThinnestStroke()`, below): one much thinner would
-be a light gray, which black and white show as a broken line. The viewer takes
-about 77 KB of the heap when it starts: 26 KB for the filler's cells, 24 KB
-for what a drawing defines, 13 KB for a band of grays, 8 KB for the
-renderer, and 6 KB for what is carried in dithering, a band of bits and a
-kilobyte of the file read at a time.
+be a light gray, which black and white show as a broken line.
+
+A drawing is read once, and kept on the card while it is shown, in a
+hidden file at the top of the card (`/.drawing-spool`, made again for each
+drawing): what it draws for each band of the panel ("Keeping a drawing",
+below). Each band is then drawn from what was kept, its own part and no
+more. If the card will not keep it, or it would be more than 4 MB, the
+drawing is read again for each band instead, as it could always be, and a
+line says why. The viewer takes about 94 KB of the heap when it starts:
+26 KB for the filler's cells, which also hold what each band has in hand
+while the file is read, 24 KB for what a drawing defines, 16 KB for the
+links of what is kept, 13 KB for a band of grays, 8 KB for the renderer, a
+kilobyte for the recorder, and 6 KB for what is carried in dithering, a
+band of bits and a kilobyte of the file read at a time.
 The trace has a span for each drawing or picture, from the press to the
 refresh, and the metrics the time the last took (`drawing_ms`).
+
+Once a drawing's refresh is over, a second line says where its time went,
+added up by the viewer, since a long drawing reads the card more times
+than a capture can keep a span for: how many bands it was drawn in, how
+much of the file was read in all, and how long went in reading it, in
+rendering, in dithering, in writing the bands to the panel, in waiting
+for the panel to take a band, in the loop's other turns between the
+viewer's, and in the refresh. A third says how much was kept and read
+back, how long each took and how long drawing the bands from it took; or
+why the drawing was not kept. A picture's says how long its refresh took.
+
+```
+drawing 2 timed: 30 bands, 911 KB read in 2 ms; rendering 20 ms, dithering 11 ms, writing 0 ms, waiting 398 ms, between turns 427 ms, refreshing 1722 ms
+drawing 2 timed: spool 619 KB written in 7 ms, 619 KB read in 4 ms; replaying 8 ms
+```
+
+That is the same engraving as above, 932 KB read once for its size and
+once to keep it, on the optimised desktop application, where the turns of
+the loop are paced and the panel's refresh is as long as the X4's.
 
 A picture's rows come from its file in the order the page is read, which
 is not the panel's order when the panel is turned to be read, as the X4's
@@ -640,7 +677,9 @@ correctly and how fast. It writes nothing to the card.
 It takes for a book every file whose name ends in `.epub` in `/books` and
 in each folder in `/books`, one level down and no further. If there is no
 `/books`, or no book there, it looks in the top directory and its folders
-instead (`reader/book_check.h`). With each book it does two things. First
+instead (`reader/book_check.h`). A file or folder whose name begins with a
+dot is hidden and passed over, as everything that lists the card does: a
+Mac writes a `._` file beside each file it copies to a card. With each book it does two things. First
 it opens the book as a reader would: finds the ZIP directory and reads the
 book's package, which says what the book is called and where its documents
 are (see "What a book says of itself" below); and then, with the book
@@ -1576,7 +1615,7 @@ call may.
 | `svg_sheet` | `draw::SvgSheetReader`, twice: the sheet whole, and cut into pieces of one of eight sizes | A call takes a byte or tells something. A rule is told as its selectors, what it sets and its end, in that order. A selector is a class or an element's name made of what a name may be made of; a property's name is in small letters with no space; neither is longer than it may be, nor a value. Both readings tell the same things and say the same of what they dropped |
 | `svg_values` | Each reader of what an attribute says (`draw/svg_values.h`), and `ParseSvgTransform` | A reading that refuses the text leaves what it was to fill as it was. Space round the text changes nothing, nor capitals a colour. A list of lengths has some, and no more than it has room for, and what reads as a length reads as a list of one. A view box is fitted where SVG says it goes, worked out again in floating point |
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
-| `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, gives the filler more than `kMostLinesPerStep` lines, fills more than one shape or stroke, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte |
+| `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, gives the filler more than `kMostLinesPerStep` lines, fills more than one shape or stroke, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte; and so is the file kept by a `SpoolWriter` and given back a band at a time, each step of which reads a chunk and fills once at the most |
 | `png` | `draw::PngReader`, four ways: for the header alone with no memory, with the room and the pieces the input chooses, with all the room it needs, and against a plain reading of the same file with zlib (`tests/support/png_reference.h`) | No step takes more from its source than `MostInputPerStep()`, and the header alone takes 33 bytes. Rows come in order, each as wide as the picture, and a picture is whole only with all of them. It has no room only when it has less than `RowBytesFor()`, and a picture is interlaced only if it says so. The header alone says what the whole reading says of it. With the room it needs it gives the same rows in any pieces. The rows are the plain reading's, and it ends where and as that does, but for data the inflater refuses as bad that zlib takes |
 | `scale` | `draw::Scaler`, from sizes the input gives (sides of nothing and past the largest among them) and its pixels, sometimes all one gray, sometimes with an old row given out of turn | A side of nothing or too long is refused and nothing is given. `Row()` gives no new row and `Step()` one at the most; the new rows come in order, each as wide as the new picture, as many as it is high. A row out of turn stops it. Every new pixel is within a gray of the working-out in real numbers, and a picture of one gray stays that gray |
 
@@ -2775,6 +2814,80 @@ the simulated panel shows beside `bn-svg`'s drawing of the same file, at
 the size it should be on the page, turned onto the panel: in blocks of 16
 by 16 pixels, each as dark as it should be to within a fifth, and all of
 them to within a hundredth on the whole.
+
+### Keeping a drawing
+
+A drawing read again for each strip costs its whole file each time: on
+the X4, the largest drawing in the public books, 3.5 MB, took 354 s in 30
+bands, about 5 s of reading the card and 5 s of rendering a pass. So a
+drawing can be read once and kept, and each strip drawn from what was
+kept. Kept so, it takes 31 s, from the press to the refresh:
+
+| On the X4, 2026-11-17 | Read each band | Kept |
+|---|---|---|
+| The largest engraving, 3.5 MB | 354 s | 31.1 s |
+| An engraving of 1.8 MB | | 17.2 s |
+| An engraving of 17 shapes, 932 KB | | 11.2 s |
+| Drawings of 4 to 52 KB: of strokes, a formula, the samples below | | 1.0 to 1.8 s |
+
+Of the 31 s: reading the file once, 5.5 s (0.62 MB/s); rendering into
+what is kept, 9.0 s; writing what is kept, 1.85 MB, 6.9 s (0.27 MB/s, the
+card writing at under half the rate it reads); reading it back, 2.9 s;
+drawing the bands from it, 1.2 s; dithering, 0.3 s; and 15.5 s between
+the viewer's turns, of which the loop's pause of 10 ms before each turn is
+most. The refresh after them takes 3.7 s, or 1.7 s for a half refresh.
+
+What a renderer draws into is a `Canvas` (`draw/fill.h`): the lines of
+each shape's outline, in pixels, and then the shape's filling. A `Filler`
+is one, and draws into its strip as the lines come. `SpoolWriter`
+(`draw/spool.h`) is another, which keeps them:
+
+- **What it keeps**: each line placed as a filler places it, at a 256th of
+  a pixel, with the line that closes an outline left open; and each line
+  for every band of the picture whose rows it crosses, since a filler does
+  nothing with a line that lies wholly above or below its strip. Each
+  filling is kept for every band that has lines it uses up. A band's lines
+  and fillings, given back in the order they came to a filler set to that
+  band (`BeginBand()`, `ReplayStep()`), draw it byte for byte as drawing
+  into it would.
+- **Where**: each band has a chunk of 512 bytes in hand, in memory the
+  caller gives; a full chunk is added to a store, the caller's
+  (`SpoolStore`: a file on a card, or memory), and a table of links, two
+  bytes for each chunk the store may hold, chains each band's chunks in
+  order. A line that goes on from where the band's last ended takes 5
+  bytes, or 9 if it is long; one that does not, 17; a filling 4 to 94.
+- **What it comes to**: drawn 480 pixels wide in bands of 16 rows, the
+  3.5 MB engraving keeps 315,112 lines in 1.85 MB, the 1.8 MB one 1.1 MB,
+  and the Alice engraving 0.6 MB; the drawings of shapes and strokes keep
+  tens of kilobytes. About 5.9 bytes a line.
+- **What a call costs**: `ReplayStep()` reads one chunk at the most, and
+  fills once at the most.
+- **Bad input**: the links given can be too few (`kNoRoom`), the store can
+  fail (`kStoreFailed`), and what is read back can be damaged
+  (`kBadRecord`); each is a status, and a damaged chunk is never read past
+  its end. The object is about a kilobyte.
+
+`bn-svg draw --spool` reads the file once into a recording in memory, and
+draws each strip from it:
+
+```
+./build/host/tools/svg/bn-svg draw drawing.svg --width 240 --rows 32 --spool --out drawing.pgm
+```
+
+```
+spool: ok, 5 chunks of 512 bytes, 140 lines and 8 fillings kept
+a drawing of 60 by 40, as 240 by 160 in 5 strips of 32 rows: 6 elements, 3 shapes filled, 0 stroked, 20 commands, 138 lines in all, 15488 bytes of cells
+left out, or not drawn as written: text
+```
+
+The unit tests set drawings kept and given back in bands of 1, 7 and 16
+rows and of the whole picture beside the same drawn straight into those
+bands, byte for byte: fillings of every kind, boxes, gradients, strokes and
+dashes, what lies beyond the picture, what is used again, and drawings made
+at random; and give back a recording damaged at random. The renderer's
+fuzz target does the same for every file it is given. The nine drawings
+timed on the X4 come out the same, byte for byte, with and without
+`--spool`.
 
 ## Pictures
 

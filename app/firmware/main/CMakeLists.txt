@@ -86,6 +86,11 @@ if(BN_DRAWING_VIEWER)
   message(WARNING "This firmware shows the SVG and PNG files in /drawings on the SD card in place of the test pattern. "
                   "Configure with -DBN_DRAWING_VIEWER=OFF for a normal build.")
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_DRAWING_VIEWER=1)
+  if(BN_DRAWING_TOUR)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_DRAWING_TOUR=1)
+  endif()
+elseif(BN_DRAWING_TOUR)
+  message(FATAL_ERROR "BN_DRAWING_TOUR goes round the drawing viewer's drawings: configure with BN_DRAWING_VIEWER ON.")
 endif()
 
 # A firmware with a fonts partition, checked at start (see

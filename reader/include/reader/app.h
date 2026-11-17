@@ -131,7 +131,9 @@ class App {
   // before the panel is, and the first drawing comes up once it is. Call
   // before Start(). Not together with the checks, which would take the
   // card's time while drawings are being read from it.
-  void ViewDrawings(std::string_view folder) noexcept;
+  // With `tour`, the viewer goes round the drawings once by itself
+  // (DrawingViewer::TourOnce()).
+  void ViewDrawings(std::string_view folder, bool tour = false) noexcept;
   // The viewer, if ViewDrawings() was called; null otherwise.
   const DrawingViewer* DrawingsViewer() const noexcept { return drawingViewer_; }
 
@@ -159,7 +161,7 @@ class App {
   // none has none in it.
   std::array<DeviceCheck*, 3> checks_{};
   // In place of the test pattern, if asked for: the drawing viewer, kept
-  // twice for the same reason as the checks, and 77 KB of its own memory.
+  // twice for the same reason as the checks, and 94 KB of its own memory.
   DrawingViewer* drawingViewer_ = nullptr;
   Screen* screen_ = nullptr;
   bool storageReady_ = false;

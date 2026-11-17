@@ -102,7 +102,12 @@ extern "C" void app_main() {
   esp_rom_printf(
       "Drawing viewer build: the SVG and PNG files in /drawings on the SD card are shown, Down and Up going "
       "from one to the next.\n");
+#ifdef BN_DRAWING_TOUR
+  esp_rom_printf("Drawing tour: each drawing is shown once, by itself, and timed.\n");
+  app.ViewDrawings(bn::reader::DrawingViewer::kFolder, true);
+#else
   app.ViewDrawings(bn::reader::DrawingViewer::kFolder);
+#endif
   if (app.DrawingsViewer() == nullptr) {
     esp_rom_printf("There is not the memory for the drawing viewer: it will not run.\n");
   }

@@ -200,9 +200,12 @@ def compare(shown: list[list[int]], dark: list[list[float]], what: str) -> float
     return worst
 
 
-def log_lines(bn_trace: str, capture: Path) -> list[str]:
+def log_lines(bn_trace: str, capture: Path, timed: bool = False) -> list[str]:
+    """The lines of log text the viewer sent: those that say what each drawing came to, or those that say where its
+    time went."""
     done = run([bn_trace, capture])
-    return [line.split(" log  ", 1)[1] for line in done.stdout.decode("utf-8", "replace").splitlines() if " log  " in line]
+    lines = [line.split(" log  ", 1)[1] for line in done.stdout.decode("utf-8", "replace").splitlines() if " log  " in line]
+    return [line for line in lines if (" timed: " in line) == timed]
 
 
 def main() -> int:

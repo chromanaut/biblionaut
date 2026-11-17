@@ -22,6 +22,7 @@
 #include "draw/fill.h"
 #include "draw/fixed.h"
 #include "draw/flatten.h"
+#include "draw/spool.h"
 #include "draw/svg_number.h"
 #include "draw/svg_path.h"
 #include "draw/svg_render.h"
@@ -44,7 +45,8 @@ using bn::draw::SvgStatus;
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s draw FILE [--width W] [--height H] [--rows ROWS] [--tolerance PIXELS]\n"
-               "                 [--pieces BYTES] [--definitions BYTES] [--thinnest PIXELS] [--out PICTURE]\n"
+               "                 [--pieces BYTES] [--definitions BYTES] [--thinnest PIXELS] [--spool]\n"
+               "                 [--out PICTURE]\n"
                "       %s path FILE [--transform TEXT] [--tolerance PIXELS] [--pieces BYTES] [--count]\n"
                "       %s fill FILE --size WxH [--transform TEXT] [--tolerance PIXELS] [--rule RULE]\n"
                "                 [--gray 0-255] [--opacity 0-255] [--rows ROWS] [--out PICTURE]\n"
@@ -69,6 +71,8 @@ void PrintUsage(const char* program) {
                "                      `use` to draw (default: 32768)\n"
                "  --thinnest PIXELS   draw no stroke thinner than this (default: each as wide\n"
                "                      as it is)\n"
+               "  --spool             read the file once, keeping what it draws for each strip,\n"
+               "                      and draw each strip from what was kept\n"
                "  --out PICTURE       write the picture there, as a PGM file: a byte a pixel\n"
                "\n"
                "  path  reads the path data in FILE, which is the value of a `d` attribute and\n"
@@ -205,6 +209,26 @@ struct Options {
   // thinnest a stroke is drawn.
   std::size_t definitions = 32768;
   Fixed thinnest = 0;
+  bool spool = false;
+};
+
+// A recording kept in memory (bn::draw::SpoolStore).
+class MemorySpool final : public bn::draw::SpoolStore {
+ public:
+  bool Append(std::span<const std::uint8_t> bytes) noexcept override {
+    bytes_.insert(bytes_.end(), bytes.begin(), bytes.end());
+    return true;
+  }
+  bool ReadAt(std::uint32_t offset, std::span<std::uint8_t> bytes) noexcept override {
+    if (std::size_t{offset} + bytes.size() > bytes_.size()) {
+      return false;
+    }
+    std::copy_n(bytes_.begin() + offset, bytes.size(), bytes.begin());
+    return true;
+  }
+
+ private:
+  std::vector<std::uint8_t> bytes_;
 };
 
 // The whole of a file. False, having said so, if it cannot be read.
@@ -417,7 +441,55 @@ int Draw(const Options& options) {
   SvgStatus status = SvgStatus::kOk;
   std::uint64_t lines = 0;
   std::size_t strips = 0;
-  for (std::size_t top = 0; top < height; top += stripRows) {
+  if (options.spool) {
+    // The file read once, into a recording kept in memory, and each strip
+    // drawn from that.
+    const auto bands =
+        bn::draw::SpoolWriter::BandsFor(static_cast<std::int32_t>(height), static_cast<std::int32_t>(stripRows));
+    if (bands > bn::draw::SpoolWriter::kMostBands) {
+      std::fprintf(stderr, "error: %zu strips are more than can be kept for (%zu)\n", bands,
+                   bn::draw::SpoolWriter::kMostBands);
+      return 2;
+    }
+    MemorySpool store;
+    std::vector<std::uint8_t> buffers(bn::draw::SpoolWriter::BufferBytesFor(bands));
+    std::vector<std::uint16_t> links(bn::draw::SpoolWriter::kMostChunks);
+    bn::draw::SpoolWriter writer;
+    if (!writer.Begin(static_cast<std::int32_t>(width), static_cast<std::int32_t>(height),
+                      static_cast<std::int32_t>(stripRows), buffers, links, store)) {
+      std::fprintf(stderr, "error: a picture of %zu by %zu in strips of %zu rows cannot be kept\n", width, height,
+                   stripRows);
+      return 2;
+    }
+    renderer.Begin(&writer, pixels(width), pixels(height), tolerance);
+    read(renderer, false);
+    status = renderer.Finish();
+    lines = renderer.Report().lines;
+    const bn::draw::SpoolStatus kept = writer.Finish();
+    std::vector<std::uint8_t> chunk(bn::draw::SpoolWriter::kChunkBytes);
+    for (std::size_t band = 0; band < bands && kept == bn::draw::SpoolStatus::kOk; ++band) {
+      const std::size_t top = band * stripRows;
+      const std::size_t rows = std::min(stripRows, height - top);
+      bn::draw::Filler filler;
+      if (!filler.Begin(std::span(picture).subspan(top * width, rows * width), width, static_cast<std::int32_t>(top),
+                        cells) ||
+          !writer.BeginBand(band, chunk)) {
+        std::fprintf(stderr, "error: a strip of %zu rows of %zu pixels cannot be drawn\n", rows, width);
+        return 2;
+      }
+      while (writer.ReplayStep(filler)) {
+      }
+      ++strips;
+    }
+    std::fprintf(stderr, "spool: %s, %u chunks of %zu bytes, %llu lines and %llu fillings kept\n",
+                 bn::draw::SpoolStatusName(writer.Status()), static_cast<unsigned>(writer.Chunks()),
+                 bn::draw::SpoolWriter::kChunkBytes, static_cast<unsigned long long>(writer.Lines()),
+                 static_cast<unsigned long long>(writer.Fills()));
+    if (writer.Status() != bn::draw::SpoolStatus::kOk) {
+      return 1;
+    }
+  }
+  for (std::size_t top = 0; top < height && !options.spool; top += stripRows) {
     const std::size_t rows = std::min(stripRows, height - top);
     bn::draw::Filler filler;
     if (!filler.Begin(std::span(picture).subspan(top * width, rows * width), width, static_cast<std::int32_t>(top),
@@ -557,6 +629,8 @@ int main(int argc, char** argv) {
     } else if (option == "--transform" && !drawing && value) {
       options.transform = value;
       ++at;
+    } else if (option == "--spool" && drawing) {
+      options.spool = true;
     } else if (option == "--thinnest" && drawing && value) {
       bn::draw::Number number = 0;
       std::size_t end = 0;

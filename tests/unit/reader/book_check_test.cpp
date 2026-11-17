@@ -1420,6 +1420,10 @@ TEST(BookCheck, LooksInFoldersOneLevelDownAndNoFurther) {
   fixture.storage.Put("/books/Series One/extras/Deeper.epub", Book(5).file);
   fixture.storage.Put("/books/.cache/Hidden.epub", Book(6).file);
   fixture.storage.Put("/books/" + std::string(243, 'f') + "/a.epub", Book(7).file);
+  // Nor taken for a book: a file whose name begins with a dot, as the
+  // `._` files are that a Mac writes beside each file it copies.
+  fixture.storage.Put("/books/._Solo.epub", BytesOf("Mac's notes on Solo.epub"));
+  fixture.storage.Put("/books/Series One/._1 First.epub", BytesOf("Mac's notes"));
 
   fixture.check->Begin();
   fixture.RunToTheEnd();

@@ -98,10 +98,13 @@ void App::CheckLayout() noexcept {
   }
 }
 
-void App::ViewDrawings(std::string_view folder) noexcept {
+void App::ViewDrawings(std::string_view folder, bool tour) noexcept {
   if (screen_ == nullptr) {
     drawingViewer_ =
         new (std::nothrow) DrawingViewer(services_.display, services_.clock, services_.storage, stream_, folder);
+    if (drawingViewer_ != nullptr && tour) {
+      drawingViewer_->TourOnce();
+    }
     screen_ = drawingViewer_;
   }
 }

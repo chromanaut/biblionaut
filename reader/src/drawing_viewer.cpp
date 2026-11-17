@@ -121,6 +121,8 @@ void DrawingViewer::Start() noexcept {
   }
   renderer_->KeepDefinitionsIn({definitions_.get(), kDefinitionBytes});
   renderer_->SetThinnestStroke(kThinnestStroke);
+  spool_.reset(new (std::nothrow) draw::SpoolWriter());
+  links_.reset(new (std::nothrow) std::uint16_t[kSpoolChunks]);
   state_ = State::kReady;
 
   // The drawings: every file in the folder named as one, in the order of
@@ -133,7 +135,9 @@ void DrawingViewer::Start() noexcept {
     while (names_.size() < kMostDrawings &&
            storage_.NextInDirectory(directory, name, length, info) == core::StorageStatus::kOk && length > 0) {
       const std::string_view found(name.data(), std::min(length, name.size()));
-      if (!info.isDirectory && (IsDrawing(found) || IsPicture(found))) {
+      // A name that begins with a dot is hidden, as the `._` files a Mac
+      // writes beside each file it copies to a card are.
+      if (!info.isDirectory && !found.starts_with('.') && (IsDrawing(found) || IsPicture(found))) {
         names_.emplace_back(found);
       }
     }
@@ -174,8 +178,8 @@ void DrawingViewer::OnInput(const core::InputEvent& event) noexcept {
   }
   drawingStartedUs_ = event.timeUs;
   // One being drawn that is no longer wanted is given up.
-  if ((phase_ == Phase::kSizing || phase_ == Phase::kDrawing || phase_ == Phase::kPicturing ||
-       phase_ == Phase::kWriting) &&
+  if ((phase_ == Phase::kSizing || phase_ == Phase::kRecording || phase_ == Phase::kDrawing ||
+       phase_ == Phase::kReplaying || phase_ == Phase::kPicturing || phase_ == Phase::kWriting) &&
       wanted_ != current_) {
     CloseFile();
     phase_ = Phase::kIdle;
@@ -184,8 +188,8 @@ void DrawingViewer::OnInput(const core::InputEvent& event) noexcept {
 
 void DrawingViewer::Sleep() noexcept {
   sleepAsked_ = true;
-  if (phase_ == Phase::kSizing || phase_ == Phase::kDrawing || phase_ == Phase::kPicturing ||
-      phase_ == Phase::kWriting) {
+  if (phase_ == Phase::kSizing || phase_ == Phase::kRecording || phase_ == Phase::kDrawing ||
+      phase_ == Phase::kReplaying || phase_ == Phase::kPicturing || phase_ == Phase::kWriting) {
     CloseFile();
     phase_ = Phase::kIdle;
   }
@@ -228,10 +232,46 @@ void DrawingViewer::Tick() noexcept {
         Fail();
         return;
       }
+      if (StartRecording()) {
+        phase_ = Phase::kRecording;
+        return;
+      }
       phase_ = Phase::kDrawing;
       if (!StartPass(&filler_)) {
         Fail();
       }
+      return;
+
+    case Phase::kRecording: {
+      if (!Feed(now + kSliceUs)) {
+        return;
+      }
+      static_cast<void>(renderer_->Finish());
+      const draw::SpoolStatus kept = spool_->Finish();
+      spooling_ = kept == draw::SpoolStatus::kOk;
+      if (spooling_) {
+        phase_ = Phase::kReplaying;
+        if (!StartReplay()) {
+          Fail();
+        }
+        return;
+      }
+      // Not kept whole: drawn as before.
+      spoolFailure_ = draw::SpoolStatusName(kept);
+      spoolStore_.Close();
+      phase_ = Phase::kDrawing;
+      if (!StartPass(&filler_)) {
+        Fail();
+      }
+      return;
+    }
+
+    case Phase::kReplaying:
+      if (!Replay(now + kSliceUs)) {
+        return;
+      }
+      phase_ = Phase::kWriting;
+      phaseStartedUs_ = now;
       return;
 
     case Phase::kDrawing:
@@ -266,14 +306,15 @@ void DrawingViewer::Tick() noexcept {
         Refresh(now);
         return;
       }
+      waitingUs_ += now - phaseStartedUs_;
       if (!WriteBand()) {
         Fail();
         return;
       }
       bandTop_ += kBandRows;
       if (bandTop_ < display_.Size().height) {
-        phase_ = Phase::kDrawing;
-        if (!StartPass(&filler_)) {
+        phase_ = spooling_ ? Phase::kReplaying : Phase::kDrawing;
+        if (!(spooling_ ? StartReplay() : StartPass(&filler_))) {
           Fail();
         }
         return;
@@ -300,13 +341,24 @@ void DrawingViewer::Tick() noexcept {
       }
       ++shown_;
       drawingsShown.Add();
+      SayTimes(now - phaseStartedUs_);
       phase_ = Phase::kIdle;
+      if (touring_ && shown_ < names_.size()) {
+        wanted_ = (current_ + 1) % names_.size();
+        drawingStartedUs_ = now;
+      } else if (touring_) {
+        LogLine line;
+        line.Text("drawings: the tour is over, ").Count(shown_, " shown", " shown");
+        stream_.SendText(line.View());
+        touring_ = false;
+      }
       phaseStartedUs_ = now;
       return;
   }
 }
 
 void DrawingViewer::Refresh(std::uint64_t now) noexcept {
+  pressToRefreshUs_ = clock_.NowUs() - drawingStartedUs_;
   CloseFile();
   const core::RefreshMode mode = firstRefresh_   ? core::RefreshMode::kFull
                                  : redrawWanted_ ? redrawMode_
@@ -354,6 +406,20 @@ void DrawingViewer::Begin(std::size_t index) noexcept {
     phase_ = Phase::kIdle;
     return;
   }
+  readingUs_ = 0;
+  renderingUs_ = 0;
+  ditheringUs_ = 0;
+  writingUs_ = 0;
+  waitingUs_ = 0;
+  bytesRead_ = 0;
+  passes_ = 0;
+  spooling_ = false;
+  spoolFailure_ = nullptr;
+  replayingUs_ = 0;
+  spoolStore_.writingUs = 0;
+  spoolStore_.readingUs = 0;
+  spoolStore_.bytesWritten = 0;
+  spoolStore_.bytesRead = 0;
   phase_ = Phase::kSizing;
   phaseStartedUs_ = clock_.NowUs();
   // The size first: with nothing to draw into, the renderer reads only as
@@ -384,6 +450,15 @@ bool DrawingViewer::StartPass(draw::Filler* filler) noexcept {
 }
 
 bool DrawingViewer::Feed(std::uint64_t until) noexcept {
+  const std::uint64_t started = clock_.NowUs();
+  const std::uint64_t readBefore = readingUs_;
+  const std::uint64_t spooledBefore = spoolStore_.writingUs;
+  const bool over = FeedSome(until);
+  renderingUs_ += (clock_.NowUs() - started) - (readingUs_ - readBefore) - (spoolStore_.writingUs - spooledBefore);
+  return over;
+}
+
+bool DrawingViewer::FeedSome(std::uint64_t until) noexcept {
   const bool sizing = phase_ == Phase::kSizing;
   for (std::uint32_t calls = 0;; ++calls) {
     // The clock is read every few calls: a call does little.
@@ -398,10 +473,15 @@ bool DrawingViewer::Feed(std::uint64_t until) noexcept {
         return true;
       }
       std::size_t read = 0;
-      if (storage_.ReadAt(file_, offset_, {chunk_.get(), kReadBytes}, read) != core::StorageStatus::kOk || read == 0) {
+      const std::uint64_t reading = clock_.NowUs();
+      const bool readOk =
+          storage_.ReadAt(file_, offset_, {chunk_.get(), kReadBytes}, read) == core::StorageStatus::kOk && read != 0;
+      readingUs_ += clock_.NowUs() - reading;
+      if (!readOk) {
         fileFailed_ = true;
         return true;
       }
+      bytesRead_ += read;
       offset_ += static_cast<std::uint32_t>(read);
       chunkAt_ = 0;
       chunkSize_ = read;
@@ -410,6 +490,109 @@ bool DrawingViewer::Feed(std::uint64_t until) noexcept {
     const std::string_view bytes(reinterpret_cast<const char*>(chunk_.get()) + chunkAt_, chunkSize_ - chunkAt_);
     chunkAt_ += renderer_->Step(bytes);
   }
+}
+
+bool DrawingViewer::StartRecording() noexcept {
+  if (!spool_ || !links_) {
+    spoolFailure_ = "no memory";
+    return false;
+  }
+  if (!spoolStore_.Open(kSpoolPath)) {
+    spoolFailure_ = "the card would not take it";
+    return false;
+  }
+  // The filler's cells are not wanted until the file has been read: they
+  // hold what each band has in hand meanwhile.
+  const core::DisplaySize size = display_.Size();
+  const std::size_t cells = draw::Filler::CellsFor(size.width, kBandRows);
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the cells' memory, as bytes.
+  const std::span<std::uint8_t> buffers(reinterpret_cast<std::uint8_t*>(cells_.get()), cells * sizeof(std::int16_t));
+  if (!spool_->Begin(static_cast<std::int32_t>(size.width), static_cast<std::int32_t>(size.height),
+                     static_cast<std::int32_t>(kBandRows), buffers, {links_.get(), kSpoolChunks}, spoolStore_)) {
+    spoolFailure_ = "not a picture it can keep";
+    spoolStore_.Close();
+    return false;
+  }
+  offset_ = 0;
+  chunkAt_ = 0;
+  chunkSize_ = 0;
+  fileFailed_ = false;
+  renderer_->Begin(spool_.get(), drawWidth_, drawHeight_);
+  return true;
+}
+
+bool DrawingViewer::StartReplay() noexcept {
+  const core::DisplaySize size = display_.Size();
+  const std::size_t width = size.width;
+  const std::size_t rows = std::min<std::size_t>(kBandRows, size.height - bandTop_);
+  const std::span<std::uint8_t> band(gray_.get(), width * rows);
+  std::fill(band.begin(), band.end(), std::uint8_t{255});
+  return filler_.Begin(band, width, static_cast<std::int32_t>(bandTop_),
+                       {cells_.get(), draw::Filler::CellsFor(width, kBandRows)}) &&
+         spool_->BeginBand(bandTop_ / kBandRows, {chunk_.get(), kReadBytes});
+}
+
+bool DrawingViewer::Replay(std::uint64_t until) noexcept {
+  const std::uint64_t started = clock_.NowUs();
+  const std::uint64_t readBefore = spoolStore_.readingUs;
+  bool over = false;
+  for (std::uint32_t calls = 0;; ++calls) {
+    if (calls % 16 == 15 && clock_.NowUs() >= until) {
+      break;
+    }
+    if (!spool_->ReplayStep(filler_)) {
+      over = true;
+      break;
+    }
+  }
+  replayingUs_ += (clock_.NowUs() - started) - (spoolStore_.readingUs - readBefore);
+  if (over && spool_->Status() != draw::SpoolStatus::kOk) {
+    // What was kept could not be read back: this band and the rest are
+    // drawn as before.
+    spoolFailure_ = draw::SpoolStatusName(spool_->Status());
+    spooling_ = false;
+    spoolStore_.Close();
+    phase_ = Phase::kDrawing;
+    if (!StartPass(&filler_)) {
+      Fail();
+    }
+    return false;
+  }
+  return over;
+}
+
+bool DrawingViewer::CardSpool::Open(std::string_view path) noexcept {
+  Close();
+  size_ = 0;
+  return storage_.Open(path, core::OpenMode::kCreate, file_) == core::StorageStatus::kOk;
+}
+
+void DrawingViewer::CardSpool::Close() noexcept {
+  if (file_ != core::kNoFile) {
+    storage_.Close(file_);
+    file_ = core::kNoFile;
+  }
+}
+
+bool DrawingViewer::CardSpool::Append(std::span<const std::uint8_t> bytes) noexcept {
+  const std::uint64_t started = clock_.NowUs();
+  const bool written = file_ != core::kNoFile && storage_.WriteAt(file_, size_, bytes) == core::StorageStatus::kOk;
+  writingUs += clock_.NowUs() - started;
+  if (written) {
+    size_ += static_cast<std::uint32_t>(bytes.size());
+    bytesWritten += bytes.size();
+  }
+  return written;
+}
+
+bool DrawingViewer::CardSpool::ReadAt(std::uint32_t offset, std::span<std::uint8_t> bytes) noexcept {
+  const std::uint64_t started = clock_.NowUs();
+  std::size_t read = 0;
+  const bool ok = file_ != core::kNoFile && storage_.ReadAt(file_, offset, bytes, read) == core::StorageStatus::kOk &&
+                  read == bytes.size();
+  readingUs += clock_.NowUs() - started;
+  bytesRead += read;
+  return ok;
 }
 
 void DrawingViewer::Place() noexcept {
@@ -445,6 +628,7 @@ bool DrawingViewer::WriteBand() noexcept {
   const std::size_t width = size.width;
   const std::size_t rowBytes = size.RowBytes();
   const std::size_t rows = std::min<std::size_t>(kBandRows, size.height - bandTop_);
+  const std::uint64_t dithering = clock_.NowUs();
   for (std::size_t row = 0; row < rows; ++row) {
     const std::span<std::uint8_t> grays(gray_.get() + (row * width), width);
     if (!ditherer_.Row(grays)) {
@@ -459,10 +643,15 @@ bool DrawingViewer::WriteBand() noexcept {
       }
     }
   }
+  const std::uint64_t writing = clock_.NowUs();
+  ditheringUs_ += writing - dithering;
   const std::span<const std::uint8_t> bits(bits_.get(), rows * rowBytes);
   const auto top = static_cast<std::uint16_t>(bandTop_);
-  return display_.WriteRows(core::DisplayPlane::kNew, top, bits) &&
-         display_.WriteRows(core::DisplayPlane::kOld, top, bits);
+  const bool written = display_.WriteRows(core::DisplayPlane::kNew, top, bits) &&
+                       display_.WriteRows(core::DisplayPlane::kOld, top, bits);
+  writingUs_ += clock_.NowUs() - writing;
+  ++passes_;
+  return written;
 }
 
 void DrawingViewer::Say() noexcept {
@@ -487,6 +676,40 @@ void DrawingViewer::Say() noexcept {
   stream_.SendText(line.View());
 }
 
+void DrawingViewer::SayTimes(std::uint64_t refreshUs) noexcept {
+  LogLine line;
+  if (picture_) {
+    line.Text("picture ").Number(current_ + 1).Text(" timed: refreshing ").Number(refreshUs / 1000).Text(" ms");
+  } else {
+    line.Text("drawing ").Number(current_ + 1).Text(" timed: ");
+    line.Count(passes_, " band", " bands").Text(", ").Number(bytesRead_ / 1024).Text(" KB read in ");
+    line.Number(readingUs_ / 1000).Text(" ms; rendering ").Number(renderingUs_ / 1000);
+    line.Text(" ms, dithering ").Number(ditheringUs_ / 1000).Text(" ms, writing ").Number(writingUs_ / 1000);
+    line.Text(" ms, waiting ").Number(waitingUs_ / 1000);
+    // From the press to the refresh, what the viewer did not spend on these
+    // is the loop's other turns.
+    const std::uint64_t untilRefresh = pressToRefreshUs_;
+    const std::uint64_t spent = readingUs_ + renderingUs_ + ditheringUs_ + writingUs_ + waitingUs_;
+    line.Text(" ms, between turns ").Number((untilRefresh > spent ? untilRefresh - spent : 0) / 1000);
+    line.Text(" ms, refreshing ").Number(refreshUs / 1000).Text(" ms");
+  }
+  stream_.SendText(line.View());
+  if (picture_ || (!spooling_ && spoolFailure_ == nullptr)) {
+    return;
+  }
+  LogLine spooled;
+  spooled.Text("drawing ").Number(current_ + 1).Text(" timed: ");
+  if (!spooling_) {
+    spooled.Text("not spooled: ").Text(spoolFailure_);
+  } else {
+    spooled.Text("spool ").Number(spoolStore_.bytesWritten / 1024).Text(" KB written in ");
+    spooled.Number(spoolStore_.writingUs / 1000).Text(" ms, ").Number(spoolStore_.bytesRead / 1024);
+    spooled.Text(" KB read in ").Number(spoolStore_.readingUs / 1000).Text(" ms; replaying ");
+    spooled.Number(replayingUs_ / 1000).Text(" ms");
+  }
+  stream_.SendText(spooled.View());
+}
+
 void DrawingViewer::Fail() noexcept {
   CloseFile();
   state_ = State::kFailed;
@@ -497,6 +720,7 @@ void DrawingViewer::CloseFile() noexcept {
     storage_.Close(file_);
     file_ = core::kNoFile;
   }
+  spoolStore_.Close();
   if (pictureFile_) {
     pictureFile_->Close();
   }

@@ -77,9 +77,15 @@ option(BN_LAYOUT_CHECK "Time the layout code, and set the text on the SD card, a
 #
 #   tools/idf -DBN_DRAWING_VIEWER=ON build flash    (back to normal: -DBN_DRAWING_VIEWER=OFF)
 #
-# Down and Up go from one to the next. It writes nothing to the card. Not
-# together with BN_STORAGE_CHECK, BN_BOOK_CHECK or BN_LAYOUT_CHECK.
+# Down and Up go from one to the next. It writes one file to the card, a
+# hidden one at its top (/.drawing-spool): what the drawing in hand draws.
+# Not together with BN_STORAGE_CHECK, BN_BOOK_CHECK or BN_LAYOUT_CHECK.
+# With BN_DRAWING_TOUR as well, it goes round them once by itself, for
+# timing them with nobody at the buttons:
+#
+#   tools/idf -DBN_DRAWING_VIEWER=ON -DBN_DRAWING_TOUR=ON build flash
 option(BN_DRAWING_VIEWER "Show the SVG and PNG files in /drawings on the SD card in place of the test pattern" OFF)
+option(BN_DRAWING_TOUR "With BN_DRAWING_VIEWER: go round the drawings once by itself" OFF)
 
 # For checking, on a device, a partition table with a data partition for
 # fonts in it, and what reading that partition costs

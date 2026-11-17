@@ -2587,7 +2587,7 @@ CI runs all of these on every push to `main` and every pull request
 |---|---|
 | Unit tests, with AddressSanitizer and UndefinedBehaviorSanitizer | `cmake --build --preset host && ctest --preset host` |
 | The same tests in the optimised build, without sanitizers | `cmake --build --preset host-release && ctest --preset host-release` |
-| Both as CI's Linux job runs them: GCC 14 on Ubuntu, in Docker | `tools/linux-check.sh` (arguments go to `ctest`) |
+| Both as CI's Linux jobs run them: GCC 14 on Ubuntu, in Docker | `tools/linux-check.sh` (arguments go to `ctest`) |
 | The fuzz targets, over the inputs kept for them | Part of each of the three above; `ctest --preset host -R '^fuzz'` for those alone |
 | The desktop application with its window, and its end-to-end test (CI runs it on macOS) | `cmake --preset window && cmake --build --preset window && ctest --preset window` |
 | Formatting | `tools/check-format.sh` (`--fix` to rewrite files) |
@@ -2599,6 +2599,12 @@ CI runs all of these on every push to `main` and every pull request
 
 The formatting check and both clang-tidy runs need the LLVM major version
 named in `tools/llvm-version` (`brew install llvm@<version>` on macOS).
+
+CI gives each host build a job of its own, so that they run at the same
+time, and runs the tests one to a core, as `tools/linux-check.sh` does. A local run does the same with `-j`: on a
+Mac with ten cores, `ctest --preset host -j 8` takes under a minute, and
+the same tests one at a time take four. So that tests can run side by side, each writes only files no other
+test writes, in a directory or under names of its own.
 
 Fuzzing itself (`tools/fuzz.py`, under Fuzzing above) is not among them: it
 is run on a developer's computer, for minutes or hours, and CI only takes
@@ -2620,7 +2626,7 @@ On an arm64 computer, such as a Mac with Apple silicon, the Linux run leaves
 out one of AddressSanitizer's checks: for use of a function's stack after
 it has returned. GCC's runtime for arm64 Linux is slow enough at it to turn
 seconds of tests into minutes (`tests/CMakeLists.txt` has the figures). CI's
-Linux job runs on x86-64, where it is not slow, and makes that check.
+Linux jobs run on x86-64, where it is not slow, and make that check.
 
 ## Licence
 

@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "draw/fixed.h"
+#include "draw/gray.h"
 #include "draw/svg_number.h"
 
 // The small things an SVG file's attributes are written in, other than
@@ -43,12 +44,7 @@ Fixed LengthIn(const SvgLength& length, Fixed whole, bool& clamped) noexcept;
 
 // ---- Paint ----
 
-// A colour as the gray this draws it in, from black (0) to white (255):
-// 0.299 of its red, 0.587 of its green and 0.114 of its blue, which is how
-// bright each looks, and what a JPEG's gray is.
-constexpr std::uint8_t GrayOf(std::uint8_t red, std::uint8_t green, std::uint8_t blue) noexcept {
-  return static_cast<std::uint8_t>(((77U * red) + (150U * green) + (29U * blue) + 128U) >> 8U);
-}
+// A colour is drawn as the gray it looks: GrayOf() in draw/gray.h.
 
 // What a shape is filled with.
 struct SvgPaint {

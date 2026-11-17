@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/png`: `bn-png`, which reads a PNG picture as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -1401,9 +1401,9 @@ pages are SVG files. `corpus/README.md` lists them, with where each came
 from and the terms it is passed on under, which are not this project's
 licence. They are kept byte for byte as they were fetched.
 
-`tools/check-books.py` runs `bn-zip`, `bn-xml`, `bn-epub` and `bn-css` over
-every EPUB under a folder, and compares what each says of a book with a
-reading of the same book by Python:
+`tools/check-books.py` runs `bn-zip`, `bn-xml`, `bn-epub`, `bn-css` and
+`bn-png` over every EPUB under a folder, and compares what each says of a
+book with a reading of the same book by Python:
 
 ```
 tools/check-books.py corpus
@@ -1411,7 +1411,8 @@ tools/check-books.py --tools build/host ~/books
 ```
 
 ```
-28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 42379 properties set for 15299 elements of 141 documents.
+28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 42379 properties set for 15299 elements of 141 documents, 80 PNG pictures of 62626058 pixels.
+Memory for the rows of a book's widest PNG picture, in bytes: 9602 at the median, 11202 for nine in ten, 11202 at the most; over the 18 books that have one.
 28 files listed in SHA256SUMS: all there and unchanged.
 The tools and Python agree about every book.
 ```
@@ -1437,11 +1438,14 @@ The tools and Python agree about every book.
   is what a second working-out gives it, by checksum; each document with
   the sheets it links and those they import, which Python finds. The
   second working-out is slow, which is why it is not every document.
+- **The pictures**: every PNG `bn-png book` reads has the header, the
+  ending, the rows and the checksum of their gray that a second reading of
+  it by Python comes to (Pictures, below, has what that reading is).
 
 Where they differ it prints a line for each difference, starting
 `DIFFERENT`, and ends with 1. It takes the tools from `build/host-release`
 if they are built there, or else from `build/host`; `--tools` names another
-build, and `--zip`, `--xml`, `--epub` and `--css` one tool each.
+build, and `--zip`, `--xml`, `--epub`, `--css` and `--png` one tool each.
 
 A folder with a file named `SHA256SUMS` in it is checked against that file
 as well: every file listed has to be there with that SHA-256, and every
@@ -1465,7 +1469,8 @@ whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
 Each reader of a book's own files, from the inflater to the table of
 contents, has a fuzz target in `tests/fuzz`, and so have the heap the XML
 parser's memory comes from, the hyphenator and the paragraph setter, which
-are given a book's words, and each reader of a drawing: one function that
+are given a book's words, each reader of a drawing, and the reader of PNG
+pictures: one function that
 is given some bytes, puts them through the reader, and ends the program if
 the reader does anything it should not.
 Going outside its memory, or into undefined behaviour, is seen by the
@@ -1490,12 +1495,17 @@ call may.
 | `svg_values` | Each reader of what an attribute says (`draw/svg_values.h`), and `ParseSvgTransform` | A reading that refuses the text leaves what it was to fill as it was. Space round the text changes nothing, nor capitals a colour. A view box is fitted where SVG says it goes, worked out again in floating point |
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
 | `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, fills more than one shape, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte |
+| `png` | `draw::PngReader`, four ways: for the header alone with no memory, with the room and the pieces the input chooses, with all the room it needs, and against a plain reading of the same file with zlib (`tests/support/png_reference.h`) | No step takes more from its source than `MostInputPerStep()`, and the header alone takes 33 bytes. Rows come in order, each as wide as the picture, and a picture is whole only with all of them. It has no room only when it has less than `RowBytesFor()`, and a picture is interlaced only if it says so. The header alone says what the whole reading says of it. With the room it needs it gives the same rows in any pieces. The rows are the plain reading's, and it ends where and as that does, but for data the inflater refuses as bad that zlib takes |
 
 The `package` and `toc` targets do not take a ZIP file as their input:
 nearly every change to one would be stopped at an entry's checksum, and
 the reader behind it never reached. They take the text of the files, and
 make a sound ZIP file round them each time (`package` can also be given
-the ZIP file itself). Each target's source says how its input is laid out.
+the ZIP file itself). The `png` target does the same for a picture: unless
+its input says to take the file as it is, it puts every chunk's checksum
+right, and may take what the `IDAT` chunks hold as the rows themselves and
+compress them before the reader sees them, cut into chunks of the size the
+input chooses. Each target's source says how its input is laid out.
 The first byte or two are its choices: how much memory the reader has,
 how big a piece is asked for at a time, when the handler stops, how many
 rows a strip of a picture has.
@@ -2510,6 +2520,135 @@ has to agree with it, in any strips and any pieces, and to say it left out
 what the drawing was given that it does not draw. The reader of tags, the
 readers of what attributes say, path data and the renderer each have a
 fuzz target ("Fuzzing", above).
+
+## Pictures
+
+`PngReader` (`draw/png.h`) reads a PNG picture. It is the first of the
+pieces that will turn a book's pictures into what a panel shows: a reader
+of each format gives rows of 8-bit gray, and scaling a picture to the size
+it is shown at, and bringing it down to the grays a panel has, come after
+it and are not written yet. JPEG and GIF are not read yet.
+
+A picture is read from a `ByteSource`, such as an entry of the ZIP file, a
+piece at a time, and never held whole: first its header, then its rows,
+top first, each given to a `PngRowSink` as soon as it is whole. All it
+keeps of a picture is the row being read and the one above it, which PNG's
+filters refer back to.
+
+- **What it reads**: every kind of picture PNG has. Gray at 1, 2, 4, 8 and
+  16 bits a sample; colour (RGB), gray with alpha and colour with alpha
+  (RGBA) at 8 and 16; colours from a palette at 1, 2, 4 and 8.
+  Transparency by an alpha sample, by a palette's alphas, or by one gray
+  or colour that stands for none (`tRNS`).
+- **What it gives**: a byte a pixel, from black (0) to white (255), as the
+  picture looks on white paper. A colour is the gray it looks, by the same
+  rule as in a drawing (`draw/gray.h`: 0.299 of its red, 0.587 of its green
+  and 0.114 of its blue), and a pixel that is not wholly solid is that much
+  of its gray laid over white. A sample of 16 bits is taken by its high
+  byte, and one of fewer than 8 is stretched so that its largest value is
+  white. A palette index past the end of the palette is black.
+- **What it leaves out**: interlaced pictures, whose rows are not whole
+  until the last of seven passes over the picture: the header is read, and
+  the rows refused (`kInterlaced`). Anything about colour itself (`gAMA`,
+  `sRGB`, `iCCP`, `cHRM`), since what comes out is gray for paper; the
+  colour a picture asks to be put behind it (`bKGD`), since it is laid on
+  the page; text; and every other chunk a reader may pass over. An
+  animated picture is read as its first picture, which is what its `IDAT`
+  chunks hold. In the books looked at, 2,823 PNG files in all, none is
+  interlaced and none is animated.
+- **Bad input**: whatever bytes it is given, it ends in a status:
+  `kNotPng`, `kBadHeader`, `kBadChecksum`, `kBadChunk`, `kUnknownChunk`,
+  `kNoPalette`, `kBadData`, `kTruncated`, `kNoRoom` or `kSourceFailed`. Every
+  chunk's checksum is checked. A wrong one ends the reading if the picture
+  needs the chunk (`IHDR`, `PLTE`, `IDAT`), and the chunk is passed over,
+  and counted, if not. A chunk's checksum comes after its bytes, so the rows
+  made from a chunk of data have been given by the time its checksum is
+  found wrong. The checksum zlib puts at the end of the data is not
+  checked: the inflater has read it by then, as it reads ahead, and its
+  bytes have all been through a chunk's checksum.
+- **Memory**: the inflater's 32 KB window and room for two rows, both the
+  caller's. A row needs the longer of its bytes, with the filter byte in
+  front of them, and its gray, which is a byte a pixel
+  (`PngReader::RowBytesFor()`). The rows of the widest picture in the
+  library need 10,202 bytes; in the public books 29,426; 16 KB holds all
+  but 73 of the public books' 2,435. The object itself is 3,048 bytes on
+  the device, most of it the inflater. Reading only the header needs no
+  window and no rows, and reads 33 bytes of the file.
+- **One call's work**: `Step()` reads PNG's signature, or the start of a
+  chunk, or up to 1 KB of one; or it asks the inflater once for up to
+  1 KB of a row, and if that finishes the row, undoes its filter, turns
+  it to gray and gives it out. What the inflater takes is bounded by its
+  own rule. Between the bytes it takes lie the ends and starts of chunks:
+  a picture's data may be cut into chunks of any length, down to a byte,
+  and two empty ones in a row are passed over (no encoder writes one, and
+  none of the books' pictures has one; three in a row are refused as bad
+  data). So the most a call takes, whatever the file, is 284,196 bytes, for
+  data a byte to a chunk with two empty chunks after each
+  (`PngReader::MostInputPerStep()`). Encoders write chunks of 8 KB or more
+  but the last, and a call then takes about what the inflater does.
+
+`bn-png` (`tools/png`) runs the reader on a file, or on every PNG in an
+EPUB:
+
+```
+./build/host/tools/png/bn-png read picture.png --out picture.pgm
+./build/host/tools/png/bn-png header picture.png
+./build/host/tools/png/bn-png book book.epub
+```
+
+`read` prints how the reading ended, the CRC-32 of the rows of gray it
+gave, what the header says (width, height, kind, bits a sample), how many
+rows it gave, the memory its rows need, how many chunks it passed over, and
+how many of those had a wrong checksum; with `--out`, it writes the rows as
+a PGM file to be looked at. `--rows` gives it less memory for rows, and
+`--pieces` the file in smaller pieces. `header` reads no more than the
+header, as a book's importer would. For the logo of a book from Standard
+Ebooks:
+
+```
+ok 0dd98f59 342 218 gray+alpha 8 218 1370 0 0
+ok 342 218 gray+alpha 8 0 33
+```
+
+and with a kilobyte for its rows:
+
+```
+no-room 00000000 342 218 gray+alpha 8 0 1370 0 0
+```
+
+`book` prints the same line for every PNG in the book, with its name, and
+adds them up. For *Pride and Prejudice*, in `corpus/`:
+
+```
+ok 0dd98f59 342 218 gray+alpha 8 218 1370 0 0 epub/images/logo-2x.png
+ok 3cffcd3b 220 140 gray+alpha 8 140 882 0 0 epub/images/logo.png
+ok 4e9b3d89 2800 880 gray+alpha 8 880 11202 0 0 epub/images/titlepage-2x.png
+ok c2934a08 1400 440 gray+alpha 8 440 5602 0 0 epub/images/titlepage.png
+png_files=4 png_failed=0 png_bytes=97941 png_pixels=3185356 png_most_room=11202
+```
+
+The unit tests make pictures with zlib, of every kind and depth with every
+filter, and set what the reader gives beside the gray each pixel should
+come to, worked out a pixel at a time from its samples
+(`tests/support/png_builder.h`); then spoil them in each way the reader
+looks for, and hold every step to its bound, among them a picture whose
+data is a byte to a chunk. An end-to-end test (`tests/e2e/png_tool.py`)
+compares `bn-png` with a second reading of the same files in Python, with
+Python's zlib: 400 pictures made up at random, every line the same, and
+600 spoiled. Through `tools/check-books.py` the two agree on every PNG of
+the books they were tried on: 80 in `corpus/`, 308 in the library and
+2,435 in the public books, 1.7 billion pixels in all. The reader has a
+fuzz target ("Fuzzing", above).
+
+The tests were set against 24 faults put into the reader on purpose, one
+at a time: in each filter, each kind of picture, transparency, the
+checksums, the order of chunks, the bound on a step and the room for
+rows. The unit tests found 23. Two of those they found only once a test
+was written for them, after the fuzz target's inputs had found them first:
+data that went on into the chunk after its last, and a signature checked
+by its first two bytes. The 24th changes nothing: which of two bytes
+Paeth's filter takes when they are equally near, which only happens when
+they are the same.
 
 ## Device build
 

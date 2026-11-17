@@ -85,16 +85,19 @@ TARGETS = {
     "svg_values": 256,
     "svg_path": 2048,
     "svg": 8192,
+    "png": 8192,
 }
 
-# Pieces of XML, of CSS and of SVG that the readers look for, which the
-# engine would be a long time coming to by changing bytes. For the targets
-# that read each.
+# Pieces of XML, of CSS, of SVG and of PNG that the readers look for, which
+# the engine would be a long time coming to by changing bytes. For the
+# targets that read each.
 XML_PIECES = ROOT / "tests" / "fuzz" / "xml.dict"
 CSS_PIECES = ROOT / "tests" / "fuzz" / "css.dict"
 CSS_RULES_PIECES = ROOT / "tests" / "fuzz" / "css_rules.dict"
 SVG_PIECES = ROOT / "tests" / "fuzz" / "svg.dict"
+PNG_PIECES = ROOT / "tests" / "fuzz" / "png.dict"
 DICTIONARIES = {
+    "png": PNG_PIECES,
     "xml": XML_PIECES,
     "package": XML_PIECES,
     "toc": XML_PIECES,

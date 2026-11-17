@@ -8,6 +8,7 @@ add_library(bn_draw STATIC
   src/fixed.cpp
   src/flatten.cpp
   src/png.cpp
+  src/scale.cpp
   src/svg_number.cpp
   src/svg_path.cpp
   src/svg_render.cpp

@@ -1521,8 +1521,8 @@ whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
 Each reader of a book's own files, from the inflater to the table of
 contents, has a fuzz target in `tests/fuzz`, and so have the heap the XML
 parser's memory comes from, the hyphenator and the paragraph setter, which
-are given a book's words, each reader of a drawing, and the reader of PNG
-pictures: one function that
+are given a book's words, each reader of a drawing, the reader of PNG
+pictures and the scaler: one function that
 is given some bytes, puts them through the reader, and ends the program if
 the reader does anything it should not.
 Going outside its memory, or into undefined behaviour, is seen by the
@@ -1548,6 +1548,7 @@ call may.
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
 | `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, fills more than one shape, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte |
 | `png` | `draw::PngReader`, four ways: for the header alone with no memory, with the room and the pieces the input chooses, with all the room it needs, and against a plain reading of the same file with zlib (`tests/support/png_reference.h`) | No step takes more from its source than `MostInputPerStep()`, and the header alone takes 33 bytes. Rows come in order, each as wide as the picture, and a picture is whole only with all of them. It has no room only when it has less than `RowBytesFor()`, and a picture is interlaced only if it says so. The header alone says what the whole reading says of it. With the room it needs it gives the same rows in any pieces. The rows are the plain reading's, and it ends where and as that does, but for data the inflater refuses as bad that zlib takes |
+| `scale` | `draw::Scaler`, from sizes the input gives (sides of nothing and past the largest among them) and its pixels, sometimes all one gray, sometimes with an old row given out of turn | A side of nothing or too long is refused and nothing is given. `Row()` gives no new row and `Step()` one at the most; the new rows come in order, each as wide as the new picture, as many as it is high. A row out of turn stops it. Every new pixel is within a gray of the working-out in real numbers, and a picture of one gray stays that gray |
 
 The `package` and `toc` targets do not take a ZIP file as their input:
 nearly every change to one would be stopped at an entry's checksum, and
@@ -2604,14 +2605,16 @@ them to within a hundredth on the whole.
 
 `PngReader` (`draw/png.h`) reads a PNG picture. It is the first of the
 pieces that will turn a book's pictures into what a panel shows: a reader
-of each format gives rows of 8-bit gray, and scaling a picture to the size
-it is shown at, and bringing it down to the grays a panel has, come after
-it and are not written yet. JPEG and GIF are not read yet.
+of each format gives rows of 8-bit gray, the scaler (below) makes them the
+size the picture is shown at, and bringing them down to the grays a panel
+has comes after that and is not written yet. JPEG and GIF are not read
+yet. The pieces hand rows on to one another through one interface,
+`RowSink` (`draw/row_sink.h`).
 
 A picture is read from a `ByteSource`, such as an entry of the ZIP file, a
 piece at a time, and never held whole: first its header, then its rows,
-top first, each given to a `PngRowSink` as soon as it is whole. All it
-keeps of a picture is the row being read and the one above it, which PNG's
+top first, each given to a `RowSink` as soon as it is whole. All it keeps
+of a picture is the row being read and the one above it, which PNG's
 filters refer back to.
 
 - **What it reads**: every kind of picture PNG has. Gray at 1, 2, 4, 8 and
@@ -2671,6 +2674,7 @@ EPUB:
 
 ```
 ./build/host/tools/png/bn-png read picture.png --out picture.pgm
+./build/host/tools/png/bn-png read picture.png --width 480 --out small.pgm
 ./build/host/tools/png/bn-png header picture.png
 ./build/host/tools/png/bn-png book book.epub
 ```
@@ -2680,9 +2684,11 @@ gave, what the header says (width, height, kind, bits a sample), how many
 rows it gave, the memory its rows need, how many chunks it passed over, and
 how many of those had a wrong checksum; with `--out`, it writes the rows as
 a PGM file to be looked at. `--rows` gives it less memory for rows, and
-`--pieces` the file in smaller pieces. `header` reads no more than the
-header, as a book's importer would. For the logo of a book from Standard
-Ebooks:
+`--pieces` the file in smaller pieces. `--width` and `--height` put the
+rows through the scaler, as the firmware will to show the picture at
+another size; with one of them, the other keeps the picture's shape.
+`header` reads no more than the header, as a book's importer would. For
+the logo of a book from Standard Ebooks:
 
 ```
 ok 0dd98f59 342 218 gray+alpha 8 218 1370 0 0
@@ -2693,6 +2699,13 @@ and with a kilobyte for its rows:
 
 ```
 no-room 00000000 342 218 gray+alpha 8 0 1370 0 0
+```
+
+and made the panel's width, when the checksum and the rows are those of the
+new picture:
+
+```
+ok 63611f11 342 218 gray+alpha 8 306 1370 0 0 scaled 480 306
 ```
 
 `book` prints the same line for every PNG in the book, with its name, and
@@ -2728,6 +2741,60 @@ data that went on into the chunk after its last, and a signature checked
 by its first two bytes. The 24th changes nothing: which of two bytes
 Paeth's filter takes when they are equally near, which only happens when
 they are the same.
+
+### Scaling
+
+`Scaler` (`draw/scale.h`) makes a picture larger or smaller a row at a time.
+It is a `RowSink`, so a reader of pictures gives it its rows as it reads
+them, and it gives the rows of the picture at the new size to another
+`RowSink`. It keeps nothing of the picture but what the rows still to come
+need: two rows of the new width at the most.
+
+- **Smaller**: each new pixel is the average of the old pixels it covers,
+  each counted by how much of it is covered. No old pixel is left out, so a
+  line one pixel wide in a large picture is still there in a small one,
+  lighter for being spread.
+- **Larger**: each new pixel is a blend of the two old pixels nearest its
+  middle, by how near each is (bilinear). Past the middle of the first or
+  last old pixel, that pixel is used as it is.
+- **Each direction by itself**, so a picture can be made narrower and
+  taller at once; the same size is the picture as it is.
+- **The grays as they are stored** are averaged, not the light they stand
+  for: a picture's grays are already spaced so that their steps look about
+  even, and averaging them as they are keeps the thin dark lines of
+  diagrams and formulas darker.
+- **Whole numbers**, rounded three times, each to the nearest with a half
+  up: a blend's weight to 4096ths of the way, a row made the new width to
+  256ths of a gray, and each new pixel to a gray. Every new pixel is within
+  a gray of the same working-out in real numbers. The sums stay inside 32
+  bits for sides of up to 65,535.
+- **Memory**: the caller's, nine bytes for each pixel of the new width
+  (4,320 for the panel's 480).
+- **One call's work**: `Row()` goes over the old row once and the new width
+  once, and gives nothing out; `Step()` makes one new row and gives it out.
+  One old row can be needed by several new ones when a picture is made
+  taller, so all the new rows an old row has made ready are given out
+  before the next old row is taken; one given before then stops the
+  scaling (`kOutOfTurn`). After each step of the reader, the caller calls
+  `Step()` until it gives nothing.
+
+Its unit tests set it beside a working-out of the same picture in real
+numbers, at 300 sizes made up at random and at the sizes a book's pictures
+meet, and hold it within a gray of it; and beside its three roundings
+worked out from exact fractions, at 400 more, where every pixel has to be
+the same. A picture of one gray stays that gray at any size, the same size
+is the picture byte for byte, and the largest sides keep their sums inside
+32 bits. The end-to-end test scales 82 of its pictures with `bn-png` and
+holds every pixel within a gray of a working-out in Python. The scaler has
+a fuzz target ("Fuzzing", above).
+
+Set against 21 faults put into it on purpose, one at a time, the unit tests
+found 19. Three of those, a rounding left out on the way, moved pixels by
+less than a 256th of a gray, which the comparison with real numbers cannot
+see; the comparison with exact fractions was written for them. The other two
+change no pixel: a step between old pixels taken one blend later, with its
+weight then the whole way, and a test at the first old pixel that picks the
+same pixel either way.
 
 ## Device build
 

@@ -27,6 +27,12 @@ gave have to be the second reading's, as far as they go.
 
 And an EPUB-like ZIP file of pictures, read with `bn-png book`.
 
+Some of the good pictures are also read made larger, smaller, or both at
+once (`--width`, `--height`), through the firmware's scaler: every new pixel
+has to be within a gray of a working-out in real numbers of the second
+reading's rows, each new pixel the average of the old ones it covers or a
+blend of the two nearest its middle, each direction by itself.
+
 The second reading is also what tools/check-books.py sets beside bn-png on
 real books (read_png).
 
@@ -597,6 +603,67 @@ def check_header(tool: str, work: Path, name: str, data: bytes) -> None:
     expect(said == wanted, f"{name}: header says {said!r}, where {wanted!r}")
 
 
+def plain_line(old: list[float], size: int) -> list[float]:
+    """One direction of the working-out in real numbers: `old` made `size` long."""
+    count = len(old)
+    out = []
+    for at in range(size):
+        if size == count:
+            out.append(old[at])
+        elif size < count:
+            start, end = at * count / size, (at + 1) * count / size
+            total = 0.0
+            i = int(start)
+            while i < count and i < end:
+                total += old[i] * (min(i + 1, end) - max(i, start))
+                i += 1
+            out.append(total / (end - start))
+        else:
+            middle = (at + 0.5) * count / size - 0.5
+            if middle <= 0:
+                out.append(old[0])
+            elif middle >= count - 1:
+                out.append(old[-1])
+            else:
+                before = int(middle)
+                out.append(old[before] * (before + 1 - middle) + old[before + 1] * (middle - before))
+    return out
+
+
+def plain_scale(rows: list[bytes], width: int, height: int) -> list[list[float]]:
+    across = [plain_line([float(v) for v in row], width) for row in rows]
+    columns = [plain_line([across[y][x] for y in range(len(rows))], height) for x in range(width)]
+    return [[columns[x][y] for x in range(width)] for y in range(height)]
+
+
+def check_scaled(tool: str, work: Path, name: str, data: bytes, width: int | None, height: int | None) -> None:
+    path = work / f"{name}.png"
+    path.write_bytes(data)
+    expected = read_png(data)
+    old_width, old_height = expected.header[0], expected.header[1]
+    out = work / f"{name}-scaled.pgm"
+    command = [tool, "read", str(path), "--out", str(out)]
+    # Only the sides asked for: a side left out keeps the picture's shape.
+    if width is not None:
+        command += ["--width", str(width)]
+    if height is not None:
+        command += ["--height", str(height)]
+    if width is None:
+        width = max(1, (height * old_width * 2 + old_height) // (old_height * 2))
+    if height is None:
+        height = max(1, (width * old_height * 2 + old_width) // (old_width * 2))
+    result = run(*command)
+    said = result.stdout.decode("utf-8", "replace").strip()
+    fields = said.split()
+    expect(result.returncode == 0 and fields[0] == "ok" and fields[-3:] == ["scaled", str(width), str(height)] and
+           fields[6] == str(height), f"{name}: scaled to {width}x{height}, bn-png says {said!r}: {result.stderr!r}")
+    given = pgm_rows(out, width)
+    plain = plain_scale(expected.rows, width, height)
+    furthest = max(abs(given[y][x] - plain[y][x]) for y in range(height) for x in range(width))
+    expect(furthest <= 1.0, f"{name}: scaled to {width}x{height}, a pixel is {furthest:.3f} grays from the "
+                            "working-out in real numbers")
+
+
 def check_book(tool: str, work: Path, pictures: list[bytes]) -> int:
     book = work / "book.epub"
     names = []
@@ -666,12 +733,23 @@ def main() -> int:
         wanted = f"no-room 00000000 {width} {height} {kind} {depth} 0 {expected.room} 0 0"
         expect(result.stdout.decode().strip() == wanted, f"rows: {result.stdout!r}, where {wanted!r}")
         books = check_book(tool, work, good[:30] + [spoiled(random.Random(7), good[3]), b"not a picture"])
+        # Scaled: smaller, larger, both at once, and one side asked for.
+        scaled = 0
+        for seed in range(0, 400, 5):
+            rng = random.Random(20000 + seed)
+            width = rng.choice((1, 3, rng.randint(1, 40), rng.randint(40, 120)))
+            height = rng.choice((1, 2, rng.randint(1, 40), rng.randint(40, 90)))
+            check_scaled(tool, work, f"made{seed}", good[seed], width, height)
+            scaled += 1
+        check_scaled(tool, work, "made1", good[1], 57, None)
+        check_scaled(tool, work, "made2", good[2], None, 33)
     except Failure as failure:
         print(f"FAIL: {failure}", file=sys.stderr)
         return 1
     print(f"png_tool: {len(good)} pictures ({', '.join(f'{n} {k}' for k, n in sorted(counts.items()))}) read as the "
           f"second reading reads them; {spoilt} spoiled ones refused as it says, {not_exact} of them where only the "
-          f"rows could be compared; {books} pictures in a book.")
+          f"rows could be compared; {books} pictures in a book; {scaled + 2} scaled within a gray of the working-out "
+          "in real numbers.")
     return 0
 
 

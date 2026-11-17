@@ -93,6 +93,7 @@ bn_add_unit_test(draw_tests
     unit/draw/fixed_test.cpp
     unit/draw/flatten_test.cpp
     unit/draw/png_test.cpp
+    unit/draw/scale_test.cpp
     unit/draw/svg_number_test.cpp
     unit/draw/svg_path_test.cpp
     unit/draw/svg_render_test.cpp

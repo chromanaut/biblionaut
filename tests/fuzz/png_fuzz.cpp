@@ -131,7 +131,7 @@ std::vector<std::uint8_t> Prepare(std::span<const std::uint8_t> file, bool plain
 }
 
 // Keeps the rows, and holds them to what the reader promises of them.
-class Rows final : public bn::draw::PngRowSink {
+class Rows final : public bn::draw::RowSink {
  public:
   explicit Rows(const PngReader& reader) : reader_(reader) {}
 

@@ -26,8 +26,8 @@ namespace {
 using bn::draw::PngColour;
 using bn::draw::PngHeader;
 using bn::draw::PngReader;
-using bn::draw::PngRowSink;
 using bn::draw::PngStatus;
+using bn::draw::RowSink;
 using bn::test::PngExtras;
 using bn::test::PngFile;
 using bn::test::PngPicture;
@@ -64,7 +64,7 @@ class PieceSource final : public bn::core::ByteSource {
 };
 
 // Keeps every row it is given, and checks they come in order and whole.
-class Rows final : public PngRowSink {
+class Rows final : public RowSink {
  public:
   void Row(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept override {
     EXPECT_EQ(y, count);

@@ -169,7 +169,7 @@ std::uint64_t PngReader::RowBytesFor(const PngHeader& header) noexcept {
 PngReader::PngReader(std::span<std::uint8_t> window, std::span<std::uint8_t> rows) noexcept
     : window_(window), rowMemory_(rows), inflater_(data_, window) {}
 
-void PngReader::Begin(core::ByteSource& source, PngRowSink* sink) noexcept {
+void PngReader::Begin(core::ByteSource& source, RowSink* sink) noexcept {
   source_ = &source;
   sink_ = sink;
   status_ = PngStatus::kOk;
@@ -214,7 +214,7 @@ bool PngReader::Step() noexcept {
   return false;
 }
 
-PngStatus PngReader::Read(core::ByteSource& source, PngRowSink* sink) noexcept {
+PngStatus PngReader::Read(core::ByteSource& source, RowSink* sink) noexcept {
   Begin(source, sink);
   while (Step()) {
   }

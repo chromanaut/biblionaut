@@ -1495,6 +1495,41 @@ def png_seeds() -> None:
     seed("nothing", b"")
 
 
+# ---- scale: the old and new sizes, two bytes of choices, then the old picture's pixels ----
+
+
+def scale_seeds() -> None:
+    clear("scale")
+
+    def seed(name: str, old: tuple[int, int], new: tuple[int, int], pixels: bytes, *, out_of_turn: int | None = None,
+             one_gray: bool = False) -> None:
+        choices = (1 if out_of_turn is not None else 0) | (2 if one_gray else 0)
+        header = struct.pack("<4H", *old, *new) + bytes([choices, out_of_turn or 0])
+        write("scale", name, header + pixels)
+
+    rng = random.Random(7)
+    picture = bytes(rng.randrange(256) for _ in range(900))
+    # Sizes are written as the target reads them: 2 to 299 come out one
+    # more than given, 0 and 1 as they are, 65534 as the largest side and
+    # 65535 one past it.
+    seed("the-same-size", (29, 30), (29, 30), picture)
+    seed("halved", (59, 39), (29, 19), picture)
+    seed("made-larger", (9, 7), (63, 41), picture)
+    seed("narrower-and-taller", (89, 9), (12, 79), picture)
+    seed("three-into-two", (2, 2), (1, 1), bytes([0, 255, 30, 90, 200, 10, 0, 0, 0]))
+    seed("a-page", (299, 199), (159, 239), picture)
+    seed("one-gray", (40, 30), (17, 61), bytes([173]), one_gray=True)
+    seed("black-and-white", (99, 59), (29, 17), bytes([0, 255, 255, 0, 255]))
+    seed("the-widest-made-one-pixel", (65534, 1), (1, 1), bytes([255]))
+    seed("the-tallest-made-one-pixel", (1, 65534), (1, 1), bytes([255]))
+    seed("one-pixel-made-the-widest", (1, 1), (65534, 1), bytes([200]))
+    seed("a-side-of-nothing", (0, 9), (9, 9), picture)
+    seed("a-side-too-long", (9, 9), (65535, 9), picture)
+    seed("a-row-out-of-turn-made-larger", (9, 7), (63, 41), picture, out_of_turn=3)
+    seed("a-row-out-of-turn-made-smaller", (59, 39), (29, 19), picture, out_of_turn=1)
+    seed("no-pixels", (19, 19), (7, 7), b"")
+
+
 def main() -> None:
     inflate_seeds()
     zip_seeds()
@@ -1512,6 +1547,7 @@ def main() -> None:
     svg_seeds()
     paragraph_seeds()
     png_seeds()
+    scale_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

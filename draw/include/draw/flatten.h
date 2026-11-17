@@ -29,7 +29,7 @@ class LineSink {
 // A flat curve takes few lines and a tight one many, up to 1,024.
 //
 // It keeps nothing of the outline: each line goes to the LineSink as it is
-// made. The object is 104 bytes on the device, and cutting a curve takes
+// made. The object is 128 bytes on the device, and cutting a curve takes
 // about half a kilobyte of stack.
 //
 // An arc is first made into curves, each an eighth of a turn at most and
@@ -70,6 +70,14 @@ class PathFlattener final : public PathSink {
   // Lines given to the sink so far.
   std::uint32_t Lines() const noexcept { return lines_; }
 
+  // The box round every point it has been told of, before they are put in
+  // pixels: the ends of lines, curves and arcs, and a curve's control
+  // points, which keep the curve within them. Nothing, if it has been told
+  // of none. Wherever the lines are wanted, this is the same.
+  bool HasBounds() const noexcept { return hasBounds_; }
+  Point BoundsFrom() const noexcept { return boundsFrom_; }
+  Point BoundsTo() const noexcept { return boundsTo_; }
+
   // Says which part of the picture the lines are wanted for: the pixels
   // from `topLeft` to `bottomRight`. A curve that lies wholly above that
   // part, below it or to one side of it is then given as one line, from
@@ -82,6 +90,7 @@ class PathFlattener final : public PathSink {
 
  private:
   Point InPixels(Point point) noexcept;
+  void Bound(Point point) noexcept;
   void Line(Point to) noexcept;
   bool NearlyStraight(Fixed halfX, Fixed halfY, Fixed radiusX, Fixed radiusY) const noexcept;
   // Whether a curve with these points, which it cannot go outside, lies
@@ -98,6 +107,9 @@ class PathFlattener final : public PathSink {
   Point keptFrom_;     // from here
   Point keptTo_;       // to here.
   std::uint32_t lines_ = 0;
+  bool hasBounds_ = false;
+  Point boundsFrom_;
+  Point boundsTo_;
   // Where the outline has got to and where this part of it began, in the
   // drawing's coordinates and in pixels.
   Point current_;

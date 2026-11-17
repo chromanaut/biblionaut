@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <numbers>
 #include <random>
 #include <string_view>
@@ -877,6 +878,181 @@ TEST(Fill, ABoxLetsWhatIsUnderShowThroughAThinShapeAsEver) {
   EXPECT_EQ(picture.At(3, 1), kWhite);
   EXPECT_EQ(picture.At(2, 0), kWhite);
   EXPECT_EQ(picture.At(2, 3), kWhite);
+}
+
+// ---- A gray that changes across the shape ----
+
+using bn::draw::GrayRamp;
+
+// A ramp from black at its start to white at its end, going right from
+// `from` to `to`, in pixels across the picture.
+// Stops of a ramp: where each is, from nothing to one, its gray and how
+// solid.
+struct Stop {
+  double at = 0;
+  std::uint8_t gray = 0;
+  std::uint8_t alpha = 255;
+};
+
+GrayRamp WithStops(std::initializer_list<Stop> stops) {
+  GrayRamp ramp;
+  for (const Stop& stop : stops) {
+    ramp.offsets[ramp.stops] = static_cast<std::int32_t>(std::llround(stop.at * GrayRamp::kOne));
+    ramp.grays[ramp.stops] = stop.gray;
+    ramp.alphas[ramp.stops] = stop.alpha;
+    ++ramp.stops;
+  }
+  ramp.Begin();
+  return ramp;
+}
+
+GrayRamp AcrossFromBlackToWhite(double from, double to, GrayRamp::Spread spread = GrayRamp::Spread::kPad) {
+  GrayRamp ramp = WithStops({{.at = 0, .gray = 0}, {.at = 1, .gray = 255}});
+  const double perPixel = static_cast<double>(GrayRamp::kOne) / (to - from);
+  ramp.across = std::llround(perPixel);
+  // The middle of the first pixel is half a pixel along.
+  ramp.at = std::llround((0.5 - from) * perPixel);
+  ramp.spread = spread;
+  return ramp;
+}
+
+Picture DrawnWithRamp(std::size_t width, std::size_t height, const Shape& shape, const GrayRamp& ramp,
+                      std::size_t stripRows, std::uint8_t opacity = 255, std::uint8_t under = kWhite) {
+  Picture picture(width, height);
+  std::fill(picture.gray.begin(), picture.gray.end(), under);
+  std::vector<std::int16_t> cells(Filler::CellsFor(width, stripRows));
+  for (std::size_t top = 0; top < height; top += stripRows) {
+    const std::size_t rows = std::min(stripRows, height - top);
+    Filler filler;
+    EXPECT_TRUE(filler.Begin(std::span(picture.gray).subspan(top * width, rows * width), width,
+                             static_cast<std::int32_t>(top), cells));
+    Outlined(filler, shape);
+    filler.Fill(FillRule::kNonZero, ramp, opacity);
+  }
+  return picture;
+}
+
+Shape Box(double left, double top, double right, double bottom) {
+  return {{{.x = left, .y = top}, {.x = right, .y = top}, {.x = right, .y = bottom}, {.x = left, .y = bottom}}};
+}
+
+TEST(Fill, ARampGivesEachPixelTheGrayWhereItsMiddleLiesAlongIt) {
+  // From black at the middle of the first pixel to white at the middle of
+  // the last: the gray of each is how far along it is.
+  const Picture picture = DrawnWithRamp(256, 4, Box(0, 0, 256, 4), AcrossFromBlackToWhite(0.5, 255.5), 4);
+  for (std::size_t x = 0; x < 256; ++x) {
+    for (std::size_t y = 0; y < 4; ++y) {
+      ASSERT_EQ(picture.At(x, y), x) << x << "," << y;
+    }
+  }
+}
+
+TEST(Fill, BeyondTheEndsOfARampItsSpreadSaysWhatComes) {
+  // Ten pixels long, from the middle of the eleventh pixel.
+  const auto row = [](GrayRamp::Spread spread) {
+    return DrawnWithRamp(50, 1, Box(0, 0, 50, 1), AcrossFromBlackToWhite(10.5, 20.5, spread), 1);
+  };
+  const Picture pad = row(GrayRamp::Spread::kPad);
+  EXPECT_EQ(pad.At(0, 0), 0);
+  EXPECT_EQ(pad.At(10, 0), 0);
+  EXPECT_NEAR(pad.At(15, 0), 128, 1);
+  EXPECT_EQ(pad.At(20, 0), 255);
+  EXPECT_EQ(pad.At(49, 0), 255);
+  // Back the other way past the end, and the other way before the start.
+  const Picture reflect = row(GrayRamp::Spread::kReflect);
+  EXPECT_NEAR(reflect.At(25, 0), 128, 1);
+  EXPECT_EQ(reflect.At(30, 0), 0);
+  EXPECT_NEAR(reflect.At(5, 0), 128, 1);
+  EXPECT_EQ(reflect.At(0, 0), 255);
+  // From the start again.
+  const Picture repeat = row(GrayRamp::Spread::kRepeat);
+  EXPECT_NEAR(repeat.At(25, 0), 128, 1);
+  EXPECT_EQ(repeat.At(29, 0), 230);
+  EXPECT_NEAR(repeat.At(5, 0), 128, 1);
+}
+
+TEST(Fill, ARampGoesAnyWayAndIsAsSolidAsItSaysAtEachPlace) {
+  // Down the picture, from black to white, half solid at its start and
+  // whole at its end, laid over a gray of 100.
+  GrayRamp ramp = WithStops({{.at = 0, .gray = 0, .alpha = 128}, {.at = 1, .gray = 255, .alpha = 255}});
+  ramp.down = GrayRamp::kOne / 10;
+  ramp.at = 0;
+  const Picture picture = DrawnWithRamp(4, 12, Box(0, 0, 4, 12), ramp, 12, 255, 100);
+  // The middle of row 0 is at the ramp's start: half black over 100.
+  EXPECT_NEAR(picture.At(2, 0), 50, 1);
+  // Row 10 is at its end: all white.
+  EXPECT_EQ(picture.At(0, 10), 255);
+  for (std::size_t y = 0; y < 12; ++y) {
+    EXPECT_EQ(picture.At(0, y), picture.At(3, y)) << y;
+  }
+  // As half solid again, white is half way from 100.
+  EXPECT_NEAR(DrawnWithRamp(4, 12, Box(0, 0, 4, 12), ramp, 12, 128, 100).At(2, 10), 100 + ((255 - 100) / 2.0), 1);
+}
+
+TEST(Fill, ARampComesOutTheSameInAnyStrips) {
+  std::mt19937 random = Repeatable(11);
+  const auto any = [&random]() { return static_cast<std::uint8_t>(random()); };
+  GrayRamp ramp = WithStops({{.at = 0, .gray = any(), .alpha = any()},
+                             {.at = 0.3, .gray = any(), .alpha = any()},
+                             {.at = 0.3, .gray = any(), .alpha = any()},
+                             {.at = 0.8, .gray = any(), .alpha = any()},
+                             {.at = 1, .gray = any(), .alpha = any()}});
+  ramp.across = GrayRamp::kOne / 37;
+  ramp.down = -GrayRamp::kOne / 23;
+  ramp.at = GrayRamp::kOne / 3;
+  ramp.spread = GrayRamp::Spread::kReflect;
+  const Shape shape = {{{.x = 2.3, .y = 1.1}, {.x = 60.2, .y = 9.7}, {.x = 31.4, .y = 44.9}}};
+  const Picture whole = DrawnWithRamp(64, 48, shape, ramp, 48);
+  EXPECT_LT(std::count(whole.gray.begin(), whole.gray.end(), kWhite), (64 * 48) - 500);
+  for (const std::size_t rows : {std::size_t{1}, std::size_t{5}, std::size_t{7}, std::size_t{16}}) {
+    EXPECT_EQ(DrawnWithRamp(64, 48, shape, ramp, rows).gray, whole.gray) << rows;
+  }
+  // A ramp that is one gray all along is a plain fill.
+  const GrayRamp flat = WithStops({{.at = 0.5, .gray = 77, .alpha = 200}});
+  Picture plain(64, 48);
+  Draw(plain, {{.shape = shape, .gray = 77, .opacity = 200}}, 48);
+  EXPECT_EQ(DrawnWithRamp(64, 48, shape, flat, 48).gray, plain.gray);
+}
+
+TEST(Fill, ARampGoesEvenlyFromStopToStopAndStepsWhereTwoAreTogether) {
+  const GrayRamp ramp = WithStops({{.at = 0.2, .gray = 200},
+                                   {.at = 0.5, .gray = 50, .alpha = 100},
+                                   {.at = 0.5, .gray = 250},
+                                   {.at = 0.5, .gray = 10},
+                                   {.at = 0.9, .gray = 90}});
+  std::uint8_t gray = 0;
+  std::uint8_t alpha = 0;
+  const auto at = [&](double along) {
+    ramp.At(std::llround(along * GrayRamp::kOne), gray, alpha);
+    return gray;
+  };
+  EXPECT_EQ(at(-1), 200);
+  EXPECT_EQ(at(0.2), 200);
+  EXPECT_EQ(at(0.35), 125);
+  EXPECT_EQ(alpha, 178);
+  // Just short of the step, and at it: the last of the stops there.
+  EXPECT_EQ(at(0.5 - (1.0 / GrayRamp::kOne)), 50);
+  EXPECT_EQ(at(0.5), 10);
+  EXPECT_EQ(at(0.7), 50);
+  EXPECT_EQ(at(2), 90);
+  // With no stops it is nothing at all.
+  GrayRamp none;
+  none.Begin();
+  none.At(0, gray, alpha);
+  EXPECT_EQ(alpha, 0);
+}
+
+TEST(Fill, ARampAsSteepOrAsFarAlongAsCanBeIsHeldToWhatItsSumsCanTake) {
+  for (const std::int64_t extreme : {INT64_MAX, INT64_MIN, GrayRamp::kMostStep * 2, -GrayRamp::kFurthest * 2}) {
+    GrayRamp ramp = AcrossFromBlackToWhite(0, 1);
+    ramp.across = extreme;
+    ramp.down = extreme;
+    ramp.at = extreme;
+    const Picture picture = DrawnWithRamp(64, 16, Box(0, 0, 64, 16), ramp, 3);
+    for (const std::uint8_t pixel : picture.gray) {
+      ASSERT_TRUE(pixel == 0 || pixel == 255) << extreme;
+    }
+  }
 }
 
 }  // namespace

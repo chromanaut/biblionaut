@@ -449,6 +449,10 @@ int Draw(const Options& options) {
     std::fprintf(stderr, "definitions: %u bytes kept of %zu, and %u gone through again in a strip\n",
                  static_cast<unsigned>(report.kept), definitions.size(), static_cast<unsigned>(report.reused));
   }
+  if (report.rules != 0 || report.gradients != 0) {
+    std::fprintf(stderr, "style: %u rules of a style sheet and %u linear gradients kept\n",
+                 static_cast<unsigned>(report.rules), static_cast<unsigned>(report.gradients));
+  }
   if (report.leftOut != 0) {
     std::string list;
     for (unsigned bit = 0; bit < 32; ++bit) {

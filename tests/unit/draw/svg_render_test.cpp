@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <iterator>
 #include <numbers>
@@ -108,8 +109,12 @@ Drawing Draw(std::string_view file, std::size_t width, std::size_t height, std::
       std::string_view bytes = file.substr(at, piece);
       at += bytes.size();
       while (!bytes.empty()) {
+        const std::uint32_t looked = renderer.Report().looked;
         const std::size_t taken = renderer.Step(bytes);
         EXPECT_LE(taken, bytes.size());
+        // Every drawing here is held to the bound on looking through what
+        // is kept.
+        EXPECT_LE(renderer.Report().looked - looked, SvgRenderer::kMostLooksPerStep);
         bytes.remove_prefix(std::min(taken, bytes.size()));
         ++drawing.calls;
       }
@@ -510,7 +515,8 @@ TEST(SvgRender, SaysWhatItLeftOut) {
       {"<image href='a.png' width='9' height='9'/>", Bits({SvgLeftOut::kImage}), 0},
       {"<defs><path id='a' d='M0 0h4v4z'/><text>x</text></defs><use href='#a'/>", 0, 8},
       {"<use href='#a'/><rect width='4' height='4'/>", Bits({SvgLeftOut::kUse}), 16},
-      {"<style>rect { fill: none }</style><rect width='4' height='4'/>", Bits({SvgLeftOut::kStyleSheet}), 16},
+      {"<style>g rect { fill: none }</style><rect width='4' height='4'/>", Bits({SvgLeftOut::kStyleSheet}), 16},
+      {"<style>rect { fill: none }</style><rect width='4' height='4'/>", 0, 0},
       {"<rect width='4' height='4' stroke='#000'/>", Bits({SvgLeftOut::kStroke}), 16},
       {"<rect width='4' height='4' fill='none' style='stroke:red;stroke-width:2'/>", Bits({SvgLeftOut::kStroke}), 0},
       {"<g stroke='blue'><rect width='4' height='4'/></g>", Bits({SvgLeftOut::kStroke}), 16},
@@ -521,7 +527,8 @@ TEST(SvgRender, SaysWhatItLeftOut) {
       {"<g stroke='#000'><rect width='4' height='4' stroke='none'/></g>", 0, 16},
       {"<g stroke='#000' stroke-width='0'><rect width='4' height='4' stroke-width='inherit'/></g>", 0, 16},
       {"<rect width='4' height='4' stroke='#000' display='none'/>", 0, 0},
-      // A gradient is not drawn, unless something is written to stand in for it.
+      // A paint that names nothing there is is not drawn, unless something is
+      // written to stand in for it.
       {"<rect width='4' height='4' fill='url(#g)'/>", Bits({SvgLeftOut::kPaintServer}), 0},
       {"<rect width='4' height='4' fill='url(#g) #000'/>", Bits({SvgLeftOut::kPaintServer}), 16},
       {"<linearGradient id='g'><stop offset='0'/></linearGradient><rect width='4' height='4'/>", 0, 16},
@@ -1530,6 +1537,331 @@ TEST(SvgRender, ASymbolIsDrawnOnlyWhereItIsUsedAndAsAnSvgThere) {
   EXPECT_TRUE(DrawBody(With(kept, "<use href='#v' height='4'/>")).IsBox(0, 0, 2, 4, kBlack));
   // A size on a `use` of anything else changes nothing.
   EXPECT_TRUE(DrawBody(With(kBlock, "<use href='#a' width='20' height='20'/>")).IsBox(0, 0, 4, 3, kBlack));
+}
+
+// ---- A style sheet ----
+
+TEST(SvgRender, AStyleSheetPaintsByClassAndByElementsName) {
+  const std::string_view sheet = "<style>.dark{fill:#404040} rect{fill:#c0c0c0} .light , .pale {fill:#e0e0e0}</style>";
+  const Drawing drawing = DrawBody(std::string(sheet) +
+                                   "<rect width='2' height='2'/>"
+                                   "<rect x='4' width='2' height='2' class='dark'/>"
+                                   "<rect x='8' width='2' height='2' class='other  pale'/>"
+                                   "<path d='M12 0h2v2h-2z' class='dark'/>"
+                                   "<path d='M16 0h2v2h-2z' class='nothing'/>");
+  EXPECT_EQ(drawing.report.leftOut, 0u);
+  EXPECT_EQ(drawing.report.rules, 3u);
+  EXPECT_EQ(drawing.At(0, 0), 0xC0);
+  // A class wins over an element's name, wherever the rules are.
+  EXPECT_EQ(drawing.At(4, 0), 0x40);
+  EXPECT_EQ(drawing.At(8, 1), 0xE0);
+  EXPECT_EQ(drawing.At(12, 0), 0x40);
+  EXPECT_EQ(drawing.At(16, 0), kBlack);
+  // Between two rules that count the same, the later wins.
+  EXPECT_EQ(
+      DrawBody("<style>.a{fill:#404040}.b{fill:#808080}</style><rect width='2' height='2' class='b a'/>").At(0, 0),
+      0x80);
+  // A name is the whole of a class's name, letter for letter.
+  EXPECT_EQ(DrawBody("<style>.a{fill:#808080}</style><rect width='2' height='2' class='ab A'/>").At(0, 0), kBlack);
+}
+
+TEST(SvgRender, WhatARuleSetsWinsOverAnAttributeAndLosesToStyle) {
+  const std::string_view sheet = "<style>.a{fill:#808080}</style>";
+  EXPECT_EQ(DrawBody(std::string(sheet) + "<rect width='2' height='2' fill='#404040' class='a'/>").At(0, 0), 0x80);
+  EXPECT_EQ(DrawBody(std::string(sheet) + "<rect class='a' fill='#404040' width='2' height='2'/>").At(0, 0), 0x80);
+  EXPECT_EQ(DrawBody(std::string(sheet) + "<rect width='2' height='2' style='fill:#404040' class='a'/>").At(0, 0),
+            0x40);
+  // What a rule sets on a group is handed on, as if written there.
+  const Drawing group = DrawBody(
+      "<style>.half{fill-opacity:.5} .gone{display:none} .grey{fill:#808080}</style>"
+      "<g class='half'><rect width='4' height='4'/><rect x='6' width='4' height='4' class='grey'/></g>"
+      "<g class='gone'><rect x='12' width='4' height='4'/></g>");
+  EXPECT_NEAR(group.At(1, 1), 128, 1);
+  EXPECT_NEAR(group.At(7, 1), 191, 1);
+  EXPECT_EQ(group.At(13, 1), kWhite);
+  // What it cannot read it reports, and the rest of the rule is used.
+  const Drawing bad = DrawBody("<style>.a{fill:blurple;fill-opacity:.5}</style><rect width='2' height='2' class='a'/>");
+  EXPECT_EQ(bad.report.leftOut, Bits({SvgLeftOut::kBadValue}));
+  EXPECT_NEAR(bad.At(0, 0), 128, 1);
+}
+
+TEST(SvgRender, ASheetStylesWhatComesAfterItAndSaysWhenItCameLate) {
+  const Drawing drawing = DrawBody(
+      "<rect width='2' height='2' class='a'/><style>.a{fill:#808080}</style>"
+      "<rect x='4' width='2' height='2' class='a'/>");
+  EXPECT_EQ(drawing.At(0, 0), kBlack);
+  EXPECT_EQ(drawing.At(4, 0), 0x80);
+  EXPECT_EQ(drawing.report.leftOut, Bits({SvgLeftOut::kStyleSheet}));
+  // A sheet after only groups, or in `defs`, is in time.
+  EXPECT_EQ(DrawBody("<g><style>.a{fill:#808080}</style></g><rect width='2' height='2' class='a'/>").At(0, 0), 0x80);
+  const Drawing inDefs =
+      DrawBody("<defs><style><![CDATA[ .a{fill:#808080} ]]></style></defs><rect width='2' height='2' class='a'/>");
+  EXPECT_EQ(inDefs.At(0, 0), 0x80);
+  EXPECT_EQ(inDefs.report.leftOut, 0u);
+}
+
+TEST(SvgRender, WhatIsUsedIsStyledByTheSheetAsWhereItIsDrawn) {
+  const Drawing drawing = DrawBody(
+      "<style>.a{fill:#808080}</style><defs><rect id='r' class='a' width='2' height='2'/></defs>"
+      "<use href='#r'/><use href='#r' x='4'/>");
+  EXPECT_EQ(drawing.At(0, 0), 0x80);
+  EXPECT_EQ(drawing.At(4, 0), 0x80);
+}
+
+TEST(SvgRender, ASheetIsKeptInTheMemoryForDefinitionsAndWhatDoesNotFitIsSaid) {
+  const std::string file = Svg(40, 20,
+                               "<style>.a{fill:#808080}.b{fill:#404040}</style><rect width='2' height='2' class='a'/>"
+                               "<rect x='4' width='2' height='2' class='b'/>");
+  const Drawing roomy = Draw(file, 40, 20);
+  EXPECT_EQ(roomy.report.rules, 2u);
+  // Each rule is a record, eight bytes, and what it says: a byte for how
+  // many selectors, two and the name for each, a byte for how many things
+  // it sets, and two and the value for each.
+  const std::size_t rule = SvgRenderer::kBytesPerDefinition + 1 + 2 + 1 + 1 + 2 + 7;
+  const Drawing room = Draw(file, 40, 20, 0, SIZE_MAX, 2 * rule);
+  EXPECT_EQ(room.gray, roomy.gray);
+  EXPECT_EQ(room.report.leftOut, 0u);
+  const Drawing less = Draw(file, 40, 20, 0, SIZE_MAX, (2 * rule) - 1);
+  EXPECT_EQ(less.report.rules, 1u);
+  EXPECT_EQ(less.report.leftOut, Bits({SvgLeftOut::kNoRoom}));
+  EXPECT_EQ(less.At(0, 0), 0x80);
+  EXPECT_EQ(less.At(4, 0), kBlack);
+  // A rule longer than one is kept for is left out, and said.
+  std::string many = "<style>";
+  for (int selector = 0; selector < 6; ++selector) {
+    many += ".class-number-" + std::to_string(selector) + ",";
+  }
+  many += ".a{fill:#808080}</style><rect width='2' height='2' class='a'/>";
+  const Drawing longRule = DrawBody(many);
+  EXPECT_EQ(longRule.At(0, 0), 0x80);
+  std::string longer = "<style>.a{fill:#808080";
+  for (int setting = 0; setting < 25; ++setting) {
+    longer += ";fill-opacity:0.99999999";
+  }
+  longer += "}</style><rect width='2' height='2' class='a'/>";
+  const Drawing tooLong = DrawBody(longer);
+  EXPECT_EQ(tooLong.At(0, 0), kBlack);
+  EXPECT_EQ(tooLong.report.leftOut, Bits({SvgLeftOut::kStyleSheet}));
+}
+
+TEST(SvgRender, ACallStylesOneElementAtTheMost) {
+  // Styling an element goes through every rule, so each element that is
+  // styled is enough for a call.
+  std::string body = "<style>";
+  for (int rule = 0; rule < 30; ++rule) {
+    body += ".c" + std::to_string(rule) + "{fill:#808080}";
+  }
+  body += "</style>";
+  for (int element = 0; element < 200; ++element) {
+    body += "<g/>";
+  }
+  const Drawing styled = Draw(Svg(40, 20, body), 40, 20);
+  EXPECT_EQ(styled.report.rules, 30u);
+  EXPECT_GE(styled.calls, 200u);
+}
+
+// ---- Gradients ----
+
+// The gray a gradient from black to white has at `along`, from 0 at its
+// start to 1 at its end, held there beyond them.
+double BlackToWhite(double along) { return 255.0 * std::clamp(along, 0.0, 1.0); }
+
+// Whether every pixel wholly inside the shape from (left, top) to (right,
+// bottom) is within a gray or so of what `gray` says for the middle of it.
+bool GradedAs(const Drawing& drawing, std::size_t left, std::size_t top, std::size_t right, std::size_t bottom,
+              const std::function<double(double, double)>& gray, double within = 1.01) {
+  for (std::size_t y = top; y < bottom; ++y) {
+    for (std::size_t x = left; x < right; ++x) {
+      const double wanted = gray(static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5);
+      if (std::abs(drawing.At(x, y) - wanted) > within) {
+        ADD_FAILURE() << "the pixel at " << x << "," << y << " is " << static_cast<int>(drawing.At(x, y)) << ", not "
+                      << wanted;
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+constexpr std::string_view kBlackToWhite = "<stop offset='0' stop-color='#000'/><stop offset='1' stop-color='#fff'/>";
+
+std::string Gradient(std::string_view attributes, std::string_view stops = kBlackToWhite) {
+  return "<defs><linearGradient id='g' " + std::string(attributes) + ">" + std::string(stops) +
+         "</linearGradient></defs>";
+}
+
+TEST(SvgRender, ALinearGradientGivesEachPixelTheGrayWhereItLiesAlongIt) {
+  // Across the shape's own box, unless it says otherwise: from its left to
+  // its right.
+  const Drawing drawing = DrawBody(Gradient("") + "<rect x='10' y='2' width='20' height='10' fill='url(#g)'/>");
+  EXPECT_EQ(drawing.report.leftOut, 0u);
+  EXPECT_EQ(drawing.report.gradients, 1u);
+  EXPECT_TRUE(GradedAs(drawing, 10, 2, 30, 12, [](double x, double) { return BlackToWhite((x - 10) / 20); }));
+  EXPECT_EQ(drawing.At(9, 5), kWhite);
+  // Down, and part of the way, in the box's own terms.
+  const Drawing down =
+      DrawBody(Gradient("x1='0' y1='25%' x2='0' y2='.75'") + "<rect y='4' width='8' height='16' fill='url(#g)'/>");
+  EXPECT_TRUE(GradedAs(down, 0, 4, 8, 20, [](double, double y) { return BlackToWhite((y - 8) / 8); }));
+  // In the space the shape is drawn in, where a percentage is of what the
+  // drawing is seen through.
+  const Drawing user = DrawBody(Gradient("gradientUnits='userSpaceOnUse' x1='10%' x2='30'") +
+                                "<g transform='translate(1 0)'><rect width='39' height='20' fill='url(#g)'/></g>");
+  EXPECT_TRUE(GradedAs(user, 1, 0, 40, 20, [](double x, double) { return BlackToWhite((x - 1 - 4) / 26); }));
+}
+
+TEST(SvgRender, AGradientIsLaidOutByItsTransformAndTheShapesAsTheyAre) {
+  // Slanted, stretched and moved, both: the gray of each pixel is found
+  // here in floating point, by taking its middle back into the gradient's
+  // own space and seeing how far along it is.
+  const Drawing drawing = DrawBody(
+      Gradient(
+          "gradientUnits='userSpaceOnUse' x1='2' y1='1' x2='9' y2='5' gradientTransform='matrix(1 .3 -.4 1.5 2 1)'") +
+          "<g transform='matrix(1.6 .2 .5 1.1 -3 -2)'><rect x='-10' y='-10' width='60' height='40' "
+          "fill='url(#g)'/></g>",
+      40, 20);
+  const auto gray = [](double x, double y) {
+    // Take the shape's transform back, then the gradient's.
+    const auto back = [](double a, double b, double c, double d, double e, double f, double& px, double& py) {
+      const double det = (a * d) - (b * c);
+      const double qx = px - e;
+      const double qy = py - f;
+      px = ((d * qx) - (c * qy)) / det;
+      py = ((-b * qx) + (a * qy)) / det;
+    };
+    back(1.6, .2, .5, 1.1, -3, -2, x, y);
+    back(1, .3, -.4, 1.5, 2, 1, x, y);
+    const double dx = 9 - 2;
+    const double dy = 5 - 1;
+    return BlackToWhite((((x - 2) * dx) + ((y - 1) * dy)) / ((dx * dx) + (dy * dy)));
+  };
+  // The ramp has 256 grays along it, and its places are worked out in
+  // whole numbers, so a gray may be one out.
+  EXPECT_TRUE(GradedAs(drawing, 0, 0, 40, 20, gray, 2.01));
+  // Laid over the box of a shape that has been turned.
+  const Drawing turned = DrawBody(Gradient("gradientTransform='rotate(90 .5 .5)'") +
+                                  "<g transform='translate(20 10) scale(2 1)'>"
+                                  "<rect x='-5' y='-5' width='10' height='10' fill='url(#g)'/></g>");
+  EXPECT_TRUE(GradedAs(turned, 11, 6, 29, 14, [](double, double y) { return BlackToWhite((y - 5) / 10); }, 2.01));
+}
+
+TEST(SvgRender, AGradientsStopsSayItsGraysAndHowSolid) {
+  const std::string_view stops =
+      "<stop offset='0' stop-color='#000'/><stop offset='50%' style='stop-color:#808080;stop-opacity:.5'/>"
+      "<stop offset='.25' stop-color='#fff'/><stop offset='1' stop-color='#fff' stop-opacity='0'/>";
+  const Drawing drawing = DrawBody(Gradient("", stops) + "<rect width='40' height='4' fill='url(#g)'/>");
+  // The third stop is before the second, so is taken to be where it is.
+  // Over white, with the second stop half solid: at the middle of pixel 0,
+  // an 80th of the way, 3 of black, and nearly solid; at pixel 10 more than
+  // half way to the second stop, 67 at three quarters solid.
+  EXPECT_NEAR(drawing.At(0, 0), 6, 1);
+  EXPECT_NEAR(drawing.At(10, 0), 116, 1);
+  // At the middle the gray changes at once from nearly half solid to white.
+  EXPECT_NEAR(drawing.At(19, 0), 188, 1);
+  EXPECT_NEAR(drawing.At(21, 0), 255, 1);
+  // One stop is one gray; and none, nothing.
+  EXPECT_TRUE(DrawBody(Gradient("", "<stop stop-color='#808080'/>") + "<rect width='4' height='4' fill='url(#g)'/>")
+                  .IsBox(0, 0, 4, 4, 0x80));
+  EXPECT_EQ(DrawBody(Gradient("", "") + "<rect width='4' height='4' fill='url(#g) #000'/>").Covered(), 0.0);
+  // With no length to it, it is its last stop.
+  EXPECT_TRUE(DrawBody(Gradient("x2='0'") + "<rect width='4' height='4' fill='url(#g)'/>").IsBox(0, 0, 4, 4, kWhite));
+  // Its stops and the shape's opacity together.
+  EXPECT_NEAR(DrawBody(Gradient("", "<stop stop-color='#000' stop-opacity='.5'/>") +
+                       "<rect width='4' height='4' fill='url(#g)' fill-opacity='.5'/>")
+                  .At(1, 1),
+              191, 1);
+  // More stops than are kept: the rest are left out, and it is said.
+  std::string many;
+  for (std::size_t stop = 0; stop <= SvgRenderer::kMostStops; ++stop) {
+    many += "<stop offset='" + std::to_string(stop) + "%' stop-color='#000'/>";
+  }
+  EXPECT_EQ(DrawBody(Gradient("", many) + "<rect width='4' height='4' fill='url(#g)'/>").report.leftOut,
+            Bits({SvgLeftOut::kPaintServer}));
+}
+
+TEST(SvgRender, BeyondItsEndsAGradientIsWhatItsSpreadSays) {
+  const auto drawn = [](std::string_view spread) {
+    return DrawBody(
+        Gradient("gradientUnits='userSpaceOnUse' x1='10' x2='20' spreadMethod='" + std::string(spread) + "'") +
+        "<rect width='40' height='2' fill='url(#g)'/>");
+  };
+  EXPECT_TRUE(GradedAs(drawn("pad"), 0, 0, 40, 2, [](double x, double) { return BlackToWhite((x - 10) / 10); }));
+  EXPECT_TRUE(GradedAs(drawn("reflect"), 0, 0, 40, 2, [](double x, double) {
+    const double along = std::fmod(std::abs(x - 10) / 10, 2);
+    return BlackToWhite(along > 1 ? 2 - along : along);
+  }));
+  EXPECT_TRUE(GradedAs(drawn("repeat"), 21, 0, 29, 2,
+                       [](double x, double) { return BlackToWhite(std::fmod((x - 10) / 10, 1)); }));
+}
+
+TEST(SvgRender, AGradientTakesWhatItDoesNotSayFromTheOneItNames) {
+  const Drawing drawing =
+      DrawBody("<defs><linearGradient id='base' x2='0' y2='1'>" + std::string(kBlackToWhite) +
+               "</linearGradient><linearGradient id='g' xlink:href='#base' x2='1'/>"
+               "<linearGradient id='h' href='#g' y2='0'><stop stop-color='#808080'/></linearGradient></defs>"
+               "<rect width='20' height='20' fill='url(#g)'/><rect x='20' width='20' height='20' fill='url(#h)'/>");
+  EXPECT_EQ(drawing.report.gradients, 3u);
+  // Its stops, and down as well as across, from the one it names.
+  EXPECT_TRUE(GradedAs(
+      drawing, 0, 0, 20, 20, [](double x, double y) { return BlackToWhite(((x / 20) + (y / 20)) / 2); }, 2.01));
+  // Its own stops, and the rest from the one it names.
+  EXPECT_TRUE(GradedAs(drawing, 20, 0, 40, 20, [](double, double) { return 128.0; }));
+}
+
+TEST(SvgRender, AGradientThatCannotBeFoundOrIsNotLinearIsReported) {
+  for (const std::string_view body :
+       {"<rect width='4' height='4' fill='url(#g)'/><defs><linearGradient id='g'/></defs>",
+        "<defs><radialGradient id='g'><stop/></radialGradient></defs><rect width='4' height='4' fill='url(#g)'/>",
+        "<defs><pattern id='g'><rect width='1' height='1'/></pattern></defs><rect width='4' height='4' "
+        "fill='url(#g)'/>"}) {
+    const Drawing drawing = DrawBody(body);
+    EXPECT_EQ(drawing.report.leftOut, Bits({SvgLeftOut::kPaintServer})) << body;
+    EXPECT_EQ(drawing.Covered(), 0.0) << body;
+  }
+  // Of two of one name, the first is the one.
+  const Drawing twice = DrawBody(
+      "<linearGradient id='g'><stop stop-color='#808080'/></linearGradient>"
+      "<linearGradient id='g'><stop stop-color='#404040'/></linearGradient><rect width='2' height='2' "
+      "fill='url(#g)'/>");
+  EXPECT_EQ(twice.At(0, 0), 0x80);
+  EXPECT_EQ(twice.report.gradients, 2u);
+  // Found outside `defs`, and in a rule of a style sheet, and handed on.
+  const Drawing found = DrawBody(
+      "<linearGradient id='g'><stop stop-color='#808080'/></linearGradient><style>.a{fill:url(#g)}</style>"
+      "<rect width='2' height='2' class='a'/><g fill='url( \"#g\" )'><rect x='4' width='2' height='2'/></g>");
+  EXPECT_EQ(found.report.leftOut, 0u);
+  EXPECT_EQ(found.At(0, 0), 0x80);
+  EXPECT_EQ(found.At(4, 0), 0x80);
+}
+
+TEST(SvgRender, AGradientInsideAnSvgIsCutOffAtItsEdges) {
+  const Drawing drawing = DrawBody(Gradient("gradientUnits='userSpaceOnUse' x2='40'") +
+                                   "<svg x='10' y='4' width='20' height='8'>"
+                                   "<rect x='-50' y='-50' width='100' height='100' fill='url(#g)'/></svg>");
+  // Laid out in the inner svg's own space, which begins ten pixels in.
+  EXPECT_TRUE(GradedAs(drawing, 10, 4, 30, 12, [](double x, double) { return BlackToWhite((x - 10) / 40); }));
+  EXPECT_EQ(drawing.At(9, 6), kWhite);
+  EXPECT_EQ(drawing.At(30, 6), kWhite);
+  EXPECT_EQ(drawing.At(15, 3), kWhite);
+  EXPECT_EQ(drawing.At(15, 12), kWhite);
+}
+
+TEST(SvgRender, AGradientComesOutTheSameInAnyStripsAndAnyPieces) {
+  const std::string file = Svg(40, 20,
+                               Gradient("gradientTransform='rotate(30)' spreadMethod='reflect' y2='.3'") +
+                                   "<style>.g{fill:url(#g)}</style>"
+                                   "<path class='g' d='M2 3c10-8 30 0 35 5s-20 15-30 10z'/>"
+                                   "<circle cx='20' cy='10' r='6' fill='url(#g)' fill-opacity='.7'/>");
+  const Drawing whole = Draw(file, 40, 20);
+  EXPECT_EQ(whole.report.leftOut, 0u);
+  EXPECT_GT(whole.Covered(), 50);
+  for (const std::size_t rows : {std::size_t{1}, std::size_t{3}, std::size_t{7}}) {
+    for (const std::size_t piece : {std::size_t{1}, std::size_t{13}, SIZE_MAX}) {
+      const Drawing cut = Draw(file, 40, 20, rows, piece);
+      EXPECT_EQ(cut.gray, whole.gray) << rows << " " << piece;
+      EXPECT_EQ(cut.report.gradients, 1u);
+      EXPECT_EQ(cut.report.rules, 1u);
+    }
+  }
 }
 
 // ---- Size ----

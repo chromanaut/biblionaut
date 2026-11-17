@@ -152,7 +152,9 @@ bool SameFile(const Reading& one, const Reading& other) {
          one.report.leftOut == other.report.leftOut && one.report.elements == other.report.elements &&
          one.report.shapes == other.report.shapes && one.report.commands == other.report.commands &&
          one.report.deepest == other.report.deepest && one.report.kept == other.report.kept &&
-         one.report.reused == other.report.reused && SameSize(one.size, other.size);
+         one.report.reused == other.report.reused && one.report.rules == other.report.rules &&
+         one.report.gradients == other.report.gradients && one.report.looked == other.report.looked &&
+         SameSize(one.size, other.size);
 }
 
 // Gives the renderer the file, `piece` bytes at a time, with `filler` to
@@ -194,6 +196,8 @@ Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::
       BN_FUZZ_CHECK(after.elements - before.elements <= SvgRenderer::kTokensPerStep,
                     "a call began more elements than a call may");
       BN_FUZZ_CHECK(again <= SvgRenderer::kReusedPerStep, "a call read more of what is kept than a call may");
+      BN_FUZZ_CHECK(after.looked - before.looked <= SvgRenderer::kMostLooksPerStep,
+                    "a call looked through what is kept more often than a call may");
       BN_FUZZ_CHECK(took == 0 || again == 0, "a call read the file and what is kept of it");
       BN_FUZZ_CHECK(after.kept >= before.kept && after.kept <= room.Size(),
                     "more is kept than there is memory for, or less than was");
@@ -212,7 +216,7 @@ Reading Read(SvgRenderer& renderer, Filler* filler, std::string_view file, std::
       if (failed) {
         BN_FUZZ_CHECK(took == bytes.size() && after.elements == before.elements && commands == 0 && made == 0 &&
                           after.shapes == before.shapes && after.leftOut == before.leftOut && again == 0 &&
-                          after.kept == before.kept,
+                          after.kept == before.kept && after.looked == before.looked,
                       "a file that had gone wrong was read on");
       }
       failed = renderer.Status() != SvgStatus::kOk;

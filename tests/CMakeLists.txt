@@ -94,6 +94,7 @@ bn_add_unit_test(draw_tests
     unit/draw/svg_number_test.cpp
     unit/draw/svg_path_test.cpp
     unit/draw/svg_render_test.cpp
+    unit/draw/svg_sheet_test.cpp
     unit/draw/svg_tags_test.cpp
     unit/draw/svg_transform_test.cpp
     unit/draw/svg_values_test.cpp

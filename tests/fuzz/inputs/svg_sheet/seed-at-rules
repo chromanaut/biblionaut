@@ -1,0 +1,1 @@
+@import url(x.css);@media print { .a { fill: red } @page {} } .b{fill:blue}@font-face{src:'}'}

@@ -1485,9 +1485,10 @@ call may.
 | `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
 | `paragraph` | `layout::ParagraphSetter`, with a paragraph's text in runs of up to seven styles and line ends asked for, on lines from 1 wide to 30,000, measured four ways | A paragraph is done with in a number of calls that depends only on its length. No call does more than `MostWorkFor()` allows, gives the breaker more than one item, asks the hyphenator about more than one word, or has more than a word's worth of bytes measured. The lines hold all the text once and in order. Each is as wide as its text adds up to and has the places between words it says; one is only too wide for a single character that is. The measure is never given a soft hyphen, nor a piece that begins inside a character. The lines are the same when the text is offered all at once |
 | `svg_tags` | `draw::SvgTagReader`, twice: whole, and cut up, with the ends of the pieces it gives handed back to it | A call takes a byte or tells something. Things are told in an order tags can have, and `Depth()` is how many elements were opened and not closed. Each tag is in the file where `TagOffset()` says it began. No more bytes are told of than were taken, and what an entity stands for is one character. Once reading has failed nothing more is told. Both readings tell the same things |
+| `svg_sheet` | `draw::SvgSheetReader`, twice: the sheet whole, and cut into pieces of one of eight sizes | A call takes a byte or tells something. A rule is told as its selectors, what it sets and its end, in that order. A selector is a class or an element's name made of what a name may be made of; a property's name is in small letters with no space; neither is longer than it may be, nor a value. Both readings tell the same things and say the same of what they dropped |
 | `svg_values` | Each reader of what an attribute says (`draw/svg_values.h`), and `ParseSvgTransform` | A reading that refuses the text leaves what it was to fill as it was. Space round the text changes nothing, nor capitals a colour. A view box is fitted where SVG says it goes, worked out again in floating point |
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
-| `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, fills more than one shape, or reads more than `kReusedPerStep` bytes of what the file defined. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, and the two pictures are the same, byte for byte |
+| `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, fills more than one shape, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte |
 
 The `package` and `toc` targets do not take a ZIP file as their input:
 nearly every change to one would be stopped at an entry's checksum, and
@@ -1580,9 +1581,10 @@ What it does not find:
   seeds for a drawing have one of each such thing that the inputs it had
   kept were found not to reach, by building the targets with clang's
   source coverage and taking them through `.fuzz/corpus/`. With those,
-  what the kept inputs do not reach of the renderer is the megabyte
-  above, the names it gives things in its reports, and checks that
-  nothing written in a file should be able to trip.
+  what the engine's inputs and the seeds together do not reach of the
+  renderer and the reader of style sheets is the megabyte above, the
+  names the renderer gives things in its reports, and checks that nothing
+  written in a file should be able to trip. The seeds alone reach less.
 
 ## Where a word may be broken
 
@@ -2043,10 +2045,10 @@ its kind is held at the largest that fits, and whoever asked is told.
   stays within the tolerance of a straight line is drawn as that line,
   which is what makes a radius of any size harmless: two public books
   have arcs whose radius is seventeen digits long.
-- **Memory**: the reader is 168 bytes and the flattener 104, on the device,
+- **Memory**: the reader is 168 bytes and the flattener 128, on the device,
   and cutting a curve takes about half a kilobyte of stack. Nothing is
   allocated, and nothing grows with the path.
-- **Flash**: 17 KB, as compiled for the device.
+- **Flash**: 18 KB, as compiled for the device.
 - **Speed**: not yet measured on a device.
 - **Bad input**: the data is not trusted. Whatever bytes it holds, reading
   ends with a status. Where path data goes wrong, everything before the
@@ -2147,6 +2149,15 @@ covers of it.
   Nothing outside it is drawn, and a pixel that an edge of the box passes
   through takes the share of its cover that the box has of the pixel. That
   is how what is inside an `svg` is cut off at the edges of the `svg`.
+- **A gray that changes**: `Fill()` can be given a `GrayRamp` in place of
+  one gray: how far along the ramp the middle of the picture's first pixel
+  is, how much further each pixel to the right is and each pixel down,
+  and up to eight stops, each a place along it with a gray and how solid
+  it is there. Between two stops the gray goes evenly from the one to the
+  other, two stops in one place make a step, and beyond the ends there is
+  the end's gray, or the ramp again to and fro, or again from its start.
+  That is a linear gradient. Each pixel costs a few additions, a look
+  through the stops and a multiplication. The ramp is 208 bytes.
 - **What a call can cost**: wherever a line runs, it adds to no more cells
   than `MostCellsPerLine()`, which is little over the strip's width and
   four for each of its rows. `Fill()` looks at each pixel of the strip once
@@ -2172,7 +2183,7 @@ covers of it.
   8 parts in 255 out, and at a quarter 73, with half of the paths at 61 or
   more. So a drawing whose edges are to be gray wants a finer tolerance
   than the quarter of a pixel that is the flattener's own.
-- **Flash**: 5 KB, as compiled for the device.
+- **Flash**: 7 KB, as compiled for the device.
 - **Speed**: not yet measured on a device. At a quarter of a pixel that
   engraving is 139,129 lines, which add to cells 495,500 times. Drawn in
   strips, the whole outline is read again for each, and a curve outside a
@@ -2222,6 +2233,16 @@ strip only what it defines for later use.
   processing instructions and a document type. It does not check that an
   element is closed by its own name, and an entity that a file declares
   for itself stands for nothing.
+- **Style sheets** (`draw/svg_sheet.h`): `SvgSheetReader` reads the text
+  of a `<style>` element as it arrives, in pieces cut anywhere, and tells
+  of each rule: its selectors, then each declaration, then its end. Of
+  every sheet inside a drawing in the books, every selector is a class
+  (`.st0`) or an element's name (`path`), so those are what it reads; a
+  rule with any other selector is passed over whole, as CSS passes over a
+  rule with one it does not understand, and so is an `@` rule. Comments,
+  strings, brackets and the `<!--` a sheet is written inside are read as
+  CSS has them. It holds one rule's selectors and one declaration, and is
+  284 bytes on the device.
 - **What an attribute says** (`draw/svg_values.h`): a length in any of
   SVG's units, a colour (`#rgb`, `#rrggbb`, `rgb()` and twenty names), a
   paint, an opacity, a view box, and how a view box is fitted. A colour is
@@ -2231,8 +2252,13 @@ strip only what it defines for later use.
   `transform` and with paint that what is inside it takes unless it has
   its own. `path`, `rect` with rounded corners, `circle`, `ellipse`,
   `polygon` and `polyline` as shapes, filled as `fill`, `fill-rule`,
-  `fill-opacity` and `opacity` say, each written as an attribute or in
-  `style`. `display` and `visibility` hide things. An `svg` inside another
+  `fill-opacity` and `opacity` say, each written as an attribute, in
+  `style` or by a rule of the drawing's style sheet. A rule wins over an
+  attribute and `style` over a rule; between rules a class wins over an
+  element's name, and a later rule over an earlier. A sheet styles what
+  comes after it in the file, which is read once from its start for each
+  strip, and says so if it comes after a shape. `display` and `visibility`
+  hide things. An `svg` inside another
   has its own place, size and view box, and what is in it is cut off at
   its edges unless its `overflow` says it may show beyond them. The whole
   drawing is fitted to the picture by its `viewBox` and
@@ -2259,9 +2285,22 @@ strip only what it defines for later use.
   others that have names. And no more than a megabyte is read again for a
   strip, nor one `use` inside another more than four deep, so that a few
   kilobytes of things that use things cannot ask for hours of work.
+- **Gradients**: a `fill` of `url(#name)` that names a `linearGradient`
+  earlier in the file, in `defs` or not, is drawn as one, a gray for each
+  pixel from where its middle lies along the gradient. Its ends are
+  anywhere and its transform any, over the shape's own box or in the
+  space the shape is drawn in, and it takes what it does not say for
+  itself from the gradient its `href` names. It is kept in the memory for
+  definitions, as a record of 71 bytes, its name, and four bytes for each
+  stop. In SVG the box of a
+  shape is the box round the shape itself; here it is the box round its
+  outline's points and its curves' control points, which can be a little
+  larger where a curve does not reach its control points. A gradient whose
+  `href` names one later in the file takes nothing from it.
 - **What it leaves out**, each of which the report names (`SvgReport`):
-  strokes, text, pictures, style sheets, gradients and patterns, clip
-  paths, masks, filters and markers. Two things are drawn nearly:
+  strokes, text, pictures, radial gradients and patterns, what a style
+  sheet says that it does not read, clip paths, masks, filters and
+  markers. Two things are drawn nearly:
   `opacity` on a group or a `use` is given to each shape in it, which
   differs where they overlap, and an `svg` inside another that something
   has turned or slanted is not cut off at its edges, which are then no
@@ -2278,20 +2317,27 @@ strip only what it defines for later use.
 - **How fine**: curves are cut to a sixteenth of a pixel, not the
   flattener's own quarter, because the edges are gray ("How exact",
   above).
-- **Memory**: the renderer is 4,176 bytes on the device. Half is what
-  each of up to 32 open groups hands on to what is inside it, an eighth
-  the path data it can hold, and a tenth the four readers of tags, 80
+- **Memory**: the renderer is 5,600 bytes on the device. Two fifths is
+  what each of up to 32 open groups hands on to what is inside it, a
+  tenth the path data it can hold, a tenth the reading of a style sheet
+  and a rule of it, a twelfth the reading of a gradient and the ramp a
+  shape is filled with, and a fourteenth the four readers of tags, 80
   bytes each, that read things used one inside another. Nothing is
-  allocated, and nothing grows with the file but what it defines, in the
-  memory given for that.
-- **Flash**: 26 KB, as compiled for the device, which makes 49 KB for all
-  of the drawing of SVG.
+  allocated, and nothing grows with the file but what it defines, its
+  sheet's rules and its gradients, in the memory given for that.
+- **Flash**: 43 KB, as compiled for the device, of which the renderer is
+  30 KB and the reader of style sheets 3 KB; 68 KB for all of the drawing
+  of SVG. Laying a gradient out is 4.7 KB of it.
 - **Speed**: not yet measured on a device. What is used is read again for
   every use and every strip, tags and path data both.
 - **What a call can cost**: `Step()` takes sixteen things from the tags at
   the most, the file's or those of something it kept, and of what it kept
   it reads no more than 1,024 bytes. It gives the outline in hand nineteen
-  commands and fills one shape, whatever the file holds.
+  commands and fills one shape, whatever the file holds. It looks through
+  the records of what is kept twice at the most: to find what a `use` or
+  a gradient's `href` names, or to style an element and find the gradient
+  it is filled with. A piece of a sheet's text is read in the call it
+  comes in.
 - **Bad input**: the file is not trusted. Whatever its bytes, it ends in a
   status (`ok`, `not svg`, `malformed`, `truncated`), and what came before
   a fault has been drawn. Groups nested deeper than 32 are passed over
@@ -2326,6 +2372,34 @@ and a circle, a path has its paint in `style`, and there is a label:
 With `--width` or `--height` the picture keeps the drawing's shape, and
 with neither it is the size the drawing says it is. `--pieces` gives the
 file to the renderer a few bytes at a time.
+
+A drawing with a style sheet or gradients is told how many of each it
+kept. In this one a sheet fills the sky with a gradient and the hill with
+a gray, and every `path` with four fifths of its gray:
+
+```
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40">
+  <style>
+    .sky { fill: url(#dusk) }
+    .hill { fill: #555 }
+    path { fill-opacity: .8 }
+  </style>
+  <linearGradient id="dusk" x2="0" y2="1">
+    <stop offset="0" stop-color="#222"/>
+    <stop offset="1" stop-color="#ddd"/>
+  </linearGradient>
+  <rect class="sky" width="60" height="40"/>
+  <path class="hill" d="M0 40c10-14 22-14 32-4s18-10 28-6v10z"/>
+</svg>
+```
+
+```
+a drawing of 60 by 40, as 240 by 160 in 5 strips of 32 rows: 7 elements, 2 shapes filled, 10 commands, 162 lines in all, 15488 bytes of cells
+style: 3 rules of a style sheet and 1 linear gradients kept
+```
+
+All but 57 of its 38,400 pixels are within one gray of what `rsvg-convert`
+draws, and the worst, on the edge of the hill, is 7 parts in 255 out.
 
 A file that defines things and uses them is also told how much of it was
 kept, and how much of that was read again for a strip. This one defines a
@@ -2367,10 +2441,13 @@ left out, or not drawn as written: use of what is not defined, definitions there
 Every SVG file in the public books, 2,420 of them, ends in `ok`, and 2,379
 are drawn in full, two of them with an arc of enormous radius drawn as the
 line it nearly is. 2,273 of those are the formulas of one book, which
-place their letters with `use`. Of the 41 not drawn in full, 20 are
-covers, each a picture with lettering laid over it by a style sheet. Of
-the other 21, 11 have a style sheet, 10 text, 5 a picture, 5 a stroke, 3 a
-clip path, 2 a gradient and markers, and 1 a filter.
+place their letters with `use`. 31 files have a style sheet, with up to
+37 rules, and 3 have linear gradients, and every rule and gradient in
+them is read; but each of those files also has something that is not
+drawn, so none of them is drawn in full for it. Of the 41 not drawn in
+full, 20 are covers, each a picture with lettering over it. Of the other
+21, 10 have text, 6 a stroke, 5 a picture, 3 a clip path, 2 markers and 1
+a filter.
 
 The 2,379 were also drawn beside `rsvg-convert`: at their own size, or,
 for the 2,245 that say they are more than 700 pixels wide, 700 wide, with
@@ -2397,13 +2474,17 @@ come out the same byte for byte. The memory for definitions is cut down to
 a byte less than a file needs, and to less, and a file of five kilobytes
 that asks for tens of megabytes to be read again is stopped at the limit.
 An end-to-end test (`tests/e2e/svg_draw.py`) makes drawings up at random,
-with groups inside groups, every shape, transforms, paint as attributes
-and as `style`, things hidden, things defined and used, and `svg` elements
-that cut off what is in them, and writes each out as a file in one of the
-many ways it can be written. The picture it should make is worked
+with groups inside groups, every shape, transforms, paint as attributes,
+as `style` and by the rules of a style sheet, things hidden, things
+defined and used, `svg` elements that cut off what is in them, and
+linear gradients of every kind, and writes each out as a file in one of
+the many ways it can be written. The picture it should make is worked
 out in Python from the drawing and not from the file: matrices multiplied
-out, outlines traced finely, what is used drawn where it is used, and each
-shape laid over the last. `bn-svg`
+out, outlines traced finely, what is used drawn where it is used, the
+rule that wins for each shape, a gradient's gray at the middle of each
+pixel found by taking it back through the matrices into the gradient's
+own space, and each shape laid over the last. A unit test does the same
+for one gradient under a slanting, stretching transform. `bn-svg`
 has to agree with it, in any strips and any pieces, and to say it left out
 what the drawing was given that it does not draw. The reader of tags, the
 readers of what attributes say, path data and the renderer each have a

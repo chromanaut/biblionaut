@@ -296,21 +296,94 @@ void Filler::AddSlice(std::int32_t row, std::int32_t x0, std::int32_t x1, std::i
   Add(row, last + 1, sign * (static_cast<std::int32_t>(size) - given));
 }
 
+void GrayRamp::Begin() noexcept {
+  stops = std::min(stops, kMostStops);
+  constexpr std::int64_t kRateOne = 16777216;  // A rate is in 2^24ths.
+  for (std::size_t stop = 1; stop < stops; ++stop) {
+    offsets[stop] = std::max(offsets[stop], offsets[stop - 1]);
+    const std::int64_t length = std::int64_t{offsets[stop]} - offsets[stop - 1];
+    // Two stops in one place are a step, with no part between them to go
+    // along.
+    grayRates_[stop] = length == 0 ? 0 : ((std::int64_t{grays[stop]} - grays[stop - 1]) * kRateOne) / length;
+    alphaRates_[stop] = length == 0 ? 0 : ((std::int64_t{alphas[stop]} - alphas[stop - 1]) * kRateOne) / length;
+  }
+}
+
+void GrayRamp::At(std::int64_t along, std::uint8_t& gray, std::uint8_t& alpha) const noexcept {
+  if (stops == 0) {
+    gray = 0;
+    alpha = 0;
+    return;
+  }
+  switch (spread) {
+    case Spread::kPad:
+      along = std::clamp<std::int64_t>(along, 0, kOne);
+      break;
+    case Spread::kReflect: {
+      // To and fro: twice the ramp's length, and back down the second half.
+      constexpr std::int64_t kTwice = 2 * kOne;
+      along = ((along % kTwice) + kTwice) % kTwice;
+      if (along > kOne) {
+        along = kTwice - along;
+      }
+      break;
+    }
+    case Spread::kRepeat:
+      along = ((along % kOne) + kOne) % kOne;
+      break;
+  }
+  // The first stop beyond the place: the place is between it and the one
+  // before. At a step, the place where both stops are is past the first.
+  std::size_t after = 0;
+  while (after < stops && offsets[after] <= along) {
+    ++after;
+  }
+  if (after == 0 || after == stops) {
+    const std::size_t stop = after == 0 ? 0 : stops - 1;
+    gray = grays[stop];
+    alpha = alphas[stop];
+    return;
+  }
+  constexpr std::int64_t kHalf = 8388608;
+  const std::int64_t into = along - offsets[after - 1];
+  gray = static_cast<std::uint8_t>(
+      std::clamp<std::int64_t>(grays[after - 1] + ShiftDown((into * grayRates_[after]) + kHalf, 24), 0, 255));
+  alpha = static_cast<std::uint8_t>(
+      std::clamp<std::int64_t>(alphas[after - 1] + ShiftDown((into * alphaRates_[after]) + kHalf, 24), 0, 255));
+}
+
 void Filler::Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity) noexcept {
-  FillWithin(rule, gray, opacity, nullptr, nullptr);
+  FillWithin(rule, gray, nullptr, opacity, nullptr, nullptr);
 }
 
 void Filler::Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity, Point from, Point to) noexcept {
   const Place first = PlaceOf(from);
   const Place last = PlaceOf(to);
-  FillWithin(rule, gray, opacity, &first, &last);
+  FillWithin(rule, gray, nullptr, opacity, &first, &last);
 }
 
-void Filler::FillWithin(FillRule rule, std::uint8_t gray, std::uint8_t opacity, const Place* from,
+void Filler::Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity) noexcept {
+  FillWithin(rule, 0, &ramp, opacity, nullptr, nullptr);
+}
+
+void Filler::Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity, Point from, Point to) noexcept {
+  const Place first = PlaceOf(from);
+  const Place last = PlaceOf(to);
+  FillWithin(rule, 0, &ramp, opacity, &first, &last);
+}
+
+void Filler::FillWithin(FillRule rule, std::uint8_t gray, const GrayRamp* ramp, std::uint8_t opacity, const Place* from,
                         const Place* to) noexcept {
   CloseOutline();
   // Opacity out of 256, so that the whole of it leaves nothing showing.
-  const std::uint32_t strength = std::uint32_t{opacity} + (opacity >> 7U);
+  const auto outOf256 = [](std::uint32_t solid) noexcept { return solid + (solid >> 7U); };
+  const std::uint32_t strength = outOf256(opacity);
+  // Along a ramp, where each pixel is: held to where no sum below can
+  // overflow, whatever the ramp says.
+  const std::int64_t rampAt = ramp == nullptr ? 0 : std::clamp(ramp->at, -GrayRamp::kFurthest, GrayRamp::kFurthest);
+  const std::int64_t rampAcross =
+      ramp == nullptr ? 0 : std::clamp(ramp->across, -GrayRamp::kMostStep, GrayRamp::kMostStep);
+  const std::int64_t rampDown = ramp == nullptr ? 0 : std::clamp(ramp->down, -GrayRamp::kMostStep, GrayRamp::kMostStep);
   const auto wide = static_cast<std::size_t>(width_);
   const std::size_t extents = wide * static_cast<std::size_t>(rows_);
   const bool boxed = from != nullptr && to != nullptr;
@@ -341,7 +414,14 @@ void Filler::FillWithin(FillRule rule, std::uint8_t gray, std::uint8_t opacity, 
         break;
       }
       ++pixelsVisited_;
-      std::uint32_t cover = Covered(static_cast<std::int16_t>(sum), rule) * strength;
+      std::uint8_t pixelGray = gray;
+      std::uint32_t pixelStrength = strength;
+      if (ramp != nullptr) {
+        std::uint8_t solid = 0;
+        ramp->At(rampAt + (rampDown * (std::int64_t{top_ / kPixel} + row)) + (rampAcross * pixel), pixelGray, solid);
+        pixelStrength = outOf256(((std::uint32_t{opacity} * solid) + 127U) / 255U);
+      }
+      std::uint32_t cover = Covered(static_cast<std::int16_t>(sum), rule) * pixelStrength;
       if (boxed && cover != 0) {
         // Only as much of it as is inside the box, across and down.
         const std::uint32_t inside = ((share(std::int64_t{pixel} * kPixel, from->x, to->x) * rowShare) + 128U) >> 8U;
@@ -350,7 +430,7 @@ void Filler::FillWithin(FillRule rule, std::uint8_t gray, std::uint8_t opacity, 
       if (cover != 0) {
         std::uint8_t& under = gray_[index];
         constexpr std::int32_t kHalf = 32768;
-        const std::int32_t change = (std::int32_t{gray} - under) * static_cast<std::int32_t>(cover);
+        const std::int32_t change = (std::int32_t{pixelGray} - under) * static_cast<std::int32_t>(cover);
         under = static_cast<std::uint8_t>(under + ShiftDown(change + kHalf, 16));
       }
     }

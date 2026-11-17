@@ -175,6 +175,17 @@ PathFlattener::PathFlattener(LineSink& sink, const Matrix& matrix, Fixed toleran
 
 Point PathFlattener::InPixels(Point point) noexcept { return Apply(matrix_, point, clamped_); }
 
+void PathFlattener::Bound(Point point) noexcept {
+  if (!hasBounds_) {
+    hasBounds_ = true;
+    boundsFrom_ = point;
+    boundsTo_ = point;
+    return;
+  }
+  boundsFrom_ = {.x = std::min(boundsFrom_.x, point.x), .y = std::min(boundsFrom_.y, point.y)};
+  boundsTo_ = {.x = std::max(boundsTo_.x, point.x), .y = std::max(boundsTo_.y, point.y)};
+}
+
 void PathFlattener::Line(Point to) noexcept {
   sink_->LineTo(to);
   currentPixels_ = to;
@@ -182,6 +193,7 @@ void PathFlattener::Line(Point to) noexcept {
 }
 
 void PathFlattener::MoveTo(Point to) noexcept {
+  Bound(to);
   current_ = to;
   start_ = to;
   currentPixels_ = InPixels(to);
@@ -190,6 +202,7 @@ void PathFlattener::MoveTo(Point to) noexcept {
 }
 
 void PathFlattener::LineTo(Point to) noexcept {
+  Bound(to);
   current_ = to;
   Line(InPixels(to));
 }
@@ -225,6 +238,8 @@ bool PathFlattener::Outside(Point a, Point b, Point c, Point d) const noexcept {
 // cut, since the first half of a piece is always taken before the second.
 
 void PathFlattener::QuadTo(Point control, Point to) noexcept {
+  Bound(control);
+  Bound(to);
   const Point pull = InPixels(control);
   const Point end = InPixels(to);
   if (Outside(currentPixels_, pull, end, end)) {
@@ -256,6 +271,9 @@ void PathFlattener::QuadTo(Point control, Point to) noexcept {
 }
 
 void PathFlattener::CubicTo(Point control1, Point control2, Point to) noexcept {
+  Bound(control1);
+  Bound(control2);
+  Bound(to);
   const Point pull1 = InPixels(control1);
   const Point pull2 = InPixels(control2);
   const Point end = InPixels(to);
@@ -323,6 +341,9 @@ bool PathFlattener::NearlyStraight(Fixed halfX, Fixed halfY, Fixed radiusX, Fixe
 // in the SVG specification's notes on implementing arcs, carried out here
 // in whole numbers.
 void PathFlattener::ArcTo(Fixed radiusX, Fixed radiusY, Angle turn, bool largeArc, bool sweep, Point to) noexcept {
+  // Only its ends: an arc that bulges past them is counted short. The
+  // renderer's ellipses are quarters, whose ends are their furthest points.
+  Bound(to);
   const Point from = current_;
   if (from == to) {
     return;

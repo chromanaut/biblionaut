@@ -1017,6 +1017,31 @@ def svg_tags_seeds() -> None:
     seed("nothing", 0, 0, b"")
 
 
+# ---- svg_sheet: byte 0 (how the sheet is cut up), then a style sheet ----
+
+INKSCAPE_SHEET = (b"\n\t.st0{fill:#1D1D1B;}\n\t.st1{fill:none;stroke:#1D1D1B;stroke-width:0.5;stroke-miterlimit:10;}\n"
+                  b"\t.st2{font-family:'MyriadPro-Regular';}\n\t.st3{font-size:12px;letter-spacing:1;}\n"
+                  b"\tpath , rect{fill-opacity:.5}\n")
+
+
+def svg_sheet_seeds() -> None:
+    clear("svg_sheet")
+
+    def seed(name: str, piece: int, sheet: bytes) -> None:
+        write("svg_sheet", name, bytes([piece]) + sheet)
+
+    seed("a-sheet", 7, INKSCAPE_SHEET)
+    seed("a-sheet-a-byte-at-a-time", 0, INKSCAPE_SHEET)
+    seed("comments-and-marks", 2, b"<!-- /* a { fill: red } */ .a /**/ { fill : /* x */ blue } --> /")
+    seed("strings-and-brackets", 3, b".a{font-family:\"x;}\\\"y\";fill:url(a;b);stroke:'}'}.b{fill:url(#g) #000}")
+    seed("selectors-it-does-not-read", 4, b"g path{fill:red}#i{fill:red}.a.b,.c{fill:red}*{fill:red}[x]{}.d:hover{}.e{fill:blue}")
+    seed("at-rules", 5, b"@import url(x.css);@media print { .a { fill: red } @page {} } .b{fill:blue}@font-face{src:'}'}")
+    seed("blocks-and-mistakes-inside-a-rule", 1, b".a{fill;stroke:{x};:red;fill:blue;{q:1}opacity:1;;}}.b{FILL:RED}")
+    seed("too-long", 6, b"." + b"n" * 130 + b"{fill:red}.a{fill:" + b"v" * 90 + b";stroke:red;" + b"p" * 40 + b":1}")
+    seed("cut-short", 2, b".a{fill:red}.b{stroke:'none")
+    seed("nothing", 0, b"")
+
+
 # ---- svg_values: byte 0 (what the text is read as), eight bytes of a box and a space, then the text ----
 
 
@@ -1234,6 +1259,49 @@ def svg_seeds() -> None:
          drawing(b"<g transform='skewX(30)'><svg x='4' y='4' width='8' height='8'><rect x='-4' y='-4' width='16' height='16'/>"
                  b"</svg></g><g transform='translate(24 0) skewY(20)'><svg width='8' height='8'><circle r='9'/></svg></g>"),
          piece=3, rows=3)
+    # A style sheet, and gradients.
+    gradients = (b"<defs><linearGradient id='base' x2='0' y2='1'><stop offset='0' stop-color='#000'/>"
+                 b"<stop offset='.4' style='stop-color:#888;stop-opacity:.5'/><stop offset='1' stop-color='#fff'/>"
+                 b"</linearGradient><linearGradient id='g' xlink:href='#base' x2='1' spreadMethod='reflect'"
+                 b" gradientTransform='rotate(20 .5 .5)'/></defs>"
+                 b"<linearGradient id='u' gradientUnits='userSpaceOnUse' x1='5' y1='2' x2='30%' y2='20'>"
+                 b"<stop offset='0'/><stop offset='1' stop-color='#ccc' stop-opacity='0'/></linearGradient>")
+    seed("a-style-sheet", drawing(b"<style><![CDATA[.st0{fill:#444}rect{fill:#999;fill-opacity:.5}.st1,.st2{display:none}]]>"
+                                  b"</style><rect width='9' height='9'/><rect x='10' width='9' height='9' class='st0'/>"
+                                  b"<g class='st1'><circle cx='30' cy='5' r='5'/></g>"
+                                  b"<path class='x st0' d='M2 12h20v10z' style='fill:#000'/>"), piece=3, rows=3)
+    seed("a-style-sheet-a-byte-at-a-time", drawing(b"<style>.a{fill:#888}path{fill-opacity:.5}</style>"
+                                                    b"<path class='a' d='M2 2h30v20z'/>"), piece=1, rows=1)
+    seed("a-style-sheet-after-what-it-styles", drawing(b"<rect class='a' width='9' height='9'/><style>.a{fill:#888}</style>"
+                                                        b"<rect class='a' x='10' width='9' height='9'/>"), piece=2)
+    seed("a-style-sheet-with-too-little-room", drawing(b"<style>.a{fill:#888}.b{fill:#444}.c{fill:url(#g)}</style>"
+                                                        b"<rect class='a' width='9' height='9'/><rect class='b c' x='10' width='9' height='9'/>"),
+         piece=4, rows=2, room=2)
+    seed("gradients", drawing(gradients + b"<rect x='2' y='2' width='30' height='10' fill='url(#g)'/>"
+                              b"<circle cx='20' cy='16' r='7' fill='url(#u)' fill-opacity='.8'/>"
+                              b"<path d='M1 23c10-9 20 9 38 0' fill='url(#base)'/>"), piece=5, rows=3)
+    seed("gradients-a-byte-at-a-time-in-strips-of-one-row",
+         drawing(gradients + b"<g fill='url(#g)'><rect width='40' height='24'/></g>"), piece=1, rows=1)
+    seed("gradients-in-a-large-picture", drawing(gradients + b"<style>.g{fill:url(#u)}</style>"
+                                                 b"<g transform='skewX(20) scale(1.5 .7)'><rect class='g' width='30' height='30'/></g>"),
+         piece=4, rows=5, size=3)
+    seed("gradients-that-come-to-nothing",
+         drawing(b"<rect width='9' height='9' fill='url(#later)'/><defs><linearGradient id='later'/>"
+                 b"<linearGradient id='flat' x2='0'><stop stop-color='#888'/></linearGradient>"
+                 b"<linearGradient id='squashed' gradientTransform='scale(0)'><stop/><stop offset='1'/></linearGradient>"
+                 b"<radialGradient id='round'><stop/></radialGradient></defs>"
+                 b"<rect x='10' width='9' height='9' fill='url(#flat)'/><rect x='20' width='9' height='9' fill='url(#squashed)'/>"
+                 b"<rect x='30' width='9' height='9' fill='url(#round) #444'/><rect y='10' width='9' height='0' fill='url(#flat)'/>"
+                 b"<path d='M0 20h40' fill='url(#flat)'/>"), piece=3, rows=2)
+    seed("sheets-and-gradients-at-their-limits",
+         drawing(b"<style>.a{fill:#888" + b";fill-opacity:0.99999999" * 25 + b"}" + b",".join(b".c%d" % n for n in range(40))
+                 + b"{fill:#444}</style><linearGradient id='many' spreadMethod='pad' x2='9e9' gradientTransform='scale(2047)'>"
+                 + b"".join(b"<stop offset='%d%%' stop-color='currentColor' stop-opacity='lots'/>" % (n * 10) for n in range(10))
+                 + b"</linearGradient><rect class='a c3' width='30' height='20' fill='url(#many)'/>"), piece=3, rows=2)
+    seed("a-gradient-in-an-svg-that-cuts-off-what-is-in-it",
+         drawing(b"<linearGradient id='g' gradientUnits='userSpaceOnUse' x2='30'><stop/><stop offset='1' stop-color='#ccc'/>"
+                 b"</linearGradient><svg x='6.5' y='3.25' width='20' height='10'>"
+                 b"<rect x='-9' y='-9' width='99' height='99' fill=\"url( '#g' )\"/></svg>"), piece=3, rows=2)
     seed("brackets-in-style-deeper-than-are-counted",
          drawing(b"<rect width='9' height='9' style='-x:" + b"(" * 256 + b";fill:#fff" + b")" * 256 + b";fill-opacity:0.5'/>"),
          piece=4)
@@ -1337,6 +1405,7 @@ def main() -> None:
     region_heap_seeds()
     hyphenator_seeds()
     css_seeds()
+    svg_sheet_seeds()
     css_rules_seeds()
     svg_tags_seeds()
     svg_values_seeds()

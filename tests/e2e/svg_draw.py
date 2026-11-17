@@ -3,18 +3,21 @@
 
 The unit tests say what the renderer should make of files written for them.
 Here drawings are made up at random: groups inside groups, every kind of
-shape, transforms, paint said as attributes and as `style`, things hidden,
-an `svg` inside another that cuts off what is in it, things defined in
-`defs` and drawn by `use`, and a few things bn-svg does not draw. Each is
-written out as a file in one of the many ways the same drawing can be
-written, and bn-svg draws it.
+shape, transforms, paint said as attributes, as `style` and by the rules of
+a style sheet, things hidden, an `svg` inside another that cuts off what is
+in it, things defined in `defs` and drawn by `use`, shapes filled with
+linear gradients, and a few things bn-svg does not draw. Each is written
+out as a file in one of the many ways the same drawing can be written, and
+bn-svg draws it.
 
 The picture it should make is worked out here from the drawing itself and
 not from the file, so nothing of the file is read twice: where each shape
 goes by multiplying out its matrices, its outline traced finely, the pixels
 inside found by running lines through each row, what a `use` names drawn
-again where the `use` stands, and one shape laid over another by the
-opacity it has. That shares no code with bn-svg. The two
+again where the `use` stands, which rule of the sheet wins for each shape,
+the gray of a gradient at the middle of each pixel by taking it back
+through the matrices into the gradient's own space, and one shape laid over
+another by the opacity it has. That shares no code with bn-svg. The two
 pictures have to agree, the picture has to be the same however it is cut
 into strips and however the file is cut into pieces, and what bn-svg says
 it left out has to be what the drawing was given that it does not draw.
@@ -138,6 +141,7 @@ def a_shape(rng: random.Random, across: float, down: float) -> dict:
                     f"A{rx} {ry} 0 0 1 {right - rx} {bottom}H{left + rx}A{rx} {ry} 0 0 1 {left} {bottom - ry}V{top + ry}"
                     f"A{rx} {ry} 0 0 1 {left + rx} {top}Z")
         name, outlines = "rect", ("data", data)
+        bounds = (left, top, left + width, top + height)
     elif kind in ("circle", "ellipse"):
         middle = (x(), y())
         radii = (1 + rng.randrange(0, int(across)) / 4, 1 + rng.randrange(0, int(down)) / 4)
@@ -149,12 +153,18 @@ def a_shape(rng: random.Random, across: float, down: float) -> dict:
         points = [(middle[0] + radii[0] * math.cos(2 * math.pi * step / 720),
                    middle[1] + radii[1] * math.sin(2 * math.pi * step / 720)) for step in range(720)]
         name, outlines = kind, ("points", [points])
+        bounds = (middle[0] - radii[0], middle[1] - radii[1], middle[0] + radii[0], middle[1] + radii[1])
     elif kind in ("polygon", "polyline"):
         points = [(x(), y()) for _ in range(rng.randrange(3, 7))]
         separator = rng.choice([" ", ",", ", "])
         attributes = {"points": rng.choice([" ", "\n  "]).join(f"{number(px)}{separator}{number(py)}" for px, py in points)}
         name, outlines = kind, ("points", [points])
+        bounds = (min(px for px, _ in points), min(py for _, py in points), max(px for px, _ in points),
+                  max(py for _, py in points))
     else:
+        # The box bn-svg lays a gradient over is round a curve's control points, and only an arc's ends: what
+        # that is for a path is not worked out here, so a path is filled only by gradients in user space.
+        bounds = None
         data = f"M{number(x())} {number(y())}"
         for _ in range(rng.randrange(2, 6)):
             letter = rng.choice("LLCQSTAHV")
@@ -171,7 +181,8 @@ def a_shape(rng: random.Random, across: float, down: float) -> dict:
             data += f"M{number(x())} {number(y())}l4 0 0 4-4 0z"
         attributes = {"d": data}
         name, outlines = "path", ("data", data)
-    shape = {"name": name, "attributes": attributes, "outlines": outlines, "paint": paint_of(rng, False)}
+    shape = {"name": name, "attributes": attributes, "outlines": outlines, "paint": paint_of(rng, False),
+             "bounds": bounds}
     if rng.random() < 0.3:
         shape["transform"] = a_transform(rng)
     if rng.random() < 0.05:
@@ -237,6 +248,61 @@ def a_fit(rng: random.Random) -> tuple[str, str, str] | None:
     return (rng.choice(["Min", "Mid", "Max"]), rng.choice(["Min", "Mid", "Max"]), rng.choice(["meet", "meet", "slice"]))
 
 
+def a_gradient(rng: random.Random, name: str, across: float, down: float, base: dict | None) -> dict:
+    """A linear gradient: in the shape's box or in user space, where it runs, its transform, its spread, and its
+    stops. With `base`, one that names it with `href`, says a few things of its own, and takes the rest."""
+    user = rng.random() < 0.4
+    gradient: dict = {"name": "linearGradient", "id": name, "user": user, "set": {}, "paint": {}}
+    if base is not None:
+        gradient["base"] = base
+        user = base["user"]
+        gradient["user"] = user
+    for end in ("x1", "y1", "x2", "y2"):
+        if rng.random() < (0.3 if base is not None else 0.7):
+            if user:
+                value = (rng.randrange(0, int(across * 4)) if end[0] == "x" else rng.randrange(0, int(down * 4))) / 4
+                gradient["set"][end] = (number(value), value)
+            elif rng.random() < 0.5:
+                value = rng.choice([-0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 1.25])
+                gradient["set"][end] = (number(value), value)
+            else:
+                value = rng.choice([0, 25, 50, 100])
+                gradient["set"][end] = (f"{value}%", value / 100)
+    if base is None:
+        if rng.random() < 0.4:
+            gradient["transform"] = a_transform(rng) if user else rng.choice([
+                ("rotate(30)", (math.cos(math.radians(30)), math.sin(math.radians(30)), -math.sin(math.radians(30)),
+                                math.cos(math.radians(30)), 0.0, 0.0)),
+                ("scale(.5 1)", (0.5, 0.0, 0.0, 1.0, 0.0, 0.0)),
+                ("translate(.25 0)", (1.0, 0.0, 0.0, 1.0, 0.25, 0.0))])
+        if rng.random() < 0.4:
+            gradient["spread"] = rng.choice(["pad", "reflect", "repeat"])
+        offsets = sorted(rng.choice([0.0, 0.2, 0.25, 0.5, 0.8, 1.0]) for _ in range(rng.randrange(2, 4)))
+        gradient["stops"] = []
+        for offset in offsets:
+            text, gray = a_gray(rng)
+            gradient["stops"].append((offset, text, gray, rng.choice([1.0, 1.0, 0.5])))
+    return gradient
+
+
+def resolved(gradient: dict) -> dict:
+    """A gradient with what it takes from the one it names filled in."""
+    base = resolved(gradient["base"]) if "base" in gradient else {"set": {}, "spread": "pad", "transform": None}
+    ends = dict(base["set"])
+    ends.update(gradient["set"])
+    return {"user": gradient["user"], "set": ends, "stops": gradient.get("stops", base.get("stops")),
+            "spread": gradient.get("spread", base["spread"] if "base" in gradient else "pad"),
+            "transform": gradient.get("transform", base["transform"] if "base" in gradient else None)}
+
+
+def inverted(matrix: tuple) -> tuple | None:
+    a, b, c, d, e, f = matrix
+    det = a * d - b * c
+    if abs(det) < 1e-12:
+        return None
+    return (d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det)
+
+
 def a_drawing(rng: random.Random) -> dict:
     """A whole drawing: its own size or view box, and what is in it."""
     drawing: dict = {"name": "svg", "paint": {}, "children": [], "root": True}
@@ -268,6 +334,34 @@ def a_drawing(rng: random.Random) -> dict:
         for some in (definitions[:split], definitions[split:]):
             if some:
                 drawing["children"].append({"name": "defs", "paint": {}, "children": some})
+    # Gradients, in `defs` or not, one perhaps naming another for what it does not say.
+    gradients: list[dict] = []
+    if rng.random() < 0.6:
+        gradients.append(a_gradient(rng, "g0", across, down, None))
+        if rng.random() < 0.5:
+            gradients.append(a_gradient(rng, "g1", across, down, gradients[0]))
+        if rng.random() < 0.5:
+            drawing["children"].insert(0, {"name": "defs", "paint": {}, "children": list(gradients)})
+        else:
+            drawing["children"][0:0] = gradients
+    # A style sheet, first of all: rules for classes and for elements' names.
+    if rng.random() < 0.6:
+        rules = []
+        for number_of in range(rng.randrange(1, 4)):
+            setting: dict = {}
+            if gradients and rng.random() < 0.3:
+                chosen = rng.choice(gradients)
+                setting["fill"] = (f"url(#{chosen['id']})", ("gradient", chosen))
+            else:
+                setting["fill"] = a_gray(rng)
+            if rng.random() < 0.3:
+                setting["fill-opacity"] = rng.choice([0.5, 0.75])
+            rules.append(("class", f"k{number_of}", setting))
+        if rng.random() < 0.5:
+            rules.insert(rng.randrange(len(rules) + 1), ("element", rng.choice(["rect", "circle", "polygon"]),
+                                                         {"fill": a_gray(rng)}))
+        drawing["sheet"] = rules
+        drawing["children"].insert(0, {"name": "style", "paint": {}, "rules": rules})
     for _ in range(rng.randrange(2, 5)):
         kind = rng.random()
         if definitions and kind < 0.3:
@@ -287,6 +381,25 @@ def a_drawing(rng: random.Random) -> dict:
             drawing["children"].append(a_group(rng, across, down, 1, definitions))
         else:
             drawing["children"].append(a_shape(rng, across, down))
+    # Classes, and fills of gradients, for some of the shapes.
+    classes = [name for kind, name, _ in drawing.get("sheet", []) if kind == "class"] + ["unknown"]
+
+    def dress(element: dict) -> None:
+        for child in element.get("children", []):
+            dress(child)
+        if "outlines" not in element:
+            return
+        if drawing.get("sheet") and rng.random() < 0.5:
+            element["attributes"]["class"] = " ".join(rng.sample(classes, rng.randrange(1, min(3, len(classes)) + 1)))
+        if gradients and rng.random() < 0.3:
+            chosen = rng.choice(gradients)
+            if chosen["user"] or element["bounds"] is not None:
+                element["paint"]["fill"] = (f"url(#{chosen['id']})", ("gradient", chosen))
+
+    for child in drawing["children"]:
+        dress(child)
+    for thing in definitions:
+        dress(thing)
     # Things that are not drawn, and should be said to have been left out or should not matter at all.
     drawing["extras"] = [extra for extra in (
         ("<text x='5' y='9'>Words</text>", "text"),
@@ -295,6 +408,9 @@ def a_drawing(rng: random.Random) -> dict:
         ("<defs><rect width='999' height='999'/><path d='M0 0h999v999z'/></defs>", None),
         ("<title>A drawing</title><desc>Made up</desc>", None),
         ("<!-- a comment, with <rect width='999' height='999'/> in it -->", None),
+        ("<style>g rect { fill: #000 }</style>", "what a style sheet says that is not read"),
+        ("<ellipse rx='9' ry='9' fill='url(#round)'/><defs><radialGradient id='round'/></defs>",
+         "a paint that is not a linear gradient before it"),
     ) if rng.random() < 0.25]
     return drawing
 
@@ -302,8 +418,57 @@ def a_drawing(rng: random.Random) -> dict:
 # ---- A drawing written out as a file ----
 
 
+def written_rules(rng: random.Random, rules: list) -> str:
+    """A style sheet's rules, in one of the ways they can be written."""
+    text = rng.choice(["", "<![CDATA[", "\n  /* made up */ "])
+    closing = "]]>" if text == "<![CDATA[" else ""
+    for kind, name, setting in rules:
+        selector = ("." if kind == "class" else "") + name
+        if kind == "class" and rng.random() < 0.3:
+            selector += rng.choice([", .never", " ,unknown-element"])
+        declarations = [f"{property}{rng.choice([':', ' : '])}{value[0] if isinstance(value, tuple) else value}"
+                        for property, value in setting.items()]
+        if rng.random() < 0.3:
+            declarations.insert(0, "font-family: 'A; B', serif")
+        text += selector + rng.choice(["{", " { "]) + "; ".join(declarations) + rng.choice(["}", ";}", " }"]) + "\n"
+    return text + closing
+
+
+def written_gradient(rng: random.Random, gradient: dict, indent: str) -> str:
+    attributes = [("id", gradient["id"])]
+    if "base" in gradient:
+        attributes.append((rng.choice(["href", "xlink:href"]), "#" + gradient["base"]["id"]))
+    if gradient["user"] and ("base" not in gradient or rng.random() < 0.5):
+        attributes.append(("gradientUnits", "userSpaceOnUse"))
+    elif not gradient["user"] and rng.random() < 0.3:
+        attributes.append(("gradientUnits", "objectBoundingBox"))
+    attributes += [(end, text) for end, (text, _) in gradient["set"].items()]
+    if "transform" in gradient:
+        attributes.append(("gradientTransform", gradient["transform"][0]))
+    if "spread" in gradient:
+        attributes.append(("spreadMethod", gradient["spread"]))
+    rng.shuffle(attributes)
+    text = indent + "<linearGradient" + "".join(f" {name}='{value}'" for name, value in attributes)
+    if "stops" not in gradient:
+        return text + "/>\n"
+    text += ">\n"
+    for offset, colour, _, opacity in gradient["stops"]:
+        offset_text = rng.choice([number(offset), f"{number(offset * 100)}%"])
+        if rng.random() < 0.5:
+            text += f"{indent}  <stop offset='{offset_text}' stop-color='{colour}'" + (
+                f" stop-opacity='{opacity}'" if opacity != 1.0 else "") + "/>\n"
+        else:
+            text += f"{indent}  <stop offset='{offset_text}' style='stop-color:{colour}" + (
+                f";stop-opacity:{opacity}" if opacity != 1.0 else "") + "'/>\n"
+    return text + indent + "</linearGradient>\n"
+
+
 def written(rng: random.Random, element: dict, indent: str = "") -> str:
     """One of the many ways an element and what is in it can be written."""
+    if element["name"] == "style":
+        return indent + "<style type='text/css'>" + written_rules(rng, element["rules"]) + "</style>\n"
+    if element["name"] == "linearGradient":
+        return written_gradient(rng, element, indent)
     attributes: list[tuple[str, str]] = list(element.get("attributes", {}).items())
     if element.get("root"):
         attributes.append(("xmlns", "http://www.w3.org/2000/svg"))
@@ -339,12 +504,15 @@ def written(rng: random.Random, element: dict, indent: str = "") -> str:
     elif paint.get("hidden") == "visibility":
         said["visibility"] = "hidden"
     style = []
+    element["styled"] = set()
     for name, value in said.items():
         way = rng.randrange(4)
         if way == 0:
             style.append(f"{name}:{value}")
+            element["styled"].add(name)
         elif way == 1:
             style.append(f" {name} : {value} ")
+            element["styled"].add(name)
             attributes.append((name, "#123456" if name == "fill" else "inherit"))
         else:
             attributes.append((name, value))
@@ -398,6 +566,9 @@ class Picture:
         self.cut = 0  # Pixels that something was cut off in, wholly or partly,
         self.uncut = 0  # and those something showed in beyond the edges of an svg that lets it.
         self.turned = 0  # Inner svgs drawn whole because they are turned.
+        self.styled = 0  # Shapes some rule of a sheet set something of,
+        self.graded = 0  # and pixels a gradient was drawn in.
+        self.sheet: list = []
         # Whether bn-svg's numbers could fairly say something else of this drawing than these do.
         self.doubtful = False
 
@@ -407,8 +578,23 @@ class Picture:
         and `box` the edges it is cut off at, in pixels, if it is inside an `svg` that cuts things off.
         `beyond` is the edges of an `svg` it is in that cuts nothing off, kept only to count what shows there."""
         paint = element["paint"]
-        if paint.get("hidden") == "display" or element["name"] == "defs":
+        if paint.get("hidden") == "display" or element["name"] in ("defs", "style", "linearGradient"):
             return
+        if "outlines" in element and self.sheet:
+            # What the sheet's rules set, where `style` does not say otherwise: a class wins over an element's
+            # name, and a later rule over an earlier one.
+            classes = element["attributes"].get("class", "").split()
+            won: dict = {}
+            for counts in (0, 1):
+                for kind, name, setting in self.sheet:
+                    if (kind, counts) == ("element", 0) and name == element["name"] or (
+                            (kind, counts) == ("class", 1) and name in classes):
+                        won.update(setting)
+            won = {name: value for name, value in won.items() if name not in element.get("styled", set())}
+            if won:
+                self.styled += 1
+                paint = dict(paint)
+                paint.update(won)
         state = dict(handed)
         if "fill" in paint:
             state["fill"] = paint["fill"][1]
@@ -437,6 +623,8 @@ class Picture:
         if "children" in element:
             if "place" in element:
                 place = tuple(float(value) for value in element["place"])
+                # What a percentage inside it is of.
+                state["view"] = (float(element["box"][2]), float(element["box"][3])) if "box" in element else (place[2], place[3])
                 if element.get("overflow") in ("visible", "auto"):
                     if matrix[1] == 0.0 and matrix[2] == 0.0:
                         one = moved((place[0], place[1]), matrix)
@@ -473,6 +661,15 @@ class Picture:
             self.left_out.add("a stroke")
         if state["hidden"] or state["fill"] is None:
             return
+        shade = None
+        unknown = False  # A gradient over a box this does not work out: what the shape covers is not compared.
+        if isinstance(state["fill"], tuple):
+            gradient = resolved(state["fill"][1])
+            unknown = not gradient["user"] and element["bounds"] is None and bool(gradient["stops"])
+            if not unknown:
+                shade = shade_of(gradient, matrix, element["bounds"], state["view"])
+                if shade is None:
+                    return
         kind, what = element["outlines"]
         outlines = outlines_of(what, matrix) if kind == "data" else [[moved(point, matrix) for point in points] for points in what]
         cover, plain = counted(outlines, self.width, self.height, state["fill-rule"])
@@ -492,25 +689,81 @@ class Picture:
                     self.uncut += 1
                 if share == 0.0:
                     continue
-                if not plain[row][pixel]:
+                if not plain[row][pixel] or (unknown and cover[row][pixel] > 0):
                     self.sure[row][pixel] = False
                 elif cover[row][pixel] > 0:
                     if share < 1.0 and cover[row][pixel] < 0.999:
                         # An edge of the shape and an edge it is cut off at, in one pixel: how much of the
                         # shape is on the inner side of the cut is not known from how much is in the pixel.
                         self.sure[row][pixel] = False
+                    elif shade is not None:
+                        gray, alpha = shade(pixel + 0.5, row + 0.5)
+                        self.gray[row][pixel] += (gray - self.gray[row][pixel]) * cover[row][pixel] * share * solid * alpha
+                        self.graded += 1
                     else:
                         self.gray[row][pixel] += (state["fill"] - self.gray[row][pixel]) * cover[row][pixel] * share * solid
 
 
+def shade_of(gradient: dict, matrix: tuple, bounds: tuple | None, view: tuple):
+    """What a gradient comes to for a shape drawn by `matrix`, whose box is `bounds`: the gray, and how solid, at
+    any place in the picture; or nothing, if it draws nothing there."""
+    stops = gradient["stops"] or []
+    if not stops:
+        return None
+    ends = gradient["set"]
+    if gradient["user"]:
+        start = (ends.get("x1", ("", 0.0))[1], ends.get("y1", ("", 0.0))[1])
+        stop = (ends.get("x2", ("", view[0]))[1], ends.get("y2", ("", 0.0))[1])
+        if "x2" not in ends:
+            stop = (view[0], stop[1])  # 100% of what the drawing is seen through.
+        space = IDENTITY
+    else:
+        start = (ends.get("x1", ("", 0.0))[1], ends.get("y1", ("", 0.0))[1])
+        stop = (ends.get("x2", ("", 1.0))[1], ends.get("y2", ("", 0.0))[1])
+        width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+        if width <= 0 or height <= 0:
+            return None
+        space = (width, 0.0, 0.0, height, bounds[0], bounds[1])
+    whole = multiplied(multiplied(matrix, space), gradient["transform"][1] if gradient["transform"] else IDENTITY)
+    back = inverted(whole)
+    run = (stop[0] - start[0], stop[1] - start[1])
+    length = run[0] ** 2 + run[1] ** 2
+
+    def at(place: float) -> tuple[float, float]:
+        if place <= stops[0][0]:
+            return stops[0][2], stops[0][3]
+        for (one, _, gray_one, solid_one), (other, _, gray_other, solid_other) in zip(stops, stops[1:]):
+            if place <= other:
+                part = 0.0 if other == one else (place - one) / (other - one)
+                return gray_one + (gray_other - gray_one) * part, solid_one + (solid_other - solid_one) * part
+        return stops[-1][2], stops[-1][3]
+
+    def shade(x: float, y: float) -> tuple[float, float]:
+        if length == 0 or back is None:
+            return at(1.0)
+        point = moved((x, y), back)
+        place = ((point[0] - start[0]) * run[0] + (point[1] - start[1]) * run[1]) / length
+        if gradient["spread"] == "reflect":
+            place = math.fmod(abs(place), 2.0)
+            place = 2.0 - place if place > 1.0 else place
+        elif gradient["spread"] == "repeat":
+            place = place - math.floor(place)
+        return at(min(max(place, 0.0), 1.0))
+
+    return shade
+
+
 def picture_of(drawing: dict, width: int, height: int) -> Picture:
     picture = Picture(width, height)
+    picture.sheet = drawing.get("sheet", [])
     space = (0.0, 0.0, float(width), float(height))
     if "box" in drawing:
         matrix = fitted(drawing["box"], space, drawing.get("fit"))
     else:
         matrix = (width / drawing["across"], 0.0, 0.0, height / drawing["down"], 0.0, 0.0)
-    picture.draw(drawing, matrix, {"fill": 0.0, "fill-opacity": 1.0, "opacity": 1.0, "fill-rule": "nonzero", "hidden": False})
+    view = (float(drawing["box"][2]), float(drawing["box"][3])) if "box" in drawing else (drawing["across"], drawing["down"])
+    picture.draw(drawing, matrix, {"fill": 0.0, "fill-opacity": 1.0, "opacity": 1.0, "fill-rule": "nonzero", "hidden": False,
+                                   "view": view})
     picture.left_out |= {name for _, name in drawing["extras"] if name}
     return picture
 
@@ -558,7 +811,7 @@ def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> 
 
     picture = picture_of(drawing, width, height)
     if picture.doubtful:
-        return 0, 0, 0.0, (0, 0, 0, 0)
+        return 0, 0, 0.0, (0, 0, 0, 0, 0, 0)
     expect(left_out == picture.left_out, f"{file}\nbn-svg says it left out {sorted(left_out)}; it was given {sorted(picture.left_out)}")
     expect(int(summary.group(8)) == picture.shapes, f"{file}\nbn-svg filled {int(summary.group(8))} shapes of {picture.shapes}")
     compared, unsure, worst, total = 0, 0, 0.0, 0.0
@@ -574,7 +827,7 @@ def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> 
             worst = max(worst, apart)
             total += apart
     expect(total / max(compared, 1) <= 0.004, f"{file}\n{total / max(compared, 1):.4f} of the way from black to white out on average")
-    return compared, unsure, worst, (picture.uses, picture.cut, picture.uncut, picture.turned)
+    return compared, unsure, worst, (picture.uses, picture.cut, picture.uncut, picture.turned, picture.styled, picture.graded)
 
 
 def check_the_tool(tool: str, work: Path) -> None:
@@ -635,7 +888,7 @@ def check_the_tool(tool: str, work: Path) -> None:
 
     # What it leaves out is said, and the rest is drawn.
     result, _, left_out, pixels = draw(tool, work, square.replace("</svg>", "<text>Words</text><path d='M20 0h5v5' stroke='#000' fill='url(#g)'/></svg>"))
-    expect(result.returncode == 0 and left_out == {"text", "a stroke", "a gradient or a pattern"} and gray_at(pixels, 30, 5, 3) == 128,
+    expect(result.returncode == 0 and left_out == {"text", "a stroke", "a paint that is not a linear gradient before it"} and gray_at(pixels, 30, 5, 3) == 128,
            f"things left out: {result.stderr!r}")
 
     # What it will not do.
@@ -664,19 +917,23 @@ def main() -> int:
         check_the_tool(tool, work)
         rng = random.Random(20261116)
         drawings, compared, unsure, worst = 0, 0, 0, 0.0
-        uses, cut, uncut, turned = 0, 0, 0, 0
+        uses, cut, uncut, turned, styled, graded = 0, 0, 0, 0, 0, 0
         for number_of in range(36):
             one, left, apart, had = check_drawing(tool, work, rng, number_of)
             drawings, compared, unsure, worst = drawings + (1 if one else 0), compared + one, unsure + left, max(worst, apart)
             uses, cut, uncut, turned = uses + had[0], cut + had[1], uncut + had[2], turned + had[3]
+            styled, graded = styled + had[4], graded + had[5]
         expect(unsure * 5 < compared, f"{unsure} pixels of {compared + unsure} could not be compared: the test is at fault")
-        expect(drawings >= 30 and uses >= 30 and cut >= 300 and uncut >= 100 and turned >= 2,
-               f"{drawings} drawings with {uses} uses, {cut} pixels cut off, {uncut} showing beyond an svg's edges and "
-               f"{turned} svg elements turned: too few for the test to mean much")
+        expect(drawings >= 30 and uses >= 30 and cut >= 300 and uncut >= 100 and turned >= 2 and styled >= 30
+               and graded >= 1000,
+               f"{drawings} drawings with {uses} uses, {cut} pixels cut off, {uncut} showing beyond an svg's edges, "
+               f"{turned} svg elements turned, {styled} shapes styled by a sheet and {graded} pixels of gradients: too "
+               f"few for the test to mean much")
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
-    print(f"{drawings} drawings, {compared} pixels, {uses} uses, {cut} pixels with something cut off: what bn-svg draws "
+    print(f"{drawings} drawings, {compared} pixels, {uses} uses, {cut} pixels with something cut off, {styled} shapes "
+          f"styled by a sheet, {graded} pixels of gradients: what bn-svg draws "
           f"agrees with the picture each drawing should make to within {worst:.3f} of the way from black to white, and is "
           f"the same in any strips and pieces")
     return 0

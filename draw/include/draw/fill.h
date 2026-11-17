@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -14,6 +15,52 @@ namespace bn::draw {
 enum class FillRule : std::uint8_t {
   kNonZero,  // Wherever the outline goes round more times one way than the other.
   kEvenOdd,  // Wherever a line out to the edge would cross the outline an odd number of times.
+};
+
+// A gray that changes along one direction across the picture, as a linear
+// gradient's does. What a pixel takes is found by where the middle of it
+// lies along the ramp.
+struct GrayRamp {
+  // How far along the ramp a place is, in kOne-ths: nothing at its start,
+  // kOne at its end.
+  static constexpr std::int64_t kOne = 16777216;
+  // The most a step across or down may be, and the furthest along the
+  // first pixel may be. More is taken as that much.
+  static constexpr std::int64_t kMostStep = 1099511627776;
+  static constexpr std::int64_t kFurthest = 1152921504606846976;
+
+  // What lies beyond either end: the gray at that end; the ramp again, the
+  // other way, and on to and fro; or the ramp again from its start.
+  enum class Spread : std::uint8_t { kPad, kReflect, kRepeat };
+
+  // How far along the middle of the picture's top left pixel is, and how
+  // much further along each pixel to the right is, and each pixel down.
+  std::int64_t at = 0;
+  std::int64_t across = 0;
+  std::int64_t down = 0;
+
+  // Its stops: where each is along it, from nothing to kOne and none before
+  // the one before it, and the gray and how solid it is there. Between two
+  // the gray goes from the one to the other evenly, and two in one place
+  // make a step. Before the first and after the last there is that one's.
+  static constexpr std::size_t kMostStops = 8;
+  std::array<std::int32_t, kMostStops> offsets{};
+  std::size_t stops = 0;
+  std::array<std::uint8_t, kMostStops> grays{};
+  std::array<std::uint8_t, kMostStops> alphas{};
+  Spread spread = Spread::kPad;
+
+  // Works out how fast each part of it changes, once its stops are set.
+  void Begin() noexcept;
+  // The gray and how solid it is at a place `along`, what lies beyond the
+  // ends taken as `spread` says. Black and clear, with no stops.
+  void At(std::int64_t along, std::uint8_t& gray, std::uint8_t& alpha) const noexcept;
+
+ private:
+  // For each part, from one stop to the next: how much gray, and how much
+  // solid, a kOne-th of the way along adds, in 2^24ths.
+  std::array<std::int64_t, kMostStops> grayRates_{};
+  std::array<std::int64_t, kMostStops> alphaRates_{};
 };
 
 // Fills outlines with a gray, a strip of a picture at a time.
@@ -106,6 +153,12 @@ class Filler final : public LineSink {
   // same.
   void Fill(FillRule rule, std::uint8_t gray, std::uint8_t opacity, Point from, Point to) noexcept;
 
+  // The same two, with a gray for each pixel from `ramp`, as solid as the
+  // ramp says there and `opacity` together. Each pixel costs a few more
+  // additions and a look in the ramp.
+  void Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity) noexcept;
+  void Fill(FillRule rule, const GrayRamp& ramp, std::uint8_t opacity, Point from, Point to) noexcept;
+
   // The strip that was set: how many pixels wide it is, which row of the
   // picture its first row is, and how many rows it has. No rows, if
   // Begin() refused it.
@@ -130,7 +183,8 @@ class Filler final : public LineSink {
   static Place PlaceOf(Point point) noexcept;
   void CloseOutline() noexcept;
   // Fill(), within the box from `from` to `to` if there is one.
-  void FillWithin(FillRule rule, std::uint8_t gray, std::uint8_t opacity, const Place* from, const Place* to) noexcept;
+  void FillWithin(FillRule rule, std::uint8_t gray, const GrayRamp* ramp, std::uint8_t opacity, const Place* from,
+                  const Place* to) noexcept;
   void AddLine(Place from, Place to) noexcept;
   // A line's part to the left of the strip, from `top` down to `bottom`.
   void AddBeside(std::int32_t top, std::int32_t bottom, std::int32_t sign) noexcept;

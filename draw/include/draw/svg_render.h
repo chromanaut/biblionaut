@@ -11,6 +11,7 @@
 #include "draw/fixed.h"
 #include "draw/flatten.h"
 #include "draw/svg_path.h"
+#include "draw/svg_sheet.h"
 #include "draw/svg_tags.h"
 #include "draw/svg_values.h"
 
@@ -34,9 +35,12 @@ enum class SvgLeftOut : std::uint32_t {
   kText = 1U << 0U,             // `text`: not drawn.
   kImage = 1U << 1U,            // `image`: not drawn.
   kUse = 1U << 2U,              // A `use` of something that is not in `defs` before it: not drawn.
-  kStyleSheet = 1U << 3U,       // `style`: not read, so nothing is painted as it says.
+  kStyleSheet = 1U << 3U,       // What a style sheet says that is not read (see SvgSheetReader), or a sheet that
+                                // comes after something it would style: that much of it is not used.
   kStroke = 1U << 4U,           // A line along an outline: not drawn.
-  kPaintServer = 1U << 5U,      // A gradient or a pattern: not drawn, or what was written to stand in for it.
+  kPaintServer = 1U << 5U,      // A paint that names something other than a linear gradient before it, such as a
+                                // pattern: what was written to stand in for it is drawn, or nothing. Or a
+                                // gradient's stops past kMostStops, which are left out.
   kClip = 1U << 6U,             // `clip-path`: what it would have cut off is drawn.
   kMask = 1U << 7U,             // `mask`: passed over.
   kFilter = 1U << 8U,           // `filter`: passed over.
@@ -63,14 +67,17 @@ const char* SvgLeftOutName(SvgLeftOut what) noexcept;
 
 // What became of a file.
 struct SvgReport {
-  std::uint32_t leftOut = 0;   // A bit of SvgLeftOut for each thing met.
-  std::uint32_t elements = 0;  // Elements read: one that is used is read again each time.
-  std::uint32_t shapes = 0;    // Shapes filled.
-  std::uint32_t commands = 0;  // Commands their outlines had,
-  std::uint32_t lines = 0;     // and lines those became.
-  std::uint32_t deepest = 0;   // The most groups open at once.
-  std::uint32_t kept = 0;      // Bytes of definitions kept,
-  std::uint32_t reused = 0;    // and bytes of them gone through again, for `use`.
+  std::uint32_t leftOut = 0;    // A bit of SvgLeftOut for each thing met.
+  std::uint32_t elements = 0;   // Elements read: one that is used is read again each time.
+  std::uint32_t shapes = 0;     // Shapes filled.
+  std::uint32_t commands = 0;   // Commands their outlines had,
+  std::uint32_t lines = 0;      // and lines those became.
+  std::uint32_t deepest = 0;    // The most groups open at once.
+  std::uint32_t kept = 0;       // Bytes of definitions kept,
+  std::uint32_t reused = 0;     // and bytes of them gone through again, for `use`.
+  std::uint32_t rules = 0;      // Rules of style sheets kept,
+  std::uint32_t gradients = 0;  // and linear gradients.
+  std::uint32_t looked = 0;     // Times what is kept was looked through, which a call does twice at the most.
 
   bool Has(SvgLeftOut what) const noexcept { return (leftOut & static_cast<std::uint32_t>(what)) != 0; }
 };
@@ -120,8 +127,24 @@ struct SvgSize {
 // - `use` draws something again that `defs` holds: see below.
 // - `path`, `rect` (with rounded corners), `circle`, `ellipse`, `polygon`
 //   and `polyline` are shapes, filled by `fill`, `fill-rule`,
-//   `fill-opacity` and `opacity`, each written as an attribute or in
-//   `style`, where `style` wins. A colour is drawn as a gray.
+//   `fill-opacity` and `opacity`, each written as an attribute, in
+//   `style`, or by a rule of the file's style sheet. A colour is drawn as
+//   a gray.
+// - A style sheet, a `<style>` element, is read as SvgSheetReader reads
+//   one: rules whose selectors are classes and elements' names. What a
+//   rule sets wins over an attribute, and `style` over a rule; between
+//   rules, a class wins over a name, and a later rule over an earlier one.
+//   A rule styles what comes after the sheet in the file, which is read
+//   once from its start for each strip.
+// - A fill can be a linear gradient, `fill="url(#name)"`, which is drawn
+//   as one: a gray for each pixel from where it lies along the gradient,
+//   which is SVG's except for one thing. Over a shape's own box
+//   (`gradientUnits="objectBoundingBox"`, which is where a gradient goes
+//   unless it says otherwise), the box is the one round the outline's
+//   points and its curves' control points, which can be a little larger
+//   than the curve. A gradient takes what it does not say from the one
+//   its `href` names. It can be anywhere in the file before what it
+//   fills.
 // - `display` and `visibility` hide things.
 // - Everything else is passed over, and Report() says what there was: see
 //   SvgLeftOut. A drawing with strokes, text or pictures in it comes out
@@ -135,7 +158,8 @@ struct SvgSize {
 //
 // What a file defines in one place and uses in another has to be kept
 // until it is used, and that is the one thing here whose size the file
-// decides. So the memory for it is the caller's (KeepDefinitionsIn()).
+// decides. So the memory for it is the caller's (KeepDefinitionsIn()):
+// what `defs` holds, the rules of the style sheet, and the gradients.
 // What `defs` holds is copied there as it goes by, as it is written, with
 // a note of where each element that has an `id` begins. A `use` then
 // reads its element again from that copy, as if it stood where the `use`
@@ -158,14 +182,19 @@ struct SvgSize {
 // doing other things between calls: at the most it takes kTokensPerStep
 // things from the file's tags or from what it has kept, gives the outline
 // in hand kMostCommandsPerStep commands, and fills one shape; of what it
-// has kept it reads no more than kReusedPerStep bytes; and it looks once
-// for what a `use` names, through the records of what is defined, which
-// are no more than the memory given has room for.
+// has kept it reads no more than kReusedPerStep bytes; and it goes through
+// the records of what it has kept twice at the most, which are no more
+// than the memory given has room for: to find what a `use` names, or
+// what a gradient's `href` does, or to style an element and find the
+// gradient it is filled with. A piece of a style sheet's text is read in
+// the call it comes in.
 //
 // The file is not trusted. Whatever its bytes, it ends in a status and a
-// report. Used by one task. The object is 4,176 bytes on the device: half
-// of it what each open group hands on, an eighth the path data it holds,
-// and a tenth the readers of what is being used again.
+// report. Used by one task. The object is 5,600 bytes on the device: two
+// fifths of it what each open group hands on, a tenth the path data it
+// holds, a tenth the reading of a style sheet, a twelfth the reading of a
+// gradient and the ramp a shape is filled with from it, and a fourteenth
+// the readers of what is being used again.
 class SvgRenderer {
  public:
   // The most groups that can be open at once. One more is passed over
@@ -201,7 +230,19 @@ class SvgRenderer {
   // as numbers of four bytes.
   static constexpr std::size_t kMostKept = 16777216;
   // What keeping one element with an `id` costs, beside its own bytes.
+  // A rule of a style sheet and a gradient cost that too, and the bytes of
+  // what they say.
   static constexpr std::size_t kBytesPerDefinition = 8;
+  // The most stops of a gradient that are kept: the rest are left out, and
+  // reported. A gradient in the books has five at the most.
+  static constexpr std::size_t kMostStops = GrayRamp::kMostStops;
+  // The most bytes of an element's `class` that are looked at, and of what
+  // one rule of a style sheet keeps of its selectors and of what it sets.
+  // A rule that needs more is left out, and reported.
+  static constexpr std::size_t kLongestClasses = 64;
+  static constexpr std::size_t kLongestRule = 256;
+  // How many times one call can look through the records of what is kept.
+  static constexpr std::uint32_t kMostLooksPerStep = 2;
 
   SvgRenderer() noexcept;
   ~SvgRenderer() = default;
@@ -222,7 +263,9 @@ class SvgRenderer {
   void KeepDefinitionsIn(std::span<std::uint8_t> block) noexcept {
     block_ = block.first(std::min(block.size(), kMostKept));
     keptBytes_ = 0;
-    definitions_ = 0;
+    recordBytes_ = 0;
+    records_ = 0;
+    rules_ = 0;
   }
 
   // Begins a pass over a file. The whole drawing is `width` by `height`
@@ -277,7 +320,14 @@ class SvgRenderer {
     kProperty,  // Something `style` could also say: `property_` says which.
     kId,        // `id`, of an element that is being kept.
     kHref,      // What a `use` names.
+    kClass,     // `class`, for a style sheet's rules.
+    kPaint,     // Something a gradient or one of its stops says: `paintSlot_` says what.
   };
+
+  // What a gradient, or a stop of one, says.
+  enum class PaintSlot : std::uint8_t { kName, kLink, kX1, kY1, kX2, kY2, kUnits, kTransform, kSpread, kOffset };
+  // What is being read that a gradient is made of.
+  enum class PaintElement : std::uint8_t { kNone, kGradient, kStop };
 
   // The lengths an element can have, each in its place in `lengths_`.
   enum Slot : std::uint8_t { kX, kY, kWidth, kHeight, kRadiusX, kRadiusY, kMiddleX, kMiddleY, kRadius, kSlots };
@@ -298,7 +348,10 @@ class SvgRenderer {
     kFilter,
     kMarker,
     kOverflow,
+    kStopColor,
+    kStopOpacity,
   };
+  static constexpr std::size_t kProperties = static_cast<std::size_t>(Property::kStopOpacity) + 1;
 
   // What an element hands on to what is inside it.
   struct Level {
@@ -319,6 +372,9 @@ class SvgRenderer {
     bool boxed = false;
     Point boxFrom;
     Point boxTo;
+    // The gradient `fill` is, if it is one: where its record ends in what is
+    // kept. Nothing if it is not one.
+    std::uint32_t gradient = 0;
   };
 
   // What a shape is filled with, and within what.
@@ -329,6 +385,43 @@ class SvgRenderer {
     bool boxed = false;
     Point boxFrom;
     Point boxTo;
+    // With a gradient: its record, and what it is laid out by.
+    std::uint32_t gradient = 0;
+    Matrix matrix;
+    Fixed viewWidth = 0;
+    Fixed viewHeight = 0;
+  };
+
+  // A gradient as its tags are read, before it is kept.
+  struct Gradient {
+    std::array<SvgLength, 4> ends{};  // x1, y1, x2, y2.
+    Matrix transform;
+    std::array<std::uint16_t, kMostStops> offsets{};  // In 65,535ths of the way.
+    std::array<std::uint8_t, kMostStops> grays{};
+    std::array<std::uint8_t, kMostStops> alphas{};
+    std::array<char, kLongestId> name{};
+    std::array<char, kLongestId> link{};  // What its `href` names.
+    std::uint8_t nameSize = 0;
+    std::uint8_t linkSize = 0;
+    std::uint8_t stops = 0;
+    std::uint8_t set = 0;  // A bit for each of the ends, its units, transform and spread that it says itself.
+    bool userSpace = false;
+    GrayRamp::Spread spread = GrayRamp::Spread::kPad;
+  };
+
+  // A record of what is kept, as its last eight bytes say: the first four
+  // its kind in the top byte and a number in the rest, and the second four
+  // another number. A definition is those eight bytes and no more: where
+  // its element begins, and where its name is. A rule or a gradient has the
+  // number of bytes of what it says below them.
+  enum class Record : std::uint8_t { kDefinition, kRule, kGradient };
+  struct Kept {
+    std::span<const std::uint8_t> said;
+    std::uint32_t number = 0;
+    std::uint32_t other = 0;
+    std::uint32_t top = 0;     // Where the record ends, one past its last byte, which is what it is known by;
+    std::uint32_t bottom = 0;  // and where it begins, which is where the one made after it ends.
+    Record kind = Record::kDefinition;
   };
 
   // Something kept that a `use` is drawing again.
@@ -370,7 +463,8 @@ class SvgRenderer {
   std::size_t TakeValue(std::string_view piece, bool ofInput) noexcept;
   void EndAttribute() noexcept;
   bool Opened(bool empty) noexcept;
-  void Close() noexcept;
+  bool OpenedElement(bool empty) noexcept;
+  bool Close() noexcept;
   // Does what one thing from the tags says. `taken` is how many bytes it
   // was read from, and is made less if some of them are handed back.
   // Returns whether that is enough work for one call.
@@ -384,11 +478,37 @@ class SvgRenderer {
   void Keep(std::string_view bytes) noexcept;
   void Define(std::uint32_t at, std::uint32_t idAt) noexcept;
   bool Find(std::uint32_t& at) const noexcept;
+  // Puts a record below the last, if there is room, and says so.
+  bool AddRecord(Record kind, std::uint32_t number, std::uint32_t other, std::span<const std::uint8_t> said) noexcept;
+  // The record that ends at `top`: false if none does. The first ends at
+  // the memory's end, and each begins where the next one made ends, so
+  // going down from there goes through them in the order they were made.
+  bool RecordAt(std::uint32_t top, Kept& kept) const noexcept;
+  // Where the gradient's record ends that has the name, or nothing.
+  std::uint32_t FindGradient(std::string_view name) const noexcept;
+  // A gradient as a record says it, and back.
+  static std::size_t Pack(const Gradient& gradient, std::span<std::uint8_t> said) noexcept;
+  static bool Unpack(std::span<const std::uint8_t> said, Gradient& gradient) noexcept;
   // A `use`: begins the drawing again of what it names. And the drawing
   // again itself, a few things at a call, and its end.
   bool OpenUse(bool empty) noexcept;
   void ReuseSome() noexcept;
   void EndReuse() noexcept;
+
+  // A style sheet: its text, a piece at a time, and what it comes to for
+  // the element whose tag is ending.
+  void ReadSheet(std::string_view piece) noexcept;
+  void EndRule() noexcept;
+  void Style() noexcept;
+  // A gradient, and each of its stops, as their tags end; and what one
+  // comes to for a shape's pixels. Each says whether it looked through what
+  // is kept.
+  void SetPaint(std::string_view value) noexcept;
+  void AddStop() noexcept;
+  bool EndGradient() noexcept;
+  bool Ramp(const Filling& filling) noexcept;
+  // What a `fill` of `url(...)` names, if it does.
+  void TakeFillName(std::string_view value) noexcept;
 
   std::size_t TakePathData(std::string_view piece, bool ofInput) noexcept;
   void TakeStyle(std::string_view piece) noexcept;
@@ -426,6 +546,10 @@ class SvgRenderer {
   Nowhere nowhere_;
   PathFlattener flattener_;
   SvgPathReader reader_;
+  // The gray of each pixel of a shape filled with a gradient, made as it is
+  // filled; and a gradient being read.
+  GrayRamp ramp_;
+  Gradient gradient_;
   Fixed width_ = 0;
   Fixed height_ = 0;
   Fixed tolerance_ = kDefaultTolerance;
@@ -441,12 +565,14 @@ class SvgRenderer {
   bool rootSeen_ = false;
 
   // What is kept of the file, in the caller's memory: the bytes of `defs`
-  // from its start, and from its end backwards a record for each element
-  // among them that has an `id`, which is where the element begins and
-  // where its name is written.
+  // from its start, and from its end backwards a record of each element
+  // among them that has an `id`, each rule of a style sheet and each
+  // linear gradient (see Kept).
   std::span<std::uint8_t> block_;
   std::uint32_t keptBytes_ = 0;
-  std::uint32_t definitions_ = 0;
+  std::uint32_t recordBytes_ = 0;
+  std::uint32_t records_ = 0;
+  std::uint32_t rules_ = 0;
   std::uint32_t keepingFrom_ = 0;  // Where in the file the bytes kept would begin, had they all been in one run.
   bool keeping_ = false;           // Inside `defs`.
   bool blockFull_ = false;
@@ -455,6 +581,31 @@ class SvgRenderer {
   // What is being drawn again, one inside another.
   std::array<Reuse, kDeepestUse> reuses_{};
   std::uint32_t reusing_ = 0;
+
+  // A style sheet being read, and the rule in hand: its selectors, each a
+  // byte for its kind and one for its length, then the name; then what it
+  // sets, each a byte for the property and one for the length of the
+  // value, then the value. The first byte is how many selectors there are,
+  // and the byte after them how many things it sets.
+  SvgSheetReader sheet_;
+  std::array<std::uint8_t, kLongestRule> rule_{};
+  std::uint32_t ruleSize_ = 0;
+  std::uint32_t settingsAt_ = 0;     // Where the count of what it sets is: nothing, until the first.
+  std::uint32_t sheetSkipping_ = 0;  // How deep in what is passed over its text is.
+  bool openingSheet_ = false;
+  bool inSheet_ = false;
+  bool shapeSeen_ = false;  // A shape has come before it.
+  bool ruleTooLong_ = false;
+
+  // A gradient being read (`gradient_`, above), and a stop of it.
+  std::uint32_t gradientSkipping_ = 0;  // How deep in what is passed over its stops are.
+  PaintElement paintElement_ = PaintElement::kNone;
+  PaintSlot paintSlot_ = PaintSlot::kName;
+  bool building_ = false;
+  std::uint8_t stopGray_ = 0;
+  std::uint16_t stopOffset_ = 0;
+  std::uint8_t stopAlpha_ = 255;
+  std::uint8_t stopOpacity_ = 255;
 
   // The element whose tag is being read.
   Element element_ = Element::kIgnored;
@@ -482,6 +633,13 @@ class SvgRenderer {
   std::array<char, kLongestId> wanted_{};
   std::uint32_t wantedSize_ = 0;
   bool hasWanted_ = false;
+  // Its name and its classes, for a style sheet; and what its `fill` names.
+  std::array<char, 32> elementName_{};
+  std::uint8_t elementNameSize_ = 0;
+  std::array<char, kLongestClasses> classes_{};
+  std::uint8_t classesSize_ = 0;
+  std::array<char, kLongestId> fillName_{};
+  std::uint8_t fillNameSize_ = 0;
   // The element being read is the one a `use` named. It takes its width
   // and height from the `use`, where that has them and it is an `svg`.
   bool firstOfUse_ = false;
@@ -490,7 +648,7 @@ class SvgRenderer {
   Fixed useWidth_ = 0;
   Fixed useHeight_ = 0;
   std::uint8_t ownOpacity_ = 255;
-  std::uint16_t fromStyle_ = 0;   // A bit for each Property that `style` has set.
+  std::uint32_t fromStyle_ = 0;   // A bit for each Property that `style` has set.
   std::uint16_t lengthsSet_ = 0;  // A bit for each Slot that was written.
   std::array<Fixed, kSlots> lengths_{};
 

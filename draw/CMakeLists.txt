@@ -9,6 +9,7 @@ add_library(bn_draw STATIC
   src/svg_number.cpp
   src/svg_path.cpp
   src/svg_render.cpp
+  src/svg_sheet.cpp
   src/svg_tags.cpp
   src/svg_transform.cpp
   src/svg_values.cpp

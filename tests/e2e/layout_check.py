@@ -13,9 +13,11 @@ desktop.
 
 The text on the card is made by tools/layout-text.py from books made here,
 and what it makes of one of them is held to a reading of that book written
-out by hand.
+out by hand. With no table on the card, the application gives the check the
+table for American English that the build made, and bn-lines is given the
+same table from the file it was made in (BUILT_IN_TABLE).
 
-usage: layout_check.py APP BN_TRACE BN_LINES BN_HYPHEN LAYOUT_TEXT WORK_DIR
+usage: layout_check.py APP BN_TRACE BN_LINES BN_HYPHEN LAYOUT_TEXT BUILT_IN_TABLE WORK_DIR
 """
 
 from __future__ import annotations
@@ -205,10 +207,11 @@ def compare(said: dict[str, dict[str, int]], name: str, expected: dict[str, int]
 # ---- The test ----
 
 def main() -> int:
-    if len(sys.argv) != 7:
+    if len(sys.argv) != 8:
         print(__doc__, file=sys.stderr)
         return 2
-    app, trace_tool, lines_tool, hyphen_tool, layout_text, work = (Path(argument) for argument in sys.argv[1:])
+    app, trace_tool, lines_tool, hyphen_tool, layout_text, built_in, work = (Path(argument)
+                                                                             for argument in sys.argv[1:])
     shutil.rmtree(work, ignore_errors=True)
     books = work / "books"
     card = work / "card"
@@ -270,16 +273,23 @@ def main() -> int:
             expect(any(re.fullmatch(expected_line, line) for line in lines),
                    f"a line like {expected_line!r}:\n{everything}")
 
-        # Without a table, it sets the text twice and hyphenates none.
+        # Without a table on the card, it takes the one that is built in.
         table.unlink()
         lines = run_check(app, trace_tool, card, capture)
         everything = "\n".join(lines)
         expect("layout check: passed." in lines, f"without a table, the check should pass:\n{everything}")
+        expect(f"layout check: no table at /layout/hyphenation.bnhy (not found): the built-in table, "
+               f"{built_in.stat().st_size} bytes; no break before 2 letters or after 3 letters." in lines,
+               f"without a table on the card, the built-in one:\n{everything}")
         said = settings_in(lines)
-        expect(list(said) == ["not hyphenated", "not hyphenated, every call timed"],
-               f"without a table, the two settings:\n{everything}")
+        expect(list(said) == ["hyphenated", "not hyphenated", "hyphenated, every call timed"],
+               f"with the built-in table, the three settings:\n{everything}")
+        english = figures_of(lines_tool, text, built_in)
+        expect(english["hyphens"] > 0, f"English breaks some of the made-up words: {english}")
+        expect(english["checksum"] != hyphenated["checksum"], "the built-in table should set other lines")
+        compare(said, "hyphenated", english, everything)
         compare(said, "not hyphenated", plain, everything)
-        compare(said, "not hyphenated, every call timed", plain, everything)
+        compare(said, "hyphenated, every call timed", english, everything)
 
         # Without the text, it fails, and says how to make it.
         text.unlink()

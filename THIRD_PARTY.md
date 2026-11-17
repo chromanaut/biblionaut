@@ -9,6 +9,7 @@ before a new dependency lands.
 | [ESP-IDF](https://github.com/espressif/esp-idf) 6.0 | Device SDK: RTOS, drivers, boot, flashing tools | Apache-2.0 | Installed separately; not in this repository | Yes (linked) |
 | [FatFs](http://elm-chan.org/fsw/ff/) R0.15, as ESP-IDF carries it | The file system on the SD card | FatFs licence: a one-clause BSD-style licence by ChaN (source must keep the copyright notice; no condition on binaries) | With ESP-IDF, in its `fatfs` component; not in this repository | Yes (linked) |
 | [Expat](https://libexpat.github.io) 2.10.0 | The XML parser: reads the files an EPUB describes itself with, and its chapters (`epub/xml.h`) | MIT. Copyright (c) 1998-2000 Thai Open Source Software Center Ltd and Clark Cooper; Copyright (c) 2001-2025 Expat maintainers | Downloaded by CMake when a build is configured, from expat's releases on GitHub, and checked against the SHA-256 in `third_party/expat/CMakeLists.txt`. Compiled as it comes, with our settings (`third_party/expat/expat_config.h`). Not in this repository | Yes (linked), once something in the firmware reads XML. Its licence asks that the notice go with every copy, so it has to go with a firmware that is given out |
+| [TeX's hyphenation patterns for American English](https://github.com/hyphenation/tex-hyphen) (`hyph-en-us`, from the hyph-utf8 package at commit `29e003ea`, tagged CTAN-2024.12.31): Gerard D.C. Kuiken's patterns, which hold Donald E. Knuth's from `hyphen.tex` | Where an English word may be broken: `bn-hyphen` makes them into the table that `layout/hyphenator.h` reads, as part of the build, and the table is compiled in (`hyphenation/american_english.h`) | The file's own notice, read from the header of `hyph-en-us.tex` at that commit: "Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken. Copying and distribution of this file, with or without modification, are permitted in any medium without royalty provided the copyright notice and this notice are preserved." Knuth's patterns, which are the file's first 4,447 of 4,938, unchanged, come under the notice of `hyphen.tex`, which lets them be changed so long as the result is not called `hyphen.tex`, and has no copyright line | Downloaded by CMake when a build is configured: the plain-text form of the patterns and of the words written out with their breaks (`hyph-en-us.pat.txt`, `hyph-en-us.hyp.txt`), each checked against the SHA-256 in `third_party/hyph-en-us/CMakeLists.txt`. Not in this repository | Yes (as the table), in a firmware that uses it: so far one built with the layout check. The copyright line and notice are compiled in with the table |
 | [GoogleTest](https://github.com/google/googletest) 1.17.0 | Host unit tests | BSD-3-Clause | Downloaded by CMake when the tests are configured | No |
 | [SDL](https://libsdl.org) 3.4.18 | The desktop application's window (`hw/desktop/panel_window_sdl.cpp`), in a build configured with `BN_DESKTOP_WINDOW` | zlib licence. Copyright (C) 1997-2026 Sam Lantinga | Downloaded by CMake when such a build is configured, from SDL's releases on GitHub, and checked against the SHA-256 in `third_party/sdl/CMakeLists.txt`. Built by its own CMake files, as a static library with only what a window needs. Not in this repository | No |
 | [zlib](https://zlib.net/) | Host tests only: what our own inflater produces is compared with what zlib does, in the unit tests and in the inflater's fuzz target, and the tests' ZIP files are made with it | zlib licence | The computer's own copy, whatever its version: macOS has one (1.2.12 when this was written), and on Linux it is the `zlib1g-dev` package (1.3 on Ubuntu 24.04). Not in this repository | No |
@@ -21,11 +22,11 @@ ESP-IDF bundles further components under their own licences; those that end
 up in the firmware image need their own entries here once the image contents
 settle.
 
-No hyphenation patterns are in this repository or in the firmware. A
-language's patterns are someone's work and come under terms of their own,
-which differ from one language to the next: each set needs an entry here,
-with its terms read from its own file, before a table made from it is
-shipped or kept here.
+No hyphenation patterns are in this repository. A language's patterns
+are someone's work and come under terms of their own, which differ from
+one language to the next: each set needs an entry here, with its terms
+read from its own file, before a table made from it is shipped or kept
+here. American English's has one, above.
 
 ## Test books
 

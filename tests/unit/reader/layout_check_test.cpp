@@ -189,6 +189,11 @@ struct CheckFixture {
 
   void PutText(const std::string& text) { storage.Put(std::string(LayoutCheck::kTextPath), BytesOf(text)); }
   void PutTable(const Bytes& table) { storage.Put(std::string(LayoutCheck::kTablePath), table); }
+  // Makes the check afresh, given `table` as its built-in one.
+  void GiveBuiltIn(const Bytes& table) {
+    builtIn = table;
+    check = std::make_unique<LayoutCheck>(storage, clock, stream, builtIn);
+  }
 
   // Turns until the check is no longer running. Returns how many it took.
   // NOLINTNEXTLINE(readability-make-member-function-const): it changes the check, which is only pointed to.
@@ -244,6 +249,7 @@ struct CheckFixture {
   bn::core::TraceStream stream{trace.tracer, sink};
   FakeStorage storage;
   SteppingClock clock;
+  Bytes builtIn;
   // On the heap, where the application keeps it.
   std::unique_ptr<LayoutCheck> check = std::make_unique<LayoutCheck>(storage, clock, stream);
 };
@@ -425,6 +431,93 @@ TEST(LayoutCheck, GoesWithoutHyphenationWhenTheTableIsNotOneOrIsTooLarge) {
   EXPECT_EQ(fixture.LineWith("is not a table"),
             "layout check: the file at /layout/hyphenation.bnhy is not a table (bad table): the text is set without "
             "hyphenation.");
+}
+
+// A table in which a word may be broken between a b and an a, which sets
+// the same text in other lines.
+Bytes BetweenBAndA() { return bn::test::PlainHyphenTable({"b1a"}, 1, 1); }
+
+TEST(LayoutCheck, TakesTheTableItWasGivenWhenTheCardHasNone) {
+  CheckFixture fixture;
+  fixture.GiveBuiltIn(BetweenAAndB());
+  const std::string text = MadeUpText(3, 40);
+  fixture.PutText(text);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  EXPECT_TRUE(fixture.check->Hyphenating());
+  EXPECT_TRUE(fixture.check->HyphenatingBuiltIn());
+  ASSERT_EQ(fixture.check->Passes(), 3U);
+  Hyphenator hyphenator;
+  const Bytes table = BetweenAAndB();
+  ASSERT_EQ(hyphenator.Open(table), bn::layout::HyphenStatus::kOk);
+  ExpectSetAs(fixture.check->PassFigures(0), SetPlainly(text, &hyphenator), "hyphenated");
+  ExpectSetAs(fixture.check->PassFigures(1), SetPlainly(text, nullptr), "not hyphenated");
+  EXPECT_EQ(fixture.LineWith("layout check: no table"),
+            "layout check: no table at /layout/hyphenation.bnhy (not found): the built-in table, " +
+                std::to_string(table.size()) + " bytes; no break before 1 letter or after 1 letter.");
+  EXPECT_NE(fixture.LineWith("layout check: hyphenator, 8 long words: "), "");
+}
+
+TEST(LayoutCheck, PrefersTheCardsTableToTheOneItWasGiven) {
+  CheckFixture fixture;
+  fixture.GiveBuiltIn(BetweenBAndA());
+  const std::string text = MadeUpText(3, 40);
+  fixture.PutText(text);
+  fixture.PutTable(BetweenAAndB());
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  EXPECT_TRUE(fixture.check->Hyphenating());
+  EXPECT_FALSE(fixture.check->HyphenatingBuiltIn());
+  Hyphenator cards;
+  const Bytes table = BetweenAAndB();
+  ASSERT_EQ(cards.Open(table), bn::layout::HyphenStatus::kOk);
+  Hyphenator given;
+  const Bytes other = BetweenBAndA();
+  ASSERT_EQ(given.Open(other), bn::layout::HyphenStatus::kOk);
+  ASSERT_NE(SetPlainly(text, &cards).checksum, SetPlainly(text, &given).checksum) << "the two tables set it apart";
+  ExpectSetAs(fixture.check->PassFigures(0), SetPlainly(text, &cards), "hyphenated");
+  EXPECT_NE(fixture.LineWith("layout check: table: "), "");
+}
+
+TEST(LayoutCheck, TakesTheTableItWasGivenWhenTheCardsCannotBeUsed) {
+  for (const Bytes& table : {BytesOf("not a table at all"), Bytes(LayoutCheck::kTableBytes + 1, 0)}) {
+    CheckFixture fixture;
+    fixture.GiveBuiltIn(BetweenAAndB());
+    fixture.PutText("Some text.\n");
+    fixture.PutTable(table);
+    fixture.check->Begin();
+    fixture.RunToTheEnd();
+    ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+    EXPECT_TRUE(fixture.check->HyphenatingBuiltIn());
+    EXPECT_EQ(fixture.check->Passes(), 3U);
+  }
+  CheckFixture fixture;
+  fixture.GiveBuiltIn(BetweenAAndB());
+  fixture.PutText("Some text.\n");
+  fixture.PutTable(BytesOf("not a table at all"));
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  EXPECT_EQ(fixture.LineWith("is not a table"),
+            "layout check: the file at /layout/hyphenation.bnhy is not a table (bad table): the built-in table, " +
+                std::to_string(BetweenAAndB().size()) + " bytes; no break before 1 letter or after 1 letter.");
+}
+
+TEST(LayoutCheck, GoesWithoutHyphenationWhenTheTableItWasGivenIsNotOne) {
+  CheckFixture fixture;
+  fixture.GiveBuiltIn(BytesOf("not a table either"));
+  fixture.PutText("Some text.\n");
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  EXPECT_FALSE(fixture.check->Hyphenating());
+  EXPECT_EQ(fixture.check->Passes(), 2U);
+  EXPECT_EQ(fixture.LineWith("layout check: no table"),
+            "layout check: no table at /layout/hyphenation.bnhy (not found): the built-in table is not one (bad "
+            "table): the text is set without hyphenation.");
 }
 
 TEST(LayoutCheck, FailsWithNoTextToSet) {

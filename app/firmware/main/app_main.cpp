@@ -10,6 +10,7 @@
 #include "core/heap.h"
 #include "crash_test.h"
 #include "hw/platform.h"
+#include "partition_check.h"
 #include "reader/app.h"
 #ifdef BN_DRAWING_VIEWER
 #include "reader/drawing_viewer.h"
@@ -65,6 +66,7 @@ extern "C" void app_main() {
   esp_rom_printf("Biblionaut %s (%s)\n", bn::reader::Version(), bn::hw::PortName());
   AnnounceSavedCrash();
   bn::firmware::AnnounceCrashTest();
+  bn::firmware::RunPartitionCheck();
 
   static bn::reader::App app(bn::reader::DefaultServices());
 #ifdef BN_PLANE_CHECK

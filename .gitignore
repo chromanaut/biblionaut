@@ -6,6 +6,8 @@
 
 # ESP-IDF build output and generated configuration
 /app/firmware/build/
+# and the partition check's, which keeps its settings apart (app/firmware/CMakeLists.txt)
+/app/firmware/build-partition-check/
 /app/firmware/sdkconfig
 /app/firmware/sdkconfig.old
 /app/firmware/managed_components/

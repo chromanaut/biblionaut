@@ -2770,6 +2770,61 @@ not taken up.
 Flashing replaces whatever firmware is on the device, including its
 bootloader and partition table.
 
+### A partition for fonts
+
+The firmware's fonts are to live in a partition of the flash of their own,
+read where they lie through the processor's mapping of flash into its
+address space. A firmware built with `-DBN_PARTITION_CHECK=ON` checks that
+on a device. It has a partition table of its own
+(`app/firmware/partitions_fonts.csv`: a 4 MB app partition and a 12 MB
+data partition, `fonts`), which `app/firmware/sdkconfig.partition_check`
+chooses, so it is built in a directory of its own, where its settings are
+kept apart from the normal build's:
+
+```
+tools/idf -B app/firmware/build-partition-check -DBN_PARTITION_CHECK=ON build flash
+./build/host-release/tools/trace/bn-trace --seconds 20 | tee partition.log
+tools/idf flash      # back to the normal firmware and ESP-IDF's own table
+```
+
+Flashing it writes the table and fills `fonts` with 12 MB of a pattern in
+which every four bytes are a number worked out from where they are
+(`app/firmware/partition_pattern.py`). At start, before the application,
+it says how large the flash chip is, what partitions there are, how much
+of `fonts` can be mapped at once, how long mapping a window takes, how
+fast the whole partition is read and whether every word of it is right,
+and what a read of 64 bytes costs where the cache has it and where it does
+not (`app/firmware/main/partition_check.h`). On an X4:
+
+```
+partition check: flash: the chip says 16384 KB (ESP_OK); the build takes it to be 16384 KB (ESP_OK).
+partition check: partition nvs: type 1, subtype 0x02, at 0x009000, 20 KB.
+partition check: partition phy_init: type 1, subtype 0x01, at 0x00e000, 4 KB.
+partition check: partition factory: type 0, subtype 0x00, at 0x010000, 4032 KB.
+partition check: partition fonts: type 1, subtype 0x40, at 0x400000, 12288 KB.
+partition check: pages of address space free for data: 124 (7936 KB).
+E (92) mmap: esp_mmu_map(479): no such vaddr range
+partition check: the whole partition at once, 12288 KB: ESP_ERR_NOT_FOUND.
+E (92) mmap: esp_mmu_map(479): no such vaddr range
+E (92) mmap: esp_mmu_map(479): no such vaddr range
+E (92) mmap: esp_mmu_map(479): no such vaddr range
+E (92) mmap: esp_mmu_map(479): no such vaddr range
+partition check: the most mapped at once: 124 pages (7936 KB).
+partition check: a window of 64 KB: mapped in 26 us and unmapped in 16 us, on average of 100 (0 failed).
+partition check: a window of 1024 KB: mapped in 27 us and unmapped in 17 us, on average of 100 (0 failed).
+partition check: read all 12288 KB in 824 ms (14902 KB/s), through windows of 1024 KB.
+partition check: every word is what it should be (3145728 words).
+partition check: scattered over 4096 KB: 20000 reads of 64 bytes in 87296 us (4364 ns a read).
+partition check: within 8 KB: 20000 reads of 64 bytes in 17226 us (861 ns a read).
+partition check: passed.
+```
+
+The processor has 8 MB of address space for flash, in 128 pages of 64 KB,
+shared by the app's code and constant data and whatever else is mapped:
+beside an app of 280 KB, 124 pages were free, so a partition larger than
+that is mapped a part at a time. Mapping a window costs the same for 64 KB
+as for 1 MB.
+
 ## Crash reports
 
 When the firmware stops unexpectedly (a processor fault, `abort()`, a failed

@@ -1,7 +1,12 @@
 # Firmware entry point: app_main().
+#
+# esp_partition, esp_timer and spi_flash are for the partition check
+# (BN_PARTITION_CHECK below). They are named whether or not it is built:
+# ESP-IDF works out what a component requires before the project's options
+# are known, and every firmware has those three anyway.
 idf_component_register(
   SRCS "app_main.cpp"
-  PRIV_REQUIRES bn_hw esp_rom esp_system freertos)
+  PRIV_REQUIRES bn_hw esp_partition esp_rom esp_system esp_timer freertos spi_flash)
 
 # bn_reader, bn_core and bn_core_runtime are defined by the project after
 # components are registered; CMake resolves the names when it generates.
@@ -81,4 +86,15 @@ if(BN_DRAWING_VIEWER)
   message(WARNING "This firmware shows the SVG files in /drawings on the SD card in place of the test pattern. "
                   "Configure with -DBN_DRAWING_VIEWER=OFF for a normal build.")
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_DRAWING_VIEWER=1)
+endif()
+
+# A firmware with a fonts partition, checked at start (see
+# BN_PARTITION_CHECK in the project file). The code for it,
+# partition_check.cpp, is only part of such a build.
+if(BN_PARTITION_CHECK)
+  message(WARNING "This firmware has a partition table with a fonts partition, and checks it at start. "
+                  "Flashing it replaces the device's partition table. Build without -DBN_PARTITION_CHECK=ON, "
+                  "in the usual build directory, for a normal firmware.")
+  target_sources(${COMPONENT_LIB} PRIVATE partition_check.cpp)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_PARTITION_CHECK=1)
 endif()

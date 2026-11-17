@@ -54,6 +54,7 @@ HOST_ONLY_DIRS = (ROOT / "hw" / "desktop",)
 # in, using the options of a neighbouring file.
 OPTIONAL_SOURCES = {
     ROOT / "app" / "firmware" / "main" / "crash_test.cpp": ["-DBN_CRASH_TEST=0", '-DBN_CRASH_TEST_NAME="fault"'],
+    ROOT / "app" / "firmware" / "main" / "partition_check.cpp": ["-DBN_PARTITION_CHECK=1"],
 }
 
 # Options GCC takes and clang does not.

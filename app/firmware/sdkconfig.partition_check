@@ -1,0 +1,4 @@
+# Read after sdkconfig.defaults by a build with BN_PARTITION_CHECK
+# (CMakeLists.txt): the partition table with a partition for fonts.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_fonts.csv"

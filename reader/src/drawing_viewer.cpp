@@ -186,6 +186,27 @@ void DrawingViewer::OnInput(const core::InputEvent& event) noexcept {
   }
 }
 
+bool DrawingViewer::WorkWaiting() const noexcept {
+  if (state_ != State::kReady) {
+    return false;
+  }
+  switch (phase_) {
+    case Phase::kSizing:
+    case Phase::kRecording:
+    case Phase::kDrawing:
+    case Phase::kReplaying:
+    case Phase::kPicturing:
+      return true;
+    case Phase::kWriting:
+      return !display_.Busy();
+    case Phase::kIdle:
+      return !sleepAsked_ && !names_.empty() && (wanted_ != current_ || redrawWanted_) && !display_.Busy();
+    case Phase::kRefreshing:
+      break;
+  }
+  return false;
+}
+
 void DrawingViewer::Sleep() noexcept {
   sleepAsked_ = true;
   if (phase_ == Phase::kSizing || phase_ == Phase::kRecording || phase_ == Phase::kDrawing ||
@@ -196,6 +217,12 @@ void DrawingViewer::Sleep() noexcept {
 }
 
 void DrawingViewer::Tick() noexcept {
+  tickStartedUs_ = clock_.NowUs();
+  TickSome();
+  turnsUs_ += clock_.NowUs() - tickStartedUs_;
+}
+
+void DrawingViewer::TickSome() noexcept {
   if (state_ != State::kReady) {
     return;
   }
@@ -359,6 +386,7 @@ void DrawingViewer::Tick() noexcept {
 
 void DrawingViewer::Refresh(std::uint64_t now) noexcept {
   pressToRefreshUs_ = clock_.NowUs() - drawingStartedUs_;
+  turnsAtRefreshUs_ = turnsUs_ + (clock_.NowUs() - tickStartedUs_);
   CloseFile();
   const core::RefreshMode mode = firstRefresh_   ? core::RefreshMode::kFull
                                  : redrawWanted_ ? redrawMode_
@@ -416,6 +444,7 @@ void DrawingViewer::Begin(std::size_t index) noexcept {
   spooling_ = false;
   spoolFailure_ = nullptr;
   replayingUs_ = 0;
+  turnsUs_ = 0;
   spoolStore_.writingUs = 0;
   spoolStore_.readingUs = 0;
   spoolStore_.bytesWritten = 0;
@@ -688,9 +717,13 @@ void DrawingViewer::SayTimes(std::uint64_t refreshUs) noexcept {
     line.Text(" ms, waiting ").Number(waitingUs_ / 1000);
     // From the press to the refresh, what the viewer did not spend on these
     // is the loop's other turns.
+    // Of the rest, what went in the viewer's own turns, and what between them.
     const std::uint64_t untilRefresh = pressToRefreshUs_;
-    const std::uint64_t spent = readingUs_ + renderingUs_ + ditheringUs_ + writingUs_ + waitingUs_;
-    line.Text(" ms, between turns ").Number((untilRefresh > spent ? untilRefresh - spent : 0) / 1000);
+    const std::uint64_t spent = readingUs_ + renderingUs_ + ditheringUs_ + writingUs_ + waitingUs_ +
+                                spoolStore_.writingUs + spoolStore_.readingUs + replayingUs_;
+    const std::uint64_t inTurns = std::max(turnsAtRefreshUs_, spent);
+    line.Text(" ms, other ").Number((inTurns - spent) / 1000);
+    line.Text(" ms, between turns ").Number((untilRefresh > inTurns ? untilRefresh - inTurns : 0) / 1000);
     line.Text(" ms, refreshing ").Number(refreshUs / 1000).Text(" ms");
   }
   stream_.SendText(line.View());

@@ -25,6 +25,10 @@ class Screen {
   // Whether the device can sleep now: the panel is asleep, or there is
   // nothing more to be done with it.
   virtual bool Resting() const noexcept = 0;
+  // Whether it has work it can do now, without waiting on the panel, the
+  // clock or a button: then the loop need not pause before the next turn
+  // (App::PauseUs()).
+  virtual bool WorkWaiting() const noexcept { return false; }
 
  protected:
   Screen() = default;

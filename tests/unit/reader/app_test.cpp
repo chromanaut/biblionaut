@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <set>
@@ -15,6 +16,7 @@
 #include "memory_fakes.h"
 #include "power_fakes.h"
 #include "reader/book_check.h"
+#include "reader/drawing_viewer.h"
 #include "reader/layout_check.h"
 #include "reader/trace_ids.h"
 #include "storage_fakes.h"
@@ -221,6 +223,49 @@ TEST(App, ReportsAPanelThatCannotBeSetUpAndCarriesOn) {
   fixture.RunFor(5'100'000);
   EXPECT_NE(fixture.Metrics().find("panel_ok=0["), std::string::npos) << fixture.Metrics();
   EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kWrite), 0u);
+}
+
+TEST(App, PausesBeforeATurnOnlyWhenNoWorkIsWaiting) {
+  // With no screen but the test pattern there is never work waiting.
+  AppFixture plain;
+  plain.display.present = true;
+  plain.app.Start();
+  EXPECT_EQ(plain.app.PauseUs(), bn::reader::App::kTurnPauseUs);
+
+  // The drawing viewer, with drawings to draw: no pause while it draws,
+  // but for one at least every kLongestRunUs; and a pause each turn once
+  // they are drawn and shown.
+  AppFixture fixture;
+  fixture.display.present = true;
+  std::string body;
+  for (int i = 0; i < 400; ++i) {
+    body += "<circle cx='" + std::to_string(i % 40) + "' cy='" + std::to_string(i % 24) + "' r='3'/>";
+  }
+  const std::string drawing = "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='24'>" + body + "</svg>";
+  for (const char* name : {"/drawings/a.svg", "/drawings/b.svg"}) {
+    fixture.storage.Put(name, {drawing.begin(), drawing.end()});
+  }
+  fixture.app.ViewDrawings(bn::reader::DrawingViewer::kFolder, true);
+  fixture.app.Start();
+  std::vector<std::uint64_t> pauses;
+  std::uint64_t sinceAPause = 0;
+  std::uint64_t longestRun = 0;
+  for (int turn = 0; turn < 3000; ++turn) {
+    const std::uint64_t pause = fixture.app.PauseUs();
+    pauses.push_back(pause);
+    sinceAPause = pause == 0 ? sinceAPause + 1000 : 0;
+    longestRun = std::max(longestRun, sinceAPause);
+    // Each turn takes a millisecond, and the panel is done at once.
+    fixture.clock.now += pause + 1000;
+    fixture.display.busy = false;
+    fixture.app.Tick();
+  }
+  EXPECT_GT(std::count(pauses.begin(), pauses.end(), 0U), 10);
+  EXPECT_LE(longestRun, bn::reader::App::kLongestRunUs);
+  // At rest at the end: both shown, the tour over.
+  EXPECT_FALSE(fixture.app.WorkWaiting());
+  EXPECT_TRUE(std::all_of(pauses.end() - 50, pauses.end(),
+                          [](std::uint64_t pause) { return pause == bn::reader::App::kTurnPauseUs; }));
 }
 
 TEST(App, ShowsTheTestPatternAndLetsTheButtonsStepThroughIt) {

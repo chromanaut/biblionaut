@@ -116,7 +116,12 @@ Ended Run(const bn::reader::Services& services, const Checks& checks, bn::hw::Pa
     if (window != nullptr && !window->Pump()) {
       break;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // As the device: a pause before each turn, none while there is work
+    // waiting but for one now and then.
+    const std::uint64_t pauseUs = app.PauseUs();
+    if (pauseUs > 0) {
+      std::this_thread::sleep_for(std::chrono::microseconds(pauseUs));
+    }
   }
   app.Tick();
   app.Flush();

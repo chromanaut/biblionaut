@@ -353,7 +353,7 @@ TEST(DrawingViewer, SaysWhereEachDrawingsTimeWentOnceItIsShown) {
   // 24 rows in bands of 16 is two bands.
   EXPECT_EQ(timed[0].find("drawing 1 timed: 2 bands, 0 KB read in "), 0U) << timed[0];
   for (const std::string_view part : {" ms; rendering ", " ms, dithering ", " ms, writing ", " ms, waiting ",
-                                      " ms, between turns ", " ms, refreshing "}) {
+                                      " ms, other ", " ms, between turns ", " ms, refreshing "}) {
     EXPECT_NE(timed[0].find(part), std::string::npos) << part << " in " << timed[0];
   }
   // What was kept for the two bands, a chunk of 512 bytes each, written

@@ -274,7 +274,13 @@ void DrawingViewer::TickSome() noexcept {
         return;
       }
       static_cast<void>(renderer_->Finish());
-      const draw::SpoolStatus kept = spool_->Finish();
+      draw::SpoolStatus kept = spool_->Finish();
+      // What is gathered goes to the card before the band of grays is
+      // wanted for the bands.
+      if (kept == draw::SpoolStatus::kOk && !spoolStore_.Flush()) {
+        kept = draw::SpoolStatus::kStoreFailed;
+      }
+      spoolStore_.Gather({});
       spooling_ = kept == draw::SpoolStatus::kOk;
       if (spooling_) {
         phase_ = Phase::kReplaying;
@@ -446,6 +452,7 @@ void DrawingViewer::Begin(std::size_t index) noexcept {
   replayingUs_ = 0;
   turnsUs_ = 0;
   spoolStore_.writingUs = 0;
+  spoolStore_.writes = 0;
   spoolStore_.readingUs = 0;
   spoolStore_.bytesWritten = 0;
   spoolStore_.bytesRead = 0;
@@ -542,6 +549,12 @@ bool DrawingViewer::StartRecording() noexcept {
     spoolStore_.Close();
     return false;
   }
+  // The band of grays is not wanted either: what is kept is gathered there,
+  // to be written a few kilobytes at a time.
+  const std::size_t grays = std::max<std::size_t>(size.width, size.height) * kBandRows;
+  const std::size_t gather =
+      std::min(kMostGathered, (grays / draw::SpoolWriter::kChunkBytes) * draw::SpoolWriter::kChunkBytes);
+  spoolStore_.Gather({gray_.get(), gather});
   offset_ = 0;
   chunkAt_ = 0;
   chunkSize_ = 0;
@@ -601,20 +614,52 @@ void DrawingViewer::CardSpool::Close() noexcept {
     storage_.Close(file_);
     file_ = core::kNoFile;
   }
+  gather_ = {};
+  gathered_ = 0;
+}
+
+void DrawingViewer::CardSpool::Gather(std::span<std::uint8_t> buffer) noexcept {
+  gather_ = buffer;
+  gathered_ = 0;
+}
+
+bool DrawingViewer::CardSpool::Flush() noexcept {
+  if (gathered_ == 0) {
+    return true;
+  }
+  const std::span<const std::uint8_t> pending(gather_.data(), gathered_);
+  gathered_ = 0;
+  return Write(pending);
 }
 
 bool DrawingViewer::CardSpool::Append(std::span<const std::uint8_t> bytes) noexcept {
+  if (gather_.empty() || bytes.size() > gather_.size()) {
+    return Flush() && Write(bytes);
+  }
+  if (gathered_ + bytes.size() > gather_.size() && !Flush()) {
+    return false;
+  }
+  std::copy(bytes.begin(), bytes.end(), gather_.subspan(gathered_, bytes.size()).begin());
+  gathered_ += bytes.size();
+  bytesWritten += bytes.size();
+  return gathered_ < gather_.size() || Flush();
+}
+
+bool DrawingViewer::CardSpool::Write(std::span<const std::uint8_t> bytes) noexcept {
   const std::uint64_t started = clock_.NowUs();
   const bool written = file_ != core::kNoFile && storage_.WriteAt(file_, size_, bytes) == core::StorageStatus::kOk;
   writingUs += clock_.NowUs() - started;
   if (written) {
     size_ += static_cast<std::uint32_t>(bytes.size());
-    bytesWritten += bytes.size();
+    ++writes;
   }
   return written;
 }
 
 bool DrawingViewer::CardSpool::ReadAt(std::uint32_t offset, std::span<std::uint8_t> bytes) noexcept {
+  if (!Flush()) {
+    return false;
+  }
   const std::uint64_t started = clock_.NowUs();
   std::size_t read = 0;
   const bool ok = file_ != core::kNoFile && storage_.ReadAt(file_, offset, bytes, read) == core::StorageStatus::kOk &&
@@ -736,7 +781,8 @@ void DrawingViewer::SayTimes(std::uint64_t refreshUs) noexcept {
     spooled.Text("not spooled: ").Text(spoolFailure_);
   } else {
     spooled.Text("spool ").Number(spoolStore_.bytesWritten / 1024).Text(" KB written in ");
-    spooled.Number(spoolStore_.writingUs / 1000).Text(" ms, ").Number(spoolStore_.bytesRead / 1024);
+    spooled.Number(spoolStore_.writingUs / 1000).Text(" ms (").Count(spoolStore_.writes, " write", " writes");
+    spooled.Text("), ").Number(spoolStore_.bytesRead / 1024);
     spooled.Text(" KB read in ").Number(spoolStore_.readingUs / 1000).Text(" ms; replaying ");
     spooled.Number(replayingUs_ / 1000).Text(" ms");
   }

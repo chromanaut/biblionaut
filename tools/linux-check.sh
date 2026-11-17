@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Runs CI's Linux host job here, in Docker, with GCC 14: the debug build
-# with the address and undefined-behaviour sanitizers and its tests, then
-# the optimised build without sanitizers and the same tests.
+# Runs CI's two Linux host jobs here, in Docker, with GCC 14: the debug
+# build with the address and undefined-behaviour sanitizers and its tests,
+# then the optimised build without sanitizers and the same tests. As in CI,
+# the tests run one to a core.
 #
 # Worth running before pushing anything that touches memory or arithmetic.
 # GCC and the Linux C library catch things that the macOS build cannot, such
@@ -39,7 +40,8 @@ exec docker run --rm \
   --volume biblionaut-linux-build-release:/build-release \
   --workdir /src \
   "$image" \
-  bash -c 'cmake --preset host -B /build >/dev/null && cmake --build /build && ctest --test-dir /build --output-on-failure "$@" \
+  bash -c 'cmake --preset host -B /build >/dev/null && cmake --build /build \
+    && ctest --test-dir /build --output-on-failure --parallel "$(nproc)" "$@" \
     && cmake --preset host-release -B /build-release >/dev/null && cmake --build /build-release \
-    && ctest --test-dir /build-release --output-on-failure "$@"' \
+    && ctest --test-dir /build-release --output-on-failure --parallel "$(nproc)" "$@"' \
   linux-check "$@"

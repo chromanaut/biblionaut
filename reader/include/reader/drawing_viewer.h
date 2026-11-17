@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/block_file.h"
 #include "core/clock.h"
 #include "core/display.h"
 #include "core/input.h"
@@ -16,22 +17,27 @@
 #include "core/trace_stream.h"
 #include "draw/dither.h"
 #include "draw/fill.h"
+#include "draw/png.h"
+#include "draw/row_sink.h"
+#include "draw/scale.h"
 #include "draw/svg_render.h"
 #include "reader/screen.h"
 
 namespace bn::reader {
 
 // What the application shows in place of the test pattern when it is given
-// a folder of drawings (App::ViewDrawings()): the SVG files in it, one at a
-// time, drawn as the firmware draws a drawing in a book.
+// a folder of drawings (App::ViewDrawings()): the SVG and PNG files in it,
+// one at a time, drawn as the firmware draws a drawing in a book, and a
+// picture read, scaled and dithered as the firmware will show one.
 //
 //   at start         the first, by a full refresh
 //   Down or Right    the next, by a half refresh
 //   Up or Left       the one before, by a half refresh
 //   Confirm, Back    the same one again, by a half or a full refresh
 //
-// The files are those in the folder whose names end in `.svg`, in the
-// order of their names; going past the last comes round to the first.
+// The files are those in the folder whose names end in `.svg` or `.png`,
+// in the order of their names; going past the last comes round to the
+// first.
 //
 // A drawing is fitted to the page the way the device is held to be read
 // (core::Display::ReadingTurn()), as large as fits and in the middle of
@@ -42,17 +48,32 @@ namespace bn::reader {
 // plane, leaves both right. The panel is driven black and white, so it has
 // two levels; a panel driven in grays would have more.
 //
+// A picture is fitted to the page in the same way. Its rows come from the
+// file in the order the page is read, which is not the panel's when the
+// panel is turned: so it is set into the panel kPictureBandRows panel rows
+// at a time, the file read through once for each. Each time, its rows are
+// read (draw::PngReader), made the size it is shown at (draw::Scaler) and
+// made the panel's levels (draw::Ditherer), the same each time, and the
+// pixels that fall in the band are kept, a bit each, to be written to both
+// planes. A picture whose rows need more than kPictureRowBytes, an
+// interlaced one, and a file that is not a picture are not shown, and a
+// line says why.
+//
 // Nothing here waits. Tick() draws for about kSliceUs and returns, so the
 // buttons and the rest of the application go on around it, a drawing of
 // megabytes taking many turns of the loop. A press while one drawing is
 // being drawn begins the one it asks for. The panel's drive voltages are
 // switched off as each refresh ends: with both planes written each time,
 // nothing is gained by keeping them on. For each drawing, a line of log
-// text says what it was, what it took, and what the renderer left out.
+// text says what it was, what it took, and what the renderer left out; for
+// each picture, what it was, the size it was shown at, and how long the
+// reading, the scaling, the dithering and the writing took.
 //
 // The memory for the bands, for the renderer and for what a drawing
 // defines is taken from the heap at Start(): about 77 KB for the X4's
-// panel, most of it the filler's cells and the definitions.
+// panel, most of it the filler's cells and the definitions. What a picture
+// needs besides is taken the first time one is shown: about 78 KB, the
+// reader's window, its rows and the band of bits the most of it.
 class DrawingViewer final : public Screen {
  public:
   // Where on storage the drawings are looked for, by the firmware and the
@@ -68,6 +89,12 @@ class DrawingViewer final : public Screen {
 
   // Rows of the panel drawn at a time.
   static constexpr std::size_t kBandRows = 16;
+  // Rows of the panel a picture is set into at a time, a bit a pixel: the
+  // picture is read once for each such band.
+  static constexpr std::size_t kPictureBandRows = 160;
+  // The memory for a picture's rows as it is read (draw::PngReader::
+  // RowBytesFor()). A picture that needs more is not shown.
+  static constexpr std::size_t kPictureRowBytes = 16384;
   // About how long one Tick() draws for.
   static constexpr std::uint64_t kSliceUs = 20'000;
   // Bytes of a file read at a time, and kept for what a drawing defines.
@@ -111,12 +138,52 @@ class DrawingViewer final : public Screen {
     kIdle,        // A drawing is on the panel, or there is none.
     kSizing,      // Reading the file's first tag, for its size.
     kDrawing,     // Drawing a band.
+    kPicturing,   // Reading a picture through, for a band.
     kWriting,     // A band drawn, to be written once the panel is free.
     kRefreshing,  // The panel is showing what was drawn.
   };
 
+  // Where a picture's rows go: their pixels in this band of the panel,
+  // made the panel's levels.
+  class PictureRows final : public draw::RowSink {
+   public:
+    explicit PictureRows(DrawingViewer& viewer) noexcept : viewer_(viewer) {}
+    void Row(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept override { viewer_.TakeRow(y, gray); }
+
+   private:
+    DrawingViewer& viewer_;
+  };
+
+  // Between the reader and the scaler: times what the scaler does with
+  // each row it is given.
+  class Timed final : public draw::RowSink {
+   public:
+    explicit Timed(DrawingViewer& viewer) noexcept : viewer_(viewer) {}
+    void Row(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept override;
+
+   private:
+    DrawingViewer& viewer_;
+  };
+
   // Begins drawing `index`, from reading its size.
   void Begin(std::size_t index) noexcept;
+  // The same for a picture: reads its header, fits it to the page, and
+  // begins the first band. False if it cannot be shown.
+  bool BeginPicture(std::size_t index) noexcept;
+  bool PictureMemory() noexcept;
+  // Starts reading the picture through again, for the band at bandTop_.
+  bool StartPicturePass() noexcept;
+  // Reads on until the time left: true when the picture has been read
+  // through for this band, or reading it failed.
+  bool FeedPicture(std::uint64_t until) noexcept;
+  // A row of the picture at the size shown: made the panel's levels, and
+  // its pixels in the band kept.
+  void TakeRow(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept;
+  bool WritePictureBand() noexcept;
+  // Everything is in both planes: the refresh, and the line saying so.
+  void Refresh(std::uint64_t now) noexcept;
+  void SayPicture() noexcept;
+  void SayNotShown(std::string_view why) noexcept;
   // Gives the renderer the file for up to the time left: true when the
   // file is over, or reading it failed.
   bool Feed(std::uint64_t until) noexcept;
@@ -174,6 +241,38 @@ class DrawingViewer final : public Screen {
   std::unique_ptr<std::uint8_t[]> chunk_;
   draw::Filler filler_;
   draw::Ditherer ditherer_;
+
+  // A picture: what its header says, where it goes on the page, and which
+  // band of the panel it is being set into.
+  bool picture_ = false;
+  draw::PngHeader header_;
+  std::uint32_t shownWidth_ = 0;
+  std::uint32_t shownHeight_ = 0;
+  std::size_t pageWidth_ = 0;
+  std::size_t pageHeight_ = 0;
+  std::size_t left_ = 0;
+  std::size_t top_ = 0;
+  std::size_t passes_ = 0;
+  draw::PngStatus pictureStatus_ = draw::PngStatus::kOk;
+  // How long each stage took, over all the passes.
+  std::uint64_t readingUs_ = 0;
+  std::uint64_t scalingUs_ = 0;
+  std::uint64_t ditheringUs_ = 0;
+  std::uint64_t writingUs_ = 0;
+  std::uint64_t timedUs_ = 0;  // The scaler's share of the reader's last step.
+
+  // The memory a picture takes, the first time one is shown.
+  std::unique_ptr<std::uint8_t[]> fileBuffer_;
+  std::unique_ptr<std::uint8_t[]> window_;
+  std::unique_ptr<std::uint8_t[]> pngRows_;
+  std::unique_ptr<std::uint32_t[]> sums_;
+  std::unique_ptr<std::uint8_t[]> scaledRow_;
+  std::unique_ptr<std::uint8_t[]> bandBits_;
+  std::unique_ptr<core::BlockFile> pictureFile_;
+  std::unique_ptr<draw::PngReader> png_;
+  std::unique_ptr<draw::Scaler> scaler_;
+  PictureRows pictureRows_{*this};
+  Timed timed_{*this};
 };
 
 }  // namespace bn::reader

@@ -336,11 +336,12 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(e2e.LayoutCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The drawing viewer, run by the desktop application over a folder of
-  # drawings, against bn-svg's drawing of each, turned onto the panel.
+  # drawings and a picture, against bn-svg's drawing of each and bn-png's
+  # reading of the picture, turned onto the panel.
   add_test(
     NAME e2e.DrawingViewer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/drawing_viewer.py
-      $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-svg> $<TARGET_FILE:bn-trace>
+      $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-svg> $<TARGET_FILE:bn-png> $<TARGET_FILE:bn-trace>
       ${CMAKE_CURRENT_BINARY_DIR}/drawing_viewer)
   set_tests_properties(e2e.DrawingViewer PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 

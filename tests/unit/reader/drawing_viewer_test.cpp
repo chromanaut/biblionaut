@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -9,6 +11,7 @@
 #include <vector>
 
 #include "display_fakes.h"
+#include "png_builder.h"
 #include "storage_fakes.h"
 #include "stream_fakes.h"
 #include "trace_fakes.h"
@@ -339,6 +342,197 @@ TEST(DrawingViewer, FailsWithNoPanel) {
   fixture.Start();
   EXPECT_EQ(fixture.viewer->CurrentState(), State::kFailed);
   EXPECT_TRUE(fixture.viewer->Resting());
+}
+
+// ---- Pictures ----
+
+// A PNG of gray, `width` by `height`, each pixel what `gray` says of it.
+template <typename Gray>
+std::vector<std::uint8_t> GrayPng(std::uint32_t width, std::uint32_t height, Gray gray, std::uint8_t interlace = 0) {
+  bn::test::PngPicture picture;
+  picture.width = width;
+  picture.height = height;
+  picture.depth = 8;
+  picture.colour = 0;
+  for (std::uint32_t y = 0; y < height; ++y) {
+    for (std::uint32_t x = 0; x < width; ++x) {
+      picture.rows.push_back(static_cast<std::uint8_t>(gray(x, y)));
+    }
+  }
+  const std::array<std::uint8_t, 1> none = {0};
+  std::vector<std::uint8_t> file = bn::test::PngFor(picture, none);
+  if (interlace != 0) {
+    // The header's last byte, and its checksum made right again.
+    bn::test::PngFile again;
+    again.Header(width, height, 8, 0, interlace);
+    std::copy(again.Bytes().begin() + 8, again.Bytes().end(), file.begin() + 8);
+  }
+  return file;
+}
+
+TEST(DrawingViewer, ShowsAPictureFittedToThePageInTheMiddle) {
+  // Black, twice as wide as high: the page's width, and half its height
+  // and a bit, in the middle down it.
+  Fixture fixture;
+  fixture.storage.Put("/drawings/p.png", GrayPng(20, 10, [](auto, auto) { return 0; }));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U) << (fixture.Lines().empty() ? "" : fixture.Lines().back());
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 0; x < 40; ++x) {
+      EXPECT_EQ(fixture.Black(x, y), y >= 2 && y < 22) << x << "," << y;
+    }
+  }
+  ASSERT_EQ(fixture.Refreshes(), std::vector<bn::core::RefreshMode>{bn::core::RefreshMode::kFull});
+}
+
+TEST(DrawingViewer, TurnsAPictureTheWayThePanelIsTurnedToBeRead) {
+  // Turned a quarter clockwise to be read, the page's top is the panel's
+  // left: a picture black above and white below is black on the left.
+  Fixture fixture;
+  fixture.display.turn = bn::core::PanelTurn::kClockwise;
+  fixture.storage.Put("/drawings/p.png", GrayPng(24, 40, [](auto, std::uint32_t y) { return y < 20 ? 0 : 255; }));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 0; x < 40; ++x) {
+      EXPECT_EQ(fixture.Black(x, y), x < 20) << x << "," << y;
+    }
+  }
+}
+
+TEST(DrawingViewer, ReadsAPictureOnceForEachBandOfThePanel) {
+  // A panel of 400 rows takes three bands of 160 rows at the most, and so
+  // three readings of the picture. Black down to the middle of the second
+  // band, white below: each band has its part.
+  Fixture fixture;
+  fixture.display.Resize({.width = 40, .height = 400});
+  fixture.storage.Put("/drawings/p.png", GrayPng(4, 40, [](auto, std::uint32_t y) { return y < 20 ? 0 : 255; }));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  ASSERT_FALSE(fixture.Lines().empty());
+  EXPECT_NE(fixture.Lines().back().find(", 3 passes: "), std::string::npos) << fixture.Lines().back();
+  for (std::size_t y = 0; y < 400; ++y) {
+    // Away from the edge, where black and white are blended and dithered.
+    if (y < 180 || y >= 220) {
+      for (std::size_t x = 0; x < 40; ++x) {
+        ASSERT_EQ(fixture.Black(x, y), y < 200) << x << "," << y;
+      }
+    }
+  }
+  // Each band to both planes: 0, 160 and 320.
+  std::vector<std::uint16_t> tops;
+  for (const FakeDisplay::Call& call : fixture.display.calls) {
+    if (call.op == Op::kWrite && call.plane == bn::core::DisplayPlane::kNew) {
+      tops.push_back(call.firstRow);
+    }
+  }
+  EXPECT_EQ(tops, (std::vector<std::uint16_t>{0, 160, 320}));
+}
+
+TEST(DrawingViewer, AGrayPictureComesOutAsDotsAsDarkOnTheWhole) {
+  Fixture fixture;
+  fixture.storage.Put("/drawings/p.png", GrayPng(40, 24, [](auto, auto) { return 128; }));
+  fixture.Start();
+  fixture.Settle();
+  const std::size_t black = fixture.BlackCount();
+  EXPECT_GT(black, 40U * 24U * 2 / 5);
+  EXPECT_LT(black, 40U * 24U * 3 / 5);
+}
+
+TEST(DrawingViewer, SaysWhatEachPictureCameToAndWhatItTook) {
+  Fixture fixture;
+  fixture.storage.Put("/drawings/p.png", GrayPng(20, 10, [](auto, auto) { return 0; }));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_FALSE(fixture.Lines().empty());
+  const std::string line = fixture.Lines().back();
+  EXPECT_EQ(line.rfind("picture 1 of 1: p.png, ok, 20x10 gray shown 40x20, 1 pass: reading ", 0), 0U) << line;
+  for (const char* part : {" ms, scaling ", " ms, dithering ", " ms, writing "}) {
+    EXPECT_NE(line.find(part), std::string::npos) << part << " in " << line;
+  }
+  EXPECT_EQ(line.substr(line.size() - 3), " ms") << line;
+}
+
+TEST(DrawingViewer, ShowsPicturesAndDrawingsTogetherInTheOrderOfTheirNames) {
+  Fixture fixture;
+  fixture.storage.Put("/drawings/a.png", GrayPng(40, 24, [](auto, auto) { return 0; }));
+  fixture.Put("b.svg", Svg(40, 24, ""));
+  fixture.Start();
+  EXPECT_EQ(fixture.viewer->Drawings(), 2U);
+  fixture.Settle();
+  EXPECT_EQ(fixture.BlackCount(), 40U * 24U);
+  ASSERT_FALSE(fixture.Lines().empty());
+  EXPECT_EQ(fixture.Lines().back().rfind("picture 1 of 2: a.png, ok", 0), 0U) << fixture.Lines().back();
+  fixture.Press(bn::core::Button::kDown);
+  fixture.Settle();
+  EXPECT_EQ(fixture.BlackCount(), 0U);
+  EXPECT_EQ(fixture.Lines().back().rfind("drawing 2 of 2: b.svg, ok", 0), 0U) << fixture.Lines().back();
+  fixture.Press(bn::core::Button::kDown);
+  fixture.Settle();
+  EXPECT_EQ(fixture.BlackCount(), 40U * 24U);
+}
+
+TEST(DrawingViewer, SaysWhyAPictureIsNotShownAndLeavesThePanelAlone) {
+  const auto notShown = [](const std::vector<std::uint8_t>& file) {
+    Fixture fixture;
+    fixture.storage.Put("/drawings/p.png", file);
+    fixture.Start();
+    fixture.Settle();
+    EXPECT_EQ(fixture.viewer->Shown(), 0U);
+    EXPECT_TRUE(fixture.Refreshes().empty());
+    return fixture.Lines().empty() ? std::string() : fixture.Lines().back();
+  };
+  const std::string text = "Not a picture.";
+  EXPECT_EQ(notShown({text.begin(), text.end()}), "picture 1 of 1: p.png, not shown: not png");
+  EXPECT_EQ(notShown(GrayPng(4, 4, [](auto, auto) { return 0; }, 1)), "picture 1 of 1: p.png, not shown: interlaced");
+  // Wider than the memory for its rows allows.
+  EXPECT_EQ(notShown(GrayPng(9000, 1, [](auto, auto) { return 0; })),
+            "picture 1 of 1: p.png, not shown: its rows need 18002 bytes");
+}
+
+TEST(DrawingViewer, APressWhileAPictureIsBeingReadGivesItUpForTheOneAskedFor) {
+  Fixture fixture;
+  fixture.clock.step = 1000;  // So that a turn reads little.
+  fixture.storage.Put("/drawings/a.png", GrayPng(400, 400, [](std::uint32_t x, std::uint32_t y) {
+                        return static_cast<std::uint8_t>((x * 7) ^ (y * 13));
+                      }));
+  fixture.Put("b.svg", Svg(40, 24, "<rect width='40' height='24'/>"));
+  fixture.Start();
+  for (int turn = 0; turn < 3; ++turn) {
+    fixture.viewer->Tick();
+  }
+  ASSERT_EQ(fixture.viewer->Shown(), 0U);
+  fixture.Press(bn::core::Button::kDown);
+  fixture.Settle();
+  EXPECT_EQ(fixture.viewer->Current(), 1U);
+  EXPECT_EQ(fixture.viewer->Shown(), 1U);
+  EXPECT_EQ(fixture.BlackCount(), 40U * 24U);
+}
+
+TEST(DrawingViewer, ATurnReadsAPictureForAboutItsSliceAndNoMore) {
+  Fixture fixture;
+  fixture.clock.step = 500;
+  fixture.storage.Put("/drawings/a.png", GrayPng(600, 600, [](std::uint32_t x, std::uint32_t y) {
+                        return static_cast<std::uint8_t>((x * 3) + (y * 5));
+                      }));
+  fixture.Start();
+  int turns = 0;
+  std::uint64_t longest = 0;
+  while (fixture.viewer->Shown() == 0 && turns < 100000) {
+    fixture.display.busy = false;
+    const std::uint64_t before = fixture.clock.now;
+    fixture.viewer->Tick();
+    longest = std::max(longest, fixture.clock.now - before);
+    ++turns;
+  }
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  EXPECT_GT(turns, 5) << "a picture this large takes several turns";
+  // A turn goes on past its slice by one step of the reader at the most:
+  // a few hundred readings of the clock here.
+  EXPECT_LT(longest, DrawingViewer::kSliceUs + 400'000) << longest;
 }
 
 }  // namespace

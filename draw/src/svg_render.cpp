@@ -2042,6 +2042,9 @@ bool SvgRenderer::OpenRoot() noexcept {
     pending_.viewWidth = naturalWidth;
     pending_.viewHeight = naturalHeight;
   }
+  if (placed) {
+    pending_.matrix = Multiply(place_, pending_.matrix, clamped);
+  }
   if (clamped) {
     Note(SvgLeftOut::kHeldNumber);
   }
@@ -2050,9 +2053,12 @@ bool SvgRenderer::OpenRoot() noexcept {
 
 void SvgRenderer::BoxIn(const SvgBox& space) noexcept {
   const Level& parent = Parent();
-  // A box that has been turned or slanted is no box of pixels. What is in
-  // it is then drawn whole, and that is reported.
-  if (parent.matrix.b != 0 || parent.matrix.c != 0) {
+  // A box that has been turned or slanted is no box of pixels, but for a
+  // quarter turn. What is in one that is not is then drawn whole, and that
+  // is reported.
+  const bool square = parent.matrix.b == 0 && parent.matrix.c == 0;
+  const bool quarter = parent.matrix.a == 0 && parent.matrix.d == 0;
+  if (!square && !quarter) {
     Note(SvgLeftOut::kViewportClip);
     return;
   }

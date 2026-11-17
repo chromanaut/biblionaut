@@ -1120,8 +1120,8 @@ def svg_seeds() -> None:
     clear("svg")
 
     def seed(name: str, file: bytes, piece: int = 0, rows: int = 0, size: int = 0, tolerance: int = 0,
-             room: int = 0) -> None:
-        write("svg", name, bytes([piece | (rows << 3) | (size << 6), tolerance | (room << 2)]) + file)
+             room: int = 0, turn: int = 0) -> None:
+        write("svg", name, bytes([piece | (rows << 3) | (size << 6), tolerance | (room << 2) | (turn << 5)]) + file)
 
     def drawing(body: bytes, attributes: bytes = b"width='40' height='24'") -> bytes:
         return b"<svg xmlns='http://www.w3.org/2000/svg' " + attributes + b">" + body + b"</svg>"
@@ -1302,6 +1302,13 @@ def svg_seeds() -> None:
          drawing(b"<linearGradient id='g' gradientUnits='userSpaceOnUse' x2='30'><stop/><stop offset='1' stop-color='#ccc'/>"
                  b"</linearGradient><svg x='6.5' y='3.25' width='20' height='10'>"
                  b"<rect x='-9' y='-9' width='99' height='99' fill=\"url( '#g' )\"/></svg>"), piece=3, rows=2)
+    # Turned into the strips' rows, as a page is onto a panel that is turned in its device: each of the turns.
+    seed("a-drawing-turned-a-quarter-clockwise", DRAWING, piece=3, rows=2, turn=1)
+    seed("things-defined-and-used-turned-a-quarter-anticlockwise", DEFINED, piece=4, rows=3, size=1, turn=2)
+    seed("an-svg-that-cuts-off-what-is-in-it-turned-a-half",
+         drawing(b"<svg x='4.5' y='3.25' width='20' height='10'><circle cx='10' cy='5' r='11' fill='#444'/></svg>"
+                 b"<linearGradient id='g' x2='0' y2='1'><stop/><stop offset='1' stop-color='#ccc'/></linearGradient>"
+                 b"<rect x='22' y='2' width='15' height='20' fill='url(#g)'/>"), piece=2, rows=1, turn=3)
     seed("brackets-in-style-deeper-than-are-counted",
          drawing(b"<rect width='9' height='9' style='-x:" + b"(" * 256 + b";fill:#fff" + b")" * 256 + b";fill-opacity:0.5'/>"),
          piece=4)

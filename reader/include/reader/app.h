@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 #include "core/byte_sink.h"
 #include "core/clock.h"
@@ -22,7 +23,9 @@
 namespace bn::reader {
 
 class BookCheck;
+class DrawingViewer;
 class LayoutCheck;
+class Screen;
 
 // Everything the application needs from the device, as interfaces. Tests
 // pass fakes; the real set comes from DefaultServices().
@@ -123,6 +126,15 @@ class App {
   // The check, if CheckLayout() was called; null otherwise.
   const LayoutCheck* LayoutChecker() const noexcept { return layoutCheck_; }
 
+  // Shows the drawings in `folder` on storage, one at a time, in place of
+  // the test pattern (reader/drawing_viewer.h). Storage is then got ready
+  // before the panel is, and the first drawing comes up once it is. Call
+  // before Start(). Not together with the checks, which would take the
+  // card's time while drawings are being read from it.
+  void ViewDrawings(std::string_view folder) noexcept;
+  // The viewer, if ViewDrawings() was called; null otherwise.
+  const DrawingViewer* DrawingsViewer() const noexcept { return drawingViewer_; }
+
  private:
   void SampleMemory() noexcept;
   void SendCrashReport() noexcept;
@@ -146,6 +158,10 @@ class App {
   // check's code only through DeviceCheck, so that a build which asks for
   // none has none in it.
   std::array<DeviceCheck*, 3> checks_{};
+  // In place of the test pattern, if asked for: the drawing viewer, kept
+  // twice for the same reason as the checks, and 74 KB of its own memory.
+  DrawingViewer* drawingViewer_ = nullptr;
+  Screen* screen_ = nullptr;
   bool storageReady_ = false;
   std::uint64_t startedAtUs_ = 0;
   std::uint64_t nextHeartbeatUs_ = 0;

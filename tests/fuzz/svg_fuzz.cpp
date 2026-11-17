@@ -11,6 +11,9 @@
 //   byte 1   bits 0 to 1: how far a line may stand from its curve
 //            bits 2 to 4: how much memory there is for what the file
 //                         defines
+//            bits 5 to 6: how the picture is turned into the strips'
+//                         rows (SvgRenderer::PlaceOn()): not at all, a
+//                         quarter either way, or a half
 //   the rest a file, or what passes for one
 //
 // The file is gone through three times: once with nothing to draw into,
@@ -264,13 +267,36 @@ struct Drawing {
   Reading reading;  // The first strip's.
 };
 
-Drawing Draw(std::string_view file, PictureSize size, std::size_t stripRows, std::size_t piece, Fixed tolerance,
-             std::size_t roomSize) {
+// What the picture, `page` across and down, is put through to go into the
+// strips' rows, for each of the four turns; and how large it is there.
+bn::draw::Matrix Turned(unsigned turn, PictureSize page) {
+  constexpr bn::draw::Coefficient kOne = bn::draw::kCoefficientOne;
+  const auto across = static_cast<Fixed>(page.width * kFixedOne);
+  const auto down = static_cast<Fixed>(page.height * kFixedOne);
+  switch (turn) {
+    case 1:
+      return {.a = 0, .b = -kOne, .c = kOne, .d = 0, .e = 0, .f = across};
+    case 2:
+      return {.a = 0, .b = kOne, .c = -kOne, .d = 0, .e = down, .f = 0};
+    case 3:
+      return {.a = -kOne, .b = 0, .c = 0, .d = -kOne, .e = across, .f = down};
+    default:
+      return {};
+  }
+}
+PictureSize TurnedSize(unsigned turn, PictureSize page) {
+  return turn == 1 || turn == 2 ? PictureSize{.width = page.height, .height = page.width} : page;
+}
+
+Drawing Draw(std::string_view file, PictureSize page, unsigned turn, std::size_t stripRows, std::size_t piece,
+             Fixed tolerance, std::size_t roomSize) {
+  const PictureSize size = TurnedSize(turn, page);
   Drawing drawing;
   drawing.picture.assign(size.width * size.height, 255);
   Room room(roomSize);
   SvgRenderer renderer;
   renderer.KeepDefinitionsIn(room.Block());
+  renderer.PlaceOn(Turned(turn, page));
   Work work;
   for (std::size_t top = 0; top < size.height; top += stripRows) {
     const std::size_t rows = std::min(stripRows, size.height - top);
@@ -285,7 +311,7 @@ Drawing Draw(std::string_view file, PictureSize size, std::size_t stripRows, std
     BN_FUZZ_CHECK(filler.Begin(gray, size.width, static_cast<std::int32_t>(top), cells),
                   "a strip of the picture was refused");
 
-    const Reading reading = Read(renderer, &filler, file, piece, size, tolerance, room, work);
+    const Reading reading = Read(renderer, &filler, file, piece, page, tolerance, room, work);
     BN_FUZZ_CHECK(std::all_of(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(size.width * rows),
                               [](std::int16_t cell) { return cell == 0; }),
                   "a drawing left something in the filler's cells");
@@ -322,18 +348,21 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::size_t stripRows = chosenRows == 0 ? picture.height : std::min(chosenRows, picture.height);
   const Fixed tolerance = kTolerances[second & 3U];
   const std::size_t roomSize = kRooms[(second >> 2U) & 7U];
+  const unsigned turn = (second >> 5U) & 3U;
 
   // With nothing to draw into.
   Room room(roomSize);
   SvgRenderer renderer;
   renderer.KeepDefinitionsIn(room.Block());
+  renderer.PlaceOn(Turned(turn, picture));
   Work nothing;
   const Reading read = Read(renderer, nullptr, file, piece, picture, tolerance, room, nothing);
   BN_FUZZ_CHECK(read.report.shapes == 0 && read.report.commands == 0 && read.report.lines == 0,
                 "a reading with nothing to draw into drew something");
 
-  const Drawing whole = Draw(file, picture, picture.height, SIZE_MAX, tolerance, roomSize);
-  const Drawing cut = Draw(file, picture, stripRows, piece, tolerance, roomSize);
+  const std::size_t turnedRows = TurnedSize(turn, picture).height;
+  const Drawing whole = Draw(file, picture, turn, turnedRows, SIZE_MAX, tolerance, roomSize);
+  const Drawing cut = Draw(file, picture, turn, std::min(stripRows, turnedRows), piece, tolerance, roomSize);
   if (read.leftOff || whole.reading.leftOff || cut.reading.leftOff) {
     return 0;
   }

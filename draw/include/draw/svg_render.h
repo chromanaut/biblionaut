@@ -54,7 +54,8 @@ enum class SvgLeftOut : std::uint32_t {
   kBadPath = 1U << 16U,         // Path data that went wrong: drawn as far as it was right.
   kHeldNumber = 1U << 17U,      // A number too large, held at the largest that fits.
   kGroupOpacity = 1U << 18U,    // `opacity` on a group: given to each shape in it, which differs where they overlap.
-  kViewportClip = 1U << 19U,    // An `svg` inside another, turned or slanted: drawn, and not cut off at its edges.
+  kViewportClip = 1U << 19U,    // An `svg` inside another, turned (but not by quarters) or slanted: drawn, and not
+                                // cut off at its edges.
   kSwitch = 1U << 20U,          // `switch`: everything in it is drawn, not the first that suits.
   kUnknownEntity = 1U << 21U,   // An entity the file declares for itself: taken as nothing.
   kNoRoom = 1U << 22U,          // More in `defs` than there was room to keep: a `use` of the rest is not drawn.
@@ -122,8 +123,8 @@ struct SvgSize {
 //   cut off at its edges unless its `overflow` is "visible" or "auto". A
 //   pixel an edge passes through keeps the share of it that is inside.
 //   The edges have to be edges of rows and columns of pixels for that: an
-//   `svg` that something has turned or slanted is drawn whole, and
-//   reported.
+//   `svg` that something has turned, other than by quarters, or slanted is
+//   drawn whole, and reported.
 // - `use` draws something again that `defs` holds: see below.
 // - `path`, `rect` (with rounded corners), `circle`, `ellipse`, `polygon`
 //   and `polyline` are shapes, filled by `fill`, `fill-rule`,
@@ -267,6 +268,14 @@ class SvgRenderer {
     records_ = 0;
     rules_ = 0;
   }
+
+  // Where the picture goes among the strip's pixels: the drawing, fitted
+  // to `width` by `height` (Begin()), is then put through `matrix`. A
+  // picture turned to go into a panel's rows, or moved to the middle of a
+  // page, is drawn so. An `svg` inside another is cut off at its edges if
+  // they still run along rows and columns of pixels, as they do after a
+  // quarter turn. Kept from one pass to the next; nothing, until given.
+  void PlaceOn(const Matrix& matrix) noexcept { place_ = matrix; }
 
   // Begins a pass over a file. The whole drawing is `width` by `height`
   // pixels, and the part of it in `filler`'s strip is drawn there, over
@@ -553,6 +562,7 @@ class SvgRenderer {
   Fixed width_ = 0;
   Fixed height_ = 0;
   Fixed tolerance_ = kDefaultTolerance;
+  Matrix place_;  // Where the fitted picture goes (PlaceOn()).
   SvgStatus status_ = SvgStatus::kOk;
   SvgReport report_;
   SvgSize size_;

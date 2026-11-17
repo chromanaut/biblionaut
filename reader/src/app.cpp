@@ -6,6 +6,7 @@
 #include "hw/platform.h"
 #include "hyphenation/american_english.h"
 #include "reader/book_check.h"
+#include "reader/drawing_viewer.h"
 #include "reader/layout_check.h"
 #include "reader/trace_ids.h"
 
@@ -68,6 +69,7 @@ App::~App() {
   for (const DeviceCheck* check : checks_) {
     delete check;
   }
+  delete screen_;
   if (core::ActiveTracer() == &tracer_) {
     core::SetActiveTracer(nullptr);
   }
@@ -96,6 +98,14 @@ void App::CheckLayout() noexcept {
   }
 }
 
+void App::ViewDrawings(std::string_view folder) noexcept {
+  if (screen_ == nullptr) {
+    drawingViewer_ =
+        new (std::nothrow) DrawingViewer(services_.display, services_.clock, services_.storage, stream_, folder);
+    screen_ = drawingViewer_;
+  }
+}
+
 void App::StartStorage() noexcept {
   const std::uint32_t began = BN_TRACE_NOW();
   const core::StorageStatus status = services_.storage.Start();
@@ -120,6 +130,12 @@ void App::Start() noexcept {
     SendCrashReport();
   }
   inputOk.Set(services_.input.Start() ? 1 : 0);
+  if (screen_ != nullptr) {
+    // What it shows comes from storage, which has to be ready first.
+    StartStorage();
+    screen_->Start();
+    return;
+  }
   viewer_.Start();
   // After the panel has been given its first picture, which it takes
   // seconds over: finding the card then delays nothing anyone can see.
@@ -156,11 +172,22 @@ void App::Tick() noexcept {
     if (event.kind == core::InputEventKind::kPress && event.button == core::Button::kPower) {
       OnPower(event.timeUs);
     }
-    viewer_.OnInput(event);
+    if (screen_ != nullptr) {
+      screen_->OnInput(event);
+    } else {
+      viewer_.OnInput(event);
+    }
   }
-  viewer_.Tick();
-  if (sleepAsked_ && (viewer_.CurrentState() == PatternViewer::State::kAsleep ||
-                      viewer_.CurrentState() == PatternViewer::State::kFailed)) {
+  bool resting = false;
+  if (screen_ != nullptr) {
+    screen_->Tick();
+    resting = screen_->Resting();
+  } else {
+    viewer_.Tick();
+    resting = viewer_.CurrentState() == PatternViewer::State::kAsleep ||
+              viewer_.CurrentState() == PatternViewer::State::kFailed;
+  }
+  if (sleepAsked_ && resting) {
     // The panel is at rest and asleep, or there is nothing more to be done
     // with it.
     GoToSleep();
@@ -203,7 +230,11 @@ void App::OnPower(std::uint64_t pressedAtUs) noexcept {
   if (!sleepAsked_ && services_.power.CanSleep()) {
     sleepAsked_ = true;
     sleepPressedAtUs_ = pressedAtUs;
-    viewer_.Sleep();
+    if (screen_ != nullptr) {
+      screen_->Sleep();
+    } else {
+      viewer_.Sleep();
+    }
   }
 }
 

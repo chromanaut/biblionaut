@@ -1,0 +1,2 @@
+
+`<svg xmlns='http://www.w3.org/2000/svg' width='40' height='24'><svg x='4.5' y='3.25' width='20' height='10'><circle cx='10' cy='5' r='11' fill='#444'/></svg><linearGradient id='g' x2='0' y2='1'><stop/><stop offset='1' stop-color='#ccc'/></linearGradient><rect x='22' y='2' width='15' height='20' fill='url(#g)'/></svg>

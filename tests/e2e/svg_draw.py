@@ -626,12 +626,12 @@ class Picture:
                 # What a percentage inside it is of.
                 state["view"] = (float(element["box"][2]), float(element["box"][3])) if "box" in element else (place[2], place[3])
                 if element.get("overflow") in ("visible", "auto"):
-                    if matrix[1] == 0.0 and matrix[2] == 0.0:
+                    if (matrix[1] == 0.0 and matrix[2] == 0.0) or (matrix[0] == 0.0 and matrix[3] == 0.0):
                         one = moved((place[0], place[1]), matrix)
                         other = moved((place[0] + place[2], place[1] + place[3]), matrix)
                         beyond = (min(one[0], other[0]), min(one[1], other[1]), max(one[0], other[0]), max(one[1], other[1]))
                 else:
-                    if matrix[1] == 0.0 and matrix[2] == 0.0:
+                    if (matrix[1] == 0.0 and matrix[2] == 0.0) or (matrix[0] == 0.0 and matrix[3] == 0.0):
                         # Its edges are edges of pixels' rows and columns: what is in it is cut off there,
                         # and at the edges of whatever it is in.
                         one = moved((place[0], place[1]), matrix)

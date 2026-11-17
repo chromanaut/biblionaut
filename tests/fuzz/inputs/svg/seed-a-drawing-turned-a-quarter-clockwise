@@ -1,0 +1,21 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+<!-- A drawing with something of everything the renderer draws. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 48" width="160" height="96">
+  <title>Shapes</title>
+  <rect width="100%" height="100%" fill="#eee"/>
+  <g transform="translate(4 4)" fill="#444">
+    <rect x="0" y="0" width="24" height="16" rx="3"/>
+    <circle cx="40" cy="8" r="8" fill="black"/>
+    <ellipse cx="60" cy="8" rx="10" ry="5" style="fill: rgb(50%, 50%, 50%); fill-opacity: .5"/>
+    <g transform="rotate(15 16 30)">
+      <polygon points="4,24 28,24 28,44 16,36 4,44" fill="#888" fill-rule="evenodd"/>
+      <polyline points="8 28 24 28 16 34" fill="white"/>
+    </g>
+  </g>
+  <path fill-rule="evenodd" d="M44 28h28v16h-28z M50 32v8h16v-8z" opacity="0.8"/>
+  <path d="M46 30c2-4 5 4 8 0s4 5 1 6z" transform="translate(1)" fill="#222"/>
+  <svg x="48" y="33" width="20" height="6" viewBox="0 0 100 100" preserveAspectRatio="none">
+    <circle cx="50" cy="50" r="50" fill="&#35;222"/>
+  </svg>
+  <g display="none"><rect width="80" height="48"/></g>
+</svg>

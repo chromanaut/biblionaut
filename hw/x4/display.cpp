@@ -113,6 +113,9 @@ void SleepAtLeastMs(std::uint32_t milliseconds) noexcept { vTaskDelay((milliseco
 class X4Display final : public core::Display {
  public:
   core::DisplaySize Size() const noexcept override { return kSize; }
+  // The panel's rows run across the device turned a quarter-turn
+  // anticlockwise from the way a book is read on it.
+  core::PanelTurn ReadingTurn() const noexcept override { return core::PanelTurn::kClockwise; }
 
   [[nodiscard]] bool Start() noexcept override {
     const std::uint32_t began = BN_TRACE_NOW();

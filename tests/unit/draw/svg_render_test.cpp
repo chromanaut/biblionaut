@@ -26,9 +26,11 @@
 
 namespace {
 
+using bn::draw::Coefficient;
 using bn::draw::Filler;
 using bn::draw::FillRule;
 using bn::draw::Fixed;
+using bn::draw::kCoefficientOne;
 using bn::draw::kFixedOne;
 using bn::draw::Matrix;
 using bn::draw::PathFlattener;
@@ -1478,6 +1480,101 @@ TEST(SvgRender, AnEdgeThatGoesThroughAPixelLeavesItTheShareThatIsInside) {
   EXPECT_NEAR(half.Covered(), all.Covered() / 2, 0.2);
   EXPECT_EQ(half.At(19, 10), kBlack);
   EXPECT_EQ(half.At(20, 10), kWhite);
+}
+
+// ---- Placed in another picture ----
+
+// `file` drawn `width` by `height` and put by `place` into a picture of
+// `across` by `down`, in strips of `stripRows`.
+Drawing DrawPlaced(std::string_view file, std::size_t width, std::size_t height, const Matrix& place,
+                   std::size_t across, std::size_t down, std::size_t stripRows) {
+  Drawing drawing;
+  drawing.width = across;
+  drawing.height = down;
+  drawing.gray.assign(across * down, kWhite);
+  std::vector<std::int16_t> cells(Filler::CellsFor(across, stripRows));
+  std::vector<std::uint8_t> kept(8192);
+  SvgRenderer renderer;
+  renderer.KeepDefinitionsIn(kept);
+  renderer.PlaceOn(place);
+  for (std::size_t top = 0; top < down; top += stripRows) {
+    const std::size_t rows = std::min(stripRows, down - top);
+    Filler filler;
+    EXPECT_TRUE(filler.Begin(std::span(drawing.gray).subspan(top * across, rows * across), across,
+                             static_cast<std::int32_t>(top), cells));
+    renderer.Begin(&filler, Pixels(width), Pixels(height));
+    for (std::string_view bytes = file; !bytes.empty();) {
+      bytes.remove_prefix(renderer.Step(bytes));
+    }
+    drawing.status = renderer.Finish();
+    drawing.report = renderer.Report();
+  }
+  return drawing;
+}
+
+TEST(SvgRender, APictureTurnedByQuartersIsThePictureTurned) {
+  // Shapes, a curve, a gradient over a box, and an svg that cuts off what
+  // is in it: 20 by 30, and turned into 30 by 20 (or 20 by 30 again).
+  const std::string file =
+      Svg(20, 30,
+          std::string("<linearGradient id='g' x2='0' y2='1'><stop/>"
+                      "<stop offset='1' stop-color='#fff'/></linearGradient>") +
+              "<rect x='2' y='3' width='9' height='14' fill='url(#g)'/>"
+              "<path d='M12 4c6 0 6 9 0 9z' fill='#555'/>"
+              "<svg x='3' y='19' width='12' height='7'><circle cx='6' cy='3.5' r='6' fill='#888'/></svg>");
+  const Drawing upright = Draw(file, 20, 30);
+  EXPECT_EQ(upright.report.leftOut, 0u);
+  constexpr Coefficient kOne = kCoefficientOne;
+  struct Turn {
+    Matrix place;
+    std::size_t across = 0;
+    std::size_t down = 0;
+    // Where the pixel at (x, y) of the upright picture goes.
+    std::size_t (*x)(std::size_t, std::size_t) = nullptr;
+    std::size_t (*y)(std::size_t, std::size_t) = nullptr;
+  };
+  const Turn turns[] = {
+      {.place = {.a = 0, .b = -kOne, .c = kOne, .d = 0, .e = 0, .f = Pixels(20)},
+       .across = 30,
+       .down = 20,
+       .x = [](std::size_t, std::size_t y) { return y; },
+       .y = [](std::size_t x, std::size_t) { return 19 - x; }},
+      {.place = {.a = 0, .b = kOne, .c = -kOne, .d = 0, .e = Pixels(30), .f = 0},
+       .across = 30,
+       .down = 20,
+       .x = [](std::size_t, std::size_t y) { return 29 - y; },
+       .y = [](std::size_t x, std::size_t) { return x; }},
+      {.place = {.a = -kOne, .b = 0, .c = 0, .d = -kOne, .e = Pixels(20), .f = Pixels(30)},
+       .across = 20,
+       .down = 30,
+       .x = [](std::size_t x, std::size_t) { return 19 - x; },
+       .y = [](std::size_t, std::size_t y) { return 29 - y; }},
+  };
+  for (const Turn& turn : turns) {
+    for (const std::size_t rows : {std::size_t{1}, std::size_t{7}, turn.down}) {
+      const Drawing turned = DrawPlaced(file, 20, 30, turn.place, turn.across, turn.down, rows);
+      // What is cut off at the edges of the svg inside still is.
+      EXPECT_EQ(turned.report.leftOut, 0u);
+      int worst = 0;
+      for (std::size_t y = 0; y < 30; ++y) {
+        for (std::size_t x = 0; x < 20; ++x) {
+          worst = std::max(worst, std::abs(turned.At(turn.x(x, y), turn.y(x, y)) - upright.At(x, y)));
+        }
+      }
+      // A pixel's cover is worked out along rows, and an edge turned to run
+      // the other way can come out a part in 255 apart.
+      EXPECT_LE(worst, 2) << turn.across << " " << rows;
+    }
+  }
+}
+
+TEST(SvgRender, APictureIsPutWhereItsPlaceSays) {
+  // Moved into the middle of a larger picture.
+  const std::string file = Svg(10, 10, "<rect width='10' height='10'/>");
+  const Drawing moved = DrawPlaced(
+      file, 10, 10, {.a = kCoefficientOne, .b = 0, .c = 0, .d = kCoefficientOne, .e = Pixels(15), .f = Pixels(5)}, 40,
+      20, 20);
+  EXPECT_TRUE(moved.IsBox(15, 5, 25, 15, kBlack));
 }
 
 TEST(SvgRender, AnSvgThatIsTurnedIsDrawnWholeAndThatIsReported) {

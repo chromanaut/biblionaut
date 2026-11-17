@@ -285,12 +285,13 @@ TEST(DrawingViewer, ATurnDrawsForAboutItsSliceAndNoMore) {
 
 TEST(DrawingViewer, SaysWhatEachDrawingCameToAndWhatWasLeftOut) {
   Fixture fixture;
-  fixture.Put("words.svg", Svg(40, 24, "<rect width='4' height='4'/><text>Words</text>"));
+  fixture.Put("words.svg",
+              Svg(40, 24, "<rect width='4' height='4' stroke='#000'/><line x2='9' stroke='#000'/><text>Words</text>"));
   fixture.Start();
   fixture.Settle();
   ASSERT_FALSE(fixture.Lines().empty());
   const std::string line = fixture.Lines().back();
-  EXPECT_NE(line.find("drawing 1 of 1: words.svg, ok, 1 shape,"), std::string::npos) << line;
+  EXPECT_NE(line.find("drawing 1 of 1: words.svg, ok, 1 shape, 2 strokes,"), std::string::npos) << line;
   EXPECT_NE(line.find("left out: text,"), std::string::npos) << line;
 }
 

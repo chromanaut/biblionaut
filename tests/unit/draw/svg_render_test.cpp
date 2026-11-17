@@ -293,13 +293,18 @@ TEST(SvgRender, InheritIsWhateverTheElementRoundItHas) {
       "<rect width='4' height='4' visibility='visible' style='visibility:inherit'/></g>");
   EXPECT_EQ(hidden.Covered(), 0.0);
   EXPECT_EQ(hidden.report.leftOut, 0u);
-  // A stroke is not drawn, and it is said when one was asked for.
-  const Drawing stroked =
-      DrawBody("<g stroke='#000'><rect width='4' height='4' stroke='none' style='stroke:inherit'/></g>");
-  EXPECT_EQ(stroked.report.leftOut, Bits({SvgLeftOut::kStroke}));
-  const Drawing unstroked =
-      DrawBody("<g stroke='none'><rect width='4' height='4' stroke='#000' style='stroke:inherit'/></g>");
-  EXPECT_EQ(unstroked.report.leftOut, 0u);
+  // A stroke, and how wide it is: a ring a pixel wide round a square
+  // of four by four, from 2 to 7.
+  const Drawing stroked = DrawBody(
+      "<g stroke='#000' stroke-width='1'><rect x='2.5' y='2.5' width='4' height='4' fill='none' stroke='none' "
+      "stroke-width='3' style='stroke:inherit;stroke-width:inherit'/></g>");
+  EXPECT_NEAR(stroked.Covered(), 16, 0.01);
+  EXPECT_EQ(stroked.report.leftOut, 0u);
+  EXPECT_EQ(stroked.report.strokes, 1u);
+  const Drawing unstroked = DrawBody(
+      "<g stroke='none'><rect x='2' y='2' width='4' height='4' fill='none' stroke='#000' style='stroke:inherit'/></g>");
+  EXPECT_EQ(unstroked.Covered(), 0.0);
+  EXPECT_EQ(unstroked.report.strokes, 0u);
   // Opacity is not handed on, and to ask for the one round it is no
   // mistake.
   const Drawing opaque = DrawBody("<rect width='4' height='4' opacity='inherit'/>");
@@ -519,10 +524,17 @@ TEST(SvgRender, SaysWhatItLeftOut) {
       {"<use href='#a'/><rect width='4' height='4'/>", Bits({SvgLeftOut::kUse}), 16},
       {"<style>g rect { fill: none }</style><rect width='4' height='4'/>", Bits({SvgLeftOut::kStyleSheet}), 16},
       {"<style>rect { fill: none }</style><rect width='4' height='4'/>", 0, 0},
-      {"<rect width='4' height='4' stroke='#000'/>", Bits({SvgLeftOut::kStroke}), 16},
-      {"<rect width='4' height='4' fill='none' style='stroke:red;stroke-width:2'/>", Bits({SvgLeftOut::kStroke}), 0},
-      {"<g stroke='blue'><rect width='4' height='4'/></g>", Bits({SvgLeftOut::kStroke}), 16},
-      {"<line x2='20' y2='10' stroke='#000'/>", Bits({SvgLeftOut::kStroke}), 0},
+      // A stroke is drawn over the fill, half its width outside the
+      // outline.
+      {"<rect x='2.5' y='2.5' width='4' height='4' stroke='#000'/>", 0, 25},
+      {"<rect x='2' y='2' width='4' height='4' fill='none' style='stroke:#000;stroke-width:2'/>", 0, 32},
+      {"<g stroke='#000'><rect x='2.5' y='2.5' width='4' height='4'/></g>", 0, 25},
+      {"<line x1='2' y1='5.5' x2='22' y2='5.5' stroke='#000'/>", 0, 20},
+      // One painted with a gradient or a pattern is not drawn: what is
+      // written to stand in for it is.
+      {"<rect x='2.5' y='2.5' width='4' height='4' fill='none' stroke='url(#g) #000'/>", Bits({SvgLeftOut::kStroke}),
+       16},
+      {"<rect x='2' y='2' width='4' height='4' fill='none' stroke='url(#g)'/>", Bits({SvgLeftOut::kStroke}), 0},
       // A stroke of no width, or of no paint, or on something hidden, is no stroke.
       {"<rect width='4' height='4' stroke='#000' stroke-width='0'/>", 0, 16},
       {"<g stroke='currentColor' stroke-width='0'><rect width='4' height='4'/></g>", 0, 16},
@@ -758,8 +770,9 @@ TEST(SvgRender, ComesOutTheSameInAnyStripsAndAnyPieces) {
       "</svg>\n";
   const Drawing whole = Draw(file, 60, 45);
   ASSERT_EQ(whole.status, SvgStatus::kOk);
-  EXPECT_EQ(whole.report.leftOut, Bits({SvgLeftOut::kText, SvgLeftOut::kStroke}));
+  EXPECT_EQ(whole.report.leftOut, Bits({SvgLeftOut::kText}));
   EXPECT_EQ(whole.report.shapes, 14u);
+  EXPECT_EQ(whole.report.strokes, 1u);
   EXPECT_GT(whole.Covered(), 500.0);
   EXPECT_GT(whole.report.kept, 200u);
   EXPECT_GT(whole.report.reused, 250u);
@@ -2098,8 +2111,8 @@ TEST(SvgRender, WithNothingToDrawIntoItOnlyReads) {
   }
   EXPECT_EQ(renderer.Finish(), SvgStatus::kOk);
   // What a file has that is not drawn is known all the same.
-  EXPECT_EQ(renderer.Report().leftOut, Bits({SvgLeftOut::kText, SvgLeftOut::kStroke, SvgLeftOut::kGroupOpacity,
-                                             SvgLeftOut::kPaintServer, SvgLeftOut::kUse}));
+  EXPECT_EQ(renderer.Report().leftOut,
+            Bits({SvgLeftOut::kText, SvgLeftOut::kGroupOpacity, SvgLeftOut::kPaintServer, SvgLeftOut::kUse}));
   EXPECT_EQ(renderer.Report().elements, 6u);
   // No outline is read, and nothing is filled.
   EXPECT_EQ(renderer.Report().commands, 0u);
@@ -2246,6 +2259,181 @@ TEST(SvgRender, ACallDoesNoMoreThanItsBound) {
   EXPECT_GT(calls, (4160 / 17) + 600 + (6000 / 16));
   EXPECT_EQ(renderer.Report().commands, 4001u + 161u + (300 * 16));
   EXPECT_EQ(renderer.Report().shapes, 602u);
+}
+
+TEST(SvgRender, ACallStrokesNoMoreThanItsBound) {
+  // Strokes with round corners and ends of outlines held and too long to
+  // hold, dashes as many as an outline may have and more, and shapes
+  // both filled and stroked: a call fills one shape or one stroke, and
+  // gives the filler no more lines than its bound.
+  std::string data = "M1 1";
+  for (int i = 0; i < 3000; ++i) {
+    data += i % 2 == 0 ? "l.01 .006" : "l.006 -.004";
+  }
+  const std::string body =
+      "<g stroke='#000' stroke-linejoin='round' stroke-linecap='round' fill='none'><path d='" + data +
+      "'/><path d='M0 0c10 20 30 -20 40 0' stroke-dasharray='.001'/>"
+      "<path d='M0 5h40' stroke-dasharray='.01 .002 0 .003'/></g>"
+      "<rect x='3' y='3' width='9' height='9' rx='2' stroke='#000' stroke-width='3'/>"
+      "<circle cx='20' cy='10' r='8' fill='#888' stroke='#444' stroke-dasharray='1 1' stroke-linecap='square'/>";
+  const std::string file = Svg(40, 20, body);
+  std::vector<std::uint8_t> gray(std::size_t{40} * 20, kWhite);
+  std::vector<std::int16_t> cells(Filler::CellsFor(40, 20));
+  Filler filler;
+  ASSERT_TRUE(filler.Begin(gray, 40, 0, cells));
+  SvgRenderer renderer;
+  renderer.Begin(&filler, Pixels(40), Pixels(20));
+  std::string_view bytes = file;
+  std::uint64_t mostLines = 0;
+  while (!bytes.empty()) {
+    const SvgReport before = renderer.Report();
+    bytes.remove_prefix(renderer.Step(bytes));
+    const SvgReport& after = renderer.Report();
+    EXPECT_LE((after.shapes - before.shapes) + (after.strokes - before.strokes), 1u);
+    EXPECT_LE(after.commands - before.commands, SvgRenderer::kMostCommandsPerStep);
+    mostLines = std::max<std::uint64_t>(mostLines, after.lines - before.lines);
+  }
+  EXPECT_EQ(renderer.Finish(), SvgStatus::kOk);
+  EXPECT_LE(mostLines, SvgRenderer::kMostLinesPerStep);
+  // The dashes past what one outline may have are a solid stroke, and said
+  // to be.
+  EXPECT_EQ(renderer.Report().strokes, 5u);
+  EXPECT_EQ(renderer.Report().shapes, 2u);
+  EXPECT_EQ(renderer.Report().leftOut, Bits({SvgLeftOut::kStroke}));
+}
+
+// ---- Strokes ----
+
+TEST(SvgRender, AStrokeGoesOverTheFillHalfInsideTheOutlineAndHalfOut) {
+  const Drawing drawing =
+      DrawBody("<rect x='2.5' y='2.5' width='8' height='8' fill='#808080' stroke='#000' stroke-width='1'/>");
+  EXPECT_EQ(drawing.At(6, 6), 128);
+  EXPECT_EQ(drawing.At(2, 6), 0);
+  EXPECT_EQ(drawing.At(10, 6), 0);
+  EXPECT_EQ(drawing.At(1, 6), kWhite);
+  EXPECT_EQ(drawing.At(11, 6), kWhite);
+  EXPECT_NEAR(drawing.Covered(), (81 - 49) + (49 * 127.0 / 255), 0.1);
+  EXPECT_EQ(drawing.report.shapes, 1u);
+  EXPECT_EQ(drawing.report.strokes, 1u);
+  // As solid as its own opacity, and the shape's, say.
+  const Drawing faint = DrawBody(
+      "<rect x='2.5' y='2.5' width='8' height='8' fill='none' stroke='#000' stroke-opacity='.5' opacity='.5'/>");
+  EXPECT_NEAR(faint.At(2, 6), 191, 1);
+}
+
+TEST(SvgRender, AStrokeIsAsWideAsItIsInItsShapesOwnUnits) {
+  // Stretched four times across: a line along it is as thick as it was, and
+  // one down it four times as thick.
+  const Drawing drawing = DrawBody(
+      "<g transform='scale(4 1)'><line x1='0.5' y1='5.5' x2='4.5' y2='5.5' stroke='#000'/>"
+      "<line x1='2' y1='8' x2='2' y2='16' stroke='#000'/></g>");
+  EXPECT_NEAR(drawing.Covered(), 16 + 32, 0.1);
+  EXPECT_EQ(drawing.At(6, 12), 0);
+  EXPECT_EQ(drawing.At(9, 12), 0);
+  EXPECT_EQ(drawing.At(10, 12), kWhite);
+  // A percentage is of the diagonal over the square root of two, as a
+  // radius's is: of 40 by 20, 31.6.
+  const Drawing wide = DrawBody("<line x1='10' y1='10' x2='30' y2='10' stroke='#000' stroke-width='10%'/>");
+  EXPECT_NEAR(wide.Covered(), 20 * 3.162, 0.5);
+}
+
+TEST(SvgRender, LongPathDataIsStrokedAsItArrivesIfItHasAStrokeAndNoFill) {
+  std::string data = "M2 10";
+  for (int step = 0; step < 600; ++step) {
+    data += "h.06";
+  }
+  ASSERT_GT(data.size(), 4 * SvgRenderer::kHeldPathData);
+  const std::string file =
+      Svg(40, 20, "<path fill='none' stroke='#000' stroke-width='2' stroke-linecap='square' d='" + data + "'/>");
+  const Drawing drawing = Draw(file, 40, 20);
+  EXPECT_EQ(drawing.report.leftOut, 0u);
+  EXPECT_EQ(drawing.report.strokes, 1u);
+  // A band 36 long and 2 wide, and its square ends: from 1 to 39.
+  EXPECT_NEAR(drawing.Covered(), 38 * 2, 1);
+  for (const std::size_t piece : {std::size_t{1}, std::size_t{7}, std::size_t{511}}) {
+    EXPECT_EQ(Draw(file, 40, 20, 3, piece).gray, drawing.gray) << piece;
+  }
+}
+
+TEST(SvgRender, LongPathDataIsFilledOrStrokedAndWhatIsNotDrawnIsSaid) {
+  std::string data = "M2 2";
+  for (int step = 0; step < 300; ++step) {
+    data += "l.1 .05";
+  }
+  data += "V18H2Z";
+  // Filled and stroked: it is filled.
+  const Drawing both = DrawBody("<path stroke='#000' d='" + data + "'/>");
+  EXPECT_EQ(both.report.leftOut, Bits({SvgLeftOut::kStroke}));
+  EXPECT_EQ(both.report.shapes, 1u);
+  EXPECT_EQ(both.report.strokes, 0u);
+  // A stroke that is said, or changed, after its data has begun, by the
+  // tag or by the sheet, is not drawn.
+  for (const std::string_view late :
+       {"<path fill='none' stroke='#000' d='DATA' stroke-width='3'/>",
+        "<style>.wide { stroke-width: 3 }</style><path class='wide' fill='none' stroke='#000' d='DATA'/>",
+        "<path fill='none' d='DATA' stroke='#000'/>"}) {
+    std::string body(late);
+    body.replace(body.find("DATA"), 4, data);
+    const Drawing drawing = DrawBody(body);
+    EXPECT_EQ(drawing.report.leftOut, Bits({SvgLeftOut::kStroke})) << late;
+    EXPECT_EQ(drawing.report.strokes, 0u) << late;
+    EXPECT_EQ(drawing.Covered(), 0.0) << late;
+  }
+  // Nor is a fill said after the data of an outline that is being stroked.
+  const Drawing lateFill = DrawBody("<path stroke='#000' fill='none' d='" + data + "' style='fill:#000'/>");
+  EXPECT_EQ(lateFill.report.leftOut, Bits({SvgLeftOut::kStroke}));
+  EXPECT_EQ(lateFill.report.shapes, 0u);
+  EXPECT_EQ(lateFill.report.strokes, 1u);
+}
+
+TEST(SvgRender, ShortPathDataIsGoneThroughOnceForTheFillAndAgainForTheStroke) {
+  const std::string data = "M4 4C10 0 20 20 30 4V16H4Z";
+  const Drawing drawing =
+      DrawBody("<path d='" + data + "' fill='#ccc' stroke='#000' stroke-width='2' stroke-dasharray='3 1'/>");
+  EXPECT_EQ(drawing.report.leftOut, 0u);
+  EXPECT_EQ(drawing.report.shapes, 1u);
+  EXPECT_EQ(drawing.report.strokes, 1u);
+  EXPECT_EQ(drawing.report.commands, 2u * 5);
+  // In any strips and pieces.
+  const std::string file =
+      Svg(40, 20, "<path d='" + data + "' fill='#ccc' stroke='#000' stroke-width='2' stroke-dasharray='3 1'/>");
+  for (const std::size_t rows : {std::size_t{1}, std::size_t{6}}) {
+    EXPECT_EQ(Draw(file, 40, 20, rows, 9).gray, drawing.gray) << rows;
+  }
+}
+
+TEST(SvgRender, ReadsEveryStrokeProperty) {
+  // Each said as an attribute, in `style`, and by a rule, and taken from
+  // the group round it.
+  const char* const ways[] = {
+      "<path d='M10 4h20v12' fill='none' stroke='#000' stroke-width='2' stroke-linejoin='bevel' "
+      "stroke-linecap='square' stroke-miterlimit='2' stroke-dasharray='4,2' stroke-dashoffset='1' "
+      "stroke-opacity='1'/>",
+      "<path d='M10 4h20v12' style='fill:none;stroke:#000;stroke-width:2;stroke-linejoin:bevel;"
+      "stroke-linecap:square;stroke-miterlimit:2;stroke-dasharray:4 2;stroke-dashoffset:1'/>",
+      "<style>path { fill: none; stroke: #000; stroke-width: 2; stroke-linejoin: bevel; stroke-linecap: square; "
+      "stroke-miterlimit: 2; stroke-dasharray: 4 2; stroke-dashoffset: 1 }</style><path d='M10 4h20v12'/>",
+      "<g fill='none' stroke='#000' stroke-width='2' stroke-linejoin='bevel' stroke-linecap='square' "
+      "stroke-miterlimit='2' stroke-dasharray='4 2' stroke-dashoffset='1'><path d='M10 4h20v12' "
+      "stroke-dasharray='inherit' stroke-linejoin='inherit'/></g>"};
+  const Drawing first = DrawBody(ways[0]);
+  EXPECT_EQ(first.report.leftOut, 0u);
+  EXPECT_EQ(first.report.strokes, 1u);
+  for (const char* const way : ways) {
+    const Drawing drawing = DrawBody(way);
+    EXPECT_EQ(drawing.gray, first.gray) << way;
+    EXPECT_EQ(drawing.report.leftOut, 0u) << way;
+  }
+  // Values that are not right are reported, and what the stroke would
+  // have been without them is drawn.
+  for (const std::string_view bad :
+       {"stroke-width='-1'", "stroke-linejoin='pointed'", "stroke-linecap='flat'", "stroke-miterlimit='0.5'",
+        "stroke-dasharray='4,,2'", "stroke-dasharray='1 2 3 4 5 6 7 8 9'", "stroke-dasharray='4 -2'",
+        "stroke-dashoffset='far'", "stroke-opacity='lots'"}) {
+    const Drawing drawing = DrawBody("<path d='M10 4h20v12' fill='none' stroke='#000' " + std::string(bad) + "/>");
+    EXPECT_EQ(drawing.report.leftOut, Bits({SvgLeftOut::kBadValue})) << bad;
+    EXPECT_EQ(drawing.report.strokes, 1u) << bad;
+  }
 }
 
 // ---- Anything at all ----

@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -85,6 +87,29 @@ TEST(SvgValues, ALengthTooLargeIsHeld) {
   ASSERT_TRUE(ParseSvgLength("400000in", length, clamped));
   EXPECT_EQ(bn::draw::LengthIn(length, 0, clamped), bn::draw::kFixedMax);
   EXPECT_TRUE(clamped);
+}
+
+TEST(SvgValues, ReadsAListOfLengthsWithCommasOrSpaceBetween) {
+  std::array<SvgLength, 4> lengths{};
+  std::size_t count = 0;
+  bool clamped = false;
+  ASSERT_TRUE(bn::draw::ParseSvgLengths(" 5, 3px\t2%  1 ", lengths, count, clamped));
+  ASSERT_EQ(count, 4U);
+  EXPECT_EQ(bn::draw::LengthIn(lengths[0], 0, clamped), Units(5));
+  EXPECT_EQ(lengths[1].unit, SvgUnit::kPx);
+  EXPECT_EQ(bn::draw::LengthIn(lengths[2], Units(200), clamped), Units(4));
+  EXPECT_EQ(bn::draw::LengthIn(lengths[3], 0, clamped), Units(1));
+  ASSERT_TRUE(bn::draw::ParseSvgLengths("7", lengths, count, clamped));
+  EXPECT_EQ(count, 1U);
+}
+
+TEST(SvgValues, RefusesAListWithAnythingElseInIt) {
+  for (const std::string_view text : {"", " ", "none", "5,,3", ",5", "5,", "5 a", "1 2 3 4 5", "5;3"}) {
+    std::array<SvgLength, 4> lengths{};
+    std::size_t count = 0;
+    bool clamped = false;
+    EXPECT_FALSE(bn::draw::ParseSvgLengths(text, lengths, count, clamped)) << text;
+  }
 }
 
 // ---- Colours ----

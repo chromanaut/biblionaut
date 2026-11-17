@@ -440,11 +440,12 @@ int Draw(const Options& options) {
   const bn::draw::SvgReport& report = renderer.Report();
   std::fprintf(stderr,
                "a drawing of %s by %s, as %zu by %zu in %zu %s of %zu rows: %u elements, %u shapes filled, "
-               "%u commands, %llu lines in all, %zu bytes of cells\n",
+               "%u stroked, %u commands, %llu lines in all, %zu bytes of cells\n",
                Brief(naturalWidth).c_str(), Brief(naturalHeight).c_str(), width, height, strips,
                strips == 1 ? "strip" : "strips", stripRows, static_cast<unsigned>(report.elements),
-               static_cast<unsigned>(report.shapes), static_cast<unsigned>(report.commands),
-               static_cast<unsigned long long>(lines), cells.size() * sizeof(std::int16_t));
+               static_cast<unsigned>(report.shapes), static_cast<unsigned>(report.strokes),
+               static_cast<unsigned>(report.commands), static_cast<unsigned long long>(lines),
+               cells.size() * sizeof(std::int16_t));
   if (report.kept != 0) {
     std::fprintf(stderr, "definitions: %u bytes kept of %zu, and %u gone through again in a strip\n",
                  static_cast<unsigned>(report.kept), definitions.size(), static_cast<unsigned>(report.reused));

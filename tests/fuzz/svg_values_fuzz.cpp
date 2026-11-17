@@ -4,9 +4,10 @@
 //
 // What it is given:
 //
-//   byte 0        bits 0 to 2: what the text is read as: a length, a
-//                 colour, a paint, an opacity, a view box, how a view box
-//                 is fitted, a transform, or each of them in turn
+//   byte 0        bits 0 to 2: what the text is read as: a length (and a
+//                 list of them), a colour, a paint, an opacity, a view box,
+//                 how a view box is fitted, a transform, or each of them in
+//                 turn
 //   bytes 1 to 8  a box and the space it is to be fitted into: for each,
 //                 where it begins across and down, and how wide and how
 //                 high it is
@@ -17,6 +18,8 @@
 //   - a reading that refuses the text leaves what it was to fill as it
 //     was;
 //   - space before and after the text changes nothing;
+//   - a list of lengths has no more than it has room for, and some; and
+//     what reads as one length reads as a list of that one;
 //   - a colour reads the same in capitals;
 //   - a paint that is a colour is that colour, and one that says to take
 //     what the element is in has nothing else to say;
@@ -26,6 +29,7 @@
 //     point: within a thirtieth of a pixel at its corners.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +90,34 @@ void ReadLength(std::string_view text) {
     const Fixed ofNothing = bn::draw::LengthIn(length, 0, held);
     (void)bn::draw::LengthIn(length, 480 * kFixedOne, held);
     BN_FUZZ_CHECK(length.unit != SvgUnit::kPercent || ofNothing == 0, "a percentage of nothing is something");
+  }
+}
+
+void ReadLengths(std::string_view text) {
+  std::array<SvgLength, 8> lengths{};
+  std::size_t count = 0;
+  bool clamped = false;
+  const bool read = bn::draw::ParseSvgLengths(text, lengths, count, clamped);
+  BN_FUZZ_CHECK(!read || (count > 0 && count <= lengths.size()),
+                "a list has more lengths than it has room for, or none");
+  std::array<SvgLength, 8> spaced{};
+  std::size_t spacedCount = 0;
+  bool spacedClamped = false;
+  BN_FUZZ_CHECK(bn::draw::ParseSvgLengths(Spaced(text), spaced, spacedCount, spacedClamped) == read,
+                "space round a list of lengths changed whether it was read");
+  if (read) {
+    BN_FUZZ_CHECK(spacedCount == count && spacedClamped == clamped, "space round a list of lengths changed it");
+    for (std::size_t i = 0; i < count; ++i) {
+      BN_FUZZ_CHECK(
+          spaced[i].value == lengths[i].value && spaced[i].unit == lengths[i].unit && lengths[i].unit <= SvgUnit::kEx,
+          "space round a list of lengths changed one");
+    }
+  }
+  SvgLength one;
+  bool oneClamped = false;
+  if (bn::draw::ParseSvgLength(text, one, oneClamped)) {
+    BN_FUZZ_CHECK(read && count == 1 && lengths[0].value == one.value && lengths[0].unit == one.unit,
+                  "what reads as a length does not read as a list of one");
   }
 }
 
@@ -255,6 +287,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 
   if (reading == kLength || reading == kAll) {
     ReadLength(text);
+    ReadLengths(text);
   }
   if (reading == kColour || reading == kAll) {
     ReadColour(text);

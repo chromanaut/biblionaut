@@ -6,7 +6,7 @@ Here drawings are made up at random: groups inside groups, every kind of
 shape, transforms, paint said as attributes, as `style` and by the rules of
 a style sheet, things hidden, an `svg` inside another that cuts off what is
 in it, things defined in `defs` and drawn by `use`, shapes filled with
-linear gradients, and a few things bn-svg does not draw. Each is written
+linear gradients, shapes stroked, and a few things bn-svg does not draw. Each is written
 out as a file in one of the many ways the same drawing can be written, and
 bn-svg draws it.
 
@@ -16,8 +16,10 @@ goes by multiplying out its matrices, its outline traced finely, the pixels
 inside found by running lines through each row, what a `use` names drawn
 again where the `use` stands, which rule of the sheet wins for each shape,
 the gray of a gradient at the middle of each pixel by taking it back
-through the matrices into the gradient's own space, and one shape laid over
-another by the opacity it has. That shares no code with bn-svg. The two
+through the matrices into the gradient's own space, a stroke as every
+point no further from the outline than half its width in the shape's own
+space (its corners and ends are round), and one shape laid over another
+by the opacity it has. That shares no code with bn-svg. The two
 pictures have to agree, the picture has to be the same however it is cut
 into strips and however the file is cut into pieces, and what bn-svg says
 it left out has to be what the drawing was given that it does not draw.
@@ -37,7 +39,8 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True  # The script beside this one is read as a module, and leaves nothing behind.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from svg_tool import Failure, counted, expect, multiplied, outlines_of  # noqa: E402
+from svg_tool import (Failure, counted, curve_of, expect, multiplied, outlines_of, reference_commands,  # noqa: E402
+                      traced)
 
 IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 
@@ -185,8 +188,10 @@ def a_shape(rng: random.Random, across: float, down: float) -> dict:
              "bounds": bounds}
     if rng.random() < 0.3:
         shape["transform"] = a_transform(rng)
-    if rng.random() < 0.05:
-        shape["stroke"] = True
+    if rng.random() < 0.3:
+        # Round corners and ends, which are what is no further from the outline than half the width.
+        shape["stroke"] = {"paint": a_gray(rng), "width": rng.choice([0.5, 1.0, 2.0, 3.0, 4.5, 6.0]),
+                           "opacity": rng.choice([1.0, 1.0, 0.5, 0.75])}
     return shape
 
 
@@ -487,8 +492,6 @@ def written(rng: random.Random, element: dict, indent: str = "") -> str:
             attributes.append(("preserveAspectRatio", text))
     if "transform" in element:
         attributes.append(("transform", element["transform"][0]))
-    if element.get("stroke"):
-        attributes.append(("stroke", "#000"))
 
     # Paint is said as attributes, in `style`, or some of each; and `style` wins over an attribute that
     # says otherwise.
@@ -499,6 +502,15 @@ def written(rng: random.Random, element: dict, indent: str = "") -> str:
     for name in ("fill-opacity", "opacity", "fill-rule"):
         if name in paint:
             said[name] = str(paint[name])
+    stroke = element.get("stroke")
+    if stroke:
+        said["stroke"] = stroke["paint"][0]
+        if stroke["width"] != 1.0 or rng.random() < 0.5:
+            said["stroke-width"] = number(stroke["width"])
+        said["stroke-linejoin"] = "round"
+        said["stroke-linecap"] = "round"
+        if stroke["opacity"] != 1.0:
+            said["stroke-opacity"] = str(stroke["opacity"])
     if paint.get("hidden") == "display":
         said["display"] = "none"
     elif paint.get("hidden") == "visibility":
@@ -562,12 +574,14 @@ class Picture:
         self.sure = [[True] * width for _ in range(height)]
         self.left_out: set[str] = set()
         self.shapes = 0
+        self.strokes = 0
         self.uses = 0
         self.cut = 0  # Pixels that something was cut off in, wholly or partly,
         self.uncut = 0  # and those something showed in beyond the edges of an svg that lets it.
         self.turned = 0  # Inner svgs drawn whole because they are turned.
         self.styled = 0  # Shapes some rule of a sheet set something of,
-        self.graded = 0  # and pixels a gradient was drawn in.
+        self.graded = 0  # and pixels a gradient was drawn in,
+        self.stroked = 0  # and pixels wholly inside a stroke.
         self.sheet: list = []
         # Whether bn-svg's numbers could fairly say something else of this drawing than these do.
         self.doubtful = False
@@ -657,9 +671,14 @@ class Picture:
 
         if "transform" in element:
             matrix = multiplied(matrix, element["transform"][1])
-        if element.get("stroke") and not state["hidden"]:
-            self.left_out.add("a stroke")
-        if state["hidden"] or state["fill"] is None:
+        if state["hidden"]:
+            return
+        self.fill(element, matrix, state, box, beyond)
+        if element.get("stroke"):
+            self.stroke(element, matrix, state, box)
+
+    def fill(self, element: dict, matrix: tuple, state: dict, box: tuple | None, beyond: tuple | None) -> None:
+        if state["fill"] is None:
             return
         shade = None
         unknown = False  # A gradient over a box this does not work out: what the shape covers is not compared.
@@ -702,6 +721,85 @@ class Picture:
                         self.graded += 1
                     else:
                         self.gray[row][pixel] += (state["fill"] - self.gray[row][pixel]) * cover[row][pixel] * share * solid
+
+
+    def stroke(self, element: dict, matrix: tuple, state: dict, box: tuple | None) -> None:
+        """Lays a shape's stroke over the picture: every point no further from its outline than half the stroke's
+        width, in the shape's own space. A pixel whose points are not all on one side of the stroke's edge, with room
+        to spare, is not compared."""
+        stroke = element["stroke"]
+        back = inverted(matrix)
+        if back is None:
+            self.doubtful = True
+            return
+        self.strokes += 1
+        half = stroke["width"] / 2
+        solid = stroke["opacity"] * state["opacity"]
+
+        def size(m: tuple) -> float:
+            return math.sqrt(m[0] ** 2 + m[1] ** 2 + m[2] ** 2 + m[3] ** 2)
+
+        # How far apart in the shape's space two points of one pixel can be, and how far its half-width reaches in
+        # pixels, at the most.
+        margin = 0.75 * size(back)
+        reach = half * size(matrix) + 2
+        tries = [((i + 0.5) / 4, (j + 0.5) / 4) for j in range(4) for i in range(4)]
+        nearest: dict[tuple[int, int], list[float]] = {}
+        for points, closed in stroke_parts(element):
+            lines = list(zip(points, points[1:])) + ([(points[-1], points[0])] if closed else [])
+            for a, b in lines:
+                one, other = moved(a, matrix), moved(b, matrix)
+                for row in range(max(0, math.floor(min(one[1], other[1]) - reach)),
+                                 min(self.height, math.floor(max(one[1], other[1]) + reach) + 1)):
+                    for pixel in range(max(0, math.floor(min(one[0], other[0]) - reach)),
+                                       min(self.width, math.floor(max(one[0], other[0]) + reach) + 1)):
+                        far = nearest.setdefault((pixel, row), [math.inf] * len(tries))
+                        for index, (dx, dy) in enumerate(tries):
+                            far[index] = min(far[index], from_line(moved((pixel + dx, row + dy), back), a, b))
+        for (pixel, row), far in nearest.items():
+            share = 1.0
+            if box is not None:
+                share = (max(0.0, min(pixel + 1.0, box[2]) - max(float(pixel), box[0])) *
+                         max(0.0, min(row + 1.0, box[3]) - max(float(row), box[1])))
+            if share == 0.0:
+                continue
+            inside = sum(1 for distance in far if distance <= half)
+            if any(abs(distance - half) < margin for distance in far) or 0 < inside < len(far) or (
+                    share < 1.0 and inside > 0):
+                self.sure[row][pixel] = False
+            elif inside:
+                self.gray[row][pixel] += (stroke["paint"][1] - self.gray[row][pixel]) * solid
+                self.stroked += 1
+
+
+def stroke_parts(element: dict) -> list[tuple[list, bool]]:
+    """The parts of a shape's outline in its own space, traced finely, and whether each is closed."""
+    kind, what = element["outlines"]
+    if kind == "points":
+        return [(list(points), element["name"] != "polyline") for points in what]
+    parts: list[tuple[list, bool]] = []
+    current = start = (0.0, 0.0)
+    for command in reference_commands(what):
+        if command[0] == "M":
+            current = start = command[1:3]
+            parts.append(([current], False))
+        elif command[0] == "Z":
+            parts[-1] = (parts[-1][0], True)
+            current = start
+        else:
+            curve = curve_of(command, current)
+            if curve is not None:
+                parts[-1][0].extend(traced(curve, IDENTITY)[1:])
+            current = command[-2:]
+    return parts
+
+
+def from_line(point: tuple, a: tuple, b: tuple) -> float:
+    """How far a point is from the line from `a` to `b`, which may be no line at all."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = dx * dx + dy * dy
+    along = 0.0 if length == 0 else max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length))
+    return math.hypot(point[0] - a[0] - along * dx, point[1] - a[1] - along * dy)
 
 
 def shade_of(gradient: dict, matrix: tuple, bounds: tuple | None, view: tuple):
@@ -771,7 +869,7 @@ def picture_of(drawing: dict, width: int, height: int) -> Picture:
 # ---- bn-svg ----
 
 SUMMARY = re.compile(rb"a drawing of (\S+) by (\S+), as (\d+) by (\d+) in (\d+) strips? of (\d+) rows: (\d+) elements, "
-                     rb"(\d+) shapes filled, (\d+) commands, (\d+) lines in all, (\d+) bytes of cells")
+                     rb"(\d+) shapes filled, (\d+) stroked, (\d+) commands, (\d+) lines in all, (\d+) bytes of cells")
 
 
 def draw(tool: str, work: Path, file: str | bytes, *options: str):
@@ -797,7 +895,8 @@ def draw(tool: str, work: Path, file: str | bytes, *options: str):
 def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> tuple:
     """Checks one drawing. Returns how many of its pixels were compared, how many were left out, the worst, and
     how much of what the test is for the drawing had: uses, pixels with something cut off, pixels with something
-    showing beyond the edges of an `svg` that lets it, and `svg` elements that are turned."""
+    showing beyond the edges of an `svg` that lets it, `svg` elements that are turned, shapes styled by a sheet,
+    pixels of gradients and pixels of strokes."""
     drawing = a_drawing(rng)
     file = ("<?xml version='1.0' encoding='UTF-8'?>\n" if number_of % 2 else "") + written(rng, drawing)
     width, height = rng.randrange(30, 49), rng.randrange(24, 37)
@@ -811,9 +910,10 @@ def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> 
 
     picture = picture_of(drawing, width, height)
     if picture.doubtful:
-        return 0, 0, 0.0, (0, 0, 0, 0, 0, 0)
+        return 0, 0, 0.0, (0, 0, 0, 0, 0, 0, 0)
     expect(left_out == picture.left_out, f"{file}\nbn-svg says it left out {sorted(left_out)}; it was given {sorted(picture.left_out)}")
     expect(int(summary.group(8)) == picture.shapes, f"{file}\nbn-svg filled {int(summary.group(8))} shapes of {picture.shapes}")
+    expect(int(summary.group(9)) == picture.strokes, f"{file}\nbn-svg stroked {int(summary.group(9))} shapes of {picture.strokes}")
     compared, unsure, worst, total = 0, 0, 0.0, 0.0
     for row in range(height):
         for pixel in range(width):
@@ -827,7 +927,8 @@ def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> 
             worst = max(worst, apart)
             total += apart
     expect(total / max(compared, 1) <= 0.004, f"{file}\n{total / max(compared, 1):.4f} of the way from black to white out on average")
-    return compared, unsure, worst, (picture.uses, picture.cut, picture.uncut, picture.turned, picture.styled, picture.graded)
+    return compared, unsure, worst, (picture.uses, picture.cut, picture.uncut, picture.turned, picture.styled, picture.graded,
+                                     picture.stroked)
 
 
 def check_the_tool(tool: str, work: Path) -> None:
@@ -851,7 +952,7 @@ def check_the_tool(tool: str, work: Path) -> None:
     expect(result.returncode == 0 and summary.group(1, 2, 3, 4) == (b"240", b"10.25", b"240", b"11"),
            f"a drawing of two and a half inches: {result.stderr!r}")
     result, summary, _, _ = draw(tool, work, square, "--rows", "7")
-    expect(summary.group(5, 6) == (b"3", b"7") and int(summary.group(11)) == (30 + 2) * 7 * 2, f"strips of 7 rows: {result.stderr!r}")
+    expect(summary.group(5, 6) == (b"3", b"7") and int(summary.group(12)) == (30 + 2) * 7 * 2, f"strips of 7 rows: {result.stderr!r}")
 
     # A file that is not a drawing, and files that go wrong part of the way through: what came before is drawn.
     for file, said in ((b"", b"not svg"), (b"<html><svg/></html>", b"not svg"), (b"\x89PNG\r\n", b"not svg")):
@@ -887,7 +988,7 @@ def check_the_tool(tool: str, work: Path) -> None:
     expect(result.returncode == 0 and gray_at(pixels, 30, 22, 12) == 0, f"just room enough for what is defined: {result.stderr!r}")
 
     # What it leaves out is said, and the rest is drawn.
-    result, _, left_out, pixels = draw(tool, work, square.replace("</svg>", "<text>Words</text><path d='M20 0h5v5' stroke='#000' fill='url(#g)'/></svg>"))
+    result, _, left_out, pixels = draw(tool, work, square.replace("</svg>", "<text>Words</text><path d='M20 0h5v5' stroke='url(#p)' fill='url(#g)'/></svg>"))
     expect(result.returncode == 0 and left_out == {"text", "a stroke", "a paint that is not a linear gradient before it"} and gray_at(pixels, 30, 5, 3) == 128,
            f"things left out: {result.stderr!r}")
 
@@ -917,23 +1018,23 @@ def main() -> int:
         check_the_tool(tool, work)
         rng = random.Random(20261116)
         drawings, compared, unsure, worst = 0, 0, 0, 0.0
-        uses, cut, uncut, turned, styled, graded = 0, 0, 0, 0, 0, 0
-        for number_of in range(36):
+        uses, cut, uncut, turned, styled, graded, stroked = 0, 0, 0, 0, 0, 0, 0
+        for number_of in range(40):
             one, left, apart, had = check_drawing(tool, work, rng, number_of)
             drawings, compared, unsure, worst = drawings + (1 if one else 0), compared + one, unsure + left, max(worst, apart)
             uses, cut, uncut, turned = uses + had[0], cut + had[1], uncut + had[2], turned + had[3]
-            styled, graded = styled + had[4], graded + had[5]
+            styled, graded, stroked = styled + had[4], graded + had[5], stroked + had[6]
         expect(unsure * 5 < compared, f"{unsure} pixels of {compared + unsure} could not be compared: the test is at fault")
         expect(drawings >= 30 and uses >= 30 and cut >= 300 and uncut >= 100 and turned >= 2 and styled >= 30
-               and graded >= 1000,
+               and graded >= 1000 and stroked >= 300,
                f"{drawings} drawings with {uses} uses, {cut} pixels cut off, {uncut} showing beyond an svg's edges, "
-               f"{turned} svg elements turned, {styled} shapes styled by a sheet and {graded} pixels of gradients: too "
-               f"few for the test to mean much")
+               f"{turned} svg elements turned, {styled} shapes styled by a sheet, {graded} pixels of gradients and "
+               f"{stroked} of strokes: too few for the test to mean much")
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"{drawings} drawings, {compared} pixels, {uses} uses, {cut} pixels with something cut off, {styled} shapes "
-          f"styled by a sheet, {graded} pixels of gradients: what bn-svg draws "
+          f"styled by a sheet, {graded} pixels of gradients, {stroked} of strokes: what bn-svg draws "
           f"agrees with the picture each drawing should make to within {worst:.3f} of the way from black to white, and is "
           f"the same in any strips and pieces")
     return 0

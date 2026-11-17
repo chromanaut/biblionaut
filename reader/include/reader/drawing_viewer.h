@@ -51,7 +51,7 @@ namespace bn::reader {
 // text says what it was, what it took, and what the renderer left out.
 //
 // The memory for the bands, for the renderer and for what a drawing
-// defines is taken from the heap at Start(): about 74 KB for the X4's
+// defines is taken from the heap at Start(): about 77 KB for the X4's
 // panel, most of it the filler's cells and the definitions.
 class DrawingViewer final : public Screen {
  public:

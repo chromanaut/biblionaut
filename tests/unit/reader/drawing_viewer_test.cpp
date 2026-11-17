@@ -359,7 +359,7 @@ TEST(DrawingViewer, SaysWhereEachDrawingsTimeWentOnceItIsShown) {
   // What was kept for the two bands, a chunk of 512 bytes each, written
   // and read back.
   EXPECT_EQ(timed[1].find("drawing 1 timed: spool 1 KB written in "), 0U) << timed[1];
-  EXPECT_NE(timed[1].find(" ms, 1 KB read in "), std::string::npos) << timed[1];
+  EXPECT_NE(timed[1].find(" ms (2 writes), 1 KB read in "), std::string::npos) << timed[1];
   EXPECT_NE(timed[1].find(" ms; replaying "), std::string::npos) << timed[1];
   // A drawing given up for another is not timed.
   EXPECT_EQ(fixture.Lines().size(), 1U);
@@ -385,6 +385,44 @@ TEST(DrawingViewer, ReadsADrawingOnceForItsSizeAndOnceToKeepWhatItDraws) {
     drawingReads += call.size == DrawingViewer::kReadBytes ? 1 : 0;
   }
   EXPECT_EQ(drawingReads, 1 + ((file.size() + DrawingViewer::kReadBytes - 1) / DrawingViewer::kReadBytes));
+}
+
+TEST(DrawingViewer, WritesWhatItKeepsAFewKilobytesAtATime) {
+  // A panel wide enough for a band of grays of several kilobytes, and a drawing
+  // that keeps many chunks: they go to the card gathered, as many to a
+  // write as the band of grays holds, 400 by 16 bytes: 12 chunks,
+  // and the panel shows what it shows when nothing is kept.
+  std::string body;
+  for (int i = 0; i < 300; ++i) {
+    body += "<circle cx='" + std::to_string((i * 37) % 400) + "' cy='" + std::to_string((i * 23) % 240) + "' r='" +
+            std::to_string(3 + (i % 9)) + "' fill='#" + std::to_string(100 + (i % 800)) + "'/>";
+  }
+  const std::string file = Svg(400, 240, body);
+  Fixture kept;
+  kept.display.Resize({.width = 400, .height = 240});
+  kept.Put("a.svg", file);
+  kept.Start();
+  kept.Settle();
+  Fixture direct;
+  direct.display.Resize({.width = 400, .height = 240});
+  direct.Put("a.svg", file);
+  direct.storage.failWrites = bn::core::StorageStatus::kFailed;
+  direct.Start();
+  direct.Settle();
+  ASSERT_EQ(kept.viewer->Shown(), 1U);
+  ASSERT_EQ(direct.viewer->Shown(), 1U);
+  for (std::size_t y = 0; y < 240; ++y) {
+    for (std::size_t x = 0; x < 400; ++x) {
+      ASSERT_EQ(kept.Black(x, y), direct.Black(x, y)) << x << "," << y;
+    }
+  }
+  const std::size_t chunks =
+      kept.storage.entries.at(std::string(DrawingViewer::kSpoolPath)).data.size() / bn::draw::SpoolWriter::kChunkBytes;
+  ASSERT_GT(chunks, 32U);
+  EXPECT_LE(static_cast<std::size_t>(kept.storage.writes), (chunks / 12) + 1);
+  const std::vector<std::string> timed = kept.Lines(true);
+  ASSERT_EQ(timed.size(), 2U);
+  EXPECT_NE(timed[1].find(" (" + std::to_string(kept.storage.writes) + " writes), "), std::string::npos) << timed[1];
 }
 
 TEST(DrawingViewer, DrawsAsBeforeWhenTheCardWillNotKeepTheDrawing) {

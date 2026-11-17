@@ -239,7 +239,7 @@ renderer left
 out:
 
 ```
-drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 36 ms
+drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 28 ms
 ```
 
 That is an engraving of 932 KB from a public book, drawn by the optimised
@@ -256,7 +256,9 @@ drawing is read again for each band instead, as it could always be, and a
 line says why. The viewer takes about 94 KB of the heap when it starts:
 26 KB for the filler's cells, which also hold what each band has in hand
 while the file is read, 24 KB for what a drawing defines, 16 KB for the
-links of what is kept, 13 KB for a band of grays, 8 KB for the renderer, a
+links of what is kept, 13 KB for a band of grays, which also gathers what
+is kept into writes of up to 8 KB while the file is read, since the card
+writes a few kilobytes at once faster than a chunk at a time, 8 KB for the renderer, a
 kilobyte for the recorder, and 6 KB for what is carried in dithering, a
 band of bits and a kilobyte of the file read at a time.
 The trace has a span for each drawing or picture, from the press to the
@@ -269,13 +271,14 @@ much of the file was read in all, and how long went in reading it, in
 rendering, in dithering, in writing the bands to the panel, in waiting
 for the panel to take a band, in the viewer's own turns otherwise
 (`other`), in the loop between the viewer's turns, and in the refresh. A
-third says how much was kept and read back, how long each took and how
+third says how much was kept and read back, how long each took (and in
+how many writes to the card) and how
 long drawing the bands from it took; or why the drawing was not kept. A
 picture's says how long its refresh took.
 
 ```
-drawing 2 timed: 30 bands, 911 KB read in 2 ms; rendering 14 ms, dithering 7 ms, writing 0 ms, waiting 5 ms, other 0 ms, between turns 0 ms, refreshing 1714 ms
-drawing 2 timed: spool 619 KB written in 4 ms, 619 KB read in 0 ms; replaying 4 ms
+drawing 2 timed: 30 bands, 911 KB read in 2 ms; rendering 12 ms, dithering 6 ms, writing 0 ms, waiting 5 ms, other 0 ms, between turns 0 ms, refreshing 1719 ms
+drawing 2 timed: spool 619 KB written in 0 ms (78 writes), 619 KB read in 1 ms; replaying 3 ms
 ```
 
 That is the same engraving as above, 932 KB read once for its size and
@@ -2822,24 +2825,24 @@ A drawing read again for each strip costs its whole file each time: on
 the X4, the largest drawing in the public books, 3.5 MB, took 354 s in 30
 bands, about 5 s of reading the card and 5 s of rendering a pass. So a
 drawing can be read once and kept, and each strip drawn from what was
-kept. Kept so, and with the loop pausing only when there is nothing to do
-("The watchdog", below), it takes about 26 s, from the press to the
-refresh:
+kept. Kept so, with the loop pausing only when there is nothing to do
+("The watchdog", below), and what is kept written 8 KB at a time, it takes
+20 s, from the press to the refresh:
 
-| On the X4, 2026-11-17 | Read each band | Kept | And the loop not pausing |
-|---|---|---|---|
-| The largest engraving, 3.5 MB | 354 s | 31.1 s | 25.6 to 27.2 s |
-| An engraving of 1.8 MB | | 17.2 s | 14.4 to 14.9 s |
-| An engraving of 17 shapes, 932 KB | | 11.2 s | 8.3 to 8.5 s |
-| Drawings of 4 to 52 KB: of strokes, a formula, the samples below | | 1.0 to 1.8 s | 0.6 to 1.2 s |
+| On the X4, 2026-11-17 | Read each band | Kept | The loop not pausing | Written 8 KB at a time |
+|---|---|---|---|---|
+| The largest engraving, 3.5 MB | 354 s | 31.1 s | 25.6 to 27.2 s | 20.1 s |
+| An engraving of 1.8 MB | | 17.2 s | 14.4 to 14.9 s | 11.4 s |
+| An engraving of 17 shapes, 932 KB | | 11.2 s | 8.3 to 8.5 s | 6.5 s |
+| Drawings of 4 to 52 KB: of strokes, a formula, the samples below | | 1.0 to 1.8 s | 0.6 to 1.2 s | 0.6 to 1.1 s |
 
-Of the 27 s: reading the file once, 5.1 s (0.67 MB/s); rendering into
-what is kept, 9.1 s; writing what is kept, 1.85 MB, 7.5 s (0.25 MB/s, the
-card writing in chunks of 512 bytes at under half the rate it reads);
-reading it back, 2.9 s; drawing the bands from it, 1.3 s; dithering, 0.3
-s; waiting for the panel, 0.5 s; and 0.4 s between the viewer's turns. The
-refresh after them takes 3.7 s, or 1.7 s for a half refresh. The card's
-writes are what varies from one run to the next.
+Of the 20 s: reading the file once, 5.1 s (0.66 MB/s); rendering into
+what is kept, 8.2 s; writing what is kept, 1.85 MB in 232 writes, 1.9 s
+(0.95 MB/s, against 0.25 MB/s written a chunk of 512 bytes at a time);
+reading it back, a chunk at a time, 2.6 s; drawing the bands from it, 1.2
+s; dithering, 0.3 s; waiting for the panel, 0.5 s; and 0.1 s between the
+viewer's turns. The refresh after them takes 3.7 s, or 1.7 s for a half
+refresh.
 
 What a renderer draws into is a `Canvas` (`draw/fill.h`): the lines of
 each shape's outline, in pixels, and then the shape's filling. A `Filler`

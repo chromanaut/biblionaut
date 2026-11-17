@@ -287,9 +287,15 @@ class DrawingViewer final : public Screen {
     CardSpool(core::Storage& storage, core::Clock& clock) noexcept : storage_(storage), clock_(clock) {}
     [[nodiscard]] bool Open(std::string_view path) noexcept;
     void Close() noexcept;
+    // Gathers what is added in `buffer`, and writes it when it is full, or
+    // at Flush(): the card writes a few kilobytes at once faster than the
+    // same a chunk at a time. Empty, each chunk is written as it comes.
+    void Gather(std::span<std::uint8_t> buffer) noexcept;
+    [[nodiscard]] bool Flush() noexcept;
     [[nodiscard]] bool Append(std::span<const std::uint8_t> bytes) noexcept override;
     [[nodiscard]] bool ReadAt(std::uint32_t offset, std::span<std::uint8_t> bytes) noexcept override;
     std::uint64_t writingUs = 0;
+    std::uint32_t writes = 0;  // Writes to the card.
     std::uint64_t readingUs = 0;
     std::uint64_t bytesWritten = 0;
     std::uint64_t bytesRead = 0;
@@ -297,9 +303,15 @@ class DrawingViewer final : public Screen {
    private:
     core::Storage& storage_;
     core::Clock& clock_;
+    // Writes `bytes` to the card, after what is there, and times it.
+    [[nodiscard]] bool Write(std::span<const std::uint8_t> bytes) noexcept;
     core::FileHandle file_ = core::kNoFile;
-    std::uint32_t size_ = 0;
+    std::uint32_t size_ = 0;  // Written to the card,
+    std::span<std::uint8_t> gather_;
+    std::size_t gathered_ = 0;  // and gathered after it.
   };
+  // The most a write of the spool gathers.
+  static constexpr std::size_t kMostGathered = 8192;
   CardSpool spoolStore_{storage_, clock_};
   std::unique_ptr<draw::SpoolWriter> spool_;
   std::unique_ptr<std::uint16_t[]> links_;

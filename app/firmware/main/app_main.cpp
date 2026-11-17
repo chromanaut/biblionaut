@@ -4,6 +4,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
 
 #include "core/crash.h"
@@ -17,11 +19,6 @@
 #endif
 
 namespace {
-
-// How often the application's periodic work runs, which is also how long a
-// button press can wait before it is acted on. (The buttons themselves are
-// read, and presses timed, by the hardware layer on its own schedule.)
-constexpr TickType_t kTickPeriod = pdMS_TO_TICKS(10);
 
 // Plain console output goes through the ROM printf: it is unbuffered and does
 // not touch the C library's buffered stdio. This toolchain's picolibc has an
@@ -125,7 +122,15 @@ extern "C" void app_main() {
     esp_rom_printf("The watchdog would not take the application's task: a hang will not be noticed.\n");
   }
   while (true) {
-    vTaskDelay(kTickPeriod);
+    // A pause before each turn, as long as the application asks: none while
+    // it has work waiting, but for one now and then. (The buttons are read,
+    // and presses timed, by the hardware layer on its own schedule.)
+    const std::uint64_t pauseUs = app.PauseUs();
+    if (pauseUs > 0) {
+      vTaskDelay(std::max<TickType_t>(1, pdMS_TO_TICKS(pauseUs / 1000)));
+    } else {
+      taskYIELD();
+    }
     app.Tick();
     bn::firmware::RunCrashTest(app);
     (void)esp_task_wdt_reset();

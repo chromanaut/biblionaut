@@ -156,6 +156,17 @@ void App::BeginChecks() noexcept {
   }
 }
 
+bool App::WorkWaiting() const noexcept { return started_ && !asleep_ && screen_ != nullptr && screen_->WorkWaiting(); }
+
+std::uint64_t App::PauseUs() noexcept {
+  const std::uint64_t now = services_.clock.NowUs();
+  if (!WorkWaiting() || now - lastPauseUs_ >= kLongestRunUs) {
+    lastPauseUs_ = now;
+    return kTurnPauseUs;
+  }
+  return 0;
+}
+
 void App::Tick() noexcept {
   if (!started_ || asleep_) {
     return;

@@ -239,7 +239,7 @@ renderer left
 out:
 
 ```
-drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 861 ms
+drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 36 ms
 ```
 
 That is an engraving of 932 KB from a public book, drawn by the optimised
@@ -267,19 +267,20 @@ added up by the viewer, since a long drawing reads the card more times
 than a capture can keep a span for: how many bands it was drawn in, how
 much of the file was read in all, and how long went in reading it, in
 rendering, in dithering, in writing the bands to the panel, in waiting
-for the panel to take a band, in the loop's other turns between the
-viewer's, and in the refresh. A third says how much was kept and read
-back, how long each took and how long drawing the bands from it took; or
-why the drawing was not kept. A picture's says how long its refresh took.
+for the panel to take a band, in the viewer's own turns otherwise
+(`other`), in the loop between the viewer's turns, and in the refresh. A
+third says how much was kept and read back, how long each took and how
+long drawing the bands from it took; or why the drawing was not kept. A
+picture's says how long its refresh took.
 
 ```
-drawing 2 timed: 30 bands, 911 KB read in 2 ms; rendering 20 ms, dithering 11 ms, writing 0 ms, waiting 398 ms, between turns 427 ms, refreshing 1722 ms
-drawing 2 timed: spool 619 KB written in 7 ms, 619 KB read in 4 ms; replaying 8 ms
+drawing 2 timed: 30 bands, 911 KB read in 2 ms; rendering 14 ms, dithering 7 ms, writing 0 ms, waiting 5 ms, other 0 ms, between turns 0 ms, refreshing 1714 ms
+drawing 2 timed: spool 619 KB written in 4 ms, 619 KB read in 0 ms; replaying 4 ms
 ```
 
 That is the same engraving as above, 932 KB read once for its size and
-once to keep it, on the optimised desktop application, where the turns of
-the loop are paced and the panel's refresh is as long as the X4's.
+once to keep it, on the optimised desktop application, where the panel's
+refresh is as long as the X4's.
 
 A picture's rows come from its file in the order the page is read, which
 is not the panel's order when the panel is turned to be read, as the X4's
@@ -2821,21 +2822,24 @@ A drawing read again for each strip costs its whole file each time: on
 the X4, the largest drawing in the public books, 3.5 MB, took 354 s in 30
 bands, about 5 s of reading the card and 5 s of rendering a pass. So a
 drawing can be read once and kept, and each strip drawn from what was
-kept. Kept so, it takes 31 s, from the press to the refresh:
+kept. Kept so, and with the loop pausing only when there is nothing to do
+("The watchdog", below), it takes about 26 s, from the press to the
+refresh:
 
-| On the X4, 2026-11-17 | Read each band | Kept |
-|---|---|---|
-| The largest engraving, 3.5 MB | 354 s | 31.1 s |
-| An engraving of 1.8 MB | | 17.2 s |
-| An engraving of 17 shapes, 932 KB | | 11.2 s |
-| Drawings of 4 to 52 KB: of strokes, a formula, the samples below | | 1.0 to 1.8 s |
+| On the X4, 2026-11-17 | Read each band | Kept | And the loop not pausing |
+|---|---|---|---|
+| The largest engraving, 3.5 MB | 354 s | 31.1 s | 25.6 to 27.2 s |
+| An engraving of 1.8 MB | | 17.2 s | 14.4 to 14.9 s |
+| An engraving of 17 shapes, 932 KB | | 11.2 s | 8.3 to 8.5 s |
+| Drawings of 4 to 52 KB: of strokes, a formula, the samples below | | 1.0 to 1.8 s | 0.6 to 1.2 s |
 
-Of the 31 s: reading the file once, 5.5 s (0.62 MB/s); rendering into
-what is kept, 9.0 s; writing what is kept, 1.85 MB, 6.9 s (0.27 MB/s, the
-card writing at under half the rate it reads); reading it back, 2.9 s;
-drawing the bands from it, 1.2 s; dithering, 0.3 s; and 15.5 s between
-the viewer's turns, of which the loop's pause of 10 ms before each turn is
-most. The refresh after them takes 3.7 s, or 1.7 s for a half refresh.
+Of the 27 s: reading the file once, 5.1 s (0.67 MB/s); rendering into
+what is kept, 9.1 s; writing what is kept, 1.85 MB, 7.5 s (0.25 MB/s, the
+card writing in chunks of 512 bytes at under half the rate it reads);
+reading it back, 2.9 s; drawing the bands from it, 1.3 s; dithering, 0.3
+s; waiting for the panel, 0.5 s; and 0.4 s between the viewer's turns. The
+refresh after them takes 3.7 s, or 1.7 s for a half refresh. The card's
+writes are what varies from one run to the next.
 
 What a renderer draws into is a `Canvas` (`draw/fill.h`): the lines of
 each shape's outline, in pixels, and then the shape's filling. A `Filler`
@@ -3220,6 +3224,15 @@ come back. (The last four registers of such a report, `mstatus` to
 nothing saves them when the watchdog breaks in.) (Left as ESP-IDF sets it up, the watchdog watches only the idle
 task, and prints a warning on the console every five seconds while the
 device stays hung.) The settings are in `app/firmware/sdkconfig.defaults`.
+
+The loop pauses before each turn for as long as the application asks
+(`App::PauseUs()`): 10 ms, which is as long as a press can wait before it
+is acted on, unless there is work waiting that can be done now, such as a
+drawing being read or drawn (`Screen::WorkWaiting()`). Then it does not
+pause, but for once at least every 250 ms, so that the idle task, which
+the watchdog also watches, has its turn. The desktop's loop does the same.
+The 10 ms pauses had come to about 4 s of the 31 s the largest drawing
+took to be drawn and kept, and to half of what a small one took.
 
 To see a report without waiting for a bug, build a firmware that crashes on
 purpose ten seconds after it starts:

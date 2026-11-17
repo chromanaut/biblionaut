@@ -138,6 +138,9 @@ class DrawingViewer final : public Screen {
   // Puts the panel to sleep, as PatternViewer::Sleep() does: the drawing
   // being drawn is given up.
   void Sleep() noexcept override;
+  // A drawing or picture being read, drawn or kept, a band to write to a
+  // panel that is free, or another to begin.
+  bool WorkWaiting() const noexcept override;
   bool Resting() const noexcept override { return state_ == State::kAsleep || state_ == State::kFailed; }
 
   State CurrentState() const noexcept { return state_; }
@@ -210,6 +213,8 @@ class DrawingViewer final : public Screen {
   // times it.
   bool Feed(std::uint64_t until) noexcept;
   bool FeedSome(std::uint64_t until) noexcept;
+  // Tick() times TickSome(), which does the work.
+  void TickSome() noexcept;
   // The file read once into the spool: false, and why in spoolFailure_, if
   // it cannot be. A band given back from it, for up to the time left: true
   // when the band is all there.
@@ -301,6 +306,11 @@ class DrawingViewer final : public Screen {
   bool spooling_ = false;               // The drawing in hand is drawn from the spool.
   const char* spoolFailure_ = nullptr;  // Why it is not, if it was tried.
   std::uint64_t replayingUs_ = 0;
+  // The viewer's own turns: when the one in hand began, how long they have
+  // taken since the drawing began, and that when its refresh began.
+  std::uint64_t tickStartedUs_ = 0;
+  std::uint64_t turnsUs_ = 0;
+  std::uint64_t turnsAtRefreshUs_ = 0;
 
   // A picture: what its header says, where it goes on the page, and which
   // band of the panel it is being set into.

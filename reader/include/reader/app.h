@@ -77,6 +77,18 @@ class App {
   // serial line. Call it often; it never waits.
   void Tick() noexcept;
 
+  // How long the loop should pause before the next Tick(): kTurnPauseUs,
+  // which is how long a button press can wait before it is acted on; or
+  // nothing while there is work waiting that can be done now, so that a
+  // drawing is not drawn a pause at a time. Even then, a pause at least
+  // every kLongestRunUs, for whatever runs only when the application waits:
+  // on the device, the idle task, which the watchdog watches.
+  static constexpr std::uint64_t kTurnPauseUs = 10'000;
+  static constexpr std::uint64_t kLongestRunUs = 250'000;
+  std::uint64_t PauseUs() noexcept;
+  // Whether there is work waiting that can be done now (Screen::WorkWaiting()).
+  bool WorkWaiting() const noexcept;
+
   // Sends whatever trace is still buffered, for an orderly exit.
   void Flush() noexcept;
 
@@ -168,6 +180,7 @@ class App {
   std::uint64_t startedAtUs_ = 0;
   std::uint64_t nextHeartbeatUs_ = 0;
   std::uint64_t nextMetricsUs_ = 0;
+  std::uint64_t lastPauseUs_ = 0;                   // When PauseUs() last asked for a pause.
   const core::CrashReport* crashReport_ = nullptr;  // Being sent; null when there is none or it is done.
   std::size_t crashSent_ = 0;                       // Bytes of its encoded form sent so far.
   bool started_ = false;

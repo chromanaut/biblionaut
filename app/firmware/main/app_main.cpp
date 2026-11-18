@@ -14,6 +14,7 @@
 #include "hw/platform.h"
 #include "partition_check.h"
 #include "reader/app.h"
+#include "window_check.h"
 #ifdef BN_DRAWING_VIEWER
 #include "reader/drawing_viewer.h"
 #endif
@@ -64,6 +65,7 @@ extern "C" void app_main() {
   AnnounceSavedCrash();
   bn::firmware::AnnounceCrashTest();
   bn::firmware::RunPartitionCheck();
+  bn::firmware::RunWindowCheck();
 
   static bn::reader::App app(bn::reader::DefaultServices());
 #ifdef BN_PLANE_CHECK

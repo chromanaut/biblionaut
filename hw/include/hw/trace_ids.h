@@ -59,7 +59,10 @@
   /* (an esp_err_t; 263 is "no answer"), or the one the file system gave   */ \
   /* (a FatFS FRESULT; 13 is "no file system it knows").                   */ \
   X(20, kInstantSdCardError, "sd_card_error", "code")                         \
-  X(21, kInstantSdMountError, "sd_mount_error", "code")
+  X(21, kInstantSdMountError, "sd_mount_error", "code")                       \
+  /* Sending a window of pixels, narrower than whole rows, to one of the   */ \
+  /* panel's planes.                                                       */ \
+  X(22, kSpanPanelWindow, "panel_window", "bytes")
 
 namespace bn::hw {
 

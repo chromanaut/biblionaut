@@ -148,6 +148,22 @@ class X4Display final : public core::Display {
     return sent;
   }
 
+  [[nodiscard]] bool WriteWindow(core::DisplayPlane plane, core::DisplayWindow window,
+                                 std::span<const std::uint8_t> data) noexcept override {
+    if (!started_ || Busy() || !window.Fits(kSize, data.size())) {
+      return false;
+    }
+    BN_TRACE_SCOPE_ARG(kSpanPanelWindow, static_cast<std::uint32_t>(data.size()));
+    if (spi_device_acquire_bus(device_, portMAX_DELAY) != ESP_OK) {
+      return false;
+    }
+    const bool sent = SetWindow(window) &&
+                      SendCommand(plane == core::DisplayPlane::kNew ? kCmdWriteNewPlane : kCmdWriteOldPlane) &&
+                      SendData(data);
+    spi_device_release_bus(device_);
+    return sent;
+  }
+
   [[nodiscard]] bool ReadRows(core::DisplayPlane plane, std::uint16_t firstRow,
                               std::span<std::uint8_t> rows) noexcept override {
     const std::size_t rowBytes = kSize.RowBytes();
@@ -419,18 +435,28 @@ class X4Display final : public core::Display {
   // Points the controller at `rowCount` whole rows starting at `firstRow`,
   // so that the pixel data that follows lands there.
   bool SetRows(std::uint16_t firstRow, std::uint16_t rowCount) noexcept {
+    return SetWindow({.firstRow = firstRow,
+                      .rows = rowCount,
+                      .firstByte = 0,
+                      .bytes = static_cast<std::uint16_t>(kSize.RowBytes())});
+  }
+
+  // Points the controller at a window, so that the pixel data that follows
+  // fills it row by row. Its addresses across are in pixels.
+  bool SetWindow(core::DisplayWindow window) noexcept {
     // The panel is mounted with its rows in the opposite order to the
     // controller's memory, so row 0 is the highest address and the address
     // counts down as rows are written.
-    const auto first = static_cast<std::uint16_t>(kSize.height - 1 - firstRow);
-    const auto last = static_cast<std::uint16_t>(first - (rowCount - 1));
-    const auto lastColumn = static_cast<std::uint16_t>(kSize.width - 1);
+    const auto first = static_cast<std::uint16_t>(kSize.height - 1 - window.firstRow);
+    const auto last = static_cast<std::uint16_t>(first - (window.rows - 1));
+    const auto firstColumn = static_cast<std::uint16_t>(window.firstByte * 8);
+    const auto lastColumn = static_cast<std::uint16_t>(((window.firstByte + window.bytes) * 8) - 1);
     constexpr std::uint8_t kColumnsUpRowsDown = 0x01;
     return Command(kCmdDataEntryMode, kColumnsUpRowsDown) &&
-           Command(kCmdColumnAddressRange, std::uint8_t{0}, std::uint8_t{0}, LowByte(lastColumn),
+           Command(kCmdColumnAddressRange, LowByte(firstColumn), HighByte(firstColumn), LowByte(lastColumn),
                    HighByte(lastColumn)) &&
            Command(kCmdRowAddressRange, LowByte(first), HighByte(first), LowByte(last), HighByte(last)) &&
-           Command(kCmdColumnAddress, std::uint8_t{0}, std::uint8_t{0}) &&
+           Command(kCmdColumnAddress, LowByte(firstColumn), HighByte(firstColumn)) &&
            Command(kCmdRowAddress, LowByte(first), HighByte(first));
   }
 

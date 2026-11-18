@@ -30,6 +30,7 @@ class FakeDisplay final : public core::Display {
     std::size_t rowCount = 0;                                     // kWrite.
     core::RefreshMode mode = core::RefreshMode::kFull;            // kRefresh.
     core::AfterRefresh after = core::AfterRefresh::kStayPowered;  // kRefresh.
+    core::DisplayWindow window{};  // kWrite through WriteWindow(); all 0 for WriteRows().
   };
 
   FakeDisplay() { Resize(size); }
@@ -71,6 +72,23 @@ class FakeDisplay final : public core::Display {
     }
     calls.push_back({.op = Op::kWrite, .plane = plane, .firstRow = firstRow, .rowCount = rows.size() / rowBytes});
     std::memcpy(Plane(plane).data() + (firstRow * rowBytes), rows.data(), rows.size());
+    return true;
+  }
+
+  // Recorded in `calls` as a write of its rows, with `window` set.
+  [[nodiscard]] bool WriteWindow(core::DisplayPlane plane, core::DisplayWindow window,
+                                 std::span<const std::uint8_t> data) noexcept override {
+    if (!started || busy || failWrites || !window.Fits(size, data.size())) {
+      ++refused;
+      return false;
+    }
+    calls.push_back(
+        {.op = Op::kWrite, .plane = plane, .firstRow = window.firstRow, .rowCount = window.rows, .window = window});
+    const std::size_t rowBytes = size.RowBytes();
+    for (std::size_t row = 0; row < window.rows; ++row) {
+      std::memcpy(Plane(plane).data() + ((window.firstRow + row) * rowBytes) + window.firstByte,
+                  data.data() + (row * window.bytes), window.bytes);
+    }
     return true;
   }
 

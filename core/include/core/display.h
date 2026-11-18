@@ -92,6 +92,26 @@ struct DisplaySize {
   constexpr std::size_t RowBytes() const noexcept { return (static_cast<std::size_t>(width) + 7) / 8; }
 };
 
+// A rectangle of a plane, in whole bytes across: `rows` rows from
+// `firstRow`, and in each of them `bytes` bytes from byte `firstByte` (the
+// pixels from 8 * firstByte).
+struct DisplayWindow {
+  std::uint16_t firstRow = 0;
+  std::uint16_t rows = 0;
+  std::uint16_t firstByte = 0;
+  std::uint16_t bytes = 0;
+
+  // The bytes it holds.
+  constexpr std::size_t Size() const noexcept { return static_cast<std::size_t>(rows) * bytes; }
+
+  // Whether it is something, lies inside a panel of `size`, and `dataSize`
+  // bytes fill it exactly.
+  constexpr bool Fits(DisplaySize size, std::size_t dataSize) const noexcept {
+    return rows > 0 && bytes > 0 && std::size_t{firstRow} + rows <= size.height &&
+           std::size_t{firstByte} + bytes <= size.RowBytes() && dataSize == Size();
+  }
+};
+
 // One panel. Implemented by each hardware port. Not for use from two tasks
 // at once.
 class Display {
@@ -117,6 +137,15 @@ class Display {
   // or is busy, or the rows do not fit.
   [[nodiscard]] virtual bool WriteRows(DisplayPlane plane, std::uint16_t firstRow,
                                        std::span<const std::uint8_t> rows) noexcept = 0;
+
+  // Writes a window of a plane, leaving the rest as it was. `data` is its
+  // rows in order, each window.bytes bytes, packed as WriteRows() takes
+  // them. A window one byte wide and the panel's height is eight columns of
+  // pixels: how a picture is written into a panel turned a quarter, eight of
+  // its rows at a time. Returns false, writing nothing, if the panel is not
+  // started or is busy, or the window does not fit (DisplayWindow::Fits()).
+  [[nodiscard]] virtual bool WriteWindow(DisplayPlane plane, DisplayWindow window,
+                                         std::span<const std::uint8_t> data) noexcept = 0;
 
   // Copies whole rows out of a plane, in the form WriteRows() takes them:
   // what the panel itself holds. This is for checking that the planes are

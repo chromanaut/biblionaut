@@ -134,8 +134,9 @@ than the tool shows ids it does not know as numbers.
 
 The e-ink panel's controller keeps two full images in its own memory, and
 the firmware keeps none: pictures are rendered a band of rows at a time and
-written straight to the controller (`core/display.h`). `hw/x4` drives the
-X4's panel.
+written straight to the controller (`core/display.h`), as whole rows or as
+a window narrower than them ("Windows of a plane", below). `hw/x4` drives
+the X4's panel.
 
 The devices have seven buttons. Six of them share two analogue pins and
 cannot raise an interrupt, so `hw/x4` reads them every 5 ms and turns the
@@ -500,6 +501,49 @@ display options are recorded too (`hw/panel_status`, `hw/panel_options`).
 tools/idf -DBN_PLANE_CHECK=ON build flash
 ./build/host/tools/trace/bn-trace | tee planes.log
 tools/idf -DBN_PLANE_CHECK=OFF build flash     # back to the normal firmware
+```
+
+### Windows of a plane
+
+Besides whole rows, a plane can be written a window at a time
+(`Display::WriteWindow()`): some rows, and in each of them a run of whole
+bytes, the rest of the plane left as it was. On a panel turned a quarter,
+as the X4's is, a picture's rows run down the panel's columns, so eight of
+them, as they come, are a window one byte wide and the panel's height.
+Written so, a picture needs no copy of the whole panel.
+
+A firmware built with `-DBN_WINDOW_CHECK=ON` checks on a device that the
+controller takes such windows, and times them. At start, before the
+application, it fills each plane with a pattern by whole rows, by windows
+one byte wide and the panel's height, and by windows of eight rows, each
+twice; then it writes eight windows of odd sizes and places over a plane
+already filled; and it reads the plane back after each, and says whether
+every byte is what it should be. On the X4:
+
+```
+window check: a panel of 800 by 480, 100 bytes a row
+window check: new plane, whole rows: right, written in 14230 us
+window check: new plane, columns of a byte: right, written in 31226 us
+window check: new plane, eight rows at a time: right, written in 23048 us
+window check: new plane, odd windows over whole rows: right, written in 2622 us
+window check: old plane, whole rows: right, written in 14179 us
+window check: old plane, columns of a byte: right, written in 31180 us
+window check: old plane, eight rows at a time: right, written in 23041 us
+window check: old plane, odd windows over whole rows: right, written in 2613 us
+window check: windows outside the panel, or not filled exactly, refused
+window check: done
+```
+
+(The second round of each is left out here.) A window costs 0.15 to
+0.17 ms more than its bytes sent as part of whole rows, for the commands
+that set it: a plane in 100 columns takes 31 ms against 14 ms in whole
+rows. The
+times include making the pattern, which is the same in each.
+
+```
+tools/idf -DBN_WINDOW_CHECK=ON build flash
+./build/host/tools/trace/bn-trace --seconds 20 | grep 'window check'
+tools/idf -DBN_WINDOW_CHECK=OFF build flash     # back to the normal firmware
 ```
 
 ## Storage

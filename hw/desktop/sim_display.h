@@ -50,6 +50,8 @@ class SimDisplay final : public core::Display {
   [[nodiscard]] bool Start() noexcept override;
   [[nodiscard]] bool WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
                                std::span<const std::uint8_t> rows) noexcept override;
+  [[nodiscard]] bool WriteWindow(core::DisplayPlane plane, core::DisplayWindow window,
+                                 std::span<const std::uint8_t> data) noexcept override;
   [[nodiscard]] bool ReadRows(core::DisplayPlane plane, std::uint16_t firstRow,
                               std::span<std::uint8_t> rows) noexcept override;
   [[nodiscard]] bool StartRefresh(core::RefreshMode mode, core::AfterRefresh after) noexcept override;

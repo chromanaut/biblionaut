@@ -93,6 +93,16 @@ elseif(BN_DRAWING_TOUR)
   message(FATAL_ERROR "BN_DRAWING_TOUR goes round the drawing viewer's drawings: configure with BN_DRAWING_VIEWER ON.")
 endif()
 
+# A firmware that checks, at start, that the panel takes windows narrower
+# than whole rows (see BN_WINDOW_CHECK in the project file). The code for
+# it, window_check.cpp, is only part of such a build.
+if(BN_WINDOW_CHECK)
+  message(WARNING "This firmware writes the panel through windows at start, and checks what it holds. "
+                  "Configure with -DBN_WINDOW_CHECK=OFF for a normal build.")
+  target_sources(${COMPONENT_LIB} PRIVATE window_check.cpp)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_WINDOW_CHECK=1)
+endif()
+
 # A firmware with a fonts partition, checked at start (see
 # BN_PARTITION_CHECK in the project file). The code for it,
 # partition_check.cpp, is only part of such a build.

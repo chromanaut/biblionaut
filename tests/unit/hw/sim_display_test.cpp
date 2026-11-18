@@ -473,6 +473,58 @@ TEST(SimDisplay, RefusesRowsThatDoNotFit) {
   EXPECT_TRUE(RowIsBlack(fixture.display.Plane(DisplayPlane::kOld), 479));
 }
 
+TEST(SimDisplay, WritesAWindowAndLeavesTheRestOfThePlaneAsItWas) {
+  SimFixture fixture;
+  const std::vector<std::uint8_t> column(kRows, 0x5A);
+  const bn::core::DisplayWindow wholeColumn = {.firstRow = 0, .rows = kRows, .firstByte = 3, .bytes = 1};
+  EXPECT_FALSE(fixture.display.WriteWindow(DisplayPlane::kNew, wholeColumn, column)) << "before it is started";
+  ASSERT_TRUE(fixture.display.Start());
+
+  // Eight columns of pixels the panel's height, as a picture's rows go into
+  // a panel turned a quarter, and a block of three bytes by two rows.
+  ASSERT_TRUE(fixture.display.WriteWindow(DisplayPlane::kNew, wholeColumn, column));
+  const std::vector<std::uint8_t> block = {1, 2, 3, 4, 5, 6};
+  ASSERT_TRUE(fixture.display.WriteWindow(DisplayPlane::kOld, {.firstRow = 478, .rows = 2, .firstByte = 97, .bytes = 3},
+                                          block));
+  const std::span<const std::uint8_t> written = fixture.display.Plane(DisplayPlane::kNew);
+  const std::span<const std::uint8_t> other = fixture.display.Plane(DisplayPlane::kOld);
+  for (std::size_t row = 0; row < kRows; ++row) {
+    for (std::size_t byte = 0; byte < kRowBytes; ++byte) {
+      const std::uint8_t newWanted = byte == 3 ? 0x5A : 0xFF;
+      ASSERT_EQ(written[(row * kRowBytes) + byte], newWanted) << row << " " << byte;
+      const bool inBlock = row >= 478 && byte >= 97;
+      const std::uint8_t oldWanted =
+          inBlock ? static_cast<std::uint8_t>(1 + ((row - 478) * 3) + (byte - 97)) : std::uint8_t{0xFF};
+      ASSERT_EQ(other[(row * kRowBytes) + byte], oldWanted) << row << " " << byte;
+    }
+  }
+
+  // Not while the panel is busy.
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFull, AfterRefresh::kStayPowered));
+  EXPECT_FALSE(fixture.display.WriteWindow(DisplayPlane::kNew, wholeColumn, column));
+  fixture.Finish();
+  EXPECT_TRUE(fixture.display.WriteWindow(DisplayPlane::kNew, wholeColumn, column));
+}
+
+TEST(SimDisplay, RefusesAWindowThatDoesNotFit) {
+  SimFixture fixture;
+  ASSERT_TRUE(fixture.display.Start());
+  const std::vector<std::uint8_t> data(4, 0x00);
+  const auto refused = [&fixture, &data](bn::core::DisplayWindow window, std::size_t bytes) {
+    return !fixture.display.WriteWindow(DisplayPlane::kNew, window, std::span(data).first(bytes));
+  };
+  EXPECT_TRUE(refused({.firstRow = 0, .rows = 0, .firstByte = 0, .bytes = 1}, 0)) << "no rows";
+  EXPECT_TRUE(refused({.firstRow = 0, .rows = 1, .firstByte = 0, .bytes = 0}, 0)) << "no bytes";
+  EXPECT_TRUE(refused({.firstRow = 479, .rows = 2, .firstByte = 0, .bytes = 1}, 2)) << "past the last row";
+  EXPECT_TRUE(refused({.firstRow = 0, .rows = 1, .firstByte = 99, .bytes = 2}, 2)) << "past the end of a row";
+  EXPECT_TRUE(refused({.firstRow = 0, .rows = 2, .firstByte = 0, .bytes = 2}, 3)) << "too few bytes";
+  EXPECT_TRUE(refused({.firstRow = 0, .rows = 1, .firstByte = 0, .bytes = 2}, 4)) << "too many bytes";
+  EXPECT_FALSE(refused({.firstRow = 479, .rows = 1, .firstByte = 98, .bytes = 2}, 2)) << "the last corner";
+  // Nothing refused left a mark.
+  const std::span<const std::uint8_t> plane = fixture.display.Plane(DisplayPlane::kNew);
+  EXPECT_EQ(std::count(plane.begin(), plane.end(), 0x00), 2);
+}
+
 TEST(SimDisplay, SleepKeepsThePictureAndStartingAgainClearsThePlanes) {
   SimFixture fixture;
   ASSERT_TRUE(fixture.display.Start());

@@ -135,6 +135,21 @@ bool SimDisplay::WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
   return true;
 }
 
+bool SimDisplay::WriteWindow(core::DisplayPlane plane, core::DisplayWindow window,
+                             std::span<const std::uint8_t> data) noexcept {
+  if (!started_ || Busy() || !window.Fits(device_.panel, data.size())) {
+    return false;
+  }
+  BN_TRACE_SCOPE_ARG(kSpanPanelWindow, static_cast<std::uint32_t>(data.size()));
+  const std::size_t rowBytes = device_.panel.RowBytes();
+  std::vector<std::uint8_t>& memory = Memory(plane);
+  for (std::size_t row = 0; row < window.rows; ++row) {
+    std::memcpy(memory.data() + ((window.firstRow + row) * rowBytes) + window.firstByte,
+                data.data() + (row * window.bytes), window.bytes);
+  }
+  return true;
+}
+
 bool SimDisplay::ReadRows(core::DisplayPlane plane, std::uint16_t firstRow, std::span<std::uint8_t> rows) noexcept {
   const std::size_t rowBytes = device_.panel.RowBytes();
   if (!started_ || Busy() || rows.empty() || rows.size() % rowBytes != 0 ||

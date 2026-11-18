@@ -31,6 +31,16 @@ set_property(CACHE BN_CRASH_TEST PROPERTY STRINGS "" fault abort oom stack hang)
 # which takes about a second each time.
 option(BN_PLANE_CHECK "Read the panel's planes back and check them whenever it comes to rest" OFF)
 
+# For checking, on a device, that the panel's controller takes windows
+# narrower than whole rows, and timing them (main/window_check.h says what
+# is done):
+#
+#   tools/idf -DBN_WINDOW_CHECK=ON build flash    (back to normal: -DBN_WINDOW_CHECK=OFF)
+#
+# Such a firmware writes and reads back both planes at start, for a few
+# seconds, and then starts as usual.
+option(BN_WINDOW_CHECK "Check at start that the panel takes windows narrower than whole rows" OFF)
+
 # For checking, on a device, that the SD card can be relied on and how fast
 # it is (reader/storage_check.h says what is done):
 #

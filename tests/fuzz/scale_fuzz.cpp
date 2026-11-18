@@ -41,8 +41,9 @@ namespace {
 using bn::draw::Scaler;
 using bn::draw::ScaleStatus;
 
-// The new pixels the target works out a second way, at the most: past this
-// it only checks the counts and the order.
+// The most pixels the target works out a second way, of the old picture, of
+// the new, and of the old rows made the new width, which it keeps: past
+// this it only checks the counts and the order.
 constexpr std::size_t kMostCompared = 200000;
 
 std::uint32_t Side(std::uint32_t number) {
@@ -129,9 +130,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const bool allowed = oldWidth >= 1 && oldHeight >= 1 && newWidth >= 1 && newHeight >= 1 &&
                        oldWidth <= Scaler::kMaxSide && oldHeight <= Scaler::kMaxSide && newWidth <= Scaler::kMaxSide &&
                        newHeight <= Scaler::kMaxSide;
-  // The work is the old picture and the new together: large pictures are
-  // left to the unit tests.
-  if (allowed && (std::uint64_t{oldWidth} * oldHeight > 4000000 || std::uint64_t{newWidth} * newHeight > 4000000)) {
+  // The work is the old picture, every old row made the new width, and the
+  // new picture: large ones are left to the unit tests.
+  if (allowed && (std::uint64_t{oldWidth} * oldHeight > 4000000 || std::uint64_t{oldHeight} * newWidth > 4000000 ||
+                  std::uint64_t{newWidth} * newHeight > 4000000)) {
     return 0;
   }
 
@@ -141,7 +143,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   Rows rows;
   rows.width = newWidth;
   const std::size_t newPixels = std::size_t{newWidth} * newHeight;
-  rows.keep = newPixels <= kMostCompared && std::size_t{oldWidth} * oldHeight <= kMostCompared;
+  rows.keep = newPixels <= kMostCompared && std::size_t{oldWidth} * oldHeight <= kMostCompared &&
+              std::size_t{oldHeight} * newWidth <= kMostCompared;
   const ScaleStatus begun = scaler.Begin(oldWidth, oldHeight, newWidth, newHeight, rows);
   if (!allowed) {
     BN_FUZZ_CHECK(begun == ScaleStatus::kBadSize, "a side of nothing or too long was taken");

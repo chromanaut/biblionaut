@@ -51,14 +51,13 @@ namespace bn::reader {
 //
 // A picture is fitted to the page in the same way. Its rows come from the
 // file in the order the page is read, which is not the panel's when the
-// panel is turned: so it is set into the panel kPictureBandRows panel rows
-// at a time, the file read through once for each. Each time, its rows are
-// read (draw::PngReader), made the size it is shown at (draw::Scaler) and
-// made the panel's levels (draw::Ditherer), the same each time, and the
-// pixels that fall in the band are kept, a bit each, to be written to both
-// planes. A picture whose rows need more than kPictureRowBytes, an
-// interlaced one, and a file that is not a picture are not shown, and a
-// line says why.
+// panel is turned: so the whole panel is kept, a bit a pixel, while the
+// file is read through once. Its rows are read (draw::PngReader), made the
+// size it is shown at (draw::Scaler) and made the panel's levels
+// (draw::Ditherer), and each pixel set where it falls on the panel; then
+// the whole panel is written to both planes. A picture whose rows need more
+// than kPictureRowBytes, an interlaced one, and a file that is not a
+// picture are not shown, and a line says why.
 //
 // Nothing here waits. Tick() draws for about kSliceUs and returns, so the
 // buttons and the rest of the application go on around it, a drawing of
@@ -78,8 +77,8 @@ namespace bn::reader {
 // and for the links of what is kept is taken from the heap at Start():
 // about 94 KB for the X4's panel, most of it the filler's cells, the
 // definitions and the links. What a picture
-// needs besides is taken the first time one is shown: about 78 KB, the
-// reader's window, its rows and the band of bits the most of it.
+// needs besides is taken the first time one is shown: about 110 KB, the
+// panel's bits, the reader's window and its rows the most of it.
 class DrawingViewer final : public Screen {
  public:
   // Where on storage the drawings are looked for, by the firmware and the
@@ -95,9 +94,6 @@ class DrawingViewer final : public Screen {
 
   // Rows of the panel drawn at a time.
   static constexpr std::size_t kBandRows = 16;
-  // Rows of the panel a picture is set into at a time, a bit a pixel: the
-  // picture is read once for each such band.
-  static constexpr std::size_t kPictureBandRows = 160;
   // The memory for a picture's rows as it is read (draw::PngReader::
   // RowBytesFor()). A picture that needs more is not shown.
   static constexpr std::size_t kPictureRowBytes = 16384;
@@ -151,8 +147,9 @@ class DrawingViewer final : public Screen {
   std::size_t Shown() const noexcept { return shown_; }
   // Goes round the drawings once by itself, for timing them with nobody at
   // the buttons: once each is shown, the next is begun as if Down had been
-  // pressed then, and after the last a line says the tour is over. Call
-  // before Start().
+  // pressed then, and after the last a line says the tour is over. One that
+  // cannot be shown is passed over in the same way, once its line has said
+  // why. Call before Start().
   void TourOnce() noexcept { touring_ = true; }
 
  private:
@@ -162,13 +159,13 @@ class DrawingViewer final : public Screen {
     kRecording,   // Reading the file once, and keeping what it draws for each band.
     kDrawing,     // Drawing a band from the file, when it was not kept.
     kReplaying,   // Drawing a band from what was kept.
-    kPicturing,   // Reading a picture through, for a band.
-    kWriting,     // A band drawn, to be written once the panel is free.
+    kPicturing,   // Reading a picture through, into the panel's bits.
+    kWriting,     // A band or a picture drawn, to be written once the panel is free.
     kRefreshing,  // The panel is showing what was drawn.
   };
 
-  // Where a picture's rows go: their pixels in this band of the panel,
-  // made the panel's levels.
+  // Where a picture's rows go: made the panel's levels, and set into the
+  // panel's bits.
   class PictureRows final : public draw::RowSink {
    public:
     explicit PictureRows(DrawingViewer& viewer) noexcept : viewer_(viewer) {}
@@ -192,18 +189,20 @@ class DrawingViewer final : public Screen {
   // Begins drawing `index`, from reading its size.
   void Begin(std::size_t index) noexcept;
   // The same for a picture: reads its header, fits it to the page, and
-  // begins the first band. False if it cannot be shown.
+  // begins reading it through. False if it cannot be shown.
   bool BeginPicture(std::size_t index) noexcept;
   bool PictureMemory() noexcept;
-  // Starts reading the picture through again, for the band at bandTop_.
-  bool StartPicturePass() noexcept;
   // Reads on until the time left: true when the picture has been read
-  // through for this band, or reading it failed.
+  // through, or reading it failed.
   bool FeedPicture(std::uint64_t until) noexcept;
   // A row of the picture at the size shown: made the panel's levels, and
-  // its pixels in the band kept.
+  // its dark pixels cleared in the panel's bits.
   void TakeRow(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept;
-  bool WritePictureBand() noexcept;
+  // The panel's bits, written to both planes.
+  bool WritePicture() noexcept;
+  // On a tour, once a file has been shown or found not to be showable: the
+  // next is asked for, or after the last a line says the tour is over.
+  void TourOn(std::uint64_t now) noexcept;
   // Everything is in both planes: the refresh, and the line saying so.
   void Refresh(std::uint64_t now) noexcept;
   void SayPicture() noexcept;
@@ -324,8 +323,7 @@ class DrawingViewer final : public Screen {
   std::uint64_t turnsUs_ = 0;
   std::uint64_t turnsAtRefreshUs_ = 0;
 
-  // A picture: what its header says, where it goes on the page, and which
-  // band of the panel it is being set into.
+  // A picture: what its header says, and where it goes on the page.
   bool picture_ = false;
   draw::PngHeader header_;
   std::uint32_t shownWidth_ = 0;
@@ -334,9 +332,9 @@ class DrawingViewer final : public Screen {
   std::size_t pageHeight_ = 0;
   std::size_t left_ = 0;
   std::size_t top_ = 0;
-  std::size_t passes_ = 0;
+  std::size_t passes_ = 0;  // The bands a drawing was drawn in.
   draw::PngStatus pictureStatus_ = draw::PngStatus::kOk;
-  // How long each stage took, over all the passes, a drawing's or a
+  // How long each stage took, over all the bands, a drawing's or a
   // picture's: reading the file, drawing or scaling what it holds, making
   // the panel's levels of it, writing it to the panel, and waiting for the
   // panel to be ready for a band. And how much of a drawing's file was read
@@ -356,7 +354,7 @@ class DrawingViewer final : public Screen {
   std::unique_ptr<std::uint8_t[]> pngRows_;
   std::unique_ptr<std::uint32_t[]> sums_;
   std::unique_ptr<std::uint8_t[]> scaledRow_;
-  std::unique_ptr<std::uint8_t[]> bandBits_;
+  std::unique_ptr<std::uint8_t[]> panelBits_;
   std::unique_ptr<core::BlockFile> pictureFile_;
   std::unique_ptr<draw::PngReader> png_;
   std::unique_ptr<draw::Scaler> scaler_;

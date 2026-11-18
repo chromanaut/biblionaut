@@ -243,7 +243,7 @@ def main() -> int:
             kind = "picture" if name in PICTURES else "drawing"
             expect(line.startswith(f"{kind} {names.index(name) + 1} of 4: {name}, ok, "), f"line {number + 1}: {line!r}")
         expect("left out: text," in lines[2], f"the text was not said to be left out: {lines[2]!r}")
-        expect(", 90x200 gray shown 360x800, 3 passes: reading " in lines[3], f"the picture's line: {lines[3]!r}")
+        expect(", 90x200 gray shown 360x800: reading " in lines[3], f"the picture's line: {lines[3]!r}")
         worst = 0.0
         for picture, name in zip(pictures, shown):
             dark = expected_picture(bn_png, work, name) if name in PICTURES else expected_panel(bn_svg, work, name)

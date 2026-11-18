@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <span>
 
+#include "draw/divide.h"
 #include "draw/row_sink.h"
 
 // Making a picture larger or smaller, a row at a time.
@@ -36,7 +37,9 @@
 // pixel to the next; a pixel of a row made the new width, to 256ths of a
 // gray; and a new pixel, once it has been made the new height too, to a
 // gray. So a new pixel is within a gray of what the same working-out in
-// real numbers comes to.
+// real numbers comes to. No pixel is divided as such: each number that
+// every pixel of a row is divided by is made a multiplier once
+// (draw/divide.h), which gives the same quotient.
 //
 // Memory is the caller's: two rows of the new width at four bytes a pixel,
 // and one at a byte (SumsFor(), the width itself).
@@ -124,25 +127,13 @@ class Scaler final : public RowSink {
     std::uint32_t remainder_ = 0;  // Over twice the new size.
     std::uint32_t oldSize_ = 0;
     std::uint32_t newSize_ = 0;
+    Divider twiceNew_;
   };
 
-  // A walk along an old row that gives the pixels of the new width one
-  // after another, each in 256ths of a gray.
-  class Across {
-   public:
-    void Begin(std::span<const std::uint8_t> gray, std::uint32_t newWidth) noexcept;
-    std::uint32_t Next() noexcept;
-
-   private:
-    std::span<const std::uint8_t> gray_;
-    std::uint32_t newWidth_ = 0;
-    // Made smaller or the same: the old pixel the next new one begins in,
-    // and how many of its units earlier new pixels have had.
-    std::uint32_t at_ = 0;
-    std::uint32_t used_ = 0;
-    // Made larger.
-    Blend blend_;
-  };
+  // The old row made the new width: each new pixel, in 256ths of a gray,
+  // given to `put` with its place, from the left.
+  template <typename Put>
+  void Across(std::span<const std::uint8_t> gray, Put put) const noexcept;
 
   enum class Vertical : std::uint8_t { kSame, kSmaller, kLarger };
 
@@ -162,7 +153,10 @@ class Scaler final : public RowSink {
   std::uint32_t taken_ = 0;  // Old rows taken,
   std::uint32_t given_ = 0;  // and new rows given.
 
-  Across across_;
+  // Across: made larger, the walk over the old pixels as it begins each
+  // row; made smaller, a division by the old width.
+  Blend across_;
+  Divider byOldWidth_;
 
   // Down, made smaller: which of the two rows of sums is the new row being
   // made, how many of its units it has had, and whether the other is a
@@ -170,6 +164,7 @@ class Scaler final : public RowSink {
   std::uint32_t current_ = 0;
   std::uint32_t filled_ = 0;
   bool waiting_ = false;
+  Divider byUnits_;  // By the units of a new row, in 256ths of a gray.
 
   // Down, made larger: the new rows' walk over the old ones. The two rows of
   // sums hold the last two old rows taken, an even row in the first and an

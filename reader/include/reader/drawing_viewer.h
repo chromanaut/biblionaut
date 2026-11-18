@@ -103,8 +103,9 @@ class DrawingViewer final : public Screen {
   static constexpr std::size_t kPictureRowBytes = 16384;
   // About how long one Tick() draws for.
   static constexpr std::uint64_t kSliceUs = 20'000;
-  // Bytes of a file read at a time, and kept for what a drawing defines.
-  static constexpr std::size_t kReadBytes = 1024;
+  // Bytes of a file read at a time (the card reads 4 KB at once half again
+  // as fast as a kilobyte), and kept for what a drawing defines.
+  static constexpr std::size_t kReadBytes = 8192;
   static constexpr std::size_t kDefinitionBytes = 24576;
   // The thinnest a stroke is drawn: a pixel, in 4,096ths. One much thinner
   // would be a light gray, which black and white show as a broken line.

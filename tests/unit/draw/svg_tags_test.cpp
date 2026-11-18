@@ -397,6 +397,31 @@ TEST(SvgTags, APieceOfAValueStraightFromTheBytesIsTheLastOfWhatWasTaken) {
   }
 }
 
+TEST(SvgTags, GivesALongValueOrTextInPiecesNoLongerThanTheLongest) {
+  // However much it is given at once, a piece is held to kLongestPiece,
+  // so a caller that takes the front of each and gives the rest back has
+  // no more looked at again than that.
+  const std::string value(3000, '1');
+  const std::string text(2000, 't');
+  const std::string document = "<a d='" + value + "'>" + text + "<![CDATA[" + text + "]]></a>";
+  SvgTagReader reader;
+  std::string values;
+  std::string texts;
+  std::string_view bytes = document;
+  while (!bytes.empty()) {
+    SvgTagToken token;
+    const std::size_t used = reader.Next(bytes, token);
+    if (token.ofInput) {
+      ASSERT_LE(token.text.size(), SvgTagReader::kLongestPiece);
+      (token.kind == Kind::kValue ? values : texts) += token.text;
+    }
+    bytes.remove_prefix(used);
+  }
+  EXPECT_EQ(reader.Finish(), SvgTagStatus::kOk);
+  EXPECT_EQ(values, value);
+  EXPECT_EQ(texts, text + text);
+}
+
 TEST(SvgTags, AnyBytesAtAllEndInAStatus) {
   // Made of the bytes that mean something to it, so that every state it
   // has is reached, and of every byte there is.

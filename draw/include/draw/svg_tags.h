@@ -33,8 +33,9 @@ struct SvgTagToken {
 
   Kind kind = Kind::kNone;
   // A name is whole, and is the reader's own copy. A piece of a value or
-  // of text is as much as was to hand, and may be any length from one
-  // byte up. Either is good until the reader is next called.
+  // of text is as much as was to hand, up to SvgTagReader::kLongestPiece
+  // bytes, and may be any length from one byte up to that. Either is good
+  // until the reader is next called.
   std::string_view text;
   // With kOpened: the element is over as well, having been written `<a/>`.
   bool empty = false;
@@ -56,7 +57,8 @@ struct SvgTagToken {
 // It gives out one thing at a call: an element's name, an attribute's
 // name, a piece of a value, the end of an element's attributes, an
 // element's end, a piece of text. So whoever calls it decides how much is
-// done at a time, and each byte is looked at once.
+// done at a time, and each byte is looked at once, unless a piece is
+// given back.
 //
 // What it reads of XML: elements and attributes, with either kind of
 // quote; `&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;` and characters by
@@ -80,6 +82,10 @@ struct SvgTagToken {
 class SvgTagReader {
  public:
   static constexpr std::size_t kLongestName = 40;
+  // The most bytes a piece of a value or of text is. A caller that takes
+  // only the front of a piece gives the rest back, to be looked at again:
+  // so what a call looks at is held to this, however much it is given.
+  static constexpr std::size_t kLongestPiece = 512;
 
   // Reads from the front of `bytes` as far as the next thing there is to
   // tell, puts that in `token`, and returns how many bytes it took: the

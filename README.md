@@ -239,7 +239,7 @@ renderer left
 out:
 
 ```
-drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 28 ms
+drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 30 ms
 ```
 
 That is an engraving of 932 KB from a public book, drawn by the optimised
@@ -253,14 +253,14 @@ drawing): what it draws for each band of the panel ("Keeping a drawing",
 below). Each band is then drawn from what was kept, its own part and no
 more. If the card will not keep it, or it would be more than 4 MB, the
 drawing is read again for each band instead, as it could always be, and a
-line says why. The viewer takes about 94 KB of the heap when it starts:
+line says why. The viewer takes about 101 KB of the heap when it starts:
 26 KB for the filler's cells, which also hold what each band has in hand
 while the file is read, 24 KB for what a drawing defines, 16 KB for the
 links of what is kept, 13 KB for a band of grays, which also gathers what
 is kept into writes of up to 8 KB while the file is read, since the card
 writes a few kilobytes at once faster than a chunk at a time, 8 KB for the renderer, a
 kilobyte for the recorder, and 6 KB for what is carried in dithering, a
-band of bits and a kilobyte of the file read at a time.
+band of bits, and 8 KB of the file read at a time.
 The trace has a span for each drawing or picture, from the press to the
 refresh, and the metrics the time the last took (`drawing_ms`).
 
@@ -277,8 +277,8 @@ long drawing the bands from it took; or why the drawing was not kept. A
 picture's says how long its refresh took.
 
 ```
-drawing 2 timed: 30 bands, 911 KB read in 2 ms; rendering 12 ms, dithering 6 ms, writing 0 ms, waiting 5 ms, other 0 ms, between turns 0 ms, refreshing 1719 ms
-drawing 2 timed: spool 619 KB written in 0 ms (78 writes), 619 KB read in 1 ms; replaying 3 ms
+drawing 2 timed: 30 bands, 918 KB read in 2 ms; rendering 13 ms, dithering 6 ms, writing 0 ms, waiting 4 ms, other 0 ms, between turns 0 ms, refreshing 1710 ms
+drawing 2 timed: spool 619 KB written in 0 ms (78 writes), 619 KB read in 0 ms; replaying 3 ms
 ```
 
 That is the same engraving as above, 932 KB read once for its size and
@@ -2455,7 +2455,11 @@ strip only what it defines for later use.
   at once, and a drawing can have a tag of megabytes: the outline of an
   engraving is one attribute, and so is a picture inside a cover. So this
   reader gives an attribute's value out in pieces as it arrives and keeps
-  none of it. It reads elements and attributes, the five entities,
+  none of it. A piece is at most 512 bytes (`kLongestPiece`), however much
+  the reader is given at once: the renderer takes the front of a piece and
+  gives the rest back, and without that limit the rest would be looked at
+  again at every call. Read 8 KB at a time on the X4, the largest engraving
+  took 9.6 s to render without it and 7.0 s with it. It reads elements and attributes, the five entities,
   characters by number and text marked as CDATA, and passes over comments,
   processing instructions and a document type. It does not check that an
   element is closed by its own name, and an entity that a file declares
@@ -2826,23 +2830,31 @@ the X4, the largest drawing in the public books, 3.5 MB, took 354 s in 30
 bands, about 5 s of reading the card and 5 s of rendering a pass. So a
 drawing can be read once and kept, and each strip drawn from what was
 kept. Kept so, with the loop pausing only when there is nothing to do
-("The watchdog", below), and what is kept written 8 KB at a time, it takes
-20 s, from the press to the refresh:
+("The watchdog", below), what is kept written 8 KB at a time, and the file
+read 8 KB at a time, it takes 17 s, from the press to the refresh:
 
-| On the X4, 2026-11-17 | Read each band | Kept | The loop not pausing | Written 8 KB at a time |
-|---|---|---|---|---|
-| The largest engraving, 3.5 MB | 354 s | 31.1 s | 25.6 to 27.2 s | 20.1 s |
-| An engraving of 1.8 MB | | 17.2 s | 14.4 to 14.9 s | 11.4 s |
-| An engraving of 17 shapes, 932 KB | | 11.2 s | 8.3 to 8.5 s | 6.5 s |
-| Drawings of 4 to 52 KB: of strokes, a formula, the samples below | | 1.0 to 1.8 s | 0.6 to 1.2 s | 0.6 to 1.1 s |
+| On the X4, 2026-11-17 | Read each band | Kept | The loop not pausing | Written 8 KB at a time | Read 8 KB at a time |
+|---|---|---|---|---|---|
+| The largest engraving, 3.5 MB | 354 s | 31.1 s | 25.6 to 27.2 s | 20.1 s | 17.4 s |
+| An engraving of 1.8 MB | | 17.2 s | 14.4 to 14.9 s | 11.4 s | 10.0 s |
+| An engraving of 17 shapes, 932 KB | | 11.2 s | 8.3 to 8.5 s | 6.5 s | 5.7 s |
+| Drawings of 4 to 52 KB: of strokes, a formula, the samples below | | 1.0 to 1.8 s | 0.6 to 1.2 s | 0.6 to 1.1 s | 0.5 to 1.0 s |
 
-Of the 20 s: reading the file once, 5.1 s (0.66 MB/s); rendering into
-what is kept, 8.2 s; writing what is kept, 1.85 MB in 232 writes, 1.9 s
-(0.95 MB/s, against 0.25 MB/s written a chunk of 512 bytes at a time);
-reading it back, a chunk at a time, 2.6 s; drawing the bands from it, 1.2
-s; dithering, 0.3 s; waiting for the panel, 0.5 s; and 0.1 s between the
-viewer's turns. The refresh after them takes 3.7 s, or 1.7 s for a half
-refresh.
+Of the 17 s: reading the file once, 3.3 s (1.0 MB/s, against 0.66 MB/s
+read a kilobyte at a time); rendering into what is kept, 7.0 s; writing
+what is kept, 1.85 MB in 232 writes, 2.2 s (0.84 MB/s, against 0.25 MB/s
+written a chunk of 512 bytes at a time); reading it back, a chunk at a
+time, 2.7 s; drawing the bands from it, 1.2 s; dithering, 0.3 s; waiting
+for the panel, 0.5 s; and 0.03 s between the viewer's turns. The refresh
+after them takes 3.7 s, or 1.7 s for a half refresh.
+
+The X4's card reads faster the more it is asked for at once, 2 MB read
+straight through: 0.73 MB/s at 512 bytes a read, 0.89 MB/s at a
+kilobyte, 1.38 MB/s at 4 KB, 1.52 MB/s at 8 KB and 1.64 MB/s at 32 KB.
+Reads of 512 bytes scattered over the file came to the same rate as reads
+of 512 bytes one after another: what costs is how many reads there are.
+While a drawing is kept, the file's reads take turns with the writes of
+what is kept, and come to less than these rates.
 
 What a renderer draws into is a `Canvas` (`draw/fill.h`): the lines of
 each shape's outline, in pixels, and then the shape's filling. A `Filler`

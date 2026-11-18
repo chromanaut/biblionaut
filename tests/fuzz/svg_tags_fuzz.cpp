@@ -16,7 +16,8 @@
 //     it has taken all of it;
 //   - a call takes a byte or tells something, so there are no more calls
 //     than twice the bytes: it cannot be made to go round;
-//   - a piece said to be of the input is the last of the bytes just taken;
+//   - a piece said to be of the input is the last of the bytes just taken,
+//     and no longer than kLongestPiece;
 //   - until reading fails, Offset() is how many bytes it has taken and
 //     not been handed back, and when an element begins or ends,
 //     TagOffset() is where its tag's `<` is, with the name it tells after
@@ -113,6 +114,8 @@ Reading Read(std::string_view file, std::size_t piece, std::size_t taken) {
         BN_FUZZ_CHECK(token.kind == Kind::kValue || token.kind == Kind::kText, "a name was said to be of the input");
         BN_FUZZ_CHECK(token.text.data() + token.text.size() == bytes.data() + took,
                       "a piece of the input is not the last of the bytes taken");
+        BN_FUZZ_CHECK(token.text.size() <= SvgTagReader::kLongestPiece,
+                      "a piece of the input is longer than any may be");
         // Only the front of it is wanted: the rest goes back, and comes
         // again.
         if (token.text.size() > taken) {

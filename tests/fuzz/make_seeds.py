@@ -1567,9 +1567,9 @@ def picture_cache_file(width: int, height: int, levels: int, turn: int, rows: by
     """A file as the cache writes it: the header, then the rows."""
     header = bytearray(64)
     header[0:4] = b"BNPC"
-    struct.pack_into("<HHHHB", header, 4, 1, levels, width, height, turn)
-    struct.pack_into("<QIII", header, 16, 0x0123456789ABCDEF, 4096, 77, zlib.crc32(rows))
-    struct.pack_into("<I", header, 36, zlib.crc32(bytes(header[:36])))
+    struct.pack_into("<HHHHB", header, 4, 2, levels, width, height, turn)
+    struct.pack_into("<QIIII", header, 16, 0x0123456789ABCDEF, 4096, 77, zlib.crc32(rows), 5)
+    struct.pack_into("<I", header, 40, zlib.crc32(bytes(header[:40])))
     return bytes(header) + rows
 
 

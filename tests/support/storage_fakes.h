@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "core/storage.h"
@@ -179,7 +180,13 @@ class FakeStorage final : public core::Storage {
       return core::StorageStatus::kFailed;  // No gaps.
     }
     if (data.size() < offset + src.size()) {
-      data.resize(offset + src.size());
+      // Grown into a block of its own, never into the spare room of the
+      // old one: libFuzzer brings a copy of this vector's code built without
+      // AddressSanitizer, and bytes it adds within the spare room are taken
+      // for bytes past the end.
+      Bytes grown(offset + src.size());
+      std::copy(data.begin(), data.end(), grown.begin());
+      data = std::move(grown);
     }
     std::memcpy(data.data() + offset, src.data(), src.size());
     entries.at(found->path).modified = ++writeStamp_;

@@ -1,5 +1,7 @@
 #include "draw/svg_tags.h"
 
+#include <algorithm>
+
 namespace bn::draw {
 
 namespace {
@@ -148,7 +150,8 @@ std::size_t SvgTagReader::Next(std::string_view bytes, SvgTagToken& token) noexc
     switch (state_) {
       case State::kContent: {
         const std::size_t from = at;
-        while (at < size && bytes[at] != '<' && bytes[at] != '&') {
+        const std::size_t end = std::min(size, from + kLongestPiece);
+        while (at < end && bytes[at] != '<' && bytes[at] != '&') {
           ++at;
         }
         if (at > from) {
@@ -263,7 +266,8 @@ std::size_t SvgTagReader::Next(std::string_view bytes, SvgTagToken& token) noexc
 
       case State::kValue: {
         const std::size_t from = at;
-        while (at < size && bytes[at] != quote_ && bytes[at] != '&') {
+        const std::size_t end = std::min(size, from + kLongestPiece);
+        while (at < end && bytes[at] != quote_ && bytes[at] != '&') {
           ++at;
         }
         if (at > from) {
@@ -388,7 +392,8 @@ std::size_t SvgTagReader::Next(std::string_view bytes, SvgTagToken& token) noexc
         // it is part of that: `matched_` is how many are.
         if (matched_ == 0) {
           const std::size_t from = at;
-          while (at < size && bytes[at] != ']') {
+          const std::size_t end = std::min(size, from + kLongestPiece);
+          while (at < end && bytes[at] != ']') {
             ++at;
           }
           if (at > from) {

@@ -2179,6 +2179,19 @@ bool SvgRenderer::OpenRoot() noexcept {
   }
   if (placed) {
     pending_.matrix = Multiply(place_, pending_.matrix, clamped);
+    // Nothing is drawn outside the picture, whatever the drawing's
+    // `overflow` says: there is nothing there to draw on. Placed turned
+    // other than by quarters, the picture is no box of pixels, and what
+    // lies outside it is drawn.
+    const bool square = place_.b == 0 && place_.c == 0;
+    const bool quarter = place_.a == 0 && place_.d == 0;
+    if (square || quarter) {
+      const Point one = Apply(place_, {.x = 0, .y = 0}, clamped);
+      const Point other = Apply(place_, {.x = width_, .y = height_}, clamped);
+      pending_.boxed = true;
+      pending_.boxFrom = {.x = std::min(one.x, other.x), .y = std::min(one.y, other.y)};
+      pending_.boxTo = {.x = std::max(one.x, other.x), .y = std::max(one.y, other.y)};
+    }
   }
   if (clamped) {
     Note(SvgLeftOut::kHeldNumber);

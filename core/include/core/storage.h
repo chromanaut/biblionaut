@@ -49,6 +49,10 @@ inline constexpr DirectoryHandle kNoDirectory = -1;
 struct FileInfo {
   std::uint32_t size = 0;  // Bytes; 0 for a directory.
   bool isDirectory = false;
+  // When the file was last written, as a number that changes when it is:
+  // FAT's date and time on a card (the date in the top half), seconds since
+  // 1970 on the desktop. 0 where storage does not say.
+  std::uint32_t modified = 0;
 };
 
 // Whether `path` is one storage accepts. The rule is the same on every

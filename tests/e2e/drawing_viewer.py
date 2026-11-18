@@ -200,12 +200,16 @@ def compare(shown: list[list[int]], dark: list[list[float]], what: str) -> float
     return worst
 
 
-def log_lines(bn_trace: str, capture: Path, timed: bool = False) -> list[str]:
-    """The lines of log text the viewer sent: those that say what each drawing came to, or those that say where its
-    time went."""
+def log_lines(bn_trace: str, capture: Path, kind: str = "what") -> list[str]:
+    """The lines of log text the viewer sent: those that say what each drawing came to ("what"), those that say where
+    its time went ("timed"), or those that say what the cache did ("cache")."""
     done = run([bn_trace, capture])
     lines = [line.split(" log  ", 1)[1] for line in done.stdout.decode("utf-8", "replace").splitlines() if " log  " in line]
-    return [line for line in lines if (" timed: " in line) == timed]
+
+    def kind_of(line: str) -> str:
+        return "timed" if " timed: " in line else "cache" if " cache: " in line else "what"
+
+    return [line for line in lines if kind_of(line) == kind]
 
 
 def main() -> int:
@@ -226,6 +230,8 @@ def main() -> int:
         for seconds in (4, 8, 16):
             for old in work.glob("panel-*.png"):
                 old.unlink()
+            # Nothing kept from the attempt before.
+            shutil.rmtree(work / "card" / ".picture-cache", ignore_errors=True)
             presses = ",".join(f"{seconds * 1000 * step}:down" for step in (1, 2, 3, 4))
             environment = {**os.environ, "BN_STORAGE": str(work / "card"), "BN_DRAWINGS": "1",
                            "BN_DISPLAY_OUT": str(work / "panel"), "BN_SERIAL_OUT": str(work / "serial.bin"),
@@ -237,11 +243,16 @@ def main() -> int:
                 break
         pictures = sorted(work.glob("panel-*.png"))
         expect(len(pictures) == 5, f"the panel was refreshed {len(pictures)} times, not 5: {lines}")
-        # Each line says which drawing or picture it was, and what it came to.
+        # Each line says which drawing or picture it was, and what it came to;
+        # the first, gone round to, comes from the cache.
         shown = [names[0], names[1], names[2], names[3], names[0]]
         for number, (line, name) in enumerate(zip(lines, shown)):
             kind = "picture" if name in PICTURES else "drawing"
-            expect(line.startswith(f"{kind} {names.index(name) + 1} of 4: {name}, ok, "), f"line {number + 1}: {line!r}")
+            came = "from the cache" if number == 4 else "ok"
+            expect(line.startswith(f"{kind} {names.index(name) + 1} of 4: {name}, {came}, "), f"line {number + 1}: {line!r}")
+        cached = log_lines(bn_trace, work / "serial.bin", "cache")
+        expect(len(cached) == 5 and all(" cache: kept, " in line for line in cached[:4]) and " cache: read " in cached[4],
+               f"what the cache did: {cached}")
         expect("left out: text," in lines[2], f"the text was not said to be left out: {lines[2]!r}")
         expect(", 90x200 gray shown 360x800: reading " in lines[3], f"the picture's line: {lines[3]!r}")
         worst = 0.0
@@ -251,8 +262,8 @@ def main() -> int:
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
-    print(f"3 drawings and a picture shown and gone round, each as bn-svg draws it or bn-png reads it turned onto "
-          f"the panel, every block of "
+    print(f"3 drawings and a picture shown and gone round, the first again from the cache, each as bn-svg draws it "
+          f"or bn-png reads it turned onto the panel, every block of "
           f"{BLOCK} by {BLOCK} pixels within {worst:.3f} of as dark as it should be")
     return 0
 

@@ -103,7 +103,7 @@ void App::ViewDrawings(std::string_view folder, bool tour) noexcept {
     drawingViewer_ =
         new (std::nothrow) DrawingViewer(services_.display, services_.clock, services_.storage, stream_, folder);
     if (drawingViewer_ != nullptr && tour) {
-      drawingViewer_->TourOnce();
+      drawingViewer_->Tour();
     }
     screen_ = drawingViewer_;
   }

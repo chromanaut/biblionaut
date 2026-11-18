@@ -143,8 +143,8 @@ class App {
   // before the panel is, and the first drawing comes up once it is. Call
   // before Start(). Not together with the checks, which would take the
   // card's time while drawings are being read from it.
-  // With `tour`, the viewer goes round the drawings once by itself
-  // (DrawingViewer::TourOnce()).
+  // With `tour`, the viewer goes round the drawings twice by itself
+  // (DrawingViewer::Tour()).
   void ViewDrawings(std::string_view folder, bool tour = false) noexcept;
   // The viewer, if ViewDrawings() was called; null otherwise.
   const DrawingViewer* DrawingsViewer() const noexcept { return drawingViewer_; }

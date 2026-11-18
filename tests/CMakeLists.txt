@@ -93,6 +93,7 @@ bn_add_unit_test(draw_tests
     unit/draw/fill_test.cpp
     unit/draw/fixed_test.cpp
     unit/draw/flatten_test.cpp
+    unit/draw/picture_cache_test.cpp
     unit/draw/png_test.cpp
     unit/draw/scale_test.cpp
     unit/draw/spool_test.cpp

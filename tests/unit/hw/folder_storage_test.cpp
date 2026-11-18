@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -212,6 +213,30 @@ TEST(FolderStorage, SaysWhatIsAtAPath) {
   EXPECT_EQ(info.size, 0u);
   EXPECT_EQ(fixture.storage->Stat("/nothing", info), StorageStatus::kNotFound);
   EXPECT_EQ(fixture.storage->Stat("/book.epub/inside", info), StorageStatus::kNotFound);
+}
+
+TEST(FolderStorage, SaysWhenAFileWasLastWritten) {
+  // In seconds, as the folder's own times say, by Stat() and by a listing
+  // alike; and later once it is written again.
+  FolderFixture fixture;
+  fixture.Put("a.svg", "<svg/>");
+  const auto at = std::filesystem::file_time_type::clock::now() - std::chrono::hours(48);
+  std::filesystem::last_write_time(fixture.folder / "a.svg", at);
+  FileInfo before;
+  ASSERT_EQ(fixture.storage->Stat("/a.svg", before), StorageStatus::kOk);
+  EXPECT_NE(before.modified, 0u);
+  DirectoryHandle directory = kNoDirectory;
+  ASSERT_EQ(fixture.storage->OpenDirectory("/", directory), StorageStatus::kOk);
+  std::array<char, 255> name{};
+  std::size_t length = 0;
+  FileInfo listed;
+  ASSERT_EQ(fixture.storage->NextInDirectory(directory, name, length, listed), StorageStatus::kOk);
+  fixture.storage->CloseDirectory(directory);
+  EXPECT_EQ(listed.modified, before.modified);
+  fixture.Put("a.svg", "<svg />");
+  FileInfo after;
+  ASSERT_EQ(fixture.storage->Stat("/a.svg", after), StorageStatus::kOk);
+  EXPECT_GE(after.modified, before.modified + (47 * 3600));
 }
 
 // Everything a listing of `path` gives, as "name" for a directory and

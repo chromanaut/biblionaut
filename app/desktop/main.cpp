@@ -42,8 +42,8 @@ void PrintUsage(const char* program) {
                "that folder's layout folder set in lines, at the same moments.\n"
                "Set BN_DRAWINGS instead to have the SVG and PNG files in that folder's\n"
                "drawings folder shown in place of the test pattern, Down and Up going from\n"
-               "one to the next; and BN_DRAWING_TOUR as well to have it go round them once\n"
-               "by itself.\n",
+               "one to the next; and BN_DRAWING_TOUR as well to have it go round them\n"
+               "twice by itself.\n",
                program);
 }
 

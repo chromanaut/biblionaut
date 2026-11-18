@@ -224,7 +224,7 @@ class SdCardStorage final : public core::Storage {
       return status;
     }
     if (path.size() == 1) {
-      info = {.size = 0, .isDirectory = true};  // FatFS has no entry for the top directory.
+      info = {.size = 0, .isDirectory = true, .modified = 0};  // FatFS has no entry for the top directory.
       return StorageStatus::kOk;
     }
     const FatPath name(path);
@@ -235,6 +235,7 @@ class SdCardStorage final : public core::Storage {
     }
     info.isDirectory = (found.fattrib & AM_DIR) != 0;
     info.size = info.isDirectory ? 0 : found.fsize;
+    info.modified = (std::uint32_t{found.fdate} << 16U) | found.ftime;
     return StorageStatus::kOk;
   }
 
@@ -318,6 +319,7 @@ class SdCardStorage final : public core::Storage {
       }
       info.isDirectory = (item.fattrib & AM_DIR) != 0;
       info.size = info.isDirectory ? 0 : item.fsize;
+      info.modified = (std::uint32_t{item.fdate} << 16U) | item.ftime;
       std::memcpy(name.data(), itemName.data(), itemName.size());
       length = itemName.size();
       return StorageStatus::kOk;

@@ -1559,6 +1559,36 @@ def scale_seeds() -> None:
     seed("no-pixels", (19, 19), (7, 7), b"")
 
 
+# ---- picture_cache: byte 0 (what is mended, how many rows a call), then a
+# file of the cache ----
+
+
+def picture_cache_file(width: int, height: int, levels: int, turn: int, rows: bytes) -> bytes:
+    """A file as the cache writes it: the header, then the rows."""
+    header = bytearray(64)
+    header[0:4] = b"BNPC"
+    struct.pack_into("<HHHHB", header, 4, 1, levels, width, height, turn)
+    struct.pack_into("<QIII", header, 16, 0x0123456789ABCDEF, 4096, 77, zlib.crc32(rows))
+    struct.pack_into("<I", header, 36, zlib.crc32(bytes(header[:36])))
+    return bytes(header) + rows
+
+
+def picture_cache_seeds() -> None:
+    clear("picture_cache")
+    random.seed(64)
+    for name, width, height, levels in (("two-levels", 20, 10, 2), ("four-levels", 13, 7, 4),
+                                        ("sixteen-levels", 9, 4, 16), ("gray", 5, 3, 256), ("one-row", 300, 1, 2)):
+        bits = 1 if levels <= 2 else 2 if levels <= 4 else 4 if levels <= 16 else 8
+        row_bytes = (width * bits + 7) // 8
+        rows = bytes(random.randrange(256) for _ in range(row_bytes * height))
+        file = picture_cache_file(width, height, levels, 1, rows)
+        write("picture_cache", name, bytes([0b00011]) + file)
+        write("picture_cache", name + "-unmended", bytes([0b10100]) + file)
+    rows = bytes(range(60))
+    write("picture_cache", "cut-short", bytes([0b00111]) + picture_cache_file(20, 10, 2, 0, rows)[:90])
+    write("picture_cache", "not-a-picture", bytes([0b00001]) + b"<svg/>" * 20)
+
+
 def main() -> None:
     inflate_seeds()
     zip_seeds()
@@ -1577,6 +1607,7 @@ def main() -> None:
     paragraph_seeds()
     png_seeds()
     scale_seeds()
+    picture_cache_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

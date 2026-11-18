@@ -1581,6 +1581,28 @@ TEST(SvgRender, APictureTurnedByQuartersIsThePictureTurned) {
   }
 }
 
+TEST(SvgRender, NothingIsDrawnOutsideThePictureItIsPlacedIn) {
+  // A drawing 20 by 20 whose shapes reach past its view box on every side,
+  // put in the middle of a picture 40 by 40, upright and turned a quarter:
+  // all of the picture's 20 by 20 is covered, and nothing around it, as
+  // when it says its `overflow` is to be seen.
+  constexpr Coefficient kOne = kCoefficientOne;
+  for (const std::string_view overflow : {"", " overflow='visible'"}) {
+    const std::string file = "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'" + std::string(overflow) +
+                             "><rect x='-10' y='-10' width='40' height='40'/></svg>";
+    for (const Matrix& place : {Matrix{.a = kOne, .b = 0, .c = 0, .d = kOne, .e = Pixels(10), .f = Pixels(10)},
+                                Matrix{.a = 0, .b = -kOne, .c = kOne, .d = 0, .e = Pixels(10), .f = Pixels(30)}}) {
+      const Drawing placed = DrawPlaced(file, 20, 20, place, 40, 40, 16);
+      for (std::size_t y = 0; y < 40; ++y) {
+        for (std::size_t x = 0; x < 40; ++x) {
+          const bool inside = x >= 10 && x < 30 && y >= 10 && y < 30;
+          ASSERT_EQ(placed.At(x, y), inside ? kBlack : kWhite) << x << "," << y << overflow;
+        }
+      }
+    }
+  }
+}
+
 TEST(SvgRender, APictureIsPutWhereItsPlaceSays) {
   // Moved into the middle of a larger picture.
   const std::string file = Svg(10, 10, "<rect width='10' height='10'/>");

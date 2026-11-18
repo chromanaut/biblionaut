@@ -30,6 +30,9 @@ class FakeStorage final : public core::Storage {
     bool isDirectory = false;
     Bytes data;     // What a read sees.
     Bytes durable;  // What would be left after a loss of power.
+    // When it was last written: a count of the writes to every file, so
+    // each write is later than the one before.
+    std::uint32_t modified = 0;
   };
 
   static Entry Directory() {
@@ -52,7 +55,7 @@ class FakeStorage final : public core::Storage {
     for (std::size_t slash = path.find('/', 1); slash != std::string::npos; slash = path.find('/', slash + 1)) {
       entries[path.substr(0, slash)] = Directory();
     }
-    entries[path] = Entry{.data = contents, .durable = contents};
+    entries[path] = Entry{.data = contents, .durable = contents, .modified = ++writeStamp_};
   }
   bool Has(const std::string& path) const { return entries.contains(path); }
   const Bytes& Contents(const std::string& path) const { return entries.at(path).data; }
@@ -118,6 +121,7 @@ class FakeStorage final : public core::Storage {
       // Emptying a file is itself only safe once synced: until then a loss
       // of power leaves what was there.
       entries[name].data.clear();
+      entries[name].modified = ++writeStamp_;
     }
     *place = OpenFile{.inUse = true, .writable = create, .path = name};
     file = static_cast<core::FileHandle>(place - open_.begin());
@@ -178,6 +182,7 @@ class FakeStorage final : public core::Storage {
       data.resize(offset + src.size());
     }
     std::memcpy(data.data() + offset, src.data(), src.size());
+    entries.at(found->path).modified = ++writeStamp_;
     return core::StorageStatus::kOk;
   }
 
@@ -206,6 +211,7 @@ class FakeStorage final : public core::Storage {
     }
     info.isDirectory = found->second.isDirectory;
     info.size = static_cast<std::uint32_t>(found->second.data.size());
+    info.modified = found->second.modified;
     return core::StorageStatus::kOk;
   }
 
@@ -322,6 +328,7 @@ class FakeStorage final : public core::Storage {
       length = itemName.size();
       info.isDirectory = found->second.isDirectory;
       info.size = static_cast<std::uint32_t>(found->second.data.size());
+      info.modified = found->second.modified;
       return core::StorageStatus::kOk;
     }
     return core::StorageStatus::kOk;
@@ -435,6 +442,7 @@ class FakeStorage final : public core::Storage {
 
   std::vector<OpenFile> open_ = std::vector<OpenFile>(kMaxOpen);  // As many as a device allows.
   std::vector<Listing> listed_ = std::vector<Listing>(kMaxListed);
+  std::uint32_t writeStamp_ = 0;  // The last write's Entry::modified.
 };
 
 }  // namespace bn::test

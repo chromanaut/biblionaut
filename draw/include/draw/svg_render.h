@@ -122,7 +122,9 @@ struct SvgSize {
 //
 // - The whole drawing is fitted to the picture: its `viewBox`, where
 //   `preserveAspectRatio` puts it; or, with no view box, its width and
-//   height stretched to the picture's.
+//   height stretched to the picture's. Nothing is drawn outside the
+//   picture, whatever its `overflow` says, unless PlaceOn() turns it other
+//   than by quarters.
 // - `svg`, `g`, `a` and `switch` are groups: a `transform`, and paint that
 //   what is inside them takes unless it has its own. An `svg` inside
 //   another has its own place, size and view box, and what is in it is

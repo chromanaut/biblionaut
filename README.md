@@ -216,10 +216,10 @@ BN_STORAGE=card BN_DRAWINGS=1 ./build/window/app/desktop/biblionaut-desktop --wi
 A firmware built with `-DBN_DRAWING_VIEWER=ON` does the same with
 `/drawings` on its card. Nothing else drives the panel then, and none of
 the checks can be asked for with it. With `-DBN_DRAWING_TOUR=ON` as well,
-or `BN_DRAWING_TOUR` set on the desktop, it goes round the drawings once by
-itself, each begun as its last refresh ends, as if Down had been pressed
-then, and a line says when the tour is over: for timing them with nobody
-at the buttons. One that cannot be shown is passed over in the same way,
+or `BN_DRAWING_TOUR` set on the desktop, it goes round the drawings twice
+by itself, the second time from the cache (below), each begun as its last
+refresh ends, as if Down had been pressed then, and a line says when the
+tour is over: for timing them with nobody at the buttons. One that cannot be shown is passed over in the same way,
 once its line has said why.
 
 ```
@@ -240,7 +240,7 @@ renderer left
 out:
 
 ```
-drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 30 ms
+drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 29 ms
 ```
 
 That is an engraving of 932 KB from a public book, drawn by the optimised
@@ -254,14 +254,35 @@ drawing): what it draws for each band of the panel ("Keeping a drawing",
 below). Each band is then drawn from what was kept, its own part and no
 more. If the card will not keep it, or it would be more than 4 MB, the
 drawing is read again for each band instead, as it could always be, and a
-line says why. The viewer takes about 101 KB of the heap when it starts:
+line says why. The viewer takes about 103 KB of the heap when it starts:
 26 KB for the filler's cells, which also hold what each band has in hand
 while the file is read, 24 KB for what a drawing defines, 16 KB for the
 links of what is kept, 13 KB for a band of grays, which also gathers what
 is kept into writes of up to 8 KB while the file is read, since the card
 writes a few kilobytes at once faster than a chunk at a time, 8 KB for the renderer, a
-kilobyte for the recorder, and 6 KB for what is carried in dithering, a
-band of bits, and 8 KB of the file read at a time.
+kilobyte for the recorder, 6 KB for what is carried in dithering and a
+band of bits, 8 KB of the file read at a time, and 2 KB for a band of what
+goes to the cache or comes from it.
+
+What is shown is kept as well, in the cache of pictures on the card
+(`/.picture-cache`, "Keeping what is shown", below): the drawing or the
+picture as it lies on the panel, the size it is shown and in the panel's
+levels. Shown again, while its file is the same size and was last written
+at the same time, it is read from there a band at a time and written to
+the panel, and nothing is drawn. What the cache does not have is drawn,
+and kept as its bands are written; what it has damaged, or half written
+by a press that gave it up, is drawn and kept again. A drawing whose file
+could not all be read, or a picture not read whole, is not kept. A line
+says what the cache did:
+
+```
+drawing 2 cache: kept, 22 KB in 1 ms
+drawing 2 of 3: lewis-carroll-illustration-7.svg, from the cache, 5 ms
+drawing 2 cache: read 22 KB in 0 ms
+```
+
+That is the same engraving, the first time and then gone back to, on the
+optimised desktop application.
 The trace has a span for each drawing or picture, from the press to the
 refresh, and the metrics the time the last took (`drawing_ms`).
 
@@ -278,8 +299,8 @@ long drawing the bands from it took; or why the drawing was not kept. A
 picture's says how long its refresh took.
 
 ```
-drawing 2 timed: 30 bands, 918 KB read in 2 ms; rendering 13 ms, dithering 6 ms, writing 0 ms, waiting 4 ms, other 0 ms, between turns 0 ms, refreshing 1710 ms
-drawing 2 timed: spool 619 KB written in 0 ms (78 writes), 619 KB read in 0 ms; replaying 3 ms
+drawing 2 timed: 30 bands, 918 KB read in 0 ms; rendering 12 ms, dithering 6 ms, writing 0 ms, waiting 5 ms, other 0 ms, between turns 0 ms, refreshing 1719 ms
+drawing 2 timed: spool 623 KB written in 0 ms (78 writes), 623 KB read in 0 ms; replaying 3 ms
 ```
 
 That is the same engraving as above, 932 KB read once for its size and
@@ -489,7 +510,10 @@ Files are reached through three things in `core`:
   read and write at an offset, sync, the handful of calls that work on
   names, and listing a directory. Every call says how it ended
   (`StorageStatus`), and every port accepts the same paths, which are the
-  ones an SD card can hold.
+  ones an SD card can hold. `Stat()` and the listing say of a file its size
+  and when it was last written (`FileInfo::modified`: FAT's date and time
+  on a card, seconds on the desktop), which is how something made from a
+  file, such as a picture in the cache, is known to be out of date.
 - `core/block_file.h` is what code reads and writes files with. It keeps a
   position and a buffer of its own, asks storage for whole blocks at
   multiples of the block size, and counts what it asks for (`sd_reads`,
@@ -1626,6 +1650,7 @@ call may.
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
 | `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, gives the filler more than `kMostLinesPerStep` lines, fills more than one shape or stroke, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte; and so is the file kept by a `SpoolWriter` and given back a band at a time, each step of which reads a chunk and fills once at the most |
 | `png` | `draw::PngReader`, four ways: for the header alone with no memory, with the room and the pieces the input chooses, with all the room it needs, and against a plain reading of the same file with zlib (`tests/support/png_reference.h`) | No step takes more from its source than `MostInputPerStep()`, and the header alone takes 33 bytes. Rows come in order, each as wide as the picture, and a picture is whole only with all of them. It has no room only when it has less than `RowBytesFor()`, and a picture is interlaced only if it says so. The header alone says what the whole reading says of it. With the room it needs it gives the same rows in any pieces. The rows are the plain reading's, and it ends where and as that does, but for data the inflater refuses as bad that zlib takes |
+| `picture_cache` | `draw::PictureCache`, reading a file the card holds, as the picture it says it is or as another, its checksums mended or not | Reading ends in a status, and no file is left open. Rows are given only whole, and only as many as the picture has. A picture read through without complaint is the file's own rows, the picture asked for, with the checksum its header gives; and kept again it reads back the same |
 | `scale` | `draw::Scaler`, from sizes the input gives (sides of nothing and past the largest among them) and its pixels, sometimes all one gray, sometimes with an old row given out of turn | A side of nothing or too long is refused and nothing is given. `Row()` gives no new row and `Step()` one at the most; the new rows come in order, each as wide as the new picture, as many as it is high. A row out of turn stops it. Every new pixel is within a gray of the working-out in real numbers, and a picture of one gray stays that gray |
 
 The `package` and `toc` targets do not take a ZIP file as their input:
@@ -2503,7 +2528,9 @@ strip only what it defines for later use.
   has its own place, size and view box, and what is in it is cut off at
   its edges unless its `overflow` says it may show beyond them. The whole
   drawing is fitted to the picture by its `viewBox` and
-  `preserveAspectRatio`.
+  `preserveAspectRatio`, and nothing is drawn outside the picture,
+  whatever its `overflow` says: placed in a larger one, as the viewer
+  places it on the page, it covers its own part and no more.
 - **What a file defines**: `use` draws again something that `defs` holds,
   moved by the transform of the `use` and then by its `x` and `y`, and
   painted as the `use` is where it says nothing of its own. A `symbol` is
@@ -2912,6 +2939,39 @@ at random; and give back a recording damaged at random. The renderer's
 fuzz target does the same for every file it is given. The nine drawings
 timed on the X4 come out the same, byte for byte, with and without
 `--spool`.
+
+### Keeping what is shown
+
+A drawing made once can be shown again without being made again:
+`draw::PictureCache` (`draw/picture_cache.h`) keeps it on the card, as it
+was shown. A picture read and scaled is kept the same way.
+
+- **What is kept**: the picture at the size it is shown and in the
+  panel's levels, a pixel's level packed into 1, 2, 4 or 8 bits, row after
+  row. It is found by a key: the path of the file it was made from, the
+  file's size and when it was last written, its own width and height, the
+  levels, and how it lies on the panel. A file changed since is not the
+  same key.
+- **Where**: a folder of 64 files, each holding one picture. The key
+  decides which file a picture goes in, so the cache never holds more than
+  64, and a picture put where another was takes its place.
+- **Each file**: a header of 64 bytes, which says what the picture is and
+  carries a checksum of itself and one of the rows; then the rows. The
+  rows are written first and the header last, so a file left half written
+  by a press, or by the power going, has no header. Files are not synced:
+  what the card had not written when the power went shows in the rows'
+  checksum, which is checked as the last row is read.
+- **Bad input**: whatever a file holds, reading it ends in a status:
+  `kMissing`, `kOther` (another picture, or this one before its file
+  changed), `kDamaged`, `kStoreFailed`; and no row is given that is not
+  whole. The viewer draws again what it finds damaged, and keeps it again.
+
+On the X4's panel held as it is read, a picture is kept as it lies on the
+panel, so a page's 480 by 800 is 800 by 480 in the cache, 47 KB at a bit a
+pixel; a drawing narrower than the page keeps only its own part. The unit
+tests keep pictures in every number of bits and read them back in pieces,
+look for them with each part of the key changed, fill more files than
+there are, and damage the files in each place a byte can be damaged.
 
 ## Pictures
 

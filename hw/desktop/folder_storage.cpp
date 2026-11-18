@@ -256,6 +256,7 @@ StorageStatus FolderStorage::Stat(std::string_view path, core::FileInfo& info) n
     return StorageStatus::kTooBig;
   }
   info.size = info.isDirectory ? 0 : static_cast<std::uint32_t>(found.st_size);
+  info.modified = static_cast<std::uint32_t>(found.st_mtime);
   return StorageStatus::kOk;
 }
 
@@ -374,10 +375,12 @@ StorageStatus FolderStorage::NextInDirectory(core::DirectoryHandle directory, st
       continue;  // Gone since, or a link to nothing.
     }
     if (S_ISDIR(found.st_mode)) {
-      info = {.size = 0, .isDirectory = true};
+      info = {.size = 0, .isDirectory = true, .modified = static_cast<std::uint32_t>(found.st_mtime)};
     } else if (S_ISREG(found.st_mode) &&
                found.st_size <= static_cast<off_t>(std::numeric_limits<std::uint32_t>::max())) {
-      info = {.size = static_cast<std::uint32_t>(found.st_size), .isDirectory = false};
+      info = {.size = static_cast<std::uint32_t>(found.st_size),
+              .isDirectory = false,
+              .modified = static_cast<std::uint32_t>(found.st_mtime)};
     } else {
       continue;  // Nothing Open() would open.
     }

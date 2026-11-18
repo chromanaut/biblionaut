@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -56,7 +57,7 @@ struct Fixture {
     ASSERT_EQ(storage.Start(), bn::core::StorageStatus::kOk);
     viewer = std::make_unique<DrawingViewer>(display, clock, storage, stream, DrawingViewer::kFolder);
     if (tour) {
-      viewer->TourOnce();
+      viewer->Tour();
     }
     viewer->Start();
   }
@@ -105,17 +106,27 @@ struct Fixture {
     return count;
   }
   // The lines of log text the viewer sent: those that say what each
-  // drawing came to, or those that say where its time went.
-  std::vector<std::string> Lines(bool timed = false) const {
+  // drawing came to, those that say where its time went, or those that
+  // say what the cache did.
+  enum class Kind : std::uint8_t { kWhat, kTimed, kCache };
+  std::vector<std::string> LinesOf(Kind kind) const {
     std::vector<std::string> lines;
     for (const bn::test::StreamItem& item : bn::test::ParseStream(sink.received)) {
-      if (item.isFrame && item.type == bn::core::FrameType::kText &&
-          (item.Text().find(" timed: ") != std::string::npos) == timed) {
-        lines.push_back(item.Text());
+      if (!item.isFrame || item.type != bn::core::FrameType::kText) {
+        continue;
+      }
+      const std::string text = item.Text();
+      const Kind found = text.find(" timed: ") != std::string::npos   ? Kind::kTimed
+                         : text.find(" cache: ") != std::string::npos ? Kind::kCache
+                                                                      : Kind::kWhat;
+      if (found == kind) {
+        lines.push_back(text);
       }
     }
     return lines;
   }
+  std::vector<std::string> Lines(bool timed = false) const { return LinesOf(timed ? Kind::kTimed : Kind::kWhat); }
+  std::vector<std::string> CacheLines() const { return LinesOf(Kind::kCache); }
   std::vector<bn::core::RefreshMode> Refreshes() const {
     std::vector<bn::core::RefreshMode> modes;
     for (const FakeDisplay::Call& call : display.calls) {
@@ -238,25 +249,50 @@ TEST(DrawingViewer, AGrayComesOutAsDotsAsDarkOnTheWhole) {
   EXPECT_NEAR(static_cast<double>(black), (40.0 * 24.0) / 2, 20.0);
 }
 
-TEST(DrawingViewer, ATourShowsEachDrawingOnceByItselfAndStops) {
+TEST(DrawingViewer, ATourShowsEachDrawingTwiceByItselfTheSecondTimeFromTheCacheAndStops) {
   Fixture fixture;
   for (const char* name : {"1.svg", "2.svg", "3.svg"}) {
-    fixture.Put(name, Svg(40, 24, ""));
+    fixture.Put(name, Svg(40, 24, "<circle cx='20' cy='12' r='9'/>"));
   }
   fixture.Start(true);
-  for (int settled = 0; settled < 6; ++settled) {
+  for (int settled = 0; settled < 12; ++settled) {
     fixture.Settle();
   }
-  EXPECT_EQ(fixture.viewer->Shown(), 3U);
+  EXPECT_EQ(fixture.viewer->Shown(), 6U);
   EXPECT_EQ(fixture.viewer->Current(), 2U);
   const std::vector<std::string> lines = fixture.Lines();
-  ASSERT_EQ(lines.size(), 4U);
+  ASSERT_EQ(lines.size(), 7U);
   for (std::size_t i = 0; i < 3; ++i) {
     EXPECT_EQ(lines[i].find("drawing " + std::to_string(i + 1) + " of 3: "), 0U) << lines[i];
+    EXPECT_EQ(lines[i].find(", from the cache"), std::string::npos) << lines[i];
+    EXPECT_EQ(lines[i + 3].find("drawing " + std::to_string(i + 1) + " of 3: " + std::to_string(i + 1) +
+                                ".svg, from the cache, "),
+              0U)
+        << lines[i + 3];
   }
-  EXPECT_EQ(lines[3], "drawings: the tour is over, 3 shown");
-  // Each is timed.
-  EXPECT_EQ(fixture.Lines(true).size(), 6U);
+  EXPECT_EQ(lines[6], "drawings: the tour is over, 6 shown");
+  // Each is timed, and the cache says what it did.
+  EXPECT_EQ(fixture.Lines(true).size(), 9U);
+  const std::vector<std::string> cached = fixture.CacheLines();
+  ASSERT_EQ(cached.size(), 6U);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(cached[i].find("drawing " + std::to_string(i + 1) + " cache: kept, "), 0U) << cached[i];
+    EXPECT_EQ(cached[i + 3].find("drawing " + std::to_string(i + 1) + " cache: read "), 0U) << cached[i + 3];
+  }
+}
+
+TEST(DrawingViewer, ATourOfOneDrawingShowsItTwice) {
+  Fixture fixture;
+  fixture.Put("1.svg", Svg(40, 24, "<circle cx='20' cy='12' r='9'/>"));
+  fixture.Start(true);
+  for (int settled = 0; settled < 4; ++settled) {
+    fixture.Settle();
+  }
+  EXPECT_EQ(fixture.viewer->Shown(), 2U);
+  const std::vector<std::string> lines = fixture.Lines();
+  ASSERT_EQ(lines.size(), 3U);
+  EXPECT_EQ(lines[1].find("drawing 1 of 1: 1.svg, from the cache, "), 0U) << lines[1];
+  EXPECT_EQ(lines[2], "drawings: the tour is over, 2 shown");
 }
 
 TEST(DrawingViewer, ATourPassesOverWhatItCannotShowAndGoesOn) {
@@ -270,19 +306,21 @@ TEST(DrawingViewer, ATourPassesOverWhatItCannotShowAndGoesOn) {
   fixture.Put("b.svg", Svg(40, 24, ""));
   fixture.Put("d.svg", Svg(40, 24, ""));
   fixture.Start(true);
-  for (int settled = 0; settled < 8; ++settled) {
+  for (int settled = 0; settled < 16; ++settled) {
     fixture.Settle();
   }
-  EXPECT_EQ(fixture.viewer->Shown(), 2U);
+  EXPECT_EQ(fixture.viewer->Shown(), 4U);
   EXPECT_EQ(fixture.viewer->Current(), 4U);
   const std::vector<std::string> lines = fixture.Lines();
-  ASSERT_EQ(lines.size(), 6U);
-  EXPECT_EQ(lines[0], "picture 1 of 5: a.png, not shown: not png");
-  EXPECT_EQ(lines[1].find("drawing 2 of 5: b.svg, ok"), 0U) << lines[1];
-  EXPECT_EQ(lines[2], "picture 3 of 5: c.png, not shown: not png");
-  EXPECT_EQ(lines[3].find("drawing 4 of 5: d.svg, ok"), 0U) << lines[3];
-  EXPECT_EQ(lines[4], "picture 5 of 5: e.png, not shown: not png");
-  EXPECT_EQ(lines[5], "drawings: the tour is over, 2 shown");
+  ASSERT_EQ(lines.size(), 11U);
+  for (const std::size_t lap : {std::size_t{0}, std::size_t{5}}) {
+    EXPECT_EQ(lines[lap + 0], "picture 1 of 5: a.png, not shown: not png");
+    EXPECT_EQ(lines[lap + 1].find("drawing 2 of 5: b.svg, "), 0U) << lines[lap + 1];
+    EXPECT_EQ(lines[lap + 2], "picture 3 of 5: c.png, not shown: not png");
+    EXPECT_EQ(lines[lap + 3].find("drawing 4 of 5: d.svg, "), 0U) << lines[lap + 3];
+    EXPECT_EQ(lines[lap + 4], "picture 5 of 5: e.png, not shown: not png");
+  }
+  EXPECT_EQ(lines[10], "drawings: the tour is over, 4 shown");
 }
 
 TEST(DrawingViewer, DownAndUpGoFromOneToTheNextAndRoundAndBackAndConfirmRedraw) {
@@ -445,10 +483,14 @@ TEST(DrawingViewer, WritesWhatItKeepsAFewKilobytesAtATime) {
   const std::size_t chunks =
       kept.storage.entries.at(std::string(DrawingViewer::kSpoolPath)).data.size() / bn::draw::SpoolWriter::kChunkBytes;
   ASSERT_GT(chunks, 32U);
-  EXPECT_LE(static_cast<std::size_t>(kept.storage.writes), (chunks / 12) + 1);
+  // The spool's line says how many writes it took.
   const std::vector<std::string> timed = kept.Lines(true);
   ASSERT_EQ(timed.size(), 2U);
-  EXPECT_NE(timed[1].find(" (" + std::to_string(kept.storage.writes) + " writes), "), std::string::npos) << timed[1];
+  const std::size_t at = timed[1].find(" ms (");
+  ASSERT_NE(at, std::string::npos) << timed[1];
+  const std::size_t writes = std::strtoul(timed[1].c_str() + at + 5, nullptr, 10);
+  EXPECT_GT(writes, 0U);
+  EXPECT_LE(writes, (chunks / 12) + 1) << timed[1];
 }
 
 TEST(DrawingViewer, DrawsAsBeforeWhenTheCardWillNotKeepTheDrawing) {
@@ -728,6 +770,175 @@ TEST(DrawingViewer, ATurnReadsAPictureForAboutItsSliceAndNoMore) {
   // A turn goes on past its slice by one step of the reader at the most:
   // a few hundred readings of the clock here.
   EXPECT_LT(longest, DrawingViewer::kSliceUs + 400'000) << longest;
+}
+
+// ---- The cache ----
+
+// What the panel shows.
+std::vector<std::uint8_t> Shown(const Fixture& fixture) { return fixture.display.shown; }
+
+// The files of the cache.
+std::vector<std::string> CacheFiles(const Fixture& fixture) {
+  std::vector<std::string> files;
+  for (const auto& [path, entry] : fixture.storage.entries) {
+    if (path.starts_with(std::string(DrawingViewer::kCacheFolder) + "/")) {
+      files.push_back(path);
+    }
+  }
+  return files;
+}
+
+TEST(DrawingViewer, ShowsWhatItHasShownBeforeFromTheCacheJustAsItWasDrawn) {
+  // A drawing of grays with shapes reaching past its edges, and a picture
+  // of grays, neither the page's shape, the panel held each way: the second
+  // time, from the cache, the panel shows what it did the first.
+  const std::string drawing = Svg(37, 19,
+                                  "<circle cx='0' cy='0' r='15' fill='#777'/><rect x='20' y='-5' width='30' "
+                                  "height='10' fill='#333'/><ellipse cx='18' cy='12' rx='9' ry='4' fill='#bbb'/>");
+  const std::vector<std::uint8_t> picture =
+      GrayPng(17, 9, [](std::uint32_t x, std::uint32_t y) { return ((x * 15) + (y * 20)) % 256; });
+  for (const bn::core::PanelTurn turn : {bn::core::PanelTurn::kNone, bn::core::PanelTurn::kClockwise,
+                                         bn::core::PanelTurn::kHalf, bn::core::PanelTurn::kAnticlockwise}) {
+    for (const bool isPicture : {false, true}) {
+      Fixture fixture;
+      fixture.display.turn = turn;
+      if (isPicture) {
+        fixture.storage.Put("/drawings/p.png", picture);
+      } else {
+        fixture.Put("a.svg", drawing);
+      }
+      fixture.Start();
+      fixture.Settle();
+      ASSERT_EQ(fixture.viewer->Shown(), 1U);
+      const std::vector<std::uint8_t> drawn = Shown(fixture);
+      ASSERT_EQ(CacheFiles(fixture).size(), 1U);
+      fixture.Press(bn::core::Button::kConfirm);
+      fixture.Settle();
+      ASSERT_EQ(fixture.viewer->Shown(), 2U);
+      const std::vector<std::string> lines = fixture.Lines();
+      ASSERT_EQ(lines.size(), 2U);
+      EXPECT_NE(lines[1].find(", from the cache, "), std::string::npos) << lines[1];
+      EXPECT_EQ(Shown(fixture), drawn) << static_cast<int>(turn) << " " << isPicture;
+      const std::vector<std::string> cached = fixture.CacheLines();
+      ASSERT_EQ(cached.size(), 2U);
+      EXPECT_NE(cached[0].find(" cache: kept, "), std::string::npos) << cached[0];
+      EXPECT_NE(cached[1].find(" cache: read "), std::string::npos) << cached[1];
+      EXPECT_EQ(fixture.storage.OpenCount(), 0);
+    }
+  }
+}
+
+TEST(DrawingViewer, DrawsAgainWhatHasChangedSinceItWasKept) {
+  // The same size, other shapes: what was kept is not shown.
+  Fixture fixture;
+  fixture.Put("a.svg", Svg(40, 24, "<rect x='0' width='20' height='24'/>"));
+  fixture.Start();
+  fixture.Settle();
+  EXPECT_TRUE(fixture.Black(5, 12));
+  fixture.Put("a.svg", Svg(40, 24, "<rect x='20' width='20' height='24'/>"));
+  fixture.Press(bn::core::Button::kConfirm);
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 2U);
+  EXPECT_FALSE(fixture.Black(5, 12));
+  EXPECT_TRUE(fixture.Black(35, 12));
+  const std::vector<std::string> lines = fixture.Lines();
+  EXPECT_EQ(lines[1].find(", from the cache"), std::string::npos) << lines[1];
+  // And it is kept as it is now.
+  fixture.Press(bn::core::Button::kConfirm);
+  fixture.Settle();
+  EXPECT_NE(fixture.Lines()[2].find(", from the cache, "), std::string::npos) << fixture.Lines()[2];
+  EXPECT_TRUE(fixture.Black(35, 12));
+}
+
+TEST(DrawingViewer, DrawsAgainAndKeepsAgainWhatItFindsDamaged) {
+  for (const bool cut : {false, true}) {
+    Fixture fixture;
+    fixture.Put("a.svg", Svg(40, 24, "<circle cx='20' cy='12' r='9' fill='#555'/>"));
+    fixture.Start();
+    fixture.Settle();
+    const std::vector<std::uint8_t> drawn = Shown(fixture);
+    // A byte of its last row changed, or the file cut short.
+    for (const std::string& path : CacheFiles(fixture)) {
+      bn::test::FakeStorage::Bytes& data = fixture.storage.entries.at(path).data;
+      if (cut) {
+        data.resize(data.size() - 3);
+      } else {
+        data.back() ^= 0x01U;
+      }
+    }
+    fixture.Press(bn::core::Button::kConfirm);
+    fixture.Settle();
+    ASSERT_EQ(fixture.viewer->Shown(), 2U);
+    EXPECT_EQ(Shown(fixture), drawn);
+    EXPECT_EQ(fixture.Lines()[1].find(", from the cache"), std::string::npos) << fixture.Lines()[1];
+    const std::vector<std::string> cached = fixture.CacheLines();
+    ASSERT_EQ(cached.size(), 2U);
+    EXPECT_NE(cached[1].find(" cache: kept, "), std::string::npos) << cached[1];
+    EXPECT_NE(cached[1].find(", after it was found damaged"), std::string::npos) << cached[1];
+    fixture.Press(bn::core::Button::kConfirm);
+    fixture.Settle();
+    EXPECT_NE(fixture.Lines()[2].find(", from the cache, "), std::string::npos) << fixture.Lines()[2];
+    EXPECT_EQ(Shown(fixture), drawn);
+  }
+}
+
+TEST(DrawingViewer, SaysWhenTheCardWillNotKeepWhatItShows) {
+  Fixture fixture;
+  fixture.Put("a.svg", Svg(40, 24, "<circle cx='20' cy='12' r='9'/>"));
+  fixture.storage.failWrites = bn::core::StorageStatus::kNoSpace;
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  EXPECT_GT(fixture.BlackCount(), 0U);
+  const std::vector<std::string> cached = fixture.CacheLines();
+  ASSERT_EQ(cached.size(), 1U);
+  EXPECT_EQ(cached[0], "drawing 1 cache: not kept: store failed");
+}
+
+TEST(DrawingViewer, WhatWasGivenUpBeforeItWasAllKeptIsDrawnAgain) {
+  // Two drawings on a panel of ten bands: the first given up for the
+  // second once one of its bands is written, and gone back to. It is drawn
+  // whole, not taken half kept from the cache.
+  std::string body;
+  for (int i = 0; i < 100; ++i) {
+    body += "<circle cx='" + std::to_string((i * 7) % 40) + "' cy='" + std::to_string((i * 13) % 160) + "' r='" +
+            std::to_string(2 + (i % 5)) + "' fill='#" + std::to_string(100 + (i % 800)) + "'/>";
+  }
+  const std::string file = Svg(40, 160, body);
+  Fixture whole;
+  whole.display.Resize({.width = 40, .height = 160});
+  whole.Put("a.svg", file);
+  whole.Start();
+  whole.Settle();
+  const std::vector<std::uint8_t> drawn = Shown(whole);
+
+  Fixture fixture;
+  fixture.display.Resize({.width = 40, .height = 160});
+  fixture.Put("a.svg", file);
+  fixture.Put("b.svg", Svg(40, 160, "<rect width='40' height='160'/>"));
+  fixture.Start();
+  const auto written = [&fixture] {
+    return std::count_if(fixture.display.calls.begin(), fixture.display.calls.end(),
+                         [](const FakeDisplay::Call& call) { return call.op == Op::kWrite; });
+  };
+  for (int turn = 0; turn < 100000 && written() < 2; ++turn) {
+    fixture.display.busy = false;
+    fixture.viewer->Tick();
+  }
+  ASSERT_EQ(written(), 2);
+  fixture.Press(bn::core::Button::kDown);
+  fixture.Settle();
+  fixture.Press(bn::core::Button::kUp);
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 2U);
+  const std::vector<std::string> lines = fixture.Lines();
+  ASSERT_EQ(lines.size(), 2U);
+  EXPECT_EQ(lines[1].find("drawing 1 of 2: a.svg, ok"), 0U) << lines[1];
+  EXPECT_EQ(Shown(fixture), drawn);
+  // What it found of the first time was not finished.
+  const std::vector<std::string> cached = fixture.CacheLines();
+  ASSERT_FALSE(cached.empty());
+  EXPECT_NE(cached.back().find(", after it was found damaged"), std::string::npos) << cached.back();
 }
 
 }  // namespace

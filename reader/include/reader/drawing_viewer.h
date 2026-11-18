@@ -17,6 +17,7 @@
 #include "core/trace_stream.h"
 #include "draw/dither.h"
 #include "draw/fill.h"
+#include "draw/picture_cache.h"
 #include "draw/png.h"
 #include "draw/row_sink.h"
 #include "draw/scale.h"
@@ -73,6 +74,14 @@ namespace bn::reader {
 // drawn from what was kept; if it cannot be kept, it is read again for each
 // band, and a line says why.
 //
+// What is shown is kept as well, in the cache of pictures on the card
+// (draw::PictureCache, in kCacheFolder): the drawing or picture as it lies
+// on the panel, the size it is shown and in the panel's levels, a bit a
+// pixel. Shown again, while its file has the same size and time, it is
+// read from there a band at a time and written to the panel, with nothing
+// drawn. What the cache does not have, or has damaged, is drawn as above,
+// and kept as its bands are written; a line says what the cache did.
+//
 // The memory for the bands, for the renderer, for what a drawing defines
 // and for the links of what is kept is taken from the heap at Start():
 // about 94 KB for the X4's panel, most of it the filler's cells, the
@@ -111,6 +120,9 @@ class DrawingViewer final : public Screen {
   // made again for each drawing. And how many chunks it may have: 4 MB.
   static constexpr std::string_view kSpoolPath = "/.drawing-spool";
   static constexpr std::size_t kSpoolChunks = 8192;
+  // Where what is shown is kept, to be shown again: a hidden folder at the
+  // top of the card.
+  static constexpr std::string_view kCacheFolder = "/.picture-cache";
   // The most drawings in the folder that are shown, and the longest name.
   static constexpr std::size_t kMostDrawings = 256;
   static constexpr std::size_t kLongestName = 255;
@@ -146,12 +158,13 @@ class DrawingViewer final : public Screen {
   std::size_t Drawings() const noexcept { return names_.size(); }
   std::size_t Current() const noexcept { return current_; }
   std::size_t Shown() const noexcept { return shown_; }
-  // Goes round the drawings once by itself, for timing them with nobody at
-  // the buttons: once each is shown, the next is begun as if Down had been
-  // pressed then, and after the last a line says the tour is over. One that
-  // cannot be shown is passed over in the same way, once its line has said
-  // why. Call before Start().
-  void TourOnce() noexcept { touring_ = true; }
+  // Goes round the drawings twice by itself, for timing them with nobody at
+  // the buttons, the second time from the cache: once each is shown, the
+  // next is begun as if Down had been pressed then, and after the last the
+  // first, or a line saying the tour is over. One that cannot be shown is
+  // passed over in the same way, once its line has said why. Call before
+  // Start().
+  void Tour() noexcept { touring_ = true; }
 
  private:
   enum class Phase : std::uint8_t {
@@ -161,6 +174,7 @@ class DrawingViewer final : public Screen {
     kDrawing,     // Drawing a band from the file, when it was not kept.
     kReplaying,   // Drawing a band from what was kept.
     kPicturing,   // Reading a picture through, into the panel's bits.
+    kFromCache,   // Writing bands read from the cache.
     kWriting,     // A band or a picture drawn, to be written once the panel is free.
     kRefreshing,  // The panel is showing what was drawn.
   };
@@ -189,6 +203,28 @@ class DrawingViewer final : public Screen {
 
   // Begins drawing `index`, from reading its size.
   void Begin(std::size_t index) noexcept;
+  // Once a drawing has been placed: its bands begun, read once and kept,
+  // or read for each. False if they cannot be.
+  bool StartBands() noexcept;
+  // Once a picture's size is known: reading it through begun. False if it
+  // cannot be.
+  bool StartPictureRead() noexcept;
+
+  // The cache. What the drawing or picture in hand is kept as, from where
+  // it lies on the page, the way the device is read.
+  void KeyFor(std::size_t left, std::size_t top, std::size_t width, std::size_t height) noexcept;
+  // Shows it from the cache, if the cache has it: true if it does. If not,
+  // it is kept as it is drawn.
+  bool FindInCache() noexcept;
+  // Bands read from the cache and written, for up to the time left: true
+  // when they all are. If what is kept turns out damaged, it is drawn
+  // instead, and the phase is that of drawing it.
+  bool FromCache(std::uint64_t until) noexcept;
+  // Rows of the panel, `rows` of them from `firstRow`, a bit a pixel: the
+  // part that is the drawing or picture, kept.
+  void CacheRows(std::span<const std::uint8_t> panelRows, std::size_t firstRow, std::size_t rows) noexcept;
+  void FinishCaching() noexcept;
+  void SayCache() noexcept;
   // The same for a picture: reads its header, fits it to the page, and
   // begins reading it through. False if it cannot be shown.
   bool BeginPicture(std::size_t index) noexcept;
@@ -202,7 +238,8 @@ class DrawingViewer final : public Screen {
   // The panel's bits, written to both planes.
   bool WritePicture() noexcept;
   // On a tour, once a file has been shown or found not to be showable: the
-  // next is asked for, or after the last a line says the tour is over.
+  // next is asked for, or after the last the first, or a line saying the
+  // tour is over.
   void TourOn(std::uint64_t now) noexcept;
   // Everything is in both planes: the refresh, and the line saying so.
   void Refresh(std::uint64_t now) noexcept;
@@ -251,6 +288,7 @@ class DrawingViewer final : public Screen {
   bool firstRefresh_ = true;
   bool sleepAsked_ = false;
   bool touring_ = false;
+  bool secondLap_ = false;
   std::uint64_t phaseStartedUs_ = 0;
   std::uint64_t drawingStartedUs_ = 0;
   std::uint64_t pressToRefreshUs_ = 0;  // From the press to the refresh's start: a press during it moves the first.
@@ -348,6 +386,21 @@ class DrawingViewer final : public Screen {
   std::uint64_t waitingUs_ = 0;
   std::uint64_t bytesRead_ = 0;
   std::uint64_t timedUs_ = 0;  // The scaler's share of the reader's last step.
+
+  // The cache: what the one in hand is kept as, where it lies on the
+  // panel, its file's size and time, and what the cache has done with it.
+  draw::PictureCache cache_{storage_, kCacheFolder};
+  std::unique_ptr<std::uint8_t[]> cacheRows_;  // Rows of it, a band's at most.
+  draw::PictureKey key_;
+  std::size_t cacheX_ = 0;
+  std::size_t cacheY_ = 0;
+  bool known_ = false;               // Its file's size and time are known, so it can be kept.
+  bool fromCache_ = false;           // It is shown from the cache,
+  bool caching_ = false;             // or being kept as it is drawn,
+  bool cacheKept_ = false;           // and has been,
+  const char* cacheNote_ = nullptr;  // or why not, or what was wrong with what was there.
+  std::uint64_t cacheUs_ = 0;        // Writing to the cache, or reading from it.
+  std::uint64_t cacheBytes_ = 0;
 
   // The memory a picture takes, the first time one is shown.
   std::unique_ptr<std::uint8_t[]> fileBuffer_;

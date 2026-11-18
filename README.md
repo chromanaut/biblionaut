@@ -1650,7 +1650,7 @@ call may.
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
 | `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, gives the filler more than `kMostLinesPerStep` lines, fills more than one shape or stroke, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte; and so is the file kept by a `SpoolWriter` and given back a band at a time, each step of which reads a chunk and fills once at the most |
 | `png` | `draw::PngReader`, four ways: for the header alone with no memory, with the room and the pieces the input chooses, with all the room it needs, and against a plain reading of the same file with zlib (`tests/support/png_reference.h`) | No step takes more from its source than `MostInputPerStep()`, and the header alone takes 33 bytes. Rows come in order, each as wide as the picture, and a picture is whole only with all of them. It has no room only when it has less than `RowBytesFor()`, and a picture is interlaced only if it says so. The header alone says what the whole reading says of it. With the room it needs it gives the same rows in any pieces. The rows are the plain reading's, and it ends where and as that does, but for data the inflater refuses as bad that zlib takes |
-| `picture_cache` | `draw::PictureCache`, reading a file the card holds, as the picture it says it is or as another, its checksums mended or not | Reading ends in a status, and no file is left open. Rows are given only whole, and only as many as the picture has. A picture read through without complaint is the file's own rows, the picture asked for, with the checksum its header gives; and kept again it reads back the same |
+| `picture_cache` | `draw::PictureCache`, reading a file the card holds, as the picture it says it is or as another, its checksums mended or not | Reading ends in a status, and no file is left open. Another picture can be kept among the same files, and is read back the same. Rows are given only whole, and only as many as the picture has. A picture read through without complaint is the file's own rows, the picture asked for, with the checksum its header gives; and kept again it reads back the same |
 | `scale` | `draw::Scaler`, from sizes the input gives (sides of nothing and past the largest among them) and its pixels, sometimes all one gray, sometimes with an old row given out of turn | A side of nothing or too long is refused and nothing is given. `Row()` gives no new row and `Step()` one at the most; the new rows come in order, each as wide as the new picture, as many as it is high. A row out of turn stops it. Every new pixel is within a gray of the working-out in real numbers, and a picture of one gray stays that gray |
 
 The `package` and `toc` targets do not take a ZIP file as their input:
@@ -2952,11 +2952,16 @@ was shown. A picture read and scaled is kept the same way.
   file's size and when it was last written, its own width and height, the
   levels, and how it lies on the panel. A file changed since is not the
   same key.
-- **Where**: a folder of 64 files, each holding one picture. The key
-  decides which file a picture goes in, so the cache never holds more than
-  64, and a picture put where another was takes its place.
+- **Where**: a folder of 64 files, each holding one picture, so the cache
+  never holds more than 64. The key chooses a picture's home file, and it
+  may be kept in any of the 8 files from there on. Of those it takes the
+  place of what was kept before as the same picture, else of the first
+  that holds nothing whole, else of the picture kept longest ago. Looking
+  for a picture, or for a place to keep one, stops at the first of its
+  places that has no file, since nothing is kept past one.
 - **Each file**: a header of 64 bytes, which says what the picture is and
-  carries a checksum of itself and one of the rows; then the rows. The
+  when it was kept, and carries a checksum of itself and one of the rows;
+  then the rows. The
   rows are written first and the header last, so a file left half written
   by a press, or by the power going, has no header. Files are not synced:
   what the card had not written when the power went shows in the rows'
@@ -2968,10 +2973,37 @@ was shown. A picture read and scaled is kept the same way.
 
 On the X4's panel held as it is read, a picture is kept as it lies on the
 panel, so a page's 480 by 800 is 800 by 480 in the cache, 47 KB at a bit a
-pixel; a drawing narrower than the page keeps only its own part. The unit
-tests keep pictures in every number of bits and read them back in pieces,
-look for them with each part of the key changed, fill more files than
-there are, and damage the files in each place a byte can be damaged.
+pixel; a drawing narrower than the page keeps only its own part.
+
+With one file for each picture, chosen by its key, two pictures were
+likely to choose the same one: on the X4, going round the 18 drawings and
+pictures of the card set twice, two pairs did, so four of the 18 were made
+again the second time, each having taken the place of the other. In sets
+of two files, three pictures shared one, and each of them took the place
+of the next. A simulation of tours of files chosen at random puts it in
+numbers, as the share of tours in which something is made again the
+second time:
+
+| Files toured | One file each | Sets of two | 8 files from a home |
+|---|---|---|---|
+| 18 | 93% | 47% | 0% |
+| 30 | 100% | 95% | 4% |
+| 45 | 100% | 100% | 56% |
+
+Looking at a file costs about 3.4 ms on the X4's card, so looking at all 8
+places, as when the picture is not there and they are all full, costs
+about 27 ms. On the X4, going round the card set a second time, each of
+the 18 came from the cache, in 68 to 171 ms from the press to the
+refresh, which takes about 1.7 s after it: 6 to 43 KB, read in 14 to
+68 ms. The largest engraving, 18.0 s and a full refresh of 3.7 s the
+first time, came back in 1.8 s; the colour photograph, 13.6 s and 1.9 s
+the first time, in 1.9 s. Keeping each took 81 to 281 ms.
+
+The unit tests keep pictures in every number of bits and read them back in
+pieces, look for them with each part of the key changed, fill more files
+than there are, keep as many pictures with one home as it has places and
+then more, keep one where a file holds nothing whole, and damage the files
+in each place a byte can be damaged.
 
 ## Pictures
 

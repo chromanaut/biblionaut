@@ -51,13 +51,18 @@ const char* PictureCacheStatusName(PictureCacheStatus status) noexcept;
 // them again: a drawing drawn, or a picture file read and scaled, at the
 // size shown and in the panel's levels.
 //
-// It is a folder of kSlots files, each holding one picture. Which file a
-// picture goes in is fixed by its key, so the cache never holds more than
-// kSlots of them, and a picture put where another was takes its place.
-// Each file is a header of kHeaderBytes, which says what the picture is
-// and carries a checksum of itself and of the rows, and then the rows,
-// RowBytesFor() each: a pixel is its level, 0 for black, packed into
-// BitsFor() bits, the leftmost pixel in the top bits of the first byte.
+// It is a folder of kSlots files, each holding one picture, so the cache
+// never holds more than kSlots pictures. A picture's key chooses its home
+// file, and it may be kept in any of the kPlaces files from there on (the
+// last followed by the first). Of those, it takes the place of what was
+// kept before as that picture, else of the first that holds nothing whole,
+// else of the picture kept longest ago: pictures whose keys choose the
+// same home, or near ones, are all kept until there are more of them than
+// places. Each file is a header of kHeaderBytes, which says what the
+// picture is and when it was kept, and carries a checksum of itself and of
+// the rows; and then the rows, RowBytesFor() each: a pixel is its level, 0
+// for black, packed into BitsFor() bits, the leftmost pixel in the top
+// bits of the first byte.
 //
 // A picture is written row after row, and the header last, so a file left
 // half written by a press, or by the power going, has no header and is
@@ -73,6 +78,7 @@ const char* PictureCacheStatusName(PictureCacheStatus status) noexcept;
 class PictureCache {
  public:
   static constexpr std::size_t kSlots = 64;
+  static constexpr std::size_t kPlaces = 8;  // The files a picture may be kept in.
   static constexpr std::size_t kHeaderBytes = 64;
   // The longest folder it can keep pictures in: given a longer one, it
   // refuses everything.
@@ -95,16 +101,20 @@ class PictureCache {
   PictureCache(const PictureCache&) = delete;
   PictureCache& operator=(const PictureCache&) = delete;
 
-  // Begins keeping the picture of `key`, in place of whatever was kept
-  // where it goes.
+  // Begins keeping the picture of `key`, in place of one of its places,
+  // chosen as above: their headers are read to choose, up to the first
+  // place that has no file.
   [[nodiscard]] PictureCacheStatus BeginWrite(const PictureKey& key) noexcept;
   // Its next rows, whole: a multiple of RowBytesFor() bytes.
   [[nodiscard]] PictureCacheStatus WriteRows(std::span<const std::uint8_t> rows) noexcept;
   // Once every row is written: the header, and the file closed.
   [[nodiscard]] PictureCacheStatus FinishWrite() noexcept;
 
-  // Finds the picture of `key`, and begins reading it. kOk only if what is
-  // there says it is that picture, and is as large as it should be.
+  // Finds the picture of `key` in its places, up to the first that has no
+  // file, and begins reading it. kOk only if a file there says it is that
+  // picture, and is as large as it should be. Found nowhere, the status
+  // says the worst of what was looked at: kStoreFailed, then kDamaged (it
+  // may have been this picture, unfinished), then kOther, then kMissing.
   [[nodiscard]] PictureCacheStatus BeginRead(const PictureKey& key) noexcept;
   // Its next rows, whole, filling `rows`: a multiple of RowBytesFor()
   // bytes. kDamaged if they are not all there, or, with the last row, if
@@ -121,8 +131,22 @@ class PictureCache {
  private:
   enum class Mode : std::uint8_t { kNone, kWriting, kReading };
 
-  // Where the picture of `key` goes: the folder, a '/' and two hex digits.
-  std::string_view SlotPath(const PictureKey& key) noexcept;
+  // What one file holds, as far as its header says.
+  struct Held {
+    PictureCacheStatus status = PictureCacheStatus::kMissing;  // kOk for a whole header.
+    PictureKey key;
+    std::uint32_t order = 0;  // When it was kept, against the others in its set.
+    std::uint32_t rowsCrc = 0;
+    std::uint32_t size = 0;  // Of the file.
+  };
+
+  // The home file of the picture of `key`.
+  static std::size_t HomeOf(const PictureKey& key) noexcept;
+  // A picture's `place` from `home`: the folder, a '/' and two hex digits.
+  std::string_view SlotPath(std::size_t home, std::size_t place) noexcept;
+  // Opens `path` and reads its header. The file is left open only when the
+  // header is whole.
+  Held Look(std::string_view path) noexcept;
 
   core::Storage& storage_;
   std::string_view folder_;
@@ -130,6 +154,9 @@ class PictureCache {
   core::FileHandle file_ = core::kNoFile;
   Mode mode_ = Mode::kNone;
   PictureKey key_;
+  std::uint32_t order_ = 0;   // Of the picture being written.
+  std::uint32_t latest_ = 0;  // The latest order seen in a header,
+  bool seen_ = false;         // once one has been.
   std::uint32_t rows_ = 0;
   std::uint32_t crc_ = 0;   // Of the rows so far,
   std::uint32_t kept_ = 0;  // and as the header says, when reading.

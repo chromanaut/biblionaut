@@ -172,6 +172,121 @@ TEST(PictureCache, KeepsUpToItsSlotsAndOneTakesTheLastOnesPlace) {
   EXPECT_EQ(ReadBack(cache, keys.back(), read), PictureCacheStatus::kOk);
 }
 
+// The file the picture of `key` goes in when the cache is empty.
+std::string FileFor(const PictureKey& key) {
+  FakeStorage storage;
+  EXPECT_EQ(storage.Start(), bn::core::StorageStatus::kOk);
+  PictureCache cache(storage, kFolder);
+  Keep(cache, key, RowsFor(key));
+  for (const auto& [path, entry] : storage.entries) {
+    if (path.starts_with(std::string(kFolder) + "/")) {
+      return path;
+    }
+  }
+  return {};
+}
+
+// `count` keys with the same home as `first`, `first` among them.
+std::vector<PictureKey> KeysOfOneHome(const PictureKey& first, std::size_t count) {
+  // An empty cache puts a picture in its home, so keys with one home go in
+  // one file then.
+  const std::string file = FileFor(first);
+  std::vector<PictureKey> keys = {first};
+  for (int at = 0; keys.size() < count && at < 100000; ++at) {
+    PictureKey key = first;
+    key.source = PictureKey::PathHash("/drawings/" + std::to_string(at) + ".svg");
+    if (FileFor(key) == file) {
+      keys.push_back(key);
+    }
+  }
+  EXPECT_EQ(keys.size(), count);
+  return keys;
+}
+
+// Whether the picture of `key` is there to be read.
+bool There(PictureCache& cache, const PictureKey& key) {
+  Bytes read;
+  return ReadBack(cache, key, read) == PictureCacheStatus::kOk;
+}
+
+TEST(PictureCache, PicturesWithOneHomeAreAllKeptWhileThereArePlaces) {
+  FakeStorage storage;
+  ASSERT_EQ(storage.Start(), bn::core::StorageStatus::kOk);
+  PictureCache cache(storage, kFolder);
+  const std::vector<PictureKey> keys = KeysOfOneHome(Key(), PictureCache::kPlaces);
+  ASSERT_EQ(keys.size(), PictureCache::kPlaces);
+  for (std::size_t at = 0; at < keys.size(); ++at) {
+    Keep(cache, keys[at], RowsFor(keys[at], static_cast<std::uint8_t>(at)));
+  }
+  for (std::size_t at = 0; at < keys.size(); ++at) {
+    Bytes read;
+    EXPECT_EQ(ReadBack(cache, keys[at], read), PictureCacheStatus::kOk) << at;
+    EXPECT_EQ(read, RowsFor(keys[at], static_cast<std::uint8_t>(at))) << at;
+  }
+  // Kept again, a picture takes its own place, not another's.
+  Keep(cache, keys[0], RowsFor(keys[0], 99));
+  for (std::size_t at = 0; at < keys.size(); ++at) {
+    Bytes read;
+    EXPECT_EQ(ReadBack(cache, keys[at], read), PictureCacheStatus::kOk) << at;
+    EXPECT_EQ(read, RowsFor(keys[at], static_cast<std::uint8_t>(at == 0 ? 99 : at))) << at;
+  }
+}
+
+TEST(PictureCache, APictureTakesThePlaceOfWhatWasKeptLongestAgo) {
+  FakeStorage storage;
+  ASSERT_EQ(storage.Start(), bn::core::StorageStatus::kOk);
+  PictureCache cache(storage, kFolder);
+  const std::vector<PictureKey> keys = KeysOfOneHome(Key(), PictureCache::kPlaces + 2);
+  ASSERT_EQ(keys.size(), PictureCache::kPlaces + 2);
+  for (std::size_t at = 0; at < PictureCache::kPlaces; ++at) {
+    Keep(cache, keys[at], RowsFor(keys[at]));
+  }
+  Keep(cache, keys[PictureCache::kPlaces], RowsFor(keys[PictureCache::kPlaces]));  // In place of the first,
+  EXPECT_FALSE(There(cache, keys[0]));
+  EXPECT_TRUE(There(cache, keys[1]));
+  Keep(cache, keys[PictureCache::kPlaces + 1], RowsFor(keys[PictureCache::kPlaces + 1]));  // then of the second,
+  EXPECT_FALSE(There(cache, keys[1]));
+  EXPECT_TRUE(There(cache, keys[2]));
+  Keep(cache, keys[0], RowsFor(keys[0]));  // then of the third.
+  EXPECT_FALSE(There(cache, keys[2]));
+  for (std::size_t at = 3; at < keys.size(); ++at) {
+    EXPECT_TRUE(There(cache, keys[at])) << at;
+  }
+  EXPECT_TRUE(There(cache, keys[0]));
+  // And by a cache that has only just begun, the same.
+  PictureCache later(storage, kFolder);
+  Keep(later, keys[1], RowsFor(keys[1]));  // In place of the fourth.
+  EXPECT_FALSE(There(later, keys[3]));
+  EXPECT_TRUE(There(later, keys[1]));
+  EXPECT_TRUE(There(later, keys[4]));
+}
+
+TEST(PictureCache, AFileThatHoldsNothingWholeIsTakenFirst) {
+  FakeStorage storage;
+  ASSERT_EQ(storage.Start(), bn::core::StorageStatus::kOk);
+  PictureCache cache(storage, kFolder);
+  const std::vector<PictureKey> keys = KeysOfOneHome(Key(), PictureCache::kPlaces + 1);
+  ASSERT_EQ(keys.size(), PictureCache::kPlaces + 1);
+  for (std::size_t at = 0; at < PictureCache::kPlaces; ++at) {
+    Keep(cache, keys[at], RowsFor(keys[at]));
+  }
+  // The last kept again, and given up partway: its file has no header.
+  const PictureKey& halfKept = keys[PictureCache::kPlaces - 1];
+  const Bytes rows = RowsFor(halfKept);
+  ASSERT_EQ(cache.BeginWrite(halfKept), PictureCacheStatus::kOk);
+  ASSERT_EQ(cache.WriteRows(std::span(rows).first(PictureCache::RowBytesFor(halfKept))), PictureCacheStatus::kOk);
+  cache.Close();
+  Bytes read;
+  EXPECT_EQ(ReadBack(cache, halfKept, read), PictureCacheStatus::kDamaged);
+  // The next takes its place, not that of the one kept longest ago.
+  Keep(cache, keys[PictureCache::kPlaces], RowsFor(keys[PictureCache::kPlaces]));
+  for (std::size_t at = 0; at + 1 < PictureCache::kPlaces; ++at) {
+    EXPECT_TRUE(There(cache, keys[at])) << at;
+  }
+  EXPECT_TRUE(There(cache, keys[PictureCache::kPlaces]));
+  EXPECT_EQ(ReadBack(cache, halfKept, read), PictureCacheStatus::kOther);
+}
+
 TEST(PictureCache, APictureNotFinishedIsFoundDamaged) {
   // Given up after some rows, as by a press, or the power gone: there is
   // no header.
@@ -196,7 +311,8 @@ TEST(PictureCache, AFileThatIsNotWhatWasWrittenIsFoundDamaged) {
   };
   for (const Harm harm : {Harm{.what = "magic", .at = 0, .cut = false}, Harm{.what = "version", .at = 4, .cut = false},
                           Harm{.what = "a row's checksum", .at = 33, .cut = false},
-                          Harm{.what = "the header's checksum", .at = 37, .cut = false},
+                          Harm{.what = "when it was kept", .at = 37, .cut = false},
+                          Harm{.what = "the header's checksum", .at = 41, .cut = false},
                           Harm{.what = "the first row", .at = 64, .cut = false},
                           Harm{.what = "the last row", .at = 64 + rows.size() - 1, .cut = false},
                           Harm{.what = "cut in the header", .at = 30, .cut = true},

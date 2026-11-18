@@ -15,9 +15,12 @@ namespace {
 
 // What each file begins with, and the form of what follows.
 constexpr std::array<std::uint8_t, 4> kMagic = {'B', 'N', 'P', 'C'};
-constexpr std::uint16_t kVersion = 1;
+constexpr std::uint16_t kVersion = 2;
 // Where things are in the header: what is checksummed, and its checksum.
-constexpr std::size_t kHeaderChecked = 36;
+constexpr std::size_t kHeaderChecked = 40;
+// The first bytes of a header say what the picture is, and nothing else:
+// they choose its set.
+constexpr std::size_t kKeyBytes = 32;
 
 void Put16(std::span<std::uint8_t> to, std::size_t at, std::uint32_t value) noexcept {
   to[at] = static_cast<std::uint8_t>(value);
@@ -37,15 +40,18 @@ std::uint32_t Get32(std::span<const std::uint8_t> from, std::size_t at) noexcept
   return Get16(from, at) | (Get16(from, at + 2) << 16U);
 }
 
-// The header for `key`, with `crc` the checksum of its rows.
+// The header for `key`, with `crc` the checksum of its rows and `order`
+// when it was kept.
 //
 //   0  "BNPC"            12  turn, then 3 bytes of 0
-//   4  version (1)       16  source (8 bytes)
+//   4  version (2)       16  source (8 bytes)
 //   6  levels            24  source's size
 //   8  width             28  source's modified
 //  10  height            32  checksum of the rows
-//                        36  checksum of bytes 0 to 35, then 0 to the end
-std::array<std::uint8_t, PictureCache::kHeaderBytes> Header(const PictureKey& key, std::uint32_t crc) noexcept {
+//                        36  order
+//                        40  checksum of bytes 0 to 39, then 0 to the end
+std::array<std::uint8_t, PictureCache::kHeaderBytes> Header(const PictureKey& key, std::uint32_t crc,
+                                                            std::uint32_t order) noexcept {
   std::array<std::uint8_t, PictureCache::kHeaderBytes> header{};
   std::copy(kMagic.begin(), kMagic.end(), header.begin());
   Put16(header, 4, kVersion);
@@ -58,6 +64,7 @@ std::array<std::uint8_t, PictureCache::kHeaderBytes> Header(const PictureKey& ke
   Put32(header, 24, key.sourceSize);
   Put32(header, 28, key.sourceModified);
   Put32(header, 32, crc);
+  Put32(header, 36, order);
   Put32(header, kHeaderChecked, core::Crc32(std::span(header).first(kHeaderChecked)));
   return header;
 }
@@ -67,6 +74,23 @@ std::array<std::uint8_t, PictureCache::kHeaderBytes> Header(const PictureKey& ke
 bool Keepable(const PictureKey& key) noexcept {
   return key.width > 0 && key.height > 0 && PictureCache::BitsFor(key.levels) != 0 &&
          (std::uint64_t{PictureCache::RowBytesFor(key)} * key.height) + PictureCache::kHeaderBytes <= UINT32_MAX;
+}
+
+// Whether `a` was kept after `b`: the count may have gone round.
+bool Later(std::uint32_t a, std::uint32_t b) noexcept { return a != b && a - b < 0x80000000U; }
+
+// How bad a status found in a set is, to say the worst of them.
+int Badness(PictureCacheStatus status) noexcept {
+  switch (status) {
+    case PictureCacheStatus::kStoreFailed:
+      return 3;
+    case PictureCacheStatus::kDamaged:
+      return 2;
+    case PictureCacheStatus::kOther:
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 }  // namespace
@@ -100,11 +124,15 @@ std::uint64_t PictureKey::PathHash(std::string_view path) noexcept {
 PictureCache::PictureCache(core::Storage& storage, std::string_view folder) noexcept
     : storage_(storage), folder_(folder) {}
 
-std::string_view PictureCache::SlotPath(const PictureKey& key) noexcept {
-  // The whole key decides the slot, so that one picture at two sizes, say,
-  // need not take each other's place.
-  const std::array<std::uint8_t, kHeaderBytes> header = Header(key, 0);
-  const std::uint32_t slot = core::Crc32(std::span(header).first(32)) % kSlots;
+std::size_t PictureCache::HomeOf(const PictureKey& key) noexcept {
+  // The whole key decides the home, so that one picture at two sizes, say,
+  // need not have the same one.
+  const std::array<std::uint8_t, kHeaderBytes> header = Header(key, 0, 0);
+  return core::Crc32(std::span(header).first(kKeyBytes)) % kSlots;
+}
+
+std::string_view PictureCache::SlotPath(std::size_t home, std::size_t place) noexcept {
+  const std::size_t slot = (home + place) % kSlots;
   constexpr std::string_view kDigits = "0123456789abcdef";
   std::copy(folder_.begin(), folder_.end(), path_.begin());
   std::size_t at = folder_.size();
@@ -122,6 +150,49 @@ void PictureCache::Close() noexcept {
   mode_ = Mode::kNone;
 }
 
+PictureCache::Held PictureCache::Look(std::string_view path) noexcept {
+  Held held;
+  const core::StorageStatus opened = storage_.Open(path, core::OpenMode::kRead, file_);
+  if (opened != core::StorageStatus::kOk) {
+    Close();
+    held.status =
+        opened == core::StorageStatus::kNotFound ? PictureCacheStatus::kMissing : PictureCacheStatus::kStoreFailed;
+    return held;
+  }
+  std::array<std::uint8_t, kHeaderBytes> header{};
+  std::size_t read = 0;
+  if (storage_.ReadAt(file_, 0, header, read) != core::StorageStatus::kOk ||
+      storage_.Size(file_, held.size) != core::StorageStatus::kOk) {
+    Close();
+    held.status = PictureCacheStatus::kStoreFailed;
+    return held;
+  }
+  const std::span<const std::uint8_t> got(header);
+  if (read != kHeaderBytes || !std::equal(kMagic.begin(), kMagic.end(), got.begin()) || Get16(got, 4) != kVersion ||
+      Get32(got, kHeaderChecked) != core::Crc32(got.first(kHeaderChecked))) {
+    Close();
+    held.status = PictureCacheStatus::kDamaged;
+    return held;
+  }
+  held.status = PictureCacheStatus::kOk;
+  held.key = {
+      .source = std::uint64_t{Get32(got, 16)} | (std::uint64_t{Get32(got, 20)} << 32U),
+      .sourceSize = Get32(got, 24),
+      .sourceModified = Get32(got, 28),
+      .width = static_cast<std::uint16_t>(Get16(got, 8)),
+      .height = static_cast<std::uint16_t>(Get16(got, 10)),
+      .levels = static_cast<std::uint16_t>(Get16(got, 6)),
+      .turn = got[12],
+  };
+  held.rowsCrc = Get32(got, 32);
+  held.order = Get32(got, 36);
+  if (!seen_ || Later(held.order, latest_)) {
+    latest_ = held.order;
+    seen_ = true;
+  }
+  return held;
+}
+
 PictureCacheStatus PictureCache::BeginWrite(const PictureKey& key) noexcept {
   Close();
   if (!Keepable(key) || folder_.size() > kLongestFolder) {
@@ -131,13 +202,41 @@ PictureCacheStatus PictureCache::BeginWrite(const PictureKey& key) noexcept {
   if (made != core::StorageStatus::kOk && made != core::StorageStatus::kExists) {
     return PictureCacheStatus::kStoreFailed;
   }
+  // Which place: the one this picture was kept in, else the first that
+  // holds nothing whole, else the one kept longest ago. Nothing is kept
+  // past a place with no file, so the looking stops there.
+  const std::size_t home = HomeOf(key);
+  std::size_t own = kPlaces;
+  std::size_t empty = kPlaces;
+  std::size_t oldest = kPlaces;
+  std::uint32_t oldestOrder = 0;
+  for (std::size_t place = 0; place < kPlaces && own == kPlaces; ++place) {
+    const Held held = Look(SlotPath(home, place));
+    Close();
+    if (held.status != PictureCacheStatus::kOk) {
+      empty = std::min(empty, place);
+      if (held.status == PictureCacheStatus::kMissing) {
+        break;
+      }
+    } else if (held.key == key) {
+      own = place;
+    } else if (oldest == kPlaces || Later(oldestOrder, held.order)) {
+      oldest = place;
+      oldestOrder = held.order;
+    }
+  }
+  const std::size_t chosen = own != kPlaces ? own : empty != kPlaces ? empty : oldest;
+  // Kept after everything it has seen.
+  order_ = seen_ ? latest_ + 1 : 0;
   // The header's room, empty until the rows are all there.
-  const std::array<std::uint8_t, kHeaderBytes> empty{};
-  if (storage_.Open(SlotPath(key), core::OpenMode::kCreate, file_) != core::StorageStatus::kOk ||
-      storage_.WriteAt(file_, 0, empty) != core::StorageStatus::kOk) {
+  const std::array<std::uint8_t, kHeaderBytes> nothing{};
+  if (storage_.Open(SlotPath(home, chosen), core::OpenMode::kCreate, file_) != core::StorageStatus::kOk ||
+      storage_.WriteAt(file_, 0, nothing) != core::StorageStatus::kOk) {
     Close();
     return PictureCacheStatus::kStoreFailed;
   }
+  latest_ = order_;
+  seen_ = true;
   mode_ = Mode::kWriting;
   key_ = key;
   rows_ = 0;
@@ -165,7 +264,7 @@ PictureCacheStatus PictureCache::FinishWrite() noexcept {
   if (mode_ != Mode::kWriting || rows_ != key_.height) {
     return PictureCacheStatus::kMisused;
   }
-  const bool written = storage_.WriteAt(file_, 0, Header(key_, crc_)) == core::StorageStatus::kOk;
+  const bool written = storage_.WriteAt(file_, 0, Header(key_, crc_, order_)) == core::StorageStatus::kOk;
   Close();
   return written ? PictureCacheStatus::kOk : PictureCacheStatus::kStoreFailed;
 }
@@ -175,48 +274,36 @@ PictureCacheStatus PictureCache::BeginRead(const PictureKey& key) noexcept {
   if (!Keepable(key) || folder_.size() > kLongestFolder) {
     return PictureCacheStatus::kMisused;
   }
-  const core::StorageStatus opened = storage_.Open(SlotPath(key), core::OpenMode::kRead, file_);
-  if (opened != core::StorageStatus::kOk) {
-    Close();
-    return opened == core::StorageStatus::kNotFound ? PictureCacheStatus::kMissing : PictureCacheStatus::kStoreFailed;
+  const std::size_t home = HomeOf(key);
+  PictureCacheStatus worst = PictureCacheStatus::kMissing;
+  for (std::size_t place = 0; place < kPlaces; ++place) {
+    const Held held = Look(SlotPath(home, place));
+    PictureCacheStatus found = held.status;
+    if (found == PictureCacheStatus::kMissing) {
+      break;  // Nothing is kept past a place with no file.
+    }
+    if (found == PictureCacheStatus::kOk) {
+      if (!(held.key == key)) {
+        found = PictureCacheStatus::kOther;
+      } else if (held.size != kHeaderBytes + (RowBytesFor(key) * key.height)) {
+        // This picture, but not all of it there: no other file holds it.
+        Close();
+        return PictureCacheStatus::kDamaged;
+      } else {
+        mode_ = Mode::kReading;
+        key_ = key;
+        rows_ = 0;
+        crc_ = 0;
+        kept_ = held.rowsCrc;
+        return PictureCacheStatus::kOk;
+      }
+      Close();
+    }
+    if (Badness(found) > Badness(worst)) {
+      worst = found;
+    }
   }
-  std::array<std::uint8_t, kHeaderBytes> header{};
-  std::size_t read = 0;
-  std::uint32_t size = 0;
-  if (storage_.ReadAt(file_, 0, header, read) != core::StorageStatus::kOk ||
-      storage_.Size(file_, size) != core::StorageStatus::kOk) {
-    Close();
-    return PictureCacheStatus::kStoreFailed;
-  }
-  const std::span<const std::uint8_t> got(header);
-  if (read != kHeaderBytes || !std::equal(kMagic.begin(), kMagic.end(), got.begin()) || Get16(got, 4) != kVersion ||
-      Get32(got, kHeaderChecked) != core::Crc32(got.first(kHeaderChecked))) {
-    Close();
-    return PictureCacheStatus::kDamaged;
-  }
-  const PictureKey kept = {
-      .source = std::uint64_t{Get32(got, 16)} | (std::uint64_t{Get32(got, 20)} << 32U),
-      .sourceSize = Get32(got, 24),
-      .sourceModified = Get32(got, 28),
-      .width = static_cast<std::uint16_t>(Get16(got, 8)),
-      .height = static_cast<std::uint16_t>(Get16(got, 10)),
-      .levels = static_cast<std::uint16_t>(Get16(got, 6)),
-      .turn = got[12],
-  };
-  if (!(kept == key)) {
-    Close();
-    return PictureCacheStatus::kOther;
-  }
-  if (size != kHeaderBytes + (RowBytesFor(key) * key.height)) {
-    Close();
-    return PictureCacheStatus::kDamaged;
-  }
-  mode_ = Mode::kReading;
-  key_ = key;
-  rows_ = 0;
-  crc_ = 0;
-  kept_ = Get32(got, 32);
-  return PictureCacheStatus::kOk;
+  return worst;
 }
 
 PictureCacheStatus PictureCache::ReadRows(std::span<std::uint8_t> rows) noexcept {

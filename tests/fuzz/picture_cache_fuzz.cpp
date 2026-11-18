@@ -14,6 +14,8 @@
 // What has to hold, whatever the bytes are:
 //
 //   - reading ends in a status, and a call gives rows only when it says ok;
+//   - another picture can be kept among those files, and read back the
+//     same;
 //   - no more rows are given than the picture has, and no file is left
 //     open once reading has ended;
 //   - when every row was given and the last call said ok, they are the
@@ -42,7 +44,7 @@ using bn::draw::PictureKey;
 using Bytes = std::vector<std::uint8_t>;
 
 constexpr std::string_view kFolder = "/.p";
-constexpr std::size_t kHeaderChecked = 36;
+constexpr std::size_t kHeaderChecked = 40;
 
 std::uint32_t Get16(const Bytes& from, std::size_t at) {
   return std::uint32_t{from[at]} | (std::uint32_t{from[at + 1]} << 8U);
@@ -125,6 +127,30 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
                     status == PictureCacheStatus::kDamaged || status == PictureCacheStatus::kMisused,
                 "reading ended with a status it should not have");
   BN_FUZZ_CHECK(storage.OpenCount() == 0, "a file was left open once reading had ended");
+
+  // Whatever the files hold, another picture can be kept among them, in
+  // place of one of them, and read back.
+  {
+    PictureKey another = key;
+    another.source = PictureKey::PathHash("/drawings/another.svg");
+    another.width = 9;
+    another.height = 3;
+    another.levels = 4;
+    Bytes kept(PictureCache::RowBytesFor(another) * another.height);
+    for (std::size_t at = 0; at < kept.size(); ++at) {
+      kept[at] = static_cast<std::uint8_t>(at * 29);
+    }
+    Bytes back(kept.size());
+    PictureCache beside(storage, kFolder);
+    BN_FUZZ_CHECK(beside.BeginWrite(another) == PictureCacheStatus::kOk &&
+                      beside.WriteRows(kept) == PictureCacheStatus::kOk &&
+                      beside.FinishWrite() == PictureCacheStatus::kOk,
+                  "a picture could not be kept among the files there");
+    BN_FUZZ_CHECK(beside.BeginRead(another) == PictureCacheStatus::kOk &&
+                      beside.ReadRows(back) == PictureCacheStatus::kOk && back == kept,
+                  "a picture kept among the files there was not read back the same");
+    BN_FUZZ_CHECK(storage.OpenCount() == 0, "a file was left open once keeping had ended");
+  }
   if (status != PictureCacheStatus::kOk) {
     return 0;
   }

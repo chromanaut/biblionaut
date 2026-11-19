@@ -17,6 +17,7 @@
 #include "core/trace_stream.h"
 #include "draw/dither.h"
 #include "draw/fill.h"
+#include "draw/jpeg.h"
 #include "draw/picture_cache.h"
 #include "draw/png.h"
 #include "draw/row_sink.h"
@@ -28,7 +29,7 @@
 namespace bn::reader {
 
 // What the application shows in place of the test pattern when it is given
-// a folder of drawings (App::ViewDrawings()): the SVG and PNG files in it,
+// a folder of drawings (App::ViewDrawings()): the SVG, PNG and JPEG files in it,
 // one at a time, drawn as the firmware draws a drawing in a book, and a
 // picture read, scaled and dithered as the firmware will show one.
 //
@@ -37,8 +38,8 @@ namespace bn::reader {
 //   Up or Left       the one before, by a half refresh
 //   Confirm, Back    the same one again, by a half or a full refresh
 //
-// The files are those in the folder whose names end in `.svg` or `.png`,
-// in the order of their names; going past the last comes round to the
+// The files are those in the folder whose names end in `.svg`, `.png`,
+// `.jpg` or `.jpeg`, in the order of their names; going past the last comes round to the
 // first.
 //
 // A drawing is fitted to the page the way the device is held to be read
@@ -53,12 +54,15 @@ namespace bn::reader {
 // A picture is fitted to the page in the same way. Its rows come from the
 // file in the order the page is read, which is not the panel's when the
 // panel is turned: so the whole panel is kept, a bit a pixel, while the
-// file is read through once. Its rows are read (draw::PngReader), made the
-// size it is shown at (draw::Scaler) and made the panel's levels
-// (draw::Ditherer), and each pixel set where it falls on the panel; then
-// the whole panel is written to both planes. A picture whose rows need more
-// than kPictureRowBytes, an interlaced one, and a file that is not a
-// picture are not shown, and a line says why.
+// file is read through once. Its rows are read (draw::PngReader, or
+// draw::JpegReader: a JPEG at the most it can be made smaller as it is read
+// and still be as large as it is shown, and a progressive one from its
+// first scan, at an eighth), made the size it is shown at (draw::Scaler)
+// and made the panel's levels (draw::Ditherer), and each pixel set where it
+// falls on the panel; then the whole panel is written to both planes. A
+// picture whose rows need more than kPictureRowBytes, an interlaced PNG, a
+// JPEG of a kind that is not read, and a file that is not a picture are not
+// shown, and a line says why.
 //
 // Nothing here waits. Tick() draws for about kSliceUs and returns, so the
 // buttons and the rest of the application go on around it, a drawing of
@@ -104,7 +108,8 @@ class DrawingViewer final : public Screen {
   // Rows of the panel drawn at a time.
   static constexpr std::size_t kBandRows = 16;
   // The memory for a picture's rows as it is read (draw::PngReader::
-  // RowBytesFor()). A picture that needs more is not shown.
+  // RowBytesFor(), draw::JpegReader::RowBytesFor()). A picture that needs
+  // more is not shown.
   static constexpr std::size_t kPictureRowBytes = 16384;
   // About how long one Tick() draws for.
   static constexpr std::uint64_t kSliceUs = 20'000;
@@ -229,6 +234,15 @@ class DrawingViewer final : public Screen {
   // begins reading it through. False if it cannot be shown.
   bool BeginPicture(std::size_t index) noexcept;
   bool PictureMemory() noexcept;
+  // Its header, a PNG's or a JPEG's, and the size it is read at once it is
+  // known how large it is shown. False, with a line saying why, if it
+  // cannot be shown.
+  bool ReadPictureHeader() noexcept;
+  bool SizePictureRead() noexcept;
+  // A step of whichever reader the picture has, and how its reading went.
+  [[nodiscard]] bool StepPicture() noexcept;
+  bool PictureReadWhole() const noexcept;
+  const char* PictureStatusName() const noexcept;
   // Reads on until the time left: true when the picture has been read
   // through, or reading it failed.
   bool FeedPicture(std::uint64_t until) noexcept;
@@ -362,9 +376,14 @@ class DrawingViewer final : public Screen {
   std::uint64_t turnsUs_ = 0;
   std::uint64_t turnsAtRefreshUs_ = 0;
 
-  // A picture: what its header says, and where it goes on the page.
+  // A picture: whether it is a JPEG, what its header says, its size as it
+  // is read (a JPEG's made smaller), and where it goes on the page.
   bool picture_ = false;
+  bool jpeg_ = false;
   draw::PngHeader header_;
+  draw::JpegHeader jpegHeader_;
+  std::uint32_t readWidth_ = 0;
+  std::uint32_t readHeight_ = 0;
   std::uint32_t shownWidth_ = 0;
   std::uint32_t shownHeight_ = 0;
   std::size_t pageWidth_ = 0;
@@ -373,6 +392,7 @@ class DrawingViewer final : public Screen {
   std::size_t top_ = 0;
   std::size_t passes_ = 0;  // The bands a drawing was drawn in.
   draw::PngStatus pictureStatus_ = draw::PngStatus::kOk;
+  draw::JpegStatus jpegStatus_ = draw::JpegStatus::kOk;
   // How long each stage took, over all the bands, a drawing's or a
   // picture's: reading the file, drawing or scaling what it holds, making
   // the panel's levels of it, writing it to the panel, and waiting for the
@@ -411,6 +431,7 @@ class DrawingViewer final : public Screen {
   std::unique_ptr<std::uint8_t[]> panelBits_;
   std::unique_ptr<core::BlockFile> pictureFile_;
   std::unique_ptr<draw::PngReader> png_;
+  std::unique_ptr<draw::JpegReader> jpegReader_;  // Its rows in pngRows_ too: one picture is read at a time.
   std::unique_ptr<draw::Scaler> scaler_;
   PictureRows pictureRows_{*this};
   Timed timed_{*this};

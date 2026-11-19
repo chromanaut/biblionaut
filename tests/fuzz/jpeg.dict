@@ -1,0 +1,48 @@
+# Pieces of JPEG that the reader of a picture looks for: given to the
+# fuzzing engine (tools/fuzz.py) for the JPEG target, which would be a long
+# time coming to them by changing bytes. One piece a line, in quotes.
+
+# The start and end of a picture
+"\xff\xd8"
+"\xff\xd9"
+
+# Frame headers: baseline, extended and progressive, which are read, and
+# lossless, hierarchical and arithmetic-coded ones, which are not
+"\xff\xc0"
+"\xff\xc1"
+"\xff\xc2"
+"\xff\xc3"
+"\xff\xc5"
+"\xff\xc9"
+"\xff\xca"
+
+# Tables, the restart interval, a scan, and the restart markers
+"\xff\xc4"
+"\xff\xdb"
+"\xff\xdd"
+"\xff\xda"
+"\xff\xd0"
+"\xff\xd1"
+"\xff\xd7"
+
+# Segments that are passed over, and Adobe's, which is looked into
+"\xff\xe0"
+"\xff\xe1"
+"\xff\xfe"
+"\xff\xee"
+"Adobe"
+
+# A 0xFF in coded data, and fill bytes
+"\xff\x00"
+"\xff\xff"
+
+# Sampling: 1 by 1, 2 by 1, 2 by 2, 4 by 1
+"\x11"
+"\x21"
+"\x22"
+"\x41"
+
+# The end of a scan header: baseline, and a progressive scan of averages
+"\x00\x3f\x00"
+"\x00\x00\x00"
+"\x00\x00\x01"

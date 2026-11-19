@@ -40,10 +40,10 @@ void PrintUsage(const char* program) {
                "to have each only opened, and none read through.\n"
                "Set BN_LAYOUT_CHECK instead to have the layout code timed, and the text in\n"
                "that folder's layout folder set in lines, at the same moments.\n"
-               "Set BN_DRAWINGS instead to have the SVG and PNG files in that folder's\n"
-               "drawings folder shown in place of the test pattern, Down and Up going from\n"
-               "one to the next; and BN_DRAWING_TOUR as well to have it go round them\n"
-               "twice by itself.\n",
+               "Set BN_DRAWINGS instead to have the SVG, PNG and JPEG files in that\n"
+               "folder's drawings folder shown in place of the test pattern, Down and Up\n"
+               "going from one to the next; and BN_DRAWING_TOUR as well to have it go\n"
+               "round them twice by itself.\n",
                program);
 }
 

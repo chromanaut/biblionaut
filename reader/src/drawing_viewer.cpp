@@ -38,7 +38,8 @@ bool EndsWith(std::string_view name, std::string_view ending) noexcept {
 }
 
 bool IsDrawing(std::string_view name) noexcept { return EndsWith(name, ".svg"); }
-bool IsPicture(std::string_view name) noexcept { return EndsWith(name, ".png"); }
+bool IsJpeg(std::string_view name) noexcept { return EndsWith(name, ".jpg") || EndsWith(name, ".jpeg"); }
+bool IsPicture(std::string_view name) noexcept { return EndsWith(name, ".png") || IsJpeg(name); }
 
 // The buffer a picture's file is read through.
 constexpr std::size_t kFileBufferBytes = 4096;
@@ -456,6 +457,7 @@ void DrawingViewer::Begin(std::size_t index) noexcept {
   current_ = index;
   wanted_ = index;
   picture_ = IsPicture(names_[index]);
+  jpeg_ = IsJpeg(names_[index]);
   // What it would be kept in the cache as, so far: its file.
   {
     const std::string path = folder_ + "/" + names_[index];
@@ -916,12 +918,14 @@ bool DrawingViewer::PictureMemory() noexcept {
     pictureFile_.reset(new (std::nothrow) core::BlockFile({fileBuffer_.get(), kFileBufferBytes}));
     png_.reset(new (std::nothrow)
                    draw::PngReader({window_.get(), draw::PngReader::kWindowBytes}, {pngRows_.get(), kPictureRowBytes}));
+    jpegReader_.reset(new (std::nothrow) draw::JpegReader({pngRows_.get(), kPictureRowBytes}));
     scaler_.reset(new (std::nothrow)
                       draw::Scaler({sums_.get(), draw::Scaler::SumsFor(widest)}, {scaledRow_.get(), widest}));
   }
-  if (!pictureFile_ || !png_ || !scaler_) {
+  if (!pictureFile_ || !png_ || !jpegReader_ || !scaler_) {
     // All of it, or none: what was had is given back.
     png_.reset();
+    jpegReader_.reset();
     scaler_.reset();
     pictureFile_.reset();
     fileBuffer_.reset();
@@ -945,24 +949,7 @@ bool DrawingViewer::BeginPicture(std::size_t index) noexcept {
     SayNotShown("cannot read it");
     return false;
   }
-  // The header alone, which says how large it is: a few steps.
-  png_->Begin(*pictureFile_, nullptr);
-  while (png_->Step()) {
-  }
-  pictureStatus_ = png_->Status();
-  if (!png_->HeaderKnown() || pictureStatus_ != draw::PngStatus::kOk) {
-    SayNotShown(draw::PngStatusName(pictureStatus_));
-    return false;
-  }
-  header_ = png_->Header();
-  if (header_.interlaced) {
-    SayNotShown("interlaced");
-    return false;
-  }
-  if (draw::PngReader::RowBytesFor(header_) > kPictureRowBytes) {
-    LogLine why;
-    why.Text("its rows need ").Number(draw::PngReader::RowBytesFor(header_)).Text(" bytes");
-    SayNotShown(why.View());
+  if (!ReadPictureHeader()) {
     return false;
   }
   // As large as fits on the page the way the device is read, keeping its
@@ -972,8 +959,8 @@ bool DrawingViewer::BeginPicture(std::size_t index) noexcept {
   const bool quarter = turn == core::PanelTurn::kClockwise || turn == core::PanelTurn::kAnticlockwise;
   pageWidth_ = quarter ? size.height : size.width;
   pageHeight_ = quarter ? size.width : size.height;
-  const std::uint64_t width = header_.width;
-  const std::uint64_t height = header_.height;
+  const std::uint64_t width = jpeg_ ? jpegHeader_.width : header_.width;
+  const std::uint64_t height = jpeg_ ? jpegHeader_.height : header_.height;
   if (width * pageHeight_ >= height * pageWidth_) {
     shownWidth_ = static_cast<std::uint32_t>(pageWidth_);
     shownHeight_ =
@@ -985,6 +972,9 @@ bool DrawingViewer::BeginPicture(std::size_t index) noexcept {
   }
   left_ = (pageWidth_ - shownWidth_) / 2;
   top_ = (pageHeight_ - shownHeight_) / 2;
+  if (!SizePictureRead()) {
+    return false;
+  }
   readingUs_ = 0;
   scalingUs_ = 0;
   ditheringUs_ = 0;
@@ -1004,6 +994,70 @@ bool DrawingViewer::BeginPicture(std::size_t index) noexcept {
   return true;
 }
 
+bool DrawingViewer::ReadPictureHeader() noexcept {
+  // The header alone, which says how large it is: a few steps.
+  pictureStatus_ = draw::PngStatus::kOk;
+  jpegStatus_ = draw::JpegStatus::kOk;
+  if (jpeg_) {
+    jpegReader_->Begin(*pictureFile_, nullptr);
+    while (jpegReader_->Step()) {
+    }
+    jpegStatus_ = jpegReader_->Status();
+    if (!jpegReader_->HeaderKnown() || jpegStatus_ != draw::JpegStatus::kOk) {
+      SayNotShown(draw::JpegStatusName(jpegStatus_));
+      return false;
+    }
+    jpegHeader_ = jpegReader_->Header();
+    return true;
+  }
+  png_->Begin(*pictureFile_, nullptr);
+  while (png_->Step()) {
+  }
+  pictureStatus_ = png_->Status();
+  if (!png_->HeaderKnown() || pictureStatus_ != draw::PngStatus::kOk) {
+    SayNotShown(draw::PngStatusName(pictureStatus_));
+    return false;
+  }
+  header_ = png_->Header();
+  if (header_.interlaced) {
+    SayNotShown("interlaced");
+    return false;
+  }
+  return true;
+}
+
+bool DrawingViewer::SizePictureRead() noexcept {
+  std::uint64_t room = 0;
+  if (jpeg_) {
+    // As small as it can be read and still be as large as it is shown.
+    const draw::JpegReduction reduction = draw::JpegReader::ReductionFor(jpegHeader_, shownWidth_, shownHeight_);
+    readWidth_ = draw::JpegReader::WidthAt(jpegHeader_, reduction);
+    readHeight_ = draw::JpegReader::HeightAt(jpegHeader_, reduction);
+    room = draw::JpegReader::RowBytesFor(jpegHeader_, reduction);
+  } else {
+    readWidth_ = header_.width;
+    readHeight_ = header_.height;
+    room = draw::PngReader::RowBytesFor(header_);
+  }
+  if (room > kPictureRowBytes) {
+    LogLine why;
+    why.Text("its rows need ").Number(room).Text(" bytes");
+    SayNotShown(why.View());
+    return false;
+  }
+  return true;
+}
+
+bool DrawingViewer::StepPicture() noexcept { return jpeg_ ? jpegReader_->Step() : png_->Step(); }
+
+bool DrawingViewer::PictureReadWhole() const noexcept {
+  return jpeg_ ? jpegStatus_ == draw::JpegStatus::kOk : pictureStatus_ == draw::PngStatus::kOk;
+}
+
+const char* DrawingViewer::PictureStatusName() const noexcept {
+  return jpeg_ ? draw::JpegStatusName(jpegStatus_) : draw::PngStatusName(pictureStatus_);
+}
+
 bool DrawingViewer::StartPictureRead() noexcept {
   const core::DisplaySize size = display_.Size();
   // White, until the picture's dark pixels are cleared; and the picture
@@ -1012,10 +1066,13 @@ bool DrawingViewer::StartPictureRead() noexcept {
   if (!pictureFile_->Seek(0)) {
     return false;
   }
-  png_->Begin(*pictureFile_, &timed_);
+  if (jpeg_) {
+    jpegReader_->Begin(*pictureFile_, &timed_, draw::JpegReader::ReductionFor(jpegHeader_, shownWidth_, shownHeight_));
+  } else {
+    png_->Begin(*pictureFile_, &timed_);
+  }
   const std::size_t widest = std::max<std::size_t>(size.width, size.height);
-  if (scaler_->Begin(header_.width, header_.height, shownWidth_, shownHeight_, pictureRows_) !=
-          draw::ScaleStatus::kOk ||
+  if (scaler_->Begin(readWidth_, readHeight_, shownWidth_, shownHeight_, pictureRows_) != draw::ScaleStatus::kOk ||
       !ditherer_.Begin(shownWidth_, static_cast<std::uint32_t>(levels_),
                        {errors_.get(), draw::Ditherer::ErrorsFor(widest)})) {
     return false;
@@ -1031,7 +1088,7 @@ bool DrawingViewer::FeedPicture(std::uint64_t until) noexcept {
     // the new rows it made ready, with the dithering's share taken out.
     const std::uint64_t started = clock_.NowUs();
     timedUs_ = 0;
-    const bool more = png_->Step();
+    const bool more = StepPicture();
     const std::uint64_t stepped = clock_.NowUs();
     readingUs_ += (stepped - started) - timedUs_;
     scalingUs_ += timedUs_;
@@ -1041,7 +1098,11 @@ bool DrawingViewer::FeedPicture(std::uint64_t until) noexcept {
     const std::uint64_t drained = clock_.NowUs();
     scalingUs_ += (drained - stepped) - (ditheringUs_ - dithered);
     if (!more) {
-      pictureStatus_ = png_->Status();
+      if (jpeg_) {
+        jpegStatus_ = jpegReader_->Status();
+      } else {
+        pictureStatus_ = png_->Status();
+      }
       return true;
     }
     if (drained >= until) {
@@ -1085,10 +1146,10 @@ bool DrawingViewer::WritePicture() noexcept {
       display_.WriteRows(core::DisplayPlane::kNew, 0, bits) && display_.WriteRows(core::DisplayPlane::kOld, 0, bits);
   writingUs_ += clock_.NowUs() - started;
   // A picture not read whole is not kept: the card may have failed.
-  if (caching_ && pictureStatus_ != draw::PngStatus::kOk) {
+  if (caching_ && !PictureReadWhole()) {
     cache_.Close();
     caching_ = false;
-    cacheNote_ = draw::PngStatusName(pictureStatus_);
+    cacheNote_ = PictureStatusName();
   }
   for (std::size_t row = 0; caching_ && row < size.height; row += kBandRows) {
     const std::size_t rows = std::min<std::size_t>(kBandRows, size.height - row);
@@ -1106,8 +1167,16 @@ void DrawingViewer::SayPicture() noexcept {
     stream_.SendText(line.View());
     return;
   }
-  line.Text(", ").Text(draw::PngStatusName(pictureStatus_)).Text(", ");
-  line.Number(header_.width).Text("x").Number(header_.height).Text(" ").Text(draw::PngColourName(header_.colour));
+  line.Text(", ").Text(PictureStatusName()).Text(", ");
+  if (jpeg_) {
+    line.Number(jpegHeader_.width).Text("x").Number(jpegHeader_.height).Text(" ").Text(draw::JpegKindName(jpegHeader_));
+    const draw::JpegReduction reduction = jpegReader_->Reduction();
+    if (reduction != draw::JpegReduction::kNone) {
+      line.Text(" read at 1/").Number(static_cast<unsigned>(reduction));
+    }
+  } else {
+    line.Number(header_.width).Text("x").Number(header_.height).Text(" ").Text(draw::PngColourName(header_.colour));
+  }
   line.Text(" shown ").Number(shownWidth_).Text("x").Number(shownHeight_);
   line.Text(": reading ").Number(readingUs_ / 1000);
   line.Text(" ms, scaling ").Number(scalingUs_ / 1000).Text(" ms, dithering ").Number(ditheringUs_ / 1000);

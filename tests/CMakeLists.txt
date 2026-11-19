@@ -93,6 +93,7 @@ bn_add_unit_test(draw_tests
     unit/draw/fill_test.cpp
     unit/draw/fixed_test.cpp
     unit/draw/flatten_test.cpp
+    unit/draw/jpeg_test.cpp
     unit/draw/picture_cache_test.cpp
     unit/draw/png_test.cpp
     unit/draw/scale_test.cpp
@@ -309,6 +310,17 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-png> ${CMAKE_CURRENT_BINARY_DIR}/png_tool)
   set_tests_properties(e2e.PngTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
+  # bn-jpeg, and through it the JPEG reader, against a second reading of the
+  # same pictures: the file taken apart all at once, its codes decoded a
+  # symbol at a time, and its blocks turned into pixels in whole numbers at
+  # an eighth and in real numbers at the other sizes. The pictures are made
+  # by an encoder of the test's own.
+  add_test(
+    NAME e2e.JpegTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/jpeg_tool.py
+      $<TARGET_FILE:bn-jpeg> ${CMAKE_CURRENT_BINARY_DIR}/jpeg_tool)
+  set_tests_properties(e2e.JpegTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
   # bn-hyphen, and through it the hyphenator and the tables it reads,
   # against a second way of breaking the same words: the patterns kept as
   # they were written, and every piece of a word looked up among them.
@@ -339,13 +351,13 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(e2e.LayoutCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The drawing viewer, run by the desktop application over a folder of
-  # drawings and a picture, against bn-svg's drawing of each and bn-png's
-  # reading of the picture, turned onto the panel.
+  # drawings and pictures, against bn-svg's drawing of each drawing and
+  # bn-png's and bn-jpeg's reading of each picture, turned onto the panel.
   add_test(
     NAME e2e.DrawingViewer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/drawing_viewer.py
-      $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-svg> $<TARGET_FILE:bn-png> $<TARGET_FILE:bn-trace>
-      ${CMAKE_CURRENT_BINARY_DIR}/drawing_viewer)
+      $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-svg> $<TARGET_FILE:bn-png> $<TARGET_FILE:bn-jpeg>
+      $<TARGET_FILE:bn-trace> ${CMAKE_CURRENT_BINARY_DIR}/drawing_viewer)
   set_tests_properties(e2e.DrawingViewer PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
@@ -357,14 +369,14 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-epub> ${CMAKE_CURRENT_BINARY_DIR}/book_check)
   set_tests_properties(e2e.BookCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
-  # bn-zip, bn-xml, bn-epub, bn-css and bn-png over the real books in corpus/,
-  # each against a reading of the same book by Python; and the books
-  # themselves against the list of what they should be.
+  # bn-zip, bn-xml, bn-epub, bn-css, bn-png and bn-jpeg over the real books
+  # in corpus/, each against a reading of the same book by Python; and the
+  # books themselves against the list of what they should be.
   add_test(
     NAME e2e.Corpus
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check-books.py
       --zip $<TARGET_FILE:bn-zip> --xml $<TARGET_FILE:bn-xml> --epub $<TARGET_FILE:bn-epub>
-      --css $<TARGET_FILE:bn-css> --png $<TARGET_FILE:bn-png>
+      --css $<TARGET_FILE:bn-css> --png $<TARGET_FILE:bn-png> --jpeg $<TARGET_FILE:bn-jpeg>
       ${PROJECT_SOURCE_DIR}/corpus)
   set_tests_properties(e2e.Corpus PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

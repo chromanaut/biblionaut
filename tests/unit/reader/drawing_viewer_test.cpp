@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "display_fakes.h"
+#include "jpeg_builder.h"
 #include "png_builder.h"
 #include "storage_fakes.h"
 #include "stream_fakes.h"
@@ -728,6 +729,79 @@ TEST(DrawingViewer, SaysWhyAPictureIsNotShownAndLeavesThePanelAlone) {
   // Wider than the memory for its rows allows.
   EXPECT_EQ(notShown(GrayPng(9000, 1, [](auto, auto) { return 0; })),
             "picture 1 of 1: p.png, not shown: its rows need 18002 bytes");
+}
+
+// A gray JPEG, `width` by `height`, each block of 8 by 8 black or white as
+// `black` says of it; progressive if asked, and CMYK if asked.
+template <typename Black>
+std::vector<std::uint8_t> GrayJpeg(std::uint32_t width, std::uint32_t height, Black black, bool progressive = false,
+                                   bool cmyk = false) {
+  bn::test::JpegPicture picture;
+  picture.width = width;
+  picture.height = height;
+  if (cmyk) {
+    picture.components = {{1, 1, 1, 0}, {2, 1, 1, 0}, {3, 1, 1, 0}, {4, 1, 1, 0}};
+  }
+  picture.Make(8);
+  for (std::size_t i = 0; i < picture.components.size(); ++i) {
+    for (std::uint32_t y = 0; y < picture.BlocksDown(i); ++y) {
+      for (std::uint32_t x = 0; x < picture.BlocksAcross(i); ++x) {
+        // An average of -128 or 127 steps of 8: black, or white.
+        picture.Block(i, x, y)[0] = static_cast<std::int16_t>(black(x, y) ? -128 : 127);
+      }
+    }
+  }
+  bn::test::JpegOptions options;
+  options.frame = progressive ? 0xC2 : 0xC0;
+  return bn::test::JpegFile(picture, options);
+}
+
+TEST(DrawingViewer, ShowsAJpegReadAsSmallAsItCanBeAndStillBeAsLargeAsItIsShown) {
+  // 160 by 96, black on the left half and white on the right, shown 40 by
+  // 24: read at a quarter, which is that size.
+  Fixture fixture;
+  fixture.storage.Put("/drawings/p.jpg", GrayJpeg(160, 96, [](std::uint32_t x, auto) { return x < 10; }));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U) << (fixture.Lines().empty() ? "" : fixture.Lines().back());
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 0; x < 40; ++x) {
+      EXPECT_EQ(fixture.Black(x, y), x < 20) << x << "," << y;
+    }
+  }
+  const std::string line = fixture.Lines().back();
+  EXPECT_EQ(line.rfind("picture 1 of 1: p.jpg, ok, 160x96 gray read at 1/4 shown 40x24: reading ", 0), 0U) << line;
+}
+
+TEST(DrawingViewer, ShowsAProgressiveJpegFromItsFirstScanAtAnEighth) {
+  Fixture fixture;
+  fixture.storage.Put("/drawings/p.JPEG",
+                      GrayJpeg(160, 96, [](std::uint32_t x, auto) { return x < 10; }, /*progressive=*/true));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U) << (fixture.Lines().empty() ? "" : fixture.Lines().back());
+  // Read 20 by 12 and made twice the size: black on the left half still,
+  // away from the middle, where black and white are blended.
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 0; x < 40; ++x) {
+      if (x < 18 || x >= 22) {
+        EXPECT_EQ(fixture.Black(x, y), x < 20) << x << "," << y;
+      }
+    }
+  }
+  const std::string line = fixture.Lines().back();
+  EXPECT_EQ(line.rfind("picture 1 of 1: p.JPEG, ok, 160x96 progressive gray read at 1/8 shown 40x24: reading ", 0), 0U)
+      << line;
+}
+
+TEST(DrawingViewer, SaysWhyAJpegIsNotShown) {
+  Fixture fixture;
+  fixture.storage.Put("/drawings/p.jpg", GrayJpeg(16, 16, [](auto, auto) { return true; }, false, /*cmyk=*/true));
+  fixture.Start();
+  fixture.Settle();
+  EXPECT_EQ(fixture.viewer->Shown(), 0U);
+  ASSERT_FALSE(fixture.Lines().empty());
+  EXPECT_EQ(fixture.Lines().back(), "picture 1 of 1: p.jpg, not shown: unsupported");
 }
 
 TEST(DrawingViewer, APressWhileAPictureIsBeingReadGivesItUpForTheOneAskedFor) {

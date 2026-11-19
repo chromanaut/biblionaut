@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import random
 import struct
+import sys
 import zlib
 from pathlib import Path
 
@@ -1524,6 +1525,155 @@ def png_seeds() -> None:
     seed("nothing", b"")
 
 
+# ---- jpeg: byte 0 (how many bytes the source gives at a call), byte 1 (the reduction asked, whether only the
+# header is read, whether the room for rows is a byte short), then a JPEG file ----
+
+
+def jpeg_seeds() -> None:
+    """Pictures made by the encoder of tests/e2e/jpeg_tool.py, which the end-to-end test also makes its pictures
+    with: small ones of every kind the reader reads, ones of the kinds it does not, and spoiled ones."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "e2e"))
+    sys.dont_write_bytecode = True  # Or Python leaves a compiled copy of jpeg_tool beside it.
+    import jpeg_tool  # noqa: E402  (found through the path set just above)
+
+    clear("jpeg")
+    reductions = {1: 0, 2: 1, 4: 2, 8: 3}
+
+    def seed(name: str, file: bytes, *, piece: int = 0, reduction: int = 1, header: bool = False,
+             short: bool = False) -> None:
+        choices = reductions[reduction] | (int(header) << 2) | (int(short) << 3)
+        write("jpeg", name, bytes([piece, choices]) + file)
+
+    def plane(width: int, height: int, number: int) -> list[bytes]:
+        """A gradient with a dark bar across it: some blocks of one gray, some not."""
+        rows = []
+        for y in range(height):
+            row = bytearray((x * 7 + y * 3 + number * 40) & 255 for x in range(width))
+            if height // 3 <= y < height // 2:
+                row[width // 4:width // 2] = bytes(width // 2 - width // 4)
+            rows.append(bytes(row))
+        return rows
+
+    def picture(width: int, height: int, marker: int, sampling: tuple[int, int] | None, *, restart: int = 0,
+                made: bool = False, wide: bool = False, low: int = 0, together: bool = True, colour_first: bool = False,
+                fill: int = 0, quality: int = 75, end: bool = True) -> bytes:
+        """A picture: gray if `sampling` is None, and otherwise YCbCr with Y sampled so; in one scan with every
+        component (`together`) or one for each, the colour's first if `colour_first`."""
+        rng = random.Random(width * 1000 + height)
+        scale = 5000 // quality if quality < 50 else 200 - 2 * quality
+        most = 2000 if wide else 255
+        steps = {which: tuple(min(most, max(1, (base * scale + 50) // 100)) for base in jpeg_tool.STANDARD_STEPS[which])
+                 for which in (0, 1)}
+        if sampling is None:
+            components = [(1, 1, 1, 0)]
+            planes = [plane(width, height, 0)]
+        else:
+            across, down = sampling
+            components = [(1, across, down, 0), (2, 1, 1, 1), (3, 1, 1, 1)]
+            planes = [plane(width, height, 0)] + [plane((width + across - 1) // across, (height + down - 1) // down,
+                                                        number) for number in (1, 2)]
+        every = list(range(len(components)))
+        if marker == 0xC2:
+            scans = [(every, 0, 0, 0, low)] if together else [([index], 0, 0, 0, low) for index in every]
+            if colour_first and not together:
+                scans = [scans[1], scans[0]] + scans[2:]
+            scans += [([0], 1, 5, 0, 0)] + [([index], 1, 63, 0, 0) for index in every[1:]] + [([0], 6, 63, 0, 0)]
+            if low:
+                scans.append((every, 0, 0, 1, 0))
+        elif together:
+            scans = [(every, 0, 63, 0, 0)]
+        else:
+            order = every[1:] + every[:1] if colour_first else every
+            scans = [([index], 0, 63, 0, 0) for index in order]
+        plan = jpeg_tool.Plan(width, height, marker, components, planes, {k: steps[k] for k in range(len(components[:2]))},
+                              wide_steps=wide, made_tables=made, restart=restart, scans=scans,
+                              fill_before_restarts=fill, end=end)
+        return jpeg_tool.encode(plan, rng, extras=False)
+
+    def segment(marker: int, body: bytes) -> bytes:
+        return bytes((0xFF, marker)) + struct.pack(">H", len(body) + 2) + body
+
+    def ahead(file: bytes, more: bytes) -> bytes:
+        """`more` just after the start of the picture."""
+        return file[:2] + more + file[2:]
+
+    # Every kind that is read, a few blocks of each.
+    seed("gray", picture(24, 17, 0xC0, None))
+    for across, down in ((1, 1), (2, 1), (2, 2), (1, 2), (4, 1)):
+        seed(f"ycbcr-{across}x{down}", picture(35, 18, 0xC0, (across, down)), reduction=2)
+    seed("extended-with-wide-steps", picture(20, 20, 0xC1, (2, 2), wide=True, quality=10), reduction=4)
+    seed("tables-made-for-it", picture(30, 12, 0xC0, (2, 1), made=True))
+    seed("a-scan-for-each-the-colour-first", picture(33, 16, 0xC0, (2, 2), together=False, colour_first=True))
+    seed("restarts", picture(40, 24, 0xC0, (2, 2), restart=2), piece=7)
+    seed("restarts-with-fill-bytes", picture(40, 8, 0xC0, None, restart=1, fill=16), reduction=8)
+    seed("progressive", picture(40, 24, 0xC2, (2, 2)), reduction=8)
+    seed("progressive-averages-a-bit-short", picture(40, 24, 0xC2, (2, 1), low=1, made=True), reduction=1)
+    seed("progressive-the-colour-first", picture(32, 16, 0xC2, (1, 1), together=False, colour_first=True),
+         reduction=8)
+    seed("progressive-a-byte-at-a-time", picture(16, 16, 0xC2, None, restart=3), piece=1)
+    seed("no-end", picture(17, 9, 0xC0, None, end=False), reduction=8)
+    sound = picture(48, 32, 0xC0, (2, 2))
+    seed("header-only", sound, header=True)
+    seed("a-byte-short-of-room", sound, short=True)
+    # What lies around the segments: segments to pass over, bytes that are not
+    # markers, and fill bytes.
+    seed("segments-to-pass-over", ahead(sound, segment(0xE0, b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00") +
+                                        segment(0xFE, b"the harbour") + segment(0xE1, b"Exif\x00\x00" + bytes(30)) +
+                                        segment(0xEE, b"Adobe\x00\x64\x00\x00\x00\x00\x01") + b"\xff\x01"))
+    seed("bytes-that-are-not-markers", ahead(sound, b"\x00\x7f\xff\x00\x01" + b"\xff" * 20))
+    # The kinds that are not read.
+    places = jpeg_tool.segments_of(sound)
+    at, marker, length = next(place for place in places if place[1] == 0xC0)
+    frame = bytearray(sound[at + 4:at + 2 + length])
+    before, after = sound[:at], sound[at + 2 + length:]
+
+    def frame_seed(name: str, marker: int, body: bytes, more: bytes = b"") -> None:
+        seed(name, before[:2] + more + before[2:] + segment(marker, body) + after)
+
+    frame_seed("adobe-rgb", 0xC0, bytes(frame), segment(0xEE, b"Adobe\x00\x64\x00\x00\x00\x00\x00"))
+    named = bytearray(frame)
+    named[6], named[9], named[12] = ord("R"), ord("G"), ord("B")
+    frame_seed("named-rgb", 0xC0, bytes(named))
+    cmyk = bytearray(frame)
+    cmyk[5] = 4
+    frame_seed("cmyk", 0xC0, bytes(cmyk + bytes((4, 0x11, 1))))
+    twelve = bytearray(frame)
+    twelve[0] = 12
+    frame_seed("twelve-bits", 0xC1, bytes(twelve))
+    frame_seed("arithmetic", 0xC9, bytes(frame))
+    frame_seed("lossless", 0xC3, bytes(frame))
+    later = bytearray(frame)
+    later[1:3] = b"\x00\x00"
+    frame_seed("height-given-later", 0xC0, bytes(later))
+    less = bytearray(frame)
+    less[7], less[10] = 0x11, 0x22
+    frame_seed("gray-sampled-less", 0xC0, bytes(less))
+    # Spoiled.
+    data_at = next(place[0] + 2 + place[2] for place in places if place[1] == 0xDA)
+    seed("cut-short-in-its-data", sound[:data_at + (len(sound) - data_at) // 2])
+    seed("cut-short-in-its-header", sound[:at + 6])
+    restarted = picture(40, 24, 0xC0, (2, 2), restart=2)
+    first = restarted.index(b"\xff\xd0")
+    seed("a-wrong-restart-marker", restarted[:first + 1] + b"\xd3" + restarted[first + 2:])
+    seed("a-restart-marker-left-out", restarted[:first] + restarted[first + 2:])
+    huffman = next(place for place in places if place[1] == 0xC4)
+    seed("a-table-left-out", sound[:huffman[0]] + sound[huffman[0] + 2 + huffman[2]:])
+    seed("a-code-of-all-ones", ahead(sound, segment(0xC4, b"\x00" + bytes([2]) + bytes(15) + b"\x00\x01")))
+    # The first byte from the middle of the data on that, changed, leaves
+    # codes that no table has after some rows.
+    for offset in range((data_at + len(sound)) // 2, len(sound)):
+        bad_data = bytearray(sound)
+        bad_data[offset] ^= 0xFF
+        reading = jpeg_tool.read_jpeg(bytes(bad_data))
+        if reading.status == "bad-data" and reading.rows:
+            break
+    seed("a-byte-of-data-changed", bytes(bad_data))
+    seed("two-frames", before + segment(0xC0, bytes(frame)) + segment(0xC0, bytes(frame)) + after)
+    seed("a-scan-before-its-frame", ahead(sound, segment(0xDA, b"\x01\x01\x00\x00\x3f\x00")))
+    seed("not-a-jpeg", b"GIF89a" + bytes(20))
+    seed("nothing", b"")
+
+
 # ---- scale: the old and new sizes, two bytes of choices, then the old picture's pixels ----
 
 
@@ -1606,6 +1756,7 @@ def main() -> None:
     svg_seeds()
     paragraph_seeds()
     png_seeds()
+    jpeg_seeds()
     scale_seeds()
     picture_cache_seeds()
     for directory in sorted(INPUTS.iterdir()):

@@ -86,11 +86,12 @@ TARGETS = {
     "svg_path": 2048,
     "svg": 8192,
     "png": 8192,
+    "jpeg": 8192,
     "scale": 4096,
     "picture_cache": 4096,
 }
 
-# Pieces of XML, of CSS, of SVG and of PNG that the readers look for, which
+# Pieces of XML, of CSS, of SVG, of PNG and of JPEG that the readers look for, which
 # the engine would be a long time coming to by changing bytes. For the
 # targets that read each.
 XML_PIECES = ROOT / "tests" / "fuzz" / "xml.dict"
@@ -98,8 +99,10 @@ CSS_PIECES = ROOT / "tests" / "fuzz" / "css.dict"
 CSS_RULES_PIECES = ROOT / "tests" / "fuzz" / "css_rules.dict"
 SVG_PIECES = ROOT / "tests" / "fuzz" / "svg.dict"
 PNG_PIECES = ROOT / "tests" / "fuzz" / "png.dict"
+JPEG_PIECES = ROOT / "tests" / "fuzz" / "jpeg.dict"
 DICTIONARIES = {
     "png": PNG_PIECES,
+    "jpeg": JPEG_PIECES,
     "xml": XML_PIECES,
     "package": XML_PIECES,
     "toc": XML_PIECES,

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Checks what the book tools make of real books against a reading of each by Python.
 
-bn-zip, bn-xml, bn-epub, bn-css and bn-png run the firmware's own code on one
-file. This runs them over every EPUB under the folders it is given and
+bn-zip, bn-xml, bn-epub, bn-css, bn-png and bn-jpeg run the firmware's own
+code on one file. This runs them over every EPUB under the folders it is given and
 compares, book by book:
 
   - bn-zip with Python's zipfile: every entry of the directory, every
@@ -15,7 +15,11 @@ compares, book by book:
     for each element, on the first few documents of the book, each given
     the style sheets it links and those they import;
   - bn-png book with a second reading of every PNG picture: its header, how
-    the reading ended, and the checksum of every row of gray.
+    the reading ended, and the checksum of every row of gray;
+  - bn-jpeg book with a second reading of every JPEG picture, both read at
+    an eighth of their size: its header, how the reading ended, what was
+    passed over, and the checksum of every row of gray, which at an eighth
+    is worked out in whole numbers and so the same byte for byte.
 
 The readings of the ZIP file, the documents, the package, the style sheets
 and the pictures, and the working-out of the cascade, are the ones the
@@ -34,10 +38,10 @@ file: every file it lists has to be there and unchanged, and every EPUB
 beside or below it has to be listed.
 
 usage: tools/check-books.py [--tools BUILD] [--zip BN_ZIP] [--xml BN_XML] [--epub BN_EPUB] [--css BN_CSS]
-                            [--png BN_PNG] [--css-report] [--jobs N] FOLDER_OR_FILE...
+                            [--png BN_PNG] [--jpeg BN_JPEG] [--css-report] [--jobs N] FOLDER_OR_FILE...
 
 BUILD is a build folder to take the tools from: build/host-release if it
-has them, or else build/host. Each of the five can be named by itself.
+has them, or else build/host. Each of the six can be named by itself.
 
 It ends with 0 if everything agreed, 1 if anything did not, 2 if it could
 not start.
@@ -66,6 +70,7 @@ sys.dont_write_bytecode = True  # Or Python leaves compiled copies of the tests'
 import css_cascade_tool  # noqa: E402  (found through the path set just above)
 import css_tool  # noqa: E402
 import epub_tool  # noqa: E402
+import jpeg_tool  # noqa: E402
 import png_tool  # noqa: E402
 import xml_tool  # noqa: E402
 import zip_tool  # noqa: E402
@@ -559,8 +564,54 @@ def check_png(tool: str, path: Path, figures: dict) -> list[str]:
     return problems[:4]
 
 
-def check_book(arguments: tuple[str, str, str, str, str, str]) -> tuple[str, list[str], dict]:
-    zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, png_tool_path, name = arguments
+def is_jpeg(name: str) -> bool:
+    """Whether bn-jpeg book takes an entry for a picture: by the ending of its name, in any case."""
+    lowered = name.lower()
+    return any(len(name) > len(ending) and lowered.endswith(ending) for ending in (".jpg", ".jpeg"))
+
+
+def check_jpeg(tool: str, path: Path, figures: dict) -> list[str]:
+    result = run(tool, "book", str(path), "--reduce", "8")
+    lines = result.stdout.decode("utf-8", "replace").splitlines()
+    if not lines or not lines[-1].startswith("jpeg_files="):
+        return [f"bn-jpeg: ended with {result.returncode} and its last line is {lines[-1:]!r}: {result.stderr[-120:]!r}"]
+    said = {}
+    for line in lines[:-1]:
+        if line.startswith("unreadable "):
+            said[line[len("unreadable "):]] = "unreadable"
+        else:
+            fields = line.split(" ", 11)
+            said[fields[11]] = " ".join(fields[:11])
+    problems = []
+    pictures = 0
+    pixels = 0
+    most_room = 0
+    with zipfile.ZipFile(path) as archive:
+        named = {info.filename: zip_tool.name_bytes(info).decode("utf-8", "replace") for info in archive.infolist()}
+        wanted = [info for info in archive.infolist() if is_jpeg(named[info.filename])]
+        if set(said) != {named[info.filename] for info in wanted} or len(said) != len(wanted):
+            return [f"bn-jpeg: it read {len(said)} pictures, and Python finds {len(wanted)} by their names, not all the "
+                    "same"]
+        for info in wanted:
+            expected = jpeg_tool.read_jpeg(archive.read(info), 8)
+            theirs = said[named[info.filename]]
+            if theirs != expected.line():
+                problems.append(f"bn-jpeg: {info.filename}: {theirs}; the second reading has {expected.line()}")
+            pictures += 1
+            if expected.frame:
+                pixels += expected.frame.width * expected.frame.height
+                most_room = max(most_room, expected.frame.room(1))
+            if expected.status != "ok":
+                figures[f"jpeg {expected.status}"] = figures.get(f"jpeg {expected.status}", 0) + 1
+    figures["jpegs"] = pictures
+    figures["jpeg_pixels"] = pixels
+    if pictures:
+        figures["jpeg room"] = [most_room]
+    return problems[:4]
+
+
+def check_book(arguments: tuple[str, str, str, str, str, str, str]) -> tuple[str, list[str], dict]:
+    zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, png_tool_path, jpeg_tool_path, name = arguments
     path = Path(name)
     # A number is added up over the books; a list is kept, a book to an item.
     figures: dict = {}
@@ -573,6 +624,7 @@ def check_book(arguments: tuple[str, str, str, str, str, str]) -> tuple[str, lis
         problems += check_css(css_tool_path, path, figures)
         problems += check_cascade(css_tool_path, path, figures)
         problems += check_png(png_tool_path, path, figures)
+        problems += check_jpeg(jpeg_tool_path, path, figures)
     except Exception as error:  # A book that the comparison itself trips over is a finding, not a crash.
         problems.append(f"the comparison failed: {error!r}")
     return name, problems, figures
@@ -664,15 +716,17 @@ def main() -> int:
     parser.add_argument("--epub")
     parser.add_argument("--css")
     parser.add_argument("--png")
+    parser.add_argument("--jpeg")
     parser.add_argument("--css-report", action="store_true")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     parser.add_argument("places", nargs="+")
     options = parser.parse_args()
     tools = [find_tool(options.zip, options.tools, "zip", "bn-zip"), find_tool(options.xml, options.tools, "xml", "bn-xml"),
              find_tool(options.epub, options.tools, "epub", "bn-epub"), find_tool(options.css, options.tools, "css", "bn-css"),
-             find_tool(options.png, options.tools, "png", "bn-png")]
+             find_tool(options.png, options.tools, "png", "bn-png"),
+             find_tool(options.jpeg, options.tools, "jpeg", "bn-jpeg")]
     if None in tools:
-        print("check-books: bn-zip, bn-xml, bn-epub, bn-css and bn-png are not all built: "
+        print("check-books: bn-zip, bn-xml, bn-epub, bn-css, bn-png and bn-jpeg are not all built: "
               "cmake --build --preset host-release", file=sys.stderr)
         return 2
     places = [Path(place) for place in options.places]
@@ -714,12 +768,19 @@ def main() -> int:
           f"{totals.get('tables', 0)} readings of tables of contents with {totals.get('toc_entries', 0)} entries, "
           f"{totals.get('sheets', 0)} style sheets with {totals.get('css_rules', 0)} rules, {totals.get('cascade_set', 0)} "
           f"properties set for {totals.get('cascade_elements', 0)} elements of {totals.get('cascade_documents', 0)} "
-          f"documents, {totals.get('pngs', 0)} PNG pictures of {totals.get('png_pixels', 0)} pixels.")
+          f"documents, {totals.get('pngs', 0)} PNG pictures of {totals.get('png_pixels', 0)} pixels, "
+          f"{totals.get('jpegs', 0)} JPEG pictures of {totals.get('jpeg_pixels', 0)} pixels.")
     if totals.get("png room"):
         print(f"Memory for the rows of a book's widest PNG picture, in bytes: {spread(totals['png room'])}; over the "
               f"{len(totals['png room'])} books that have one.")
     for key in sorted(key for key in totals if key.startswith("png ") and key != "png room"):
         print(f"{totals[key]} PNG pictures end as {key[4:]}, by the tool and by Python alike.")
+    if totals.get("jpeg room"):
+        print(f"Memory for the rows of a book's widest JPEG picture read at its whole size (a progressive one at an "
+              f"eighth), in bytes: {spread(totals['jpeg room'])}; over the {len(totals['jpeg room'])} books that have "
+              "one.")
+    for key in sorted(key for key in totals if key.startswith("jpeg ") and key != "jpeg room"):
+        print(f"{totals[key]} JPEG pictures end as {key[5:]}, by the tool and by Python alike.")
     if options.css_report:
         print_css_report(totals, len(books))
     if totals.get("cascade_not_compared"):

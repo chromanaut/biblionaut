@@ -80,9 +80,9 @@ option(BN_BOOK_CHECK_BRIEF "With BN_BOOK_CHECK: open every book and read none th
 # BN_BOOK_CHECK.
 option(BN_LAYOUT_CHECK "Time the layout code, and set the text on the SD card, at start and at each press of Power" OFF)
 
-# A firmware that shows the SVG and PNG files in /drawings on the SD card
-# in place of the test pattern, a drawing drawn as a drawing in a book is
-# and a picture read, scaled and dithered (reader/drawing_viewer.h says
+# A firmware that shows the SVG, PNG and JPEG files in /drawings on the SD
+# card in place of the test pattern, a drawing drawn as a drawing in a book
+# is and a picture read, scaled and dithered (reader/drawing_viewer.h says
 # how):
 #
 #   tools/idf -DBN_DRAWING_VIEWER=ON build flash    (back to normal: -DBN_DRAWING_VIEWER=OFF)
@@ -95,7 +95,7 @@ option(BN_LAYOUT_CHECK "Time the layout code, and set the text on the SD card, a
 # nobody at the buttons:
 #
 #   tools/idf -DBN_DRAWING_VIEWER=ON -DBN_DRAWING_TOUR=ON build flash
-option(BN_DRAWING_VIEWER "Show the SVG and PNG files in /drawings on the SD card in place of the test pattern" OFF)
+option(BN_DRAWING_VIEWER "Show the SVG, PNG and JPEG files in /drawings on the SD card in place of the test pattern" OFF)
 option(BN_DRAWING_TOUR "With BN_DRAWING_VIEWER: go round the drawings twice by itself" OFF)
 
 # For checking, on a device, a partition table with a data partition for

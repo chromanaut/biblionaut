@@ -7,6 +7,7 @@ add_library(bn_draw STATIC
   src/fill.cpp
   src/fixed.cpp
   src/flatten.cpp
+  src/jpeg.cpp
   src/picture_cache.cpp
   src/png.cpp
   src/scale.cpp

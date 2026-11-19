@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/png`: `bn-png`, which reads a PNG picture as the firmware does; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/png`: `bn-png`, which reads a PNG picture as the firmware does; `tools/jpeg`: `bn-jpeg`, which does the same for a JPEG picture; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -192,10 +192,11 @@ open panel-001.png          # one picture per refresh
 - `BN_DEVICE` names the device simulated. `x4` is the only one, and what
   is simulated without it.
 
-In place of the pattern, the application can show the SVG and PNG files in
-the card's `drawings` folder (`reader/drawing_viewer.h`): a drawing drawn
-as a drawing in a book is, and a picture read (`draw/png.h`) and scaled
-(`draw/scale.h`). Each is fitted to the page the way the device is held to
+In place of the pattern, the application can show the SVG, PNG and JPEG
+files in the card's `drawings` folder (`reader/drawing_viewer.h`): a
+drawing drawn as a drawing in a book is, and a picture read (`draw/png.h`,
+`draw/jpeg.h`, a JPEG made as small as it can be as it is read and still be
+as large as it is shown) and scaled (`draw/scale.h`). Each is fitted to the page the way the device is held to
 be read, as large as fits and in the middle of it, turned into the panel's
 rows, and its grays dithered to the panel's black and white
 (`draw/dither.h`). It is for seeing the renderer's and the picture
@@ -1599,8 +1600,8 @@ pages are SVG files. `corpus/README.md` lists them, with where each came
 from and the terms it is passed on under, which are not this project's
 licence. They are kept byte for byte as they were fetched.
 
-`tools/check-books.py` runs `bn-zip`, `bn-xml`, `bn-epub`, `bn-css` and
-`bn-png` over every EPUB under a folder, and compares what each says of a
+`tools/check-books.py` runs `bn-zip`, `bn-xml`, `bn-epub`, `bn-css`,
+`bn-png` and `bn-jpeg` over every EPUB under a folder, and compares what each says of a
 book with a reading of the same book by Python:
 
 ```
@@ -1609,8 +1610,9 @@ tools/check-books.py --tools build/host ~/books
 ```
 
 ```
-28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 42379 properties set for 15299 elements of 141 documents, 80 PNG pictures of 62626058 pixels.
+28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 42379 properties set for 15299 elements of 141 documents, 80 PNG pictures of 62626058 pixels, 45 JPEG pictures of 46766091 pixels.
 Memory for the rows of a book's widest PNG picture, in bytes: 9602 at the median, 11202 for nine in ten, 11202 at the most; over the 18 books that have one.
+Memory for the rows of a book's widest JPEG picture read at its whole size (a progressive one at an eighth), in bytes: 22528 at the median, 29952 for nine in ten, 40960 at the most; over the 17 books that have one.
 28 files listed in SHA256SUMS: all there and unchanged.
 The tools and Python agree about every book.
 ```
@@ -1638,12 +1640,15 @@ The tools and Python agree about every book.
   second working-out is slow, which is why it is not every document.
 - **The pictures**: every PNG `bn-png book` reads has the header, the
   ending, the rows and the checksum of their gray that a second reading of
-  it by Python comes to (Pictures, below, has what that reading is).
+  it by Python comes to (Pictures, below, has what that reading is); and
+  so has every JPEG `bn-jpeg book --reduce 8` reads, at an eighth of its
+  size, where the reader's arithmetic and the second reading's are the
+  same.
 
 Where they differ it prints a line for each difference, starting
 `DIFFERENT`, and ends with 1. It takes the tools from `build/host-release`
 if they are built there, or else from `build/host`; `--tools` names another
-build, and `--zip`, `--xml`, `--epub`, `--css` and `--png` one tool each.
+build, and `--zip`, `--xml`, `--epub`, `--css`, `--png` and `--jpeg` one tool each.
 
 A folder with a file named `SHA256SUMS` in it is checked against that file
 as well: every file listed has to be there with that SHA-256, and every
@@ -1667,8 +1672,8 @@ whatever the flag says, and `e2e.EpubTool` makes a book of that kind.
 Each reader of a book's own files, from the inflater to the table of
 contents, has a fuzz target in `tests/fuzz`, and so have the heap the XML
 parser's memory comes from, the hyphenator and the paragraph setter, which
-are given a book's words, each reader of a drawing, the reader of PNG
-pictures and the scaler: one function that
+are given a book's words, each reader of a drawing, the readers of PNG
+and JPEG pictures and the scaler: one function that
 is given some bytes, puts them through the reader, and ends the program if
 the reader does anything it should not.
 Going outside its memory, or into undefined behaviour, is seen by the
@@ -1694,6 +1699,7 @@ call may.
 | `svg_path` | `draw::SvgPathReader`, `PathFlattener` and `Filler`: a shape drawn whole, and again in strips with its data cut up | A call gives no more commands than it was asked for and one. A curve is 1,024 lines at the most and an arc 32,768. A line adds to no more cells than `MostCellsPerLine()`. Nothing is written outside the strip, and no cell is left with anything in it. The two pictures are the same, byte for byte |
 | `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, gives the filler more than `kMostLinesPerStep` lines, fills more than one shape or stroke, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte; and so is the file kept by a `SpoolWriter` and given back a band at a time, each step of which reads a chunk and fills once at the most |
 | `png` | `draw::PngReader`, four ways: for the header alone with no memory, with the room and the pieces the input chooses, with all the room it needs, and against a plain reading of the same file with zlib (`tests/support/png_reference.h`) | No step takes more from its source than `MostInputPerStep()`, and the header alone takes 33 bytes. Rows come in order, each as wide as the picture, and a picture is whole only with all of them. It has no room only when it has less than `RowBytesFor()`, and a picture is interlaced only if it says so. The header alone says what the whole reading says of it. With the room it needs it gives the same rows in any pieces. The rows are the plain reading's, and it ends where and as that does, but for data the inflater refuses as bad that zlib takes |
+| `jpeg` | `draw::JpegReader`, four ways: for the header alone with no memory, with the reduction, room and pieces the input chooses, with all the room it needs in pieces of 4 KB, and at an eighth | No step takes more from its source than `MostInputPerStep()`, nor gives more than one row. Rows come in order, each as wide as the picture is read, and a picture is whole only with all of them. The reduction taken is the one asked, or an eighth for a progressive picture, and the sides read are the picture's divided by it. It has no room only when it has less than `RowBytesFor()`, and a header it takes is one it can say the room for. The header alone says what the whole reading says of it, and fails as it does. It gives the same rows in any pieces, and ends at an eighth as it ends at the reduction asked |
 | `picture_cache` | `draw::PictureCache`, reading a file the card holds, as the picture it says it is or as another, its checksums mended or not | Reading ends in a status, and no file is left open. Another picture can be kept among the same files, and is read back the same. Rows are given only whole, and only as many as the picture has. A picture read through without complaint is the file's own rows, the picture asked for, with the checksum its header gives; and kept again it reads back the same |
 | `scale` | `draw::Scaler`, from sizes the input gives (sides of nothing and past the largest among them) and its pixels, sometimes all one gray, sometimes with an old row given out of turn | A side of nothing or too long is refused and nothing is given. `Row()` gives no new row and `Step()` one at the most; the new rows come in order, each as wide as the new picture, as many as it is high. A row out of turn stops it. Every new pixel is within a gray of the working-out in real numbers, and a picture of one gray stays that gray |
 
@@ -2893,9 +2899,11 @@ readers of what attributes say, path data and the renderer each have a
 fuzz target ("Fuzzing", above), and the renderer's target places its picture by each
 of the four turns. Another end-to-end test
 (`tests/e2e/drawing_viewer.py`) runs the desktop application over a folder
-of drawings and goes from one to the next and round, and sets each picture
-the simulated panel shows beside `bn-svg`'s drawing of the same file, at
-the size it should be on the page, turned onto the panel: in blocks of 16
+of drawings and pictures (a PNG, a JPEG and a progressive JPEG) and goes
+from one to the next and round, and sets each picture the simulated panel
+shows beside `bn-svg`'s drawing of the same file, or `bn-png`'s or
+`bn-jpeg`'s reading of it, at the size it should be on the page, turned
+onto the panel: in blocks of 16
 by 16 pixels, each as dark as it should be to within a fifth, and all of
 them to within a hundredth on the whole.
 
@@ -3055,9 +3063,9 @@ in each place a byte can be damaged.
 pieces that will turn a book's pictures into what a panel shows: a reader
 of each format gives rows of 8-bit gray, the scaler (below) makes them the
 size the picture is shown at, and the ditherer (`draw/dither.h`) brings
-them down to the grays a panel has. The drawing viewer shows the PNG files
-on its card this way ("The panel and the buttons", above). JPEG and GIF are
-not read yet. The pieces hand rows on to one another through one interface,
+them down to the grays a panel has. `JpegReader` (`draw/jpeg.h`, below) is
+the second. The drawing viewer shows the PNG and JPEG files on its card
+this way ("The panel and the buttons", above). GIF is not read yet. The pieces hand rows on to one another through one interface,
 `RowSink` (`draw/row_sink.h`).
 
 A picture is read from a `ByteSource`, such as an entry of the ZIP file, a
@@ -3190,6 +3198,159 @@ data that went on into the chunk after its last, and a signature checked
 by its first two bytes. The 24th changes nothing: which of two bytes
 Paeth's filter takes when they are equally near, which only happens when
 they are the same.
+
+### JPEG
+
+`JpegReader` (`draw/jpeg.h`) reads a JPEG picture in the same way: from a
+`ByteSource`, a piece at a time, its header first and then its rows, top
+first, each given to a `RowSink`. What it keeps of a picture is one row of
+its blocks: the 8 or 16 rows of pixels that are made at once.
+
+- **What it reads**: baseline and extended pictures coded with Huffman
+  codes, 8 bits a sample, gray (one component) or colour as YCbCr (three),
+  sampled in any way the standard allows, in one scan or several; restart
+  markers; and progressive pictures by their first scan (below).
+- **What it gives**: a byte a pixel, from black (0) to white (255). A
+  JPEG's gray is its first component, Y, which is 0.299 of red, 0.587 of
+  green and 0.114 of blue, the rule `draw/gray.h` has for every picture. So
+  only Y is turned back from frequencies into pixels: the colour is decoded
+  only as far as is needed to find where Y's next block begins.
+- **Smaller as it is read**: at a half, a quarter or an eighth of its size
+  each way (`JpegReduction`), for less work and less memory. Each pixel is
+  then the average of those it stands for in the block at its whole size,
+  worked out from the block's frequencies in one transform; at an eighth
+  that is the block's average alone. `ReductionFor()` gives the most a
+  picture can be made smaller as it is read and still be as large as it is
+  shown, and the scaler does the rest. Shown on the X4's page, 480 by 800,
+  the rows of every JPEG in the library and the public books fit in 16 KB
+  (15,360 bytes at the most); at their whole size the widest need 71,424.
+- **Progressive pictures**: a progressive picture is coded in scans over
+  the whole of it, each adding to every block, and none of its pixels is
+  whole until the last; keeping every block's coefficients between scans
+  would take about two bytes a pixel. Its first scan holds each block's
+  average, which is the picture at an eighth of its size. So a progressive
+  picture is read at an eighth, whatever is asked, from that scan alone,
+  and made larger by the scaler: soft. The low bit of an average that a
+  later scan would add is taken as nothing. libjpeg's `jpegtran` rewrites
+  a progressive file as baseline without changing a coefficient. Of the
+  608 progressive JPEGs in the library and the public books, every one has
+  such a first scan; only 27 are covers.
+- **What it leaves out**: arithmetic coding, lossless and hierarchical
+  JPEG, samples of 12 or 16 bits, four components (CMYK), colour coded as
+  RGB, a picture whose Y is sampled less than its colour, and one whose
+  height comes after its first scan. Each has its header read and is
+  refused (`kUnsupported`). The orientation an Exif block gives is not
+  looked at. Of the 10,008 JPEGs in the library and the public books, the
+  two that are CMYK are the only ones refused, and every Exif orientation
+  is upright.
+- **Bad input**: whatever bytes it is given, it ends in a status:
+  `kNotJpeg`, `kBadMarker`, `kBadHeader`, `kBadTable`, `kBadScan`,
+  `kUnsupported`, `kBadData`, `kTruncated`, `kNoRoom` or `kSourceFailed`.
+  Bytes between segments that are not a marker are passed over and
+  counted, as other readers do. Inside a scan, a code that no table has, a
+  coefficient past a block's end, or a restart marker other than the one
+  due is bad data; coded data that runs into the end of the file, or into
+  the picture's end marker, is cut short. The rows of the blocks finished
+  before either have been given.
+- **Memory**: room for one row of blocks, the caller's
+  (`JpegReader::RowBytesFor()`), and the object itself, which holds eight
+  tables of Huffman codes, four of quantization and a block's numbers:
+  9,052 bytes on the device. Reading only the header needs no room;
+  the source is read 512 bytes at a time, and a header is in the first 512
+  bytes unless segments of metadata come before it.
+- **One call's work**: `Step()` reads JPEG's first marker; or passes over
+  up to 1 KB between segments, finding a marker; or reads one table, a
+  frame or scan header, or up to 1 KB of a segment that is passed over; or
+  passes over up to 1 KB of a scan that is not read; or decodes up to eight
+  of a scan's units of blocks and turns Y's blocks among them into pixels;
+  or gives one row. So the most a call takes, whatever the file, is 34,096
+  bytes: eight units of ten blocks, each of whose coefficients has the
+  longest code and the most bits there can be, every byte of it 0xFF and
+  so followed by a 0, and what is read ahead
+  (`JpegReader::MostInputPerStep()`).
+
+`bn-jpeg` (`tools/jpeg`) runs the reader on a file, or on every JPEG in an
+EPUB:
+
+```
+./build/host/tools/jpeg/bn-jpeg read picture.jpg --out picture.pgm
+./build/host/tools/jpeg/bn-jpeg read picture.jpg --width 480 --out small.pgm
+./build/host/tools/jpeg/bn-jpeg read picture.jpg --reduce 8
+./build/host/tools/jpeg/bn-jpeg header picture.jpg
+./build/host/tools/jpeg/bn-jpeg book book.epub
+```
+
+`read` prints how the reading ended, the CRC-32 of the rows of gray it
+gave, what the header says (width, height, kind), how many times smaller
+it was read, how many rows it gave, the memory its rows need, and how many
+segments and scans it passed over and bytes between segments that were not
+a marker; with `--out`, it writes the rows as a PGM file to be looked at.
+`--reduce` reads it smaller; `--width` and `--height` put the rows through
+the scaler, read at the reduction the firmware would take for that size.
+`--rows` and `--pieces` are as `bn-png`'s. For the cover of *Pride and
+Prejudice* from Standard Ebooks, in `corpus/`:
+
+```
+ok 34521b35 1400 2100 4:2:0 1 2100 22528 1 0 0
+ok 1400 2100 4:2:0 512
+```
+
+and made the panel's width, read at a half on the way:
+
+```
+ok 1194a0f2 1400 2100 4:2:0 2 720 5632 1 0 0 scaled 480 720
+```
+
+and the same cover made progressive by `jpegtran`, read at an eighth from
+its first scan:
+
+```
+ok 0a856cdf 1400 2100 progressive-4:2:0 8 720 352 1 0 0 scaled 480 720
+```
+
+`book` prints the same line for every JPEG in the book, with its name, and
+adds them up. For *Moby Dick* from the IDPF's samples, in `corpus/`:
+
+```
+ok 65840f70 646 902 4:4:4 1 902 5184 5 0 0 OPS/images/9780316000000.jpg
+ok 64de40f2 840 1380 gray 1 1380 6720 4 0 0 OPS/images/Moby-Dick_FE_title_page.jpg
+jpeg_files=2 jpeg_failed=0 jpeg_bytes=453855 jpeg_pixels=1741892 jpeg_most_room=6720
+```
+
+The unit tests make pictures from the coefficients of their blocks, of
+every kind the reader reads, and set what it gives beside what those
+coefficients come to in real numbers: T.81's inverse transform a pixel at
+a time, and at a half and a quarter the average of the whole block's
+pixels (`tests/support/jpeg_builder.h`); within a gray, and at an eighth
+exactly. Then pictures of each kind it refuses, and pictures spoiled in
+each way it looks for, every step held to its bound. An end-to-end test
+(`tests/e2e/jpeg_tool.py`) compares `bn-jpeg` with a second reading of the
+same files in Python, of pictures made up at random by an encoder of its
+own: 160 of every kind the reader reads, each the same line for line and
+byte for byte at an eighth and within a gray at the other sizes; 12 of the
+kinds it refuses; and 300 spoiled. Through `tools/check-books.py` the two
+agree at an eighth, byte for byte, on every JPEG of the books they were
+tried on: 45 in `corpus/`, 9,097 in the library and 911 in the public
+books, 6.4 billion pixels in all.
+Set beside libjpeg (`djpeg -grayscale -dct float`, and `-scale` for each
+reduction) on 400 JPEGs of the library and the public books, 100 of them
+progressive, it is within a gray at every size, and the same at an eighth;
+a progressive picture's first scan is within two grays of libjpeg's
+eighth, for the bit a later scan would add. The reader has a fuzz target
+("Fuzzing", above).
+
+The tests were set against 18 faults put into the reader on purpose, one
+at a time: in the transform and its tables, restarts, a progressive
+picture's first scan, the sides of a picture read smaller, the tables of
+codes, what is counted and passed over, the kinds refused, how a unit's
+blocks are placed, and the units decoded a step. The unit tests, the fuzz
+target's inputs and the end-to-end test found 15. A 16th, a step that
+decoded a unit more than it says, they found only once a test was written
+for it: the bound on what a step takes is for the worst a file can be, far
+past what any picture is. The other two move pixels by less than a gray,
+which a comparison of 8-bit pixels cannot tell from rounding: the first
+direction of the transform not rounded, and one number of the table for a
+half 10 in 4,096 off.
 
 ### Scaling
 

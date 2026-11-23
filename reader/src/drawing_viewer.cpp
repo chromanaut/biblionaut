@@ -131,7 +131,10 @@ void DrawingViewer::Start() noexcept {
   bits_.reset(new (std::nothrow) std::uint8_t[size.RowBytes() * kBandRows]);
   definitions_.reset(new (std::nothrow) std::uint8_t[kDefinitionBytes]);
   chunk_.reset(new (std::nothrow) std::uint8_t[kReadBytes]);
-  cacheRows_.reset(new (std::nothrow) std::uint8_t[size.RowBytes() * kBandRows]);
+  // A band of a drawing as it lies on the panel, or of a picture's rows
+  // across the page.
+  cacheRowsBytes_ = ((widest + 7) / 8) * kBandRows;
+  cacheRows_.reset(new (std::nothrow) std::uint8_t[cacheRowsBytes_]);
   if (!renderer_ || !gray_ || !cells_ || !errors_ || !bits_ || !definitions_ || !chunk_ || !cacheRows_) {
     stream_.SendText("drawings: no memory to draw them in");
     Fail();
@@ -363,6 +366,13 @@ void DrawingViewer::TickSome() noexcept {
     }
 
     case Phase::kPicturing:
+      // Its strips are written as its rows come.
+      if (display_.Busy()) {
+        if (now - phaseStartedUs_ > kGiveUpUs) {
+          Fail();
+        }
+        return;
+      }
       if (!FeedPicture(now + kSliceUs)) {
         return;
       }
@@ -377,7 +387,7 @@ void DrawingViewer::TickSome() noexcept {
         }
         return;
       }
-      if (FromCache(now + kSliceUs)) {
+      if (picture_ ? PictureFromCache(now + kSliceUs) : FromCache(now + kSliceUs)) {
         Refresh(now);
       }
       return;
@@ -908,13 +918,15 @@ bool DrawingViewer::PictureMemory() noexcept {
   const core::DisplaySize size = display_.Size();
   const auto widest = static_cast<std::uint32_t>(std::max<std::size_t>(size.width, size.height));
   // The largest first, while the heap has the most room in one piece.
-  panelBits_.reset(new (std::nothrow) std::uint8_t[size.RowBytes() * size.height]);
   window_.reset(new (std::nothrow) std::uint8_t[draw::PngReader::kWindowBytes]);
   pngRows_.reset(new (std::nothrow) std::uint8_t[kPictureRowBytes]);
   fileBuffer_.reset(new (std::nothrow) std::uint8_t[kFileBufferBytes]);
   sums_.reset(new (std::nothrow) std::uint32_t[draw::Scaler::SumsFor(widest)]);
   scaledRow_.reset(new (std::nothrow) std::uint8_t[widest]);
-  if (fileBuffer_ && window_ && pngRows_ && sums_ && scaledRow_ && panelBits_) {
+  // A strip: one byte of each of the panel's rows, or eight of its rows.
+  stripBits_.reset(new (std::nothrow) std::uint8_t[std::max<std::size_t>(size.height, 8 * size.RowBytes())]);
+  rowBits_.reset(new (std::nothrow) std::uint8_t[(widest + 7) / 8]);
+  if (fileBuffer_ && window_ && pngRows_ && sums_ && scaledRow_ && stripBits_ && rowBits_) {
     pictureFile_.reset(new (std::nothrow) core::BlockFile({fileBuffer_.get(), kFileBufferBytes}));
     png_.reset(new (std::nothrow)
                    draw::PngReader({window_.get(), draw::PngReader::kWindowBytes}, {pngRows_.get(), kPictureRowBytes}));
@@ -933,7 +945,8 @@ bool DrawingViewer::PictureMemory() noexcept {
     pngRows_.reset();
     sums_.reset();
     scaledRow_.reset();
-    panelBits_.reset();
+    stripBits_.reset();
+    rowBits_.reset();
     return false;
   }
   return true;
@@ -983,7 +996,11 @@ bool DrawingViewer::BeginPicture(std::size_t index) noexcept {
   bytesRead_ = 0;
   passes_ = 0;
   turnsUs_ = 0;
-  KeyFor(left_, top_, shownWidth_, shownHeight_);
+  // Kept as it lies on the page, its rows in the order they come: not
+  // turned, whichever way the panel is.
+  key_.width = static_cast<std::uint16_t>(shownWidth_);
+  key_.height = static_cast<std::uint16_t>(shownHeight_);
+  key_.turn = static_cast<std::uint8_t>(core::PanelTurn::kNone);
   if (FindInCache()) {
     return true;
   }
@@ -1060,9 +1077,10 @@ const char* DrawingViewer::PictureStatusName() const noexcept {
 
 bool DrawingViewer::StartPictureRead() noexcept {
   const core::DisplaySize size = display_.Size();
-  // White, until the picture's dark pixels are cleared; and the picture
-  // read through from its start.
-  std::fill_n(panelBits_.get(), size.RowBytes() * size.height, std::uint8_t{0xFF});
+  // The picture read through from its start, into the page's strips from
+  // its first.
+  ResetStrips();
+  cachedRows_ = 0;
   if (!pictureFile_->Seek(0)) {
     return false;
   }
@@ -1085,18 +1103,19 @@ bool DrawingViewer::StartPictureRead() noexcept {
 bool DrawingViewer::FeedPicture(std::uint64_t until) noexcept {
   for (;;) {
     // A step of the reader, with the scaler's share of it taken out; then
-    // the new rows it made ready, with the dithering's share taken out.
+    // the new rows it made ready. What becomes of the rows the scaler gives
+    // out (dithering them, writing their strips, keeping them) is timed by
+    // itself, wherever it happens, and taken out of the scaling.
     const std::uint64_t started = clock_.NowUs();
+    const std::uint64_t after = ditheringUs_ + writingUs_ + cacheUs_;
     timedUs_ = 0;
     const bool more = StepPicture();
     const std::uint64_t stepped = clock_.NowUs();
     readingUs_ += (stepped - started) - timedUs_;
-    scalingUs_ += timedUs_;
-    const std::uint64_t dithered = ditheringUs_;
     while (scaler_->Step()) {
     }
     const std::uint64_t drained = clock_.NowUs();
-    scalingUs_ += (drained - stepped) - (ditheringUs_ - dithered);
+    scalingUs_ += (timedUs_ + (drained - stepped)) - ((ditheringUs_ + writingUs_ + cacheUs_) - after);
     if (!more) {
       if (jpeg_) {
         jpegStatus_ = jpegReader_->Status();
@@ -1119,43 +1138,174 @@ void DrawingViewer::Timed::Row(std::uint32_t y, std::span<const std::uint8_t> gr
 
 void DrawingViewer::TakeRow(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept {
   const std::uint64_t started = clock_.NowUs();
+  const std::uint64_t others = writingUs_ + cacheUs_;
   // The ditherer works in place.
   const std::span<std::uint8_t> row(gray_.get(), gray.size());
   std::copy(gray.begin(), gray.end(), row.begin());
   if (ditherer_.Row(row)) {
-    const std::size_t rowBytes = display_.Size().RowBytes();
-    const core::PanelTurn turn = display_.ReadingTurn();
-    // A clear bit is black, the leftmost pixel the top bit of the first byte.
-    for (std::size_t x = 0; x < row.size(); ++x) {
-      if (row[x] >= 128) {
-        continue;
+    // A set bit is white, the leftmost pixel the top bit of the first byte.
+    const std::span<std::uint8_t> bits(rowBits_.get(), (row.size() + 7) / 8);
+    for (std::size_t at = 0; at < bits.size(); ++at) {
+      const std::size_t first = at * 8;
+      const std::size_t end = std::min(first + 8, row.size());
+      unsigned byte = 0;
+      for (std::size_t x = first; x < end; ++x) {
+        byte |= row[x] >= 128 ? 0x80U >> (x - first) : 0U;
       }
-      const PanelPixel at = OnPanel(turn, pageWidth_, pageHeight_, left_ + x, top_ + y);
-      std::uint8_t& byte = panelBits_[(at.y * rowBytes) + (at.x / 8)];
-      byte = static_cast<std::uint8_t>(byte & ~(0x80U >> (at.x % 8)));
+      bits[at] = static_cast<std::uint8_t>(byte);
     }
+    CachePictureRow(bits);
+    PutRow(top_ + y, bits);
   }
-  ditheringUs_ += clock_.NowUs() - started;
+  ditheringUs_ += (clock_.NowUs() - started) - ((writingUs_ + cacheUs_) - others);
 }
 
 bool DrawingViewer::WritePicture() noexcept {
-  const std::uint64_t started = clock_.NowUs();
-  const core::DisplaySize size = display_.Size();
-  const std::span<const std::uint8_t> bits(panelBits_.get(), size.RowBytes() * size.height);
-  const bool written =
-      display_.WriteRows(core::DisplayPlane::kNew, 0, bits) && display_.WriteRows(core::DisplayPlane::kOld, 0, bits);
-  writingUs_ += clock_.NowUs() - started;
   // A picture not read whole is not kept: the card may have failed.
   if (caching_ && !PictureReadWhole()) {
     cache_.Close();
     caching_ = false;
     cacheNote_ = PictureStatusName();
   }
-  for (std::size_t row = 0; caching_ && row < size.height; row += kBandRows) {
-    const std::size_t rows = std::min<std::size_t>(kBandRows, size.height - row);
-    CacheRows(bits.subspan(row * size.RowBytes(), rows * size.RowBytes()), row, rows);
+  FlushCachedRows();
+  return FinishStrips();
+}
+
+// ---- A picture's strips ----
+
+std::size_t DrawingViewer::StripOf(std::size_t pageRow) const noexcept {
+  const core::PanelTurn turn = display_.ReadingTurn();
+  const PanelPixel at = OnPanel(turn, pageWidth_, pageHeight_, 0, pageRow);
+  // Turned a quarter, a row of the page is a column of the panel's.
+  const bool quarter = turn == core::PanelTurn::kClockwise || turn == core::PanelTurn::kAnticlockwise;
+  return quarter ? at.x / 8 : at.y / 8;
+}
+
+void DrawingViewer::ResetStrips() noexcept {
+  nextRow_ = 0;
+  stripOpen_ = false;
+  stripFailed_ = false;
+}
+
+void DrawingViewer::OpenStrip(std::size_t pageRow) noexcept {
+  const core::DisplaySize size = display_.Size();
+  const core::PanelTurn turn = display_.ReadingTurn();
+  const bool quarter = turn == core::PanelTurn::kClockwise || turn == core::PanelTurn::kAnticlockwise;
+  strip_ = StripOf(pageRow);
+  if (quarter) {
+    stripWindow_ = {.firstRow = 0, .rows = size.height, .firstByte = static_cast<std::uint16_t>(strip_), .bytes = 1};
+  } else {
+    const std::size_t first = strip_ * 8;
+    stripWindow_ = {.firstRow = static_cast<std::uint16_t>(first),
+                    .rows = static_cast<std::uint16_t>(std::min<std::size_t>(8, size.height - first)),
+                    .firstByte = 0,
+                    .bytes = static_cast<std::uint16_t>(size.RowBytes())};
   }
-  return written;
+  std::fill_n(stripBits_.get(), stripWindow_.Size(), std::uint8_t{0xFF});
+  stripOpen_ = true;
+}
+
+void DrawingViewer::FlushStrip() noexcept {
+  if (!stripOpen_) {
+    return;
+  }
+  stripOpen_ = false;
+  if (stripFailed_) {
+    return;
+  }
+  const std::uint64_t started = clock_.NowUs();
+  const std::span<const std::uint8_t> bits(stripBits_.get(), stripWindow_.Size());
+  stripFailed_ = !display_.WriteWindow(core::DisplayPlane::kNew, stripWindow_, bits) ||
+                 !display_.WriteWindow(core::DisplayPlane::kOld, stripWindow_, bits);
+  writingUs_ += clock_.NowUs() - started;
+  ++passes_;
+}
+
+void DrawingViewer::ReachRow(std::size_t pageRow) noexcept {
+  for (; nextRow_ <= pageRow && nextRow_ < pageHeight_; ++nextRow_) {
+    if (stripOpen_ && StripOf(nextRow_) != strip_) {
+      FlushStrip();
+    }
+    if (!stripOpen_) {
+      OpenStrip(nextRow_);
+    }
+  }
+}
+
+void DrawingViewer::PutRow(std::size_t pageRow, std::span<const std::uint8_t> bits) noexcept {
+  ReachRow(pageRow);
+  // Rows come in order; one whose strip is gone is passed over.
+  if (pageRow >= pageHeight_ || !stripOpen_ || StripOf(pageRow) != strip_) {
+    return;
+  }
+  const core::PanelTurn turn = display_.ReadingTurn();
+  const std::span<std::uint8_t> strip(stripBits_.get(), stripWindow_.Size());
+  // Along a row of the page, the panel's pixel moves one place a pixel: up
+  // or down a column of the panel's when it is turned a quarter, along a
+  // row of it otherwise. So where the row's first pixel falls is found
+  // once, and the rest from it.
+  const PanelPixel first = OnPanel(turn, pageWidth_, pageHeight_, left_, pageRow);
+  const bool quarter = turn == core::PanelTurn::kClockwise || turn == core::PanelTurn::kAnticlockwise;
+  if (quarter) {
+    // The strip is one byte of each of the panel's rows, the row's pixels
+    // all the same bit of it.
+    const auto keep = static_cast<std::uint8_t>(~(0x80U >> (first.x % 8)));
+    const bool down = turn == core::PanelTurn::kAnticlockwise;
+    for (std::size_t x = 0; x < shownWidth_; ++x) {
+      if ((bits[x / 8] & (0x80U >> (x % 8))) == 0) {
+        std::uint8_t& byte = strip[down ? first.y + x : first.y - x];
+        byte = static_cast<std::uint8_t>(byte & keep);
+      }
+    }
+    return;
+  }
+  const std::span<std::uint8_t> row =
+      strip.subspan((first.y - stripWindow_.firstRow) * stripWindow_.bytes, stripWindow_.bytes);
+  const bool right = turn == core::PanelTurn::kNone;
+  for (std::size_t x = 0; x < shownWidth_; ++x) {
+    if ((bits[x / 8] & (0x80U >> (x % 8))) == 0) {
+      const std::size_t at = right ? first.x + x : first.x - x;
+      row[at / 8] = static_cast<std::uint8_t>(row[at / 8] & ~(0x80U >> (at % 8)));
+    }
+  }
+}
+
+bool DrawingViewer::FinishStrips() noexcept {
+  if (pageHeight_ > 0) {
+    ReachRow(pageHeight_ - 1);
+  }
+  FlushStrip();
+  return !stripFailed_;
+}
+
+void DrawingViewer::CachePictureRow(std::span<const std::uint8_t> bits) noexcept {
+  if (!caching_) {
+    return;
+  }
+  const std::size_t keptBytes = draw::PictureCache::RowBytesFor(key_);
+  if ((cachedRows_ + 1) * keptBytes > cacheRowsBytes_) {
+    FlushCachedRows();
+  }
+  std::copy_n(bits.begin(), keptBytes, cacheRows_.get() + (cachedRows_ * keptBytes));
+  ++cachedRows_;
+}
+
+void DrawingViewer::FlushCachedRows() noexcept {
+  if (!caching_ || cachedRows_ == 0) {
+    cachedRows_ = 0;
+    return;
+  }
+  const std::uint64_t started = clock_.NowUs();
+  const std::span<const std::uint8_t> kept(cacheRows_.get(), cachedRows_ * draw::PictureCache::RowBytesFor(key_));
+  cachedRows_ = 0;
+  const draw::PictureCacheStatus written = cache_.WriteRows(kept);
+  cacheUs_ += clock_.NowUs() - started;
+  cacheBytes_ += kept.size();
+  if (written != draw::PictureCacheStatus::kOk) {
+    cache_.Close();
+    caching_ = false;
+    cacheNote_ = draw::PictureCacheStatusName(written);
+  }
 }
 
 void DrawingViewer::SayPicture() noexcept {
@@ -1210,6 +1360,7 @@ bool DrawingViewer::FindInCache() noexcept {
   if (found == draw::PictureCacheStatus::kOk) {
     fromCache_ = true;
     bandTop_ = 0;
+    ResetStrips();
     phase_ = Phase::kFromCache;
     phaseStartedUs_ = clock_.NowUs();
     return true;
@@ -1245,19 +1396,7 @@ bool DrawingViewer::FromCache(std::uint64_t until) noexcept {
       const draw::PictureCacheStatus read = cache_.ReadRows(kept);
       cacheUs_ += clock_.NowUs() - reading;
       if (read != draw::PictureCacheStatus::kOk) {
-        // What was kept is not what was written: drawn instead, and kept
-        // again.
-        fromCache_ = false;
-        cacheNote_ = draw::PictureCacheStatusName(read);
-        const std::uint64_t writing = clock_.NowUs();
-        caching_ = cache_.BeginWrite(key_) == draw::PictureCacheStatus::kOk;
-        cacheUs_ += clock_.NowUs() - writing;
-        writingUs_ = 0;
-        cacheBytes_ = 0;
-        passes_ = 0;
-        if (!(picture_ ? StartPictureRead() : StartBands())) {
-          Fail();
-        }
+        DrawInstead(read);
         return false;
       }
       cacheBytes_ += kept.size();
@@ -1282,6 +1421,54 @@ bool DrawingViewer::FromCache(std::uint64_t until) noexcept {
     if (clock_.NowUs() >= until) {
       return false;
     }
+  }
+}
+
+bool DrawingViewer::PictureFromCache(std::uint64_t until) noexcept {
+  const std::size_t keptBytes = draw::PictureCache::RowBytesFor(key_);
+  for (;;) {
+    if (bandTop_ >= key_.height) {
+      if (!FinishStrips()) {
+        Fail();
+        return false;
+      }
+      return true;
+    }
+    const std::size_t rows = std::min<std::size_t>(kBandRows, key_.height - bandTop_);
+    const std::span<std::uint8_t> kept(cacheRows_.get(), rows * keptBytes);
+    const std::uint64_t reading = clock_.NowUs();
+    const draw::PictureCacheStatus read = cache_.ReadRows(kept);
+    cacheUs_ += clock_.NowUs() - reading;
+    if (read != draw::PictureCacheStatus::kOk) {
+      DrawInstead(read);
+      return false;
+    }
+    cacheBytes_ += kept.size();
+    for (std::size_t row = 0; row < rows; ++row) {
+      PutRow(top_ + bandTop_ + row, kept.subspan(row * keptBytes, keptBytes));
+    }
+    if (stripFailed_) {
+      Fail();
+      return false;
+    }
+    bandTop_ += rows;
+    if (clock_.NowUs() >= until) {
+      return false;
+    }
+  }
+}
+
+void DrawingViewer::DrawInstead(draw::PictureCacheStatus read) noexcept {
+  fromCache_ = false;
+  cacheNote_ = draw::PictureCacheStatusName(read);
+  const std::uint64_t writing = clock_.NowUs();
+  caching_ = cache_.BeginWrite(key_) == draw::PictureCacheStatus::kOk;
+  cacheUs_ += clock_.NowUs() - writing;
+  writingUs_ = 0;
+  cacheBytes_ = 0;
+  passes_ = 0;
+  if (!(picture_ ? StartPictureRead() : StartBands())) {
+    Fail();
   }
 }
 

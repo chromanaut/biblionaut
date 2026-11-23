@@ -20,8 +20,8 @@
 #include "hw/platform.h"
 #include "hw/trace_ids.h"
 
-// The Xteink X4's panel: 800 x 480 pixels, black and white, driven by an
-// SSD1677 controller over SPI.
+// The Xteink X4's panel: 800 x 480 pixels, black and white, with two grays
+// between them after a gray pass, driven by an SSD1677 controller over SPI.
 //
 // The controller keeps two images of the screen in its own memory. This
 // driver writes rows of pixels into either, tells the controller to refresh
@@ -36,9 +36,9 @@
 // nothing here needs to know which memory is which.
 //
 // The command numbers and their meanings are the controller's own. The
-// values sent while setting the panel up, and the order of the steps, follow
-// the OpenX4 community SDK (see THIRD_PARTY.md), which worked them out for
-// this panel.
+// values sent while setting the panel up, the order of the steps, and the
+// waveform of the gray pass follow the OpenX4 community SDK (see
+// THIRD_PARTY.md), which worked them out for this panel.
 
 namespace bn::hw {
 
@@ -56,6 +56,8 @@ constexpr int kReadClockHz = 1'000'000;
 
 // Controller commands.
 constexpr std::uint8_t kCmdDriverOutputControl = 0x01;
+constexpr std::uint8_t kCmdGateVoltage = 0x03;
+constexpr std::uint8_t kCmdSourceVoltage = 0x04;
 constexpr std::uint8_t kCmdBoosterSoftStart = 0x0C;
 constexpr std::uint8_t kCmdDeepSleep = 0x10;
 constexpr std::uint8_t kCmdDataEntryMode = 0x11;
@@ -69,7 +71,9 @@ constexpr std::uint8_t kCmdWriteNewPlane = 0x24;
 constexpr std::uint8_t kCmdWriteOldPlane = 0x26;
 constexpr std::uint8_t kCmdReadPlane = 0x27;
 constexpr std::uint8_t kCmdReadDisplayOptions = 0x2D;
+constexpr std::uint8_t kCmdWriteVcom = 0x2C;
 constexpr std::uint8_t kCmdReadStatus = 0x2F;
+constexpr std::uint8_t kCmdWriteWaveform = 0x32;
 constexpr std::uint8_t kCmdBorderWaveform = 0x3C;
 constexpr std::uint8_t kCmdPlaneToRead = 0x41;
 constexpr std::uint8_t kCmdRowAddressRange = 0x45;
@@ -98,6 +102,136 @@ constexpr std::uint8_t kUseBothPlanes = 0x00;
 // The temperature written before a half refresh, in degrees: telling the
 // controller the panel is hot makes it pick its shortest waveform.
 constexpr std::uint8_t kHotTemperature = 0x5A;
+
+// The waveform of the gray pass, which the controller is given in place of
+// the panel's own (command 32h), and the drive voltages it is run at. The
+// values are the OpenX4 community SDK's own gray table for the X4 (see
+// THIRD_PARTY.md).
+//
+// A pixel's two bits, one in each plane, choose one of the first four
+// groups of ten bytes: the old-image plane's bit is the high one. Each
+// byte is four phases of two bits, a phase saying which voltage drives the
+// pixel (00 none, 01 towards black, 10 towards white); the groups of five
+// after them say how many frames each phase lasts. So a pixel marked in
+// neither plane is not driven; one marked in the old plane alone (10) is
+// driven towards white the longest, to a light gray; one marked in both
+// (11) less, to a dark gray. Twelve frames in all.
+constexpr std::array<std::uint8_t, 105> kGrayWaveform = {
+    // Which voltage, phase by phase: neither plane marked; the new plane
+    // alone (not used by the gray pass); the old plane alone; both; and
+    // the common electrode.
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0x54,
+    0x54,
+    0x40,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0xAA,
+    0xA0,
+    0xA8,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0xA2,
+    0x22,
+    0x20,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    // How long each phase lasts, ten groups of four phases and a repeat
+    // count: the first three groups a frame a phase.
+    0x01,
+    0x01,
+    0x01,
+    0x01,
+    0x00,  //
+    0x01,
+    0x01,
+    0x01,
+    0x01,
+    0x00,  //
+    0x01,
+    0x01,
+    0x01,
+    0x01,
+    0x00,  //
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,  //
+    // The frame rate, for each pair of groups.
+    0x8F,
+    0x8F,
+    0x8F,
+    0x8F,
+    0x8F,  //
+};
+constexpr std::uint8_t kGrayGateVoltage = 0x17;
+constexpr std::array<std::uint8_t, 3> kGraySourceVoltages = {0x41, 0xA8, 0x32};  // VSH1, VSH2, VSL.
+constexpr std::uint8_t kGrayVcom = 0x30;
 
 // A panel that has not reported back after this long never will.
 constexpr std::int64_t kMaxBusyUs = 30'000'000;
@@ -228,6 +362,42 @@ class X4Display final : public core::Display {
     sent = sent && Command(kCmdUpdateControl2, static_cast<std::uint8_t>(steps));
     if (sent) {
       ExpectBusy(span, powerOff ? 1 : 0);
+      sent = Command(kCmdActivate);
+      if (!sent) {
+        expectingIdle_ = false;
+      }
+    }
+    spi_device_release_bus(device_);
+    if (sent) {
+      analogOn_ = !powerOff;
+    }
+    return sent;
+  }
+
+  [[nodiscard]] bool StartGrayRefresh(core::AfterRefresh after) noexcept override {
+    if (!started_ || Busy()) {
+      return false;
+    }
+    // Both planes compared, by the waveform given here: the panel's own is
+    // not loaded. The next full or half refresh loads the panel's again.
+    unsigned steps = kStepDifferential | kStepRefresh;
+    if (!analogOn_) {
+      steps |= kStepClockOn | kStepAnalogOn;
+    }
+    const bool powerOff = after == core::AfterRefresh::kPowerOff;
+    if (powerOff) {
+      steps |= kStepAnalogOff | kStepClockOff;
+    }
+    if (spi_device_acquire_bus(device_, portMAX_DELAY) != ESP_OK) {
+      return false;
+    }
+    bool sent = SendCommand(kCmdWriteWaveform) && SendData(kGrayWaveform) &&
+                Command(kCmdGateVoltage, kGrayGateVoltage) &&
+                Command(kCmdSourceVoltage, kGraySourceVoltages[0], kGraySourceVoltages[1], kGraySourceVoltages[2]) &&
+                Command(kCmdWriteVcom, kGrayVcom) && Command(kCmdUpdateControl1, kUseBothPlanes) &&
+                Command(kCmdUpdateControl2, static_cast<std::uint8_t>(steps));
+    if (sent) {
+      ExpectBusy(kSpanRefreshGray, powerOff ? 1 : 0);
       sent = Command(kCmdActivate);
       if (!sent) {
         expectingIdle_ = false;

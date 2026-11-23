@@ -554,6 +554,66 @@ tools/idf -DBN_WINDOW_CHECK=ON build flash
 tools/idf -DBN_WINDOW_CHECK=OFF build flash     # back to the normal firmware
 ```
 
+### Grays
+
+The X4's panel shows black and white, and two grays between them after a
+gray pass (`Display::StartGrayRefresh()`). A picture in four levels is
+first shown by a full or half refresh with each of its grays black. Then
+the two planes mark the grays, the old-image plane every gray pixel and
+the new-image plane the dark ones, and the gray pass drives the marked
+pixels from black towards white: a little for a dark gray, more for a
+light one. Pixels not marked are left as they are. The pass runs a
+waveform the driver gives the controller in place of the panel's own,
+with the drive voltages to run it at: the OpenX4 SDK's own gray table
+(`THIRD_PARTY.md`). The next full or half refresh loads the panel's
+waveform again and shows black and white, leaving nothing of the grays.
+A panel that shows no grays refuses the pass, as the desktop's does for
+now.
+
+A firmware built with `-DBN_GRAY_CHECK=ON` shows, at start, a picture
+made for looking at: four patches of the four levels, a ramp from black
+to white dithered to the four, and the same ramp dithered to black and
+white. It shows it in black and white, then gives it the gray pass and
+holds it for 30 seconds; then shows large squares by a half refresh, in
+which any gray left behind would show; then the picture again with the
+drive voltages kept up from the half refresh to the gray pass. Each step
+is said on the console as it begins, with what it took. On the X4:
+
+```
+gray check: a full refresh to white took 3719 ms
+gray check: the picture, the drive voltages off between the refreshes
+gray check: black and white written in 290 ms
+gray check: the half refresh took 1709 ms
+gray check: in black and white, every gray black; held 5 s
+gray check: the gray planes written in 581 ms
+gray check: the gray pass took 288 ms
+gray check: LOOK NOW: four patches, black to white; the four-level ramp smoother than the two-level one; held 30 s
+gray check: the squares written in 300 ms
+gray check: the half refresh took 1709 ms
+gray check: LOOK NOW: large squares; any trace of the patches or the ramps is grays not cleared; held 15 s
+gray check: the picture, the drive voltages kept up from one to the other
+gray check: black and white written in 290 ms
+gray check: the half refresh took 1569 ms
+gray check: in black and white, every gray black; held 5 s
+gray check: the gray planes written in 581 ms
+gray check: the gray pass took 208 ms
+gray check: LOOK NOW: four patches, black to white; the four-level ramp smoother than the two-level one; held 30 s
+gray check: done
+```
+
+Looked at on the panel, the four patches were four levels, the
+four-level ramp the smoother, nothing of the grays was left in the
+squares, and the second showing was as the first. The gray pass takes
+208 ms with the drive voltages up, 288 ms when it has to bring them up.
+The writing times are mostly the check making its picture a pixel at a
+time.
+
+```
+tools/idf -DBN_GRAY_CHECK=ON build flash
+./build/host/tools/trace/bn-trace --seconds 150 | grep 'gray check'
+tools/idf -DBN_GRAY_CHECK=OFF build flash     # back to the normal firmware
+```
+
 ## Storage
 
 Files are reached through three things in `core`:

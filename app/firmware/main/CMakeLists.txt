@@ -103,6 +103,17 @@ if(BN_WINDOW_CHECK)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_WINDOW_CHECK=1)
 endif()
 
+# A firmware that shows a picture in the panel's grays at start (see
+# BN_GRAY_CHECK in the project file). The code for it, gray_check.cpp, is
+# only part of such a build.
+if(BN_GRAY_CHECK)
+  message(WARNING "This firmware shows a picture in grays at start, in stages, for about two minutes. "
+                  "Configure with -DBN_GRAY_CHECK=OFF for a normal build.")
+  target_sources(${COMPONENT_LIB} PRIVATE gray_check.cpp)
+  target_link_libraries(${COMPONENT_LIB} PRIVATE bn_draw)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_GRAY_CHECK=1)
+endif()
+
 # A firmware with a fonts partition, checked at start (see
 # BN_PARTITION_CHECK in the project file). The code for it,
 # partition_check.cpp, is only part of such a build.

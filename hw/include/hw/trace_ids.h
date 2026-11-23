@@ -62,7 +62,10 @@
   X(21, kInstantSdMountError, "sd_mount_error", "code")                       \
   /* Sending a window of pixels, narrower than whole rows, to one of the   */ \
   /* panel's planes.                                                       */ \
-  X(22, kSpanPanelWindow, "panel_window", "bytes")
+  X(22, kSpanPanelWindow, "panel_window", "bytes")                            \
+  /* The gray pass, from its command to the panel reporting that it has    */ \
+  /* finished, as the refreshes above.                                     */ \
+  X(23, kSpanRefreshGray, "refresh_gray", "power_off_after")
 
 namespace bn::hw {
 

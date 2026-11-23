@@ -267,9 +267,9 @@ band of bits, 8 KB of the file read at a time, and 2 KB for a band of what
 goes to the cache or comes from it.
 
 What is shown is kept as well, in the cache of pictures on the card
-(`/.picture-cache`, "Keeping what is shown", below): the drawing or the
-picture as it lies on the panel, the size it is shown and in the panel's
-levels. Shown again, while its file is the same size and was last written
+(`/.picture-cache`, "Keeping what is shown", below), the size it is
+shown and in the panel's levels: a drawing as it lies on the panel, and a
+picture as it lies on the page, its rows in the order they came. Shown again, while its file is the same size and was last written
 at the same time, it is read from there a band at a time and written to
 the panel, and nothing is drawn. What the cache does not have is drawn,
 and kept as its bands are written; what it has damaged, or half written
@@ -311,32 +311,39 @@ refresh is as long as the X4's.
 
 A picture's rows come from its file in the order the page is read, which
 is not the panel's order when the panel is turned to be read, as the X4's
-is. So the whole panel is kept while a picture is read, a bit a pixel, and
-its file is read through once: its rows are read, made the size they are
-shown at and dithered, and each pixel is set where it falls on the panel;
-then the whole panel is written to both planes. A picture whose rows would
-need more than 16 KB of the reader's memory, an interlaced one, and a file
-that is not a picture are not shown, and a line says why. For each picture
-shown, a line says what it was, the size it was shown at, and how long the
+is. Its file is read through once: its rows are read, made the size they
+are shown at and dithered, and written to both planes as they come, a
+strip at a time. A strip is the rows of the page that fall in one byte of
+the panel's rows: on a panel turned a quarter, eight of the page's rows
+are a column of the panel one byte wide and the panel's height, written as
+one window ("Windows of a plane", above); otherwise they are eight of the
+panel's rows. The strips above and below the picture are written white. So
+nothing of the panel is kept but the strip being filled. A picture whose
+rows would need more than 16 KB of the reader's memory, an interlaced PNG,
+a JPEG of a kind that is not read, and a file that is not a picture are
+not shown, and a line says why. For each picture shown, a line says what
+it was, the size it was shown at, and how long the
 reading, the scaling, the dithering (with the setting of the panel's bits)
 and the writing took, and then from the press to its refresh:
 
 ```
-picture 3 of 3: c-gutenberg.png, ok, 332x500 palette shown 480x723: reading 1 ms, scaling 0 ms, dithering 6 ms, writing 0 ms; 8 ms
+picture 3 of 3: c-gutenberg.png, ok, 332x500 palette shown 480x723: reading 1 ms, scaling 0 ms, dithering 7 ms, writing 0 ms; 11 ms
 ```
 
 That is an illustration from a Project Gutenberg book in `corpus/`, made
 larger to fill the page, on the optimised desktop application. On the X4,
 an engraving of 600 by 825 pixels in 16 colours from another book in
-`corpus/`, made 480 by 660, takes 714 ms from the press to its refresh: a
-third of it reading, a quarter scaling and a third dithering. A title page
-of 2,800 by 880 takes 1.6 s, three quarters of it reading. A colour
-photograph of 4 megapixels takes 13 s, nearly all of it the inflater
-giving out its 12 MB of rows. What a picture needs is taken from the heap
-the first time one is shown, and kept: about 110 KB, 47 KB of it the
-panel's bits, 32 KB the reader's window, 16 KB the reader's rows, 6 KB the
-scaler's sums, 4 KB a buffer to read the file through and 3 KB the reader
-itself.
+`corpus/`, made 480 by 660, takes 1.1 s from the press to its refresh:
+about a quarter each reading it, dithering it and keeping it in the cache
+(below), a sixth scaling, and 57 ms writing its 100 strips to both planes.
+A title page of 2,800 by 880 takes 1.8 s, two thirds of it reading. A
+colour photograph of 4 megapixels takes 14 s, nearly all of it the
+inflater giving out its 12 MB of rows. What a picture needs is taken from
+the heap the first time one is shown, and kept: about 72 KB, 32 KB of it
+PNG's window, 16 KB the reader's rows, 9 KB the JPEG reader, 6 KB the
+scaler's sums, 4 KB a buffer to read the file through, 3 KB the PNG
+reader, and less than a kilobyte each for a row at the size shown and the
+strip being filled.
 
 What the desktop simulates of a device is described once, in a profile
 (`hw/desktop/device_profile.h`): the panel's size, how long it takes over
@@ -3023,9 +3030,13 @@ was shown. A picture read and scaled is kept the same way.
   changed), `kDamaged`, `kStoreFailed`; and no row is given that is not
   whole. The viewer draws again what it finds damaged, and keeps it again.
 
-On the X4's panel held as it is read, a picture is kept as it lies on the
-panel, so a page's 480 by 800 is 800 by 480 in the cache, 47 KB at a bit a
-pixel; a drawing narrower than the page keeps only its own part.
+On the X4's panel held as it is read, the viewer keeps a drawing as it
+lies on the panel, so a page's 480 by 800 is 800 by 480 in the cache,
+47 KB at a bit a pixel, and a drawing narrower than the page keeps only
+its own part. It keeps a picture as it lies on the page, its rows in the
+order they come from the file, which is the order its strips are written
+in again: so the key of a picture says it is not turned, whichever way
+the panel is.
 
 With one file for each picture, chosen by its key, two pictures were
 likely to choose the same one: on the X4, going round the 18 drawings and

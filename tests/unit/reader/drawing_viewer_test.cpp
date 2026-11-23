@@ -617,9 +617,21 @@ TEST(DrawingViewer, TurnsAPictureTheWayThePanelIsTurnedToBeRead) {
   }
 }
 
-TEST(DrawingViewer, SetsAPictureIntoTheWholePanelAndWritesItOnce) {
-  // A panel of 400 rows, black down to the middle and white below: set from
-  // one reading of the picture, and written whole to both planes.
+// The writes the panel was given, in order.
+std::vector<FakeDisplay::Call> Writes(const FakeDisplay& display) {
+  std::vector<FakeDisplay::Call> writes;
+  for (const FakeDisplay::Call& call : display.calls) {
+    if (call.op == Op::kWrite) {
+      writes.push_back(call);
+    }
+  }
+  return writes;
+}
+
+TEST(DrawingViewer, WritesAPictureEightRowsAtATimeToBothPlanes) {
+  // A panel of 400 rows, black down to the middle and white below: from one
+  // reading of the picture, written as it comes in strips of eight rows,
+  // each to both planes, every row once.
   Fixture fixture;
   fixture.display.Resize({.width = 40, .height = 400});
   fixture.storage.Put("/drawings/p.png", GrayPng(4, 40, [](auto, std::uint32_t y) { return y < 20 ? 0 : 255; }));
@@ -634,18 +646,50 @@ TEST(DrawingViewer, SetsAPictureIntoTheWholePanelAndWritesItOnce) {
       }
     }
   }
-  std::vector<FakeDisplay::Call> writes;
-  for (const FakeDisplay::Call& call : fixture.display.calls) {
-    if (call.op == Op::kWrite) {
-      writes.push_back(call);
-    }
+  const std::vector<FakeDisplay::Call> writes = Writes(fixture.display);
+  ASSERT_EQ(writes.size(), 100U);
+  for (std::size_t at = 0; at < writes.size(); ++at) {
+    const bn::core::DisplayWindow& window = writes[at].window;
+    EXPECT_EQ(writes[at].plane, at % 2 == 0 ? bn::core::DisplayPlane::kNew : bn::core::DisplayPlane::kOld);
+    EXPECT_EQ(window.firstRow, (at / 2) * 8);
+    EXPECT_EQ(window.rows, 8U);
+    EXPECT_EQ(window.firstByte, 0U);
+    EXPECT_EQ(window.bytes, 5U);
   }
-  ASSERT_EQ(writes.size(), 2U);
-  EXPECT_EQ(writes[0].plane, bn::core::DisplayPlane::kNew);
-  EXPECT_EQ(writes[1].plane, bn::core::DisplayPlane::kOld);
-  for (const FakeDisplay::Call& write : writes) {
-    EXPECT_EQ(write.firstRow, 0U);
-    EXPECT_EQ(write.rowCount, 400U);
+}
+
+TEST(DrawingViewer, WritesAPictureOnATurnedPanelAColumnOfABytesWidthAtATime) {
+  // Turned a quarter, eight of the page's rows are a column of the panel
+  // one byte wide and the panel's height: written as they come, each to
+  // both planes, every column once and nothing of the panel kept.
+  for (const bn::core::PanelTurn turn : {bn::core::PanelTurn::kClockwise, bn::core::PanelTurn::kAnticlockwise}) {
+    Fixture fixture;
+    fixture.display.turn = turn;
+    fixture.display.Resize({.width = 80, .height = 24});
+    fixture.storage.Put("/drawings/p.png", GrayPng(24, 80, [](auto, std::uint32_t y) { return y < 40 ? 0 : 255; }));
+    fixture.Start();
+    fixture.Settle();
+    ASSERT_EQ(fixture.viewer->Shown(), 1U);
+    const std::vector<FakeDisplay::Call> writes = Writes(fixture.display);
+    ASSERT_EQ(writes.size(), 20U);
+    std::vector<int> columns(10, 0);
+    for (std::size_t at = 0; at < writes.size(); ++at) {
+      const bn::core::DisplayWindow& window = writes[at].window;
+      EXPECT_EQ(writes[at].plane, at % 2 == 0 ? bn::core::DisplayPlane::kNew : bn::core::DisplayPlane::kOld);
+      EXPECT_EQ(window.firstRow, 0U);
+      EXPECT_EQ(window.rows, 24U);
+      EXPECT_EQ(window.bytes, 1U);
+      ASSERT_LT(window.firstByte, 10U);
+      ++columns[window.firstByte];
+    }
+    EXPECT_EQ(columns, std::vector<int>(10, 2));
+    // The page's top, black, is the panel's left turned clockwise, and its
+    // right turned anticlockwise.
+    const bool clockwise = turn == bn::core::PanelTurn::kClockwise;
+    for (std::size_t y = 0; y < 24; ++y) {
+      EXPECT_EQ(fixture.Black(0, y), clockwise) << y;
+      EXPECT_EQ(fixture.Black(79, y), !clockwise) << y;
+    }
   }
 }
 

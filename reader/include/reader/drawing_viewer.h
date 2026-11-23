@@ -61,7 +61,17 @@ namespace bn::reader {
 // panel turned a quarter is a window one byte wide and the panel's height
 // (core::Display::WriteWindow()), and otherwise eight of the panel's rows.
 // The strips of the page above and below the picture are written white. So
-// no copy of the panel is kept. A picture whose rows need more than
+// no copy of the panel is kept.
+//
+// A picture is made as many levels as the panel shows (core::Display::
+// Levels()). On a panel with grays, such as the X4's, it is four: it is
+// shown first in black and white, each of its grays black, by a half or
+// full refresh; then it is read back from the cache, its two grays are
+// marked in the two planes, a strip at a time as before, and the gray pass
+// (core::Display::StartGrayRefresh()) brings them out. The drive voltages
+// stay up from the one refresh to the other. A picture with no grays has no
+// gray pass, and one that could not be kept is left in black and white,
+// and a line says why. A picture whose rows need more than
 // kPictureRowBytes, an interlaced PNG, a JPEG of a kind that is not read,
 // and a file that is not a picture are not shown, and a line says why.
 //
@@ -69,19 +79,21 @@ namespace bn::reader {
 // buttons and the rest of the application go on around it, a drawing of
 // megabytes taking many turns of the loop. A press while one drawing is
 // being drawn begins the one it asks for. The panel's drive voltages are
-// switched off as each refresh ends: with both planes written each time,
-// nothing is gained by keeping them on. For each drawing, a line of log
+// switched off as each refresh ends, but before a gray pass: with both
+// planes written each time, nothing is gained by keeping them on. For each drawing, a line of log
 // text says what it was, what it took, and what the renderer left out; for
 // each picture, what it was, the size it was shown at, and how long the
-// reading, the scaling, the dithering and the writing took.
+// reading, the scaling, the dithering and the writing took, and the gray
+// pass.
 //
 // A drawing is read once and kept on the card (kSpoolPath), and each band
 // drawn from what was kept; if it cannot be kept, it is read again for each
 // band, and a line says why.
 //
 // What is shown is kept as well, in the cache of pictures on the card
-// (draw::PictureCache, in kCacheFolder), the size it is shown and in the
-// panel's levels, a bit a pixel: a drawing as it lies on the panel, in the
+// (draw::PictureCache, in kCacheFolder), the size it is shown and in its
+// levels, a bit a pixel for a drawing and two for a picture in four levels:
+// a drawing as it lies on the panel, in the
 // order its bands are written; a picture as it lies on the page, in the
 // order its rows come (so its key says it is not turned). Shown again,
 // while its file has the same size and time, it is read from there a band
@@ -93,7 +105,7 @@ namespace bn::reader {
 // and for the links of what is kept is taken from the heap at Start():
 // about 94 KB for the X4's panel, most of it the filler's cells, the
 // definitions and the links. What a picture needs besides is taken the
-// first time one is shown: about 72 KB, PNG's window and the readers' rows
+// first time one is shown: about 73 KB, PNG's window and the readers' rows
 // the most of it.
 class DrawingViewer final : public Screen {
  public:
@@ -185,6 +197,7 @@ class DrawingViewer final : public Screen {
     kFromCache,   // Writing bands read from the cache.
     kWriting,     // A band or a picture drawn, to be written once the panel is free.
     kRefreshing,  // The panel is showing what was drawn.
+    kGraying,     // A picture's grays read back from the cache and written to the planes.
   };
 
   // Where a picture's rows go: made the panel's levels, kept, and written.
@@ -229,6 +242,21 @@ class DrawingViewer final : public Screen {
   // through the strips, as they did when it was read.
   bool FromCache(std::uint64_t until) noexcept;
   bool PictureFromCache(std::uint64_t until) noexcept;
+  // After a picture's black and white refresh: whether a gray pass follows,
+  // and why not if not (into grayNote_); its beginning, reading the picture
+  // back from the cache; and its strips written from what is read, for up
+  // to the time left, true when they all are and the pass has begun. False
+  // from StartGrays() or GrayStrips() leaves the voltages to be switched
+  // off and the picture in black and white.
+  bool GraysWanted() noexcept;
+  bool StartGrays() noexcept;
+  bool GrayStrips(std::uint64_t until) noexcept;
+  // The picture's grays not shown, for `why`: the voltages switched off,
+  // and the refresh's line said.
+  void WithoutGrays(const char* why, std::uint64_t now) noexcept;
+  // The refresh, or the gray pass after it, over: the lines said, and on to
+  // the next.
+  void Finished(std::uint64_t now) noexcept;
   // What was read from the cache is not what was written: drawn instead,
   // and kept again.
   void DrawInstead(draw::PictureCacheStatus read) noexcept;
@@ -253,8 +281,8 @@ class DrawingViewer final : public Screen {
   // Reads on until the time left: true when the picture has been read
   // through, or reading it failed.
   bool FeedPicture(std::uint64_t until) noexcept;
-  // A row of the picture at the size shown: made the panel's levels, a bit
-  // a pixel, kept, and put in its strip.
+  // A row of the picture at the size shown: made its levels, kept, and its
+  // white put in its strip.
   void TakeRow(std::uint32_t y, std::span<const std::uint8_t> gray) noexcept;
   // The rest of the picture's strips written, and the rest of its rows
   // kept. False if the panel would not take a strip.
@@ -267,8 +295,10 @@ class DrawingViewer final : public Screen {
   void ResetStrips() noexcept;
   // A row of the picture, `bits` a bit a pixel (a set bit white) from the
   // picture's left edge, put in its strip; each strip before it, white
-  // where no row was put, is written first.
-  void PutRow(std::size_t pageRow, std::span<const std::uint8_t> bits) noexcept;
+  // where no row was put, is written first. For the gray pass a strip is
+  // two, `which` saying which: 0 for the new-image plane's marks, 1 for the
+  // old's, each given as a row where a clear bit is a pixel marked.
+  void PutRow(std::size_t pageRow, std::span<const std::uint8_t> bits, std::size_t which = 0) noexcept;
   // Every strip up to and including that of `pageRow` begun, and those
   // before it written.
   void ReachRow(std::size_t pageRow) noexcept;
@@ -279,7 +309,8 @@ class DrawingViewer final : public Screen {
   // A row of a picture, kept; and the rows gathered, written to the cache.
   // As many rows are gathered as cacheRows_ holds: a write to the card
   // costs a few milliseconds whatever its size.
-  void CachePictureRow(std::span<const std::uint8_t> bits) noexcept;
+  // The row is the dithered grays, each the gray of its level.
+  void CachePictureRow(std::span<const std::uint8_t> grays) noexcept;
   void FlushCachedRows() noexcept;
   // On a tour, once a file has been shown or found not to be showable: the
   // next is asked for, or after the last the first, or a line saying the
@@ -350,7 +381,7 @@ class DrawingViewer final : public Screen {
   draw::Fixed drawWidth_ = 0;
   draw::Fixed drawHeight_ = 0;
   std::size_t bandTop_ = 0;
-  std::size_t levels_ = 2;
+  std::size_t levels_ = 2;  // A drawing's.
 
   // The memory taken at Start().
   std::unique_ptr<draw::SvgRenderer> renderer_;
@@ -423,6 +454,17 @@ class DrawingViewer final : public Screen {
   std::size_t passes_ = 0;  // The bands a drawing was drawn in.
   draw::PngStatus pictureStatus_ = draw::PngStatus::kOk;
   draw::JpegStatus jpegStatus_ = draw::JpegStatus::kOk;
+  std::uint32_t pictureLevels_ = 2;  // The panel's: 2, or 4 with a gray pass.
+  bool graysSeen_ = false;           // The picture has a gray.
+  // Its gray pass: next after the refresh, the planes being written, or
+  // begun; and how long each took, or why there was none.
+  bool grayNext_ = false;
+  bool grayPass_ = false;
+  bool grayShown_ = false;
+  std::uint64_t refreshUs_ = 0;
+  std::uint64_t grayPlanesUs_ = 0;
+  std::uint64_t grayPassUs_ = 0;
+  const char* grayNote_ = nullptr;
   // How long each stage took, over all the bands, a drawing's or a
   // picture's: reading the file, drawing or scaling what it holds, making
   // the panel's levels of it, writing it to the panel, and waiting for the
@@ -438,12 +480,13 @@ class DrawingViewer final : public Screen {
   std::uint64_t timedUs_ = 0;  // The scaler's share of the reader's last step.
 
   // The strips of a picture: the next of the page's rows not yet reached,
-  // the strip open and where it goes on the panel, and whether the panel
-  // refused one.
+  // the strip open and where it goes on the panel, whether it is the gray
+  // pass's two, and whether the panel refused one.
   std::size_t nextRow_ = 0;
   bool stripOpen_ = false;
   std::size_t strip_ = 0;
   core::DisplayWindow stripWindow_;
+  bool stripGrays_ = false;
   bool stripFailed_ = false;
   std::size_t cachedRows_ = 0;  // A picture's rows gathered for the cache.
 
@@ -469,8 +512,8 @@ class DrawingViewer final : public Screen {
   std::unique_ptr<std::uint8_t[]> pngRows_;
   std::unique_ptr<std::uint32_t[]> sums_;
   std::unique_ptr<std::uint8_t[]> scaledRow_;
-  std::unique_ptr<std::uint8_t[]> stripBits_;  // The strip being filled.
-  std::unique_ptr<std::uint8_t[]> rowBits_;    // A row of the picture, a bit a pixel.
+  std::unique_ptr<std::uint8_t[]> stripBits_;  // The strip being filled: two, for the gray pass.
+  std::unique_ptr<std::uint8_t[]> rowBits_;    // A row of the picture, a bit a pixel: two, for the gray pass.
   std::unique_ptr<core::BlockFile> pictureFile_;
   std::unique_ptr<draw::PngReader> png_;
   std::unique_ptr<draw::JpegReader> jpegReader_;  // Its rows in pngRows_ too: one picture is read at a time.

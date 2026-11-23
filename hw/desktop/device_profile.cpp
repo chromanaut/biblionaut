@@ -25,8 +25,15 @@ constexpr std::array<DeviceProfile, 1> kDevices = {{
      // The panel's rows run across the device turned a quarter-turn
      // anticlockwise from the way a book is read on it.
      .turn = ReadingTurn::kClockwise,
-     // As measured on an X4.
-     .times = {.fullRefreshUs = 3'579'000, .halfRefreshUs = 1'571'000, .fastRefreshUs = 418'000, .powerOffUs = 139'000},
+     // Black, two grays and white, the grays from a gray pass.
+     .levels = 4,
+     // As measured on an X4. The gray pass was timed only with the
+     // switch-off after it, 208 ms; this is that less the switch-off.
+     .times = {.fullRefreshUs = 3'579'000,
+               .halfRefreshUs = 1'571'000,
+               .fastRefreshUs = 418'000,
+               .grayRefreshUs = 69'000,
+               .powerOffUs = 139'000},
      .buttons = kX4Buttons},
 }};
 

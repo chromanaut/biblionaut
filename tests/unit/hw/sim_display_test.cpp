@@ -132,7 +132,7 @@ DecodedPng DecodePng(std::span<const std::uint8_t> png) {
   EXPECT_EQ(Be32(std::span(zlib).subspan(in, 4)), (b << 16U) | a);
 
   // Each row has a filter byte in front, which must say "none".
-  const std::size_t rowBytes = (decoded.width + 7) / 8;
+  const std::size_t rowBytes = ((decoded.width * decoded.bitDepth) + 7) / 8;
   EXPECT_EQ(raw.size(), decoded.height * (rowBytes + 1));
   for (std::size_t y = 0; y < decoded.height && (y + 1) * (rowBytes + 1) <= raw.size(); ++y) {
     EXPECT_EQ(raw[y * (rowBytes + 1)], 0u);
@@ -187,18 +187,97 @@ TEST(SimDisplay, AFullRefreshShowsTheNewPlaneAndKeepsThePanelBusyMeanwhile) {
   EXPECT_TRUE(fixture.display.Powered());
 }
 
-TEST(SimDisplay, RefusesTheGrayPassAsAPanelThatShowsNoGrays) {
+// Whether every pixel of a panel row has `level`.
+bool RowHasLevel(std::span<const std::uint8_t> levels, std::size_t row, std::uint8_t level) {
+  const std::span<const std::uint8_t> pixels = levels.subspan(row * 800, 800);
+  return std::all_of(pixels.begin(), pixels.end(), [level](std::uint8_t pixel) { return pixel == level; });
+}
+
+TEST(SimDisplay, TheGrayPassMovesThePixelsTheOldPlaneMarksTowardsWhite) {
   SimFixture fixture;
+  EXPECT_EQ(fixture.display.Levels(), 4U);
   ASSERT_TRUE(fixture.display.Start());
-  const std::vector<std::uint8_t> picture = WithBlackRows(100, 50);
-  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, picture));
-  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kPowerOff));
+  // Rows 100 to 149 black; then, for the gray pass, the old plane marks
+  // rows 100 to 139 and the new plane rows 100 to 119 among them.
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(100, 50)));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kStayPowered));
+  fixture.Finish();
+  std::vector<std::uint8_t> dark(kRowBytes * kRows, 0x00);
+  std::vector<std::uint8_t> either(kRowBytes * kRows, 0x00);
+  std::fill_n(dark.begin() + (100 * kRowBytes), 20 * kRowBytes, 0xFF);
+  std::fill_n(either.begin() + (100 * kRowBytes), 40 * kRowBytes, 0xFF);
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, dark));
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, either));
+
+  ASSERT_TRUE(fixture.display.StartGrayRefresh(AfterRefresh::kPowerOff));
+  EXPECT_TRUE(fixture.display.LastRefresh().gray);
+  fixture.clock.now += bn::hw::X4().times.grayRefreshUs - 1;
+  EXPECT_TRUE(fixture.display.Busy());
   fixture.Finish();
 
-  EXPECT_FALSE(fixture.display.StartGrayRefresh(AfterRefresh::kPowerOff));
-  EXPECT_FALSE(fixture.display.Busy());
-  EXPECT_EQ(fixture.display.RefreshCount(), 1);
-  EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 100));
+  const std::span<const std::uint8_t> levels = fixture.display.ShownLevels();
+  EXPECT_TRUE(RowHasLevel(levels, 99, 3));
+  EXPECT_TRUE(RowHasLevel(levels, 100, 1));  // Dark gray.
+  EXPECT_TRUE(RowHasLevel(levels, 119, 1));
+  EXPECT_TRUE(RowHasLevel(levels, 120, 2));  // Light gray.
+  EXPECT_TRUE(RowHasLevel(levels, 139, 2));
+  EXPECT_TRUE(RowHasLevel(levels, 140, 0));  // Not marked: still black.
+  EXPECT_TRUE(RowHasLevel(levels, 150, 3));
+  EXPECT_TRUE(RowHasLevel(fixture.display.ShownLevelsBefore(), 120, 0));
+  // In black and white, a gray still counts as black.
+  EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 120));
+  EXPECT_FALSE(fixture.display.Powered());
+
+  // A half refresh shows black and white again.
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(130, 1)));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kPowerOff));
+  fixture.Finish();
+  EXPECT_TRUE(RowHasLevel(fixture.display.ShownLevels(), 100, 3));
+  EXPECT_TRUE(RowHasLevel(fixture.display.ShownLevels(), 130, 0));
+  EXPECT_TRUE(RowHasLevel(fixture.display.ShownLevels(), 140, 3));
+}
+
+TEST(SimDisplay, AFastRefreshLeavesAGrayWhereBothPlanesSayWhite) {
+  SimFixture fixture;
+  ASSERT_TRUE(fixture.display.Start());
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(100, 20)));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kStayPowered));
+  fixture.Finish();
+  std::vector<std::uint8_t> marks(kRowBytes * kRows, 0x00);
+  std::fill_n(marks.begin() + (100 * kRowBytes), 20 * kRowBytes, 0xFF);
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, std::vector<std::uint8_t>(kRowBytes * kRows, 0x00)));
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, marks));
+  ASSERT_TRUE(fixture.display.StartGrayRefresh(AfterRefresh::kPowerOff));
+  fixture.Finish();
+  ASSERT_TRUE(RowHasLevel(fixture.display.ShownLevels(), 110, 2));
+
+  // Both planes white over rows 100 to 109, which are left alone; rows
+  // 110 to 119 are driven white.
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(0, 0)));
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kOld, 0, WithBlackRows(110, 10)));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kFast, AfterRefresh::kPowerOff));
+  fixture.Finish();
+  EXPECT_TRUE(RowHasLevel(fixture.display.ShownLevels(), 105, 2));
+  EXPECT_TRUE(RowHasLevel(fixture.display.ShownLevels(), 115, 3));
+}
+
+TEST(SimDisplay, RefusesTheGrayPassOnAPanelDrivenBlackAndWhite) {
+  bn::hw::DeviceProfile device = bn::hw::X4();
+  device.levels = 2;
+  bn::test::FakeClock clock;
+  SimDisplay display(clock, device, "");
+  EXPECT_EQ(display.Levels(), 2U);
+  ASSERT_TRUE(display.Start());
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(100, 50)));
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kPowerOff));
+  clock.now += 10'000'000;
+  ASSERT_FALSE(display.Busy());
+
+  EXPECT_FALSE(display.StartGrayRefresh(AfterRefresh::kPowerOff));
+  EXPECT_FALSE(display.Busy());
+  EXPECT_EQ(display.RefreshCount(), 1);
+  EXPECT_EQ(display.ShownLevels()[std::size_t{100} * 800], 0);
+  EXPECT_EQ(display.ShownLevels()[0], 1);
 }
 
 TEST(SimDisplay, IsTheSizeOfItsDeviceAndTakesAsLongAsItsPanelDoes) {
@@ -690,6 +769,53 @@ TEST(SimDisplay, SavesThePanelsPictureAtEveryRefresh) {
     EXPECT_TRUE(RowIsWhite(decoded.rows, 200)) << suffix;
     std::remove((prefix + suffix).c_str());
   }
+}
+
+TEST(SimDisplay, SavesItsPictureAtTwoBitsAPixelOnceItShowsGrays) {
+  const std::string prefix = testing::TempDir() + "bn_sim_display_gray_test";
+  for (const char* suffix : {"-001.png", "-002.png"}) {
+    std::remove((prefix + suffix).c_str());
+  }
+  bn::test::FakeClock clock;
+  SimDisplay display(clock, bn::hw::X4(), prefix);
+  ASSERT_TRUE(display.Start());
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, WithBlackRows(10, 5)));
+  ASSERT_TRUE(display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kStayPowered));
+  clock.now += 10'000'000;
+  ASSERT_FALSE(display.Busy());
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kNew, 0, std::vector<std::uint8_t>(kRowBytes * kRows, 0x00)));
+  std::vector<std::uint8_t> marks(kRowBytes * kRows, 0x00);
+  std::fill_n(marks.begin() + (10 * kRowBytes), kRowBytes, 0xFF);
+  ASSERT_TRUE(display.WriteRows(DisplayPlane::kOld, 0, marks));
+  ASSERT_TRUE(display.StartGrayRefresh(AfterRefresh::kPowerOff));
+
+  for (const auto& [suffix, depth] : {std::pair{"-001.png", 1}, std::pair{"-002.png", 2}}) {
+    std::ifstream file(prefix + suffix, std::ios::binary);
+    ASSERT_TRUE(file.good()) << suffix;
+    const std::vector<std::uint8_t> png((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    const DecodedPng decoded = DecodePng(png);
+    EXPECT_EQ(decoded.bitDepth, depth) << suffix;
+    std::remove((prefix + suffix).c_str());
+    if (depth == 2) {
+      // Row 10 light gray (10), row 11 still black, row 9 white.
+      ASSERT_EQ(decoded.rows.size(), 200U * kRows);
+      EXPECT_EQ(decoded.rows[(10 * 200) + 7], 0xAA);
+      EXPECT_EQ(decoded.rows[(11 * 200) + 7], 0x00);
+      EXPECT_EQ(decoded.rows[(9 * 200) + 7], 0xFF);
+    }
+  }
+}
+
+TEST(EncodeFourLevelPng, PacksFourPixelsToAByteBlackAsNought) {
+  const std::vector<std::uint8_t> levels = {0, 1, 2, 3, 3, 2, 1, 0, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0};
+  const DecodedPng decoded = DecodePng(bn::hw::EncodeFourLevelPng({.width = 10, .height = 2}, levels));
+  EXPECT_EQ(decoded.width, 10u);
+  EXPECT_EQ(decoded.height, 2u);
+  EXPECT_EQ(decoded.bitDepth, 2);
+  EXPECT_EQ(decoded.colourType, 0);  // Greyscale.
+  // 00 01 10 11, 11 10 01 00, 11 11 and the rest of the byte empty; then
+  // 11 11 11 11, 00 00 00 00, 00 00.
+  EXPECT_EQ(decoded.rows, (std::vector<std::uint8_t>{0x1B, 0xE4, 0xF0, 0xFF, 0x00, 0x00}));
 }
 
 TEST(EncodePng, HandlesPicturesTooBigForOneBlock) {

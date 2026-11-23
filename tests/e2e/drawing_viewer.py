@@ -12,10 +12,12 @@ is, and put in the middle of the page. The pictures are set beside what
 `bn-png read` or `bn-jpeg read` makes of each at the size it should be
 shown at, in the same way: a PNG file; a baseline JPEG large enough to be
 read at a half; and a progressive JPEG, read from its first scan at an
-eighth and made larger. The panel is black and white, its grays dithered,
-so the two are compared in blocks of pixels: how dark each block is, on
-the whole. The lines of log text the viewer sends are read back with
-bn-trace.
+eighth and made larger. The simulated X4 shows four levels: a drawing is
+dithered to black and white, and a picture to the four, shown first in
+black and white and then by a gray pass, which saves a second picture of
+the panel. So the two are compared in blocks of pixels: how dark each
+block is, on the whole. The lines of log text the viewer sends are read
+back with bn-trace.
 
 The presses are timed by the clock, not by the application's turns, and a
 run that has not shown every drawing in time is run again with more.
@@ -140,9 +142,10 @@ def run(command: list, **more) -> subprocess.CompletedProcess:
     return subprocess.run([str(part) for part in command], capture_output=True, check=False, **more)
 
 
-def read_png(path: Path) -> list[list[int]]:
-    """A panel picture: rows of 1 for white, 0 for black. As the simulated panel writes them: one bit a pixel,
-    stored, each row with a filter byte of none in front."""
+def read_png(path: Path) -> tuple[int, list[list[float]]]:
+    """A panel picture's bits a pixel, and its rows, each pixel how light it is: 1 for white, 0 for black, and the
+    grays between. As the simulated panel writes them: one bit a pixel while it shows only black and white, two
+    once it shows grays, stored, each row with a filter byte of none in front."""
     data = path.read_bytes()
     expect(data[:8] == b"\x89PNG\r\n\x1a\n", f"{path} is not a PNG file")
     at, idat, width, height = 8, b"", 0, 0
@@ -151,18 +154,19 @@ def read_png(path: Path) -> list[list[int]]:
         body = data[at + 8:at + 8 + length]
         if kind == b"IHDR":
             width, height, depth = struct.unpack(">IIB", body[:9])
-            expect(depth == 1, f"{path} is not one bit a pixel")
+            expect(depth in (1, 2), f"{path} is not one or two bits a pixel")
         elif kind == b"IDAT":
             idat += body
         at += 12 + length
     raw = zlib.decompress(idat)
-    row_bytes = (width + 7) // 8
+    row_bytes = (width * depth + 7) // 8
+    top = (1 << depth) - 1
     rows = []
     for y in range(height):
         line = raw[y * (row_bytes + 1):(y + 1) * (row_bytes + 1)]
         expect(line[0] == 0, f"{path}: a row with a filter")
-        rows.append([(line[1 + x // 8] >> (7 - x % 8)) & 1 for x in range(width)])
-    return rows
+        rows.append([((line[1 + x * depth // 8] >> (8 - depth - x * depth % 8)) & top) / top for x in range(width)])
+    return depth, rows
 
 
 def read_pgm(path: Path) -> tuple[int, int, bytes]:
@@ -224,7 +228,7 @@ def expected_picture(reader: str, work: Path, name: str) -> list[list[float]]:
     return dark
 
 
-def compare(shown: list[list[int]], dark: list[list[float]], what: str) -> float:
+def compare(shown: list[list[float]], dark: list[list[float]], what: str) -> float:
     """Sets the panel beside how dark it should be, a block at a time. Returns the largest difference."""
     worst, total, blocks = 0.0, 0.0, 0
     for top in range(0, PANEL_HEIGHT, BLOCK):
@@ -270,8 +274,10 @@ def main() -> int:
     for name, data in PICTURES.items():
         (folder / name).write_bytes(data)
     names = sorted([*DRAWINGS, *PICTURES])
-    # Each in turn, and round to the first.
+    # Each in turn, and round to the first. A picture is two refreshes: in
+    # black and white, and the gray pass.
     shown = names + names[:1]
+    refreshes = len(shown) + sum(1 for name in shown if name in PICTURES)
     try:
         # Down after each drawing has had its time, and round to the first.
         for seconds in (4, 8, 16):
@@ -286,10 +292,10 @@ def main() -> int:
             done = run([app, "--run-ms", str(seconds * 1000 * len(shown))], env=environment)
             expect(done.returncode == 0, f"the application ended with {done.returncode}: {done.stderr!r}")
             lines = log_lines(bn_trace, work / "serial.bin")
-            if len(list(work.glob("panel-*.png"))) >= len(shown) and len(lines) >= len(shown):
+            if len(list(work.glob("panel-*.png"))) >= refreshes and len(lines) >= len(shown):
                 break
         pictures = sorted(work.glob("panel-*.png"))
-        expect(len(pictures) == len(shown), f"the panel was refreshed {len(pictures)} times, not {len(shown)}: {lines}")
+        expect(len(pictures) == refreshes, f"the panel was refreshed {len(pictures)} times, not {refreshes}: {lines}")
         # Each line says which drawing or picture it was, and what it came to;
         # the first, gone round to, comes from the cache.
         for number, (line, name) in enumerate(zip(lines, shown)):
@@ -305,18 +311,31 @@ def main() -> int:
         expect(", 960x576 gray read at 1/2 shown 480x288: reading " in lines[4], f"the baseline JPEG's line: {lines[4]!r}")
         expect(", 240x384 progressive 4:2:0 read at 1/8 shown 480x768: reading " in lines[5],
                f"the progressive JPEG's line: {lines[5]!r}")
+        # The first timed line of each: not a drawing's second, of its spool.
+        timed = [line for line in log_lines(bn_trace, work / "serial.bin", "timed")
+                 if " timed: spool " not in line and " timed: not spooled" not in line]
+        for line, name in zip(timed, shown):
+            expect((name in PICTURES) == ("; gray planes " in line), f"the gray pass of {name}: {line!r}")
         worst = 0.0
-        for picture, name in zip(pictures, shown):
+        panel = iter(pictures)
+        for name in shown:
             if name in PICTURES:
+                # First in black and white, then in grays.
+                first, second = next(panel), next(panel)
+                expect(read_png(first)[0] == 1, f"{first.name} ({name}) is not black and white")
+                depth, levels = read_png(second)
+                expect(depth == 2, f"{second.name} ({name}) shows no grays")
                 dark = expected_picture(bn_png if name.endswith(".png") else bn_jpeg, work, name)
+                worst = max(worst, compare(levels, dark, f"{second.name} ({name})"))
             else:
+                picture = next(panel)
                 dark = expected_panel(bn_svg, work, name)
-            worst = max(worst, compare(read_png(picture), dark, f"{picture.name} ({name})"))
+                worst = max(worst, compare(read_png(picture)[1], dark, f"{picture.name} ({name})"))
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"3 drawings and 3 pictures shown and gone round, the first again from the cache, each as bn-svg draws it "
-          f"or bn-png or bn-jpeg reads it turned onto the panel, every block of "
+          f"or bn-png or bn-jpeg reads it turned onto the panel, the pictures in four levels, every block of "
           f"{BLOCK} by {BLOCK} pixels within {worst:.3f} of as dark as it should be")
     return 0
 

@@ -41,15 +41,14 @@ std::uint32_t Adler32(std::span<const std::uint8_t> data) {
   return (b << 16U) | a;
 }
 
-}  // namespace
-
-std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std::uint8_t> rows) {
-  const std::size_t rowBytes = size.RowBytes();
-
+// A PNG of grays, `depth` bits a pixel (0 black), from rows of `rowBytes`
+// bytes each, not compressed.
+std::vector<std::uint8_t> EncodeGrayPng(std::uint32_t width, std::uint32_t height, std::uint8_t depth,
+                                        std::size_t rowBytes, std::span<const std::uint8_t> rows) {
   // The image data PNG wants: each row with a "no filter" byte in front.
   std::vector<std::uint8_t> raw;
-  raw.reserve(size.height * (rowBytes + 1));
-  for (std::size_t y = 0; y < size.height; ++y) {
+  raw.reserve(height * (rowBytes + 1));
+  for (std::size_t y = 0; y < height; ++y) {
     raw.push_back(0);
     const std::span<const std::uint8_t> row = rows.subspan(y * rowBytes, rowBytes);
     raw.insert(raw.end(), row.begin(), row.end());
@@ -75,17 +74,38 @@ std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std:
 
   std::vector<std::uint8_t> png = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
   std::vector<std::uint8_t> header;
-  PutBe32(header, size.width);
-  PutBe32(header, size.height);
-  header.push_back(1);  // Bits per pixel.
-  header.push_back(0);  // Greyscale: 0 is black, 1 is white, as in a plane.
-  header.push_back(0);  // Compression method, filter method, no interlace.
+  PutBe32(header, width);
+  PutBe32(header, height);
+  header.push_back(depth);  // Bits per pixel.
+  header.push_back(0);      // Greyscale, 0 black.
+  header.push_back(0);      // Compression method, filter method, no interlace.
   header.push_back(0);
   header.push_back(0);
   PutChunk(png, "IHDR", header);
   PutChunk(png, "IDAT", zlib);
   PutChunk(png, "IEND", {});
   return png;
+}
+
+}  // namespace
+
+std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std::uint8_t> rows) {
+  // A plane's rows are already a 1-bit PNG's: 0 is black, 1 is white.
+  return EncodeGrayPng(size.width, size.height, 1, size.RowBytes(), rows);
+}
+
+std::vector<std::uint8_t> EncodeFourLevelPng(core::DisplaySize size, std::span<const std::uint8_t> levels) {
+  const std::size_t rowBytes = ((static_cast<std::size_t>(size.width) * 2) + 7) / 8;
+  std::vector<std::uint8_t> rows(rowBytes * size.height, 0);
+  for (std::size_t y = 0; y < size.height; ++y) {
+    for (std::size_t x = 0; x < size.width; ++x) {
+      const unsigned shown = levels[(y * size.width) + x];
+      const unsigned level = shown > 3 ? 3U : shown;
+      std::uint8_t& byte = rows[(y * rowBytes) + (x / 4)];
+      byte = static_cast<std::uint8_t>(byte | (level << (6U - (2U * (x % 4)))));
+    }
+  }
+  return EncodeGrayPng(size.width, size.height, 2, rowBytes, rows);
 }
 
 SimDisplay::SimDisplay(core::Clock& clock, const DeviceProfile& device, std::string outputPrefix, std::uint32_t speed)
@@ -96,7 +116,10 @@ SimDisplay::SimDisplay(core::Clock& clock, const DeviceProfile& device, std::str
       memory_{std::vector<std::uint8_t>(device.panel.RowBytes() * device.panel.height, 0xFF),
               std::vector<std::uint8_t>(device.panel.RowBytes() * device.panel.height, 0xFF)},
       shown_(memory_[0]),
-      shownBefore_(memory_[0]) {}
+      shownBefore_(memory_[0]),
+      shownLevels_(static_cast<std::size_t>(device.panel.width) * device.panel.height,
+                   static_cast<std::uint8_t>(device.levels - 1)),
+      shownLevelsBefore_(shownLevels_) {}
 
 std::vector<std::uint8_t>& SimDisplay::Memory(core::DisplayPlane plane) noexcept {
   return memory_[plane == core::DisplayPlane::kNew ? newIs_ : 1 - newIs_];
@@ -166,17 +189,22 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
     return false;
   }
   shownBefore_ = shown_;
+  shownLevelsBefore_ = shownLevels_;
   const std::vector<std::uint8_t>& newPlane = Memory(core::DisplayPlane::kNew);
   const std::vector<std::uint8_t>& oldPlane = Memory(core::DisplayPlane::kOld);
   std::uint64_t durationUs = device_.times.fullRefreshUs;
   core::SpanId span = kSpanRefreshFull;
   if (mode == core::RefreshMode::kFast) {
     // Where both planes say white (a set bit) the panel is left as it is,
-    // right or wrong; everywhere else it goes to what the new one says.
+    // right or wrong, a gray among it; everywhere else it goes to what the
+    // new one says.
+    std::vector<std::uint8_t> driven(shown_.size());
     for (std::size_t i = 0; i < shown_.size(); ++i) {
       const unsigned leftAlone = static_cast<unsigned>(newPlane[i]) & oldPlane[i];
       shown_[i] = static_cast<std::uint8_t>((shown_[i] & leftAlone) | (newPlane[i] & ~leftAlone));
+      driven[i] = static_cast<std::uint8_t>(~leftAlone);
     }
+    ShowLevels(newPlane, driven);
     // And the planes change places: what was just shown is now the old
     // image. (The moment within the refresh cannot matter: nothing can be
     // written or read until it is over.)
@@ -185,11 +213,59 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
     span = kSpanRefreshFast;
   } else {
     shown_ = newPlane;
+    ShowLevels(newPlane, std::vector<std::uint8_t>(shown_.size(), 0xFF));
     if (mode == core::RefreshMode::kHalf) {
       durationUs = device_.times.halfRefreshUs;
       span = kSpanRefreshHalf;
     }
   }
+  Finish(durationUs, span, after, Refresh{.mode = mode});
+  return true;
+}
+
+bool SimDisplay::StartGrayRefresh(core::AfterRefresh after) noexcept {
+  if (device_.levels != 4 || !started_ || Busy()) {
+    return false;
+  }
+  shownBefore_ = shown_;
+  shownLevelsBefore_ = shownLevels_;
+  const std::vector<std::uint8_t>& newPlane = Memory(core::DisplayPlane::kNew);
+  const std::vector<std::uint8_t>& oldPlane = Memory(core::DisplayPlane::kOld);
+  const std::size_t width = device_.panel.width;
+  const std::size_t rowBytes = device_.panel.RowBytes();
+  for (std::size_t y = 0; y < device_.panel.height; ++y) {
+    for (std::size_t x = 0; x < width; ++x) {
+      const std::size_t byte = (y * rowBytes) + (x / 8);
+      const unsigned bit = 0x80U >> (x % 8);
+      if ((oldPlane[byte] & bit) == 0) {
+        continue;
+      }
+      // Towards white: two levels for a light gray, one for a dark.
+      std::uint8_t& level = shownLevels_[(y * width) + x];
+      const unsigned moved = level + ((newPlane[byte] & bit) != 0 ? 1U : 2U);
+      level = static_cast<std::uint8_t>(moved > 3 ? 3U : moved);
+    }
+  }
+  Finish(device_.times.grayRefreshUs, kSpanRefreshGray, after, Refresh{.gray = true});
+  return true;
+}
+
+void SimDisplay::ShowLevels(std::span<const std::uint8_t> rows, std::span<const std::uint8_t> driven) noexcept {
+  const std::size_t width = device_.panel.width;
+  const std::size_t rowBytes = device_.panel.RowBytes();
+  const auto white = static_cast<std::uint8_t>(device_.levels - 1);
+  for (std::size_t y = 0; y < device_.panel.height; ++y) {
+    for (std::size_t x = 0; x < width; ++x) {
+      const std::size_t byte = (y * rowBytes) + (x / 8);
+      const unsigned bit = 0x80U >> (x % 8);
+      if ((driven[byte] & bit) != 0) {
+        shownLevels_[(y * width) + x] = (rows[byte] & bit) != 0 ? white : std::uint8_t{0};
+      }
+    }
+  }
+}
+
+void SimDisplay::Finish(std::uint64_t durationUs, core::SpanId span, core::AfterRefresh after, Refresh refresh) {
   const bool powerOff = after == core::AfterRefresh::kPowerOff;
   if (powerOff) {
     // By the rule measured for a switch-off made by itself. One made as
@@ -198,11 +274,12 @@ bool SimDisplay::StartRefresh(core::RefreshMode mode, core::AfterRefresh after) 
   }
   powered_ = !powerOff;
   const std::uint64_t now = clock_.NowUs();
-  lastRefresh_ = Refresh{.mode = mode, .startUs = now, .doneUs = now + (durationUs / speed_)};
+  refresh.startUs = now;
+  refresh.doneUs = now + (durationUs / speed_);
+  lastRefresh_ = refresh;
   BeginBusy(durationUs + (powerOff ? device_.times.powerOffUs : 0), span, powerOff ? 1 : 0);
   ++refreshCount_;
   SavePicture();
-  return true;
 }
 
 void SimDisplay::BeginBusy(std::uint64_t durationUs, core::SpanId span, std::uint32_t argument) noexcept {
@@ -249,7 +326,17 @@ void SimDisplay::SavePicture() {
   std::array<char, 16> suffix{};
   std::snprintf(suffix.data(), suffix.size(), "-%03d.png", refreshCount_);
   const std::string path = outputPrefix_ + suffix.data();
-  const std::vector<std::uint8_t> png = EncodePng(device_.panel, shown_);
+  // In black and white while that is all it shows, so a picture of it is
+  // the same as before the panel had grays.
+  // (A plain loop: a build with sanitizers takes seconds over an algorithm
+  // called through a predicate for each of the panel's pixels.)
+  const auto white = static_cast<std::uint8_t>(device_.levels - 1);
+  bool grays = false;
+  for (std::size_t at = 0; at < shownLevels_.size() && !grays; ++at) {
+    grays = shownLevels_[at] != 0 && shownLevels_[at] != white;
+  }
+  const std::vector<std::uint8_t> png =
+      grays ? EncodeFourLevelPng(device_.panel, shownLevels_) : EncodePng(device_.panel, shown_);
   std::FILE* file = std::fopen(path.c_str(), "wb");
   if (file == nullptr || std::fwrite(png.data(), 1, png.size(), file) != png.size()) {
     std::fprintf(stderr, "warning: cannot write the panel picture to '%s'\n", path.c_str());

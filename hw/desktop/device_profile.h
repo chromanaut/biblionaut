@@ -38,6 +38,7 @@ struct PanelTimes {
   std::uint64_t fullRefreshUs = 0;
   std::uint64_t halfRefreshUs = 0;
   std::uint64_t fastRefreshUs = 0;
+  std::uint64_t grayRefreshUs = 0;  // The gray pass, on a panel with grays.
   std::uint64_t powerOffUs = 0;
 };
 
@@ -45,6 +46,9 @@ struct DeviceProfile {
   const char* name = "";      // As BN_DEVICE names it.
   core::DisplaySize panel{};  // In the panel's own orientation.
   ReadingTurn turn = ReadingTurn::kNone;
+  // The levels of gray the panel shows (core::Display::Levels()): 2, or 4
+  // with a gray pass.
+  std::uint32_t levels = 2;
   PanelTimes times;
   // Every spot a button is at. A button wired to more than one spot, as
   // a device with Up and Down on both sides may have them, is listed once

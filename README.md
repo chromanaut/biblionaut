@@ -268,7 +268,8 @@ goes to the cache or comes from it.
 
 What is shown is kept as well, in the cache of pictures on the card
 (`/.picture-cache`, "Keeping what is shown", below), the size it is
-shown and in the panel's levels: a drawing as it lies on the panel, and a
+shown and in its levels, a bit a pixel for a drawing and two for a
+picture in the X4's four: a drawing as it lies on the panel, and a
 picture as it lies on the page, its rows in the order they came. Shown again, while its file is the same size and was last written
 at the same time, it is read from there a band at a time and written to
 the panel, and nothing is drawn. What the cache does not have is drawn,
@@ -321,44 +322,66 @@ panel's rows. The strips above and below the picture are written white. So
 nothing of the panel is kept but the strip being filled. A picture whose
 rows would need more than 16 KB of the reader's memory, an interlaced PNG,
 a JPEG of a kind that is not read, and a file that is not a picture are
-not shown, and a line says why. For each picture shown, a line says what
-it was, the size it was shown at, and how long the
-reading, the scaling, the dithering (with the setting of the panel's bits)
-and the writing took, and then from the press to its refresh:
+not shown, and a line says why.
+
+A picture is dithered to as many levels as the panel shows
+(`Display::Levels()`): on the X4, and the desktop's X4, four, the grays by
+a gray pass ("Grays", below). It is shown first by a half or full refresh
+in black and white, each of its grays black, and kept in the cache at two
+bits a pixel; the drive voltages stay up. Then it is read back from the
+cache, its grays are marked in the two planes, strip by strip as before,
+and the gray pass brings them out. A picture with no grays has no gray
+pass, and one that could not be kept stays in black and white. A press
+during the first refresh, for another, is not kept waiting for the grays.
+
+For each picture shown, a line says what it was, the size it was shown
+at, and how long the reading, the scaling, the dithering (with the setting
+of the panel's bits) and the writing took, and then from the press to its
+refresh; and once the panel is done, a second line says how long the
+refresh took, and the gray pass: writing its planes, and the pass itself,
+or why there was none:
 
 ```
-picture 3 of 3: c-gutenberg.png, ok, 332x500 palette shown 480x723: reading 1 ms, scaling 0 ms, dithering 7 ms, writing 0 ms; 11 ms
+picture 3 of 3: c-gutenberg.png, ok, 332x500 palette shown 480x723: reading 1 ms, scaling 0 ms, dithering 6 ms, writing 0 ms; 10 ms
+picture 3 timed: refreshing 1577 ms; gray planes 4 ms, gray pass 209 ms
 ```
 
 That is an illustration from a Project Gutenberg book in `corpus/`, made
-larger to fill the page, on the optimised desktop application. On the X4,
+larger to fill the page, on the optimised desktop application, where the
+refresh and the gray pass take as long as on the X4. On the X4,
 an engraving of 600 by 825 pixels in 16 colours from another book in
-`corpus/`, made 480 by 660, takes 1.1 s from the press to its refresh:
-about a quarter each reading it, dithering it and keeping it in the cache
-(below), a sixth scaling, and 57 ms writing its 100 strips to both planes.
-A title page of 2,800 by 880 takes 1.8 s, two thirds of it reading. A
-colour photograph of 4 megapixels takes 14 s, nearly all of it the
-inflater giving out its 12 MB of rows. What a picture needs is taken from
-the heap the first time one is shown, and kept: about 72 KB, 32 KB of it
-PNG's window, 16 KB the reader's rows, 9 KB the JPEG reader, 6 KB the
-scaler's sums, 4 KB a buffer to read the file through, 3 KB the PNG
-reader, and less than a kilobyte each for a row at the size shown and the
-strip being filled.
+`corpus/`, made 480 by 660, takes 1.3 s from the press to its refresh:
+nearly a third keeping it in the cache at two bits a pixel (77 KB, below),
+a quarter dithering, a fifth reading, a seventh scaling, and 60 ms writing
+its 100 strips to both planes. Its grays come 0.5 s after the refresh:
+311 ms reading it back and writing the gray planes, and the gray pass,
+with the switch-off after it, 207 ms. A title page of 2,800 by 880 takes
+1.9 s, two thirds of it reading. A colour photograph of 4 megapixels takes
+14 s, nearly all of it the inflater giving out its 12 MB of rows. From the
+cache, a picture is at its refresh in 0.1 to 0.3 s. What a picture needs
+is taken from the heap the first time one is shown, and kept: about 73 KB,
+32 KB of it PNG's window, 16 KB the reader's rows, 9 KB the JPEG reader,
+6 KB the scaler's sums, 4 KB a buffer to read the file through, 3 KB the
+PNG reader, and 2.6 KB for a row at the size shown, the two strips being
+filled and two rows of bits.
 
 What the desktop simulates of a device is described once, in a profile
 (`hw/desktop/device_profile.h`): the panel's size, how long it takes over
 each kind of refresh and over switching off, which way the panel is
-turned to be read, and which buttons the device has, on which edges and
+turned to be read, how many levels the panel shows, and which buttons the device has, on which edges and
 where along them. A button wired to more than one spot, as Up and Down
 are where a device has them on both sides, is listed once for each: it
 is the same button whichever is pressed, and is lit at all of them. The
 simulated panel and the window take everything they need from it. The X4's times are as measured on one, and its
 buttons' places along the edges are drawn near enough. A profile does
-not say how many shades a panel can show, or how its controller keeps
-its two planes: everything that drives a panel (`core/display.h`) is
-black and white, and keeps to the rules found on the X4. A panel's grays
-are its own business: the drawing code draws in 256 and dithers to as many
-as a panel is driven in, which on the X4 is two for now.
+not say how its controller keeps its two planes: everything that drives a
+panel (`core/display.h`) keeps to the rules found on the X4. A panel's
+grays are its own business: the drawing code draws in 256 and dithers to
+as many as a panel shows, which on the X4 is four for pictures, by a gray
+pass, and two for drawings for now. The simulated panel keeps a level for
+each pixel and shows them in the window; it saves its picture at one bit
+a pixel while it shows only black and white, and at two once it shows
+grays.
 
 ### A window on the desktop
 
@@ -567,8 +590,8 @@ waveform the driver gives the controller in place of the panel's own,
 with the drive voltages to run it at: the OpenX4 SDK's own gray table
 (`THIRD_PARTY.md`). The next full or half refresh loads the panel's
 waveform again and shows black and white, leaving nothing of the grays.
-A panel that shows no grays refuses the pass, as the desktop's does for
-now.
+A panel that shows no grays refuses the pass. The desktop's X4 takes it
+as the X4 does, the marked pixels moved one level towards white or two.
 
 A firmware built with `-DBN_GRAY_CHECK=ON` shows, at start, a picture
 made for looking at: four patches of the four levels, a ramp from black

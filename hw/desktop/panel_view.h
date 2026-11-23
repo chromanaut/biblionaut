@@ -27,7 +27,7 @@ enum class ViewTurn : std::uint8_t {
 // is only enough of one to show that a full or a half refresh flashes and
 // takes its time, and when the new picture is there.
 enum class RefreshStage : std::uint8_t {
-  kBefore = 0,    // The picture from before: through a fast refresh, until it is over.
+  kBefore = 0,    // The picture from before: through a fast refresh or a gray pass, until it is over.
   kInverted = 1,  // The picture from before, black for white: the first third of a full refresh.
   kBlack = 2,     // All black: the second third of a full refresh, the first half of a half refresh.
   kWhite = 3,     // All white: the rest of either.
@@ -59,13 +59,16 @@ class PanelView {
   // True if the picture changed, or the way it is turned did.
   bool Update(const SimDisplay& display, std::uint64_t nowUs);
 
-  // Row after row of Size(), top to bottom; kWhite and kBlack.
+  // Row after row of Size(), top to bottom: kWhite, kBlack, and the grays
+  // between them on a panel that shows grays.
   std::span<const std::uint32_t> Pixels() const noexcept { return pixels_; }
   // The stage of the last refresh that the picture shows.
   RefreshStage Stage() const noexcept { return stage_; }
 
  private:
-  void Paint(std::span<const std::uint8_t> rows, bool inverted);
+  // Paints a picture of the panel's levels, a byte a pixel (SimDisplay::
+  // ShownLevels()), black for white if `inverted`.
+  void Paint(std::span<const std::uint8_t> shownLevels, std::uint32_t levels, bool inverted);
   void Fill(std::uint32_t pixel);
 
   // Quarter-turns clockwise from the panel's own orientation to the one shown.

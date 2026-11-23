@@ -123,6 +123,11 @@ class Display {
   // rows. Nothing, for a panel read as it stands.
   virtual PanelTurn ReadingTurn() const noexcept { return PanelTurn::kNone; }
 
+  // How many levels of gray the panel shows, black and white among them,
+  // evenly spaced: 2 on a panel driven black and white, 4 on one with a
+  // gray pass (StartGrayRefresh()), which shows two grays between them.
+  virtual std::uint32_t Levels() const noexcept { return 2; }
+
   // Wakes the panel and prepares it; both planes end up white. Call before
   // anything else, and again after Sleep(). A refresh still in progress is
   // abandoned: one may have been left running by the program's last run.

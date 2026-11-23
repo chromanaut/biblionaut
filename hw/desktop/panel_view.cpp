@@ -10,6 +10,9 @@ RefreshStage StageAt(const SimDisplay::Refresh& refresh, std::uint64_t nowUs) no
   }
   const std::uint64_t length = refresh.doneUs - refresh.startUs;
   const std::uint64_t into = nowUs > refresh.startUs ? nowUs - refresh.startUs : 0;
+  if (refresh.gray) {
+    return RefreshStage::kBefore;
+  }
   switch (refresh.mode) {
     case core::RefreshMode::kFast:
       return RefreshStage::kBefore;
@@ -49,10 +52,10 @@ bool PanelView::Update(const SimDisplay& display, std::uint64_t nowUs) {
   }
   switch (stage) {
     case RefreshStage::kBefore:
-      Paint(display.ShownBefore(), false);
+      Paint(display.ShownLevelsBefore(), display.Levels(), false);
       break;
     case RefreshStage::kInverted:
-      Paint(display.ShownBefore(), true);
+      Paint(display.ShownLevelsBefore(), display.Levels(), true);
       break;
     case RefreshStage::kBlack:
       Fill(kBlack);
@@ -61,7 +64,7 @@ bool PanelView::Update(const SimDisplay& display, std::uint64_t nowUs) {
       Fill(kWhite);
       break;
     case RefreshStage::kAfter:
-      Paint(display.Shown(), false);
+      Paint(display.ShownLevels(), display.Levels(), false);
       break;
   }
   painted_ = true;
@@ -71,16 +74,20 @@ bool PanelView::Update(const SimDisplay& display, std::uint64_t nowUs) {
   return true;
 }
 
-void PanelView::Paint(std::span<const std::uint8_t> rows, bool inverted) {
-  const std::size_t rowBytes = panel_.RowBytes();
+void PanelView::Paint(std::span<const std::uint8_t> shownLevels, std::uint32_t levels, bool inverted) {
   const std::size_t width = panel_.width;
   const std::size_t height = panel_.height;
   const unsigned turns = QuarterTurns();
+  const std::uint32_t top = levels > 1 ? levels - 1 : 1;
   for (std::size_t y = 0; y < height; ++y) {
     for (std::size_t x = 0; x < width; ++x) {
-      const unsigned byte = rows[(y * rowBytes) + (x / 8)];
-      const bool white = ((byte >> (7 - (x % 8))) & 1U) != 0;
-      const std::uint32_t pixel = white != inverted ? kWhite : kBlack;
+      std::uint32_t level = std::min<std::uint32_t>(shownLevels[(y * width) + x], top);
+      if (inverted) {
+        level = top - level;
+      }
+      // Evenly spaced from black to white, the same in red, green and blue.
+      const std::uint32_t gray = (level * 255) / top;
+      const std::uint32_t pixel = 0xFF000000U | (gray << 16U) | (gray << 8U) | gray;
       // Turned a quarter-turn clockwise, a pixel's row becomes its column
       // counted from the right, and its column its row; a half turn puts it
       // as far from the other corner; a quarter-turn anticlockwise makes its

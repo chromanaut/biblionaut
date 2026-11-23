@@ -205,6 +205,36 @@ TEST(PanelView, ShowsAFastRefreshsPictureOnceItIsOver) {
   EXPECT_EQ(CountBlack(view), 9u);
 }
 
+TEST(PanelView, ShowsTheGraysOfAGrayPassOnceItIsOver) {
+  ViewFixture f;
+  f.Show({{10, 10}, {11, 10}, {12, 10}});
+  PanelView view({.width = kWidth, .height = kHeight}, ReadingTurn::kNone);
+  ASSERT_TRUE(view.Update(f.display, f.clock.now));
+  ASSERT_EQ(CountBlack(view), 3u);
+
+  // The pixel at 10 is marked dark gray, the one at 11 light gray; 12 is
+  // left black.
+  const std::uint64_t start = f.clock.now;
+  std::vector<std::uint8_t> dark(kRowBytes * kHeight, 0x00);
+  std::vector<std::uint8_t> either(kRowBytes * kHeight, 0x00);
+  dark[(10 * kRowBytes) + 1] = 0x20;
+  either[(10 * kRowBytes) + 1] = 0x30;
+  ASSERT_TRUE(f.display.WriteRows(DisplayPlane::kNew, 0, dark));
+  ASSERT_TRUE(f.display.WriteRows(DisplayPlane::kOld, 0, either));
+  ASSERT_TRUE(f.display.StartGrayRefresh(AfterRefresh::kPowerOff));
+
+  ASSERT_TRUE(view.Update(f.display, start));
+  EXPECT_EQ(view.Stage(), RefreshStage::kBefore);
+  EXPECT_EQ(CountBlack(view), 3u);
+
+  ASSERT_TRUE(view.Update(f.display, start + bn::hw::X4().times.grayRefreshUs));
+  EXPECT_EQ(view.Stage(), RefreshStage::kAfter);
+  EXPECT_EQ(view.Pixels()[(10 * kWidth) + 10], 0xFF555555U);
+  EXPECT_EQ(view.Pixels()[(10 * kWidth) + 11], 0xFFAAAAAAU);
+  EXPECT_EQ(view.Pixels()[(10 * kWidth) + 12], PanelView::kBlack);
+  EXPECT_EQ(view.Pixels()[(10 * kWidth) + 13], PanelView::kWhite);
+}
+
 TEST(PanelView, ChangesOnlyWhenWhatThePanelLooksLikeDoes) {
   ViewFixture f;
   f.Show({{0, 0}});

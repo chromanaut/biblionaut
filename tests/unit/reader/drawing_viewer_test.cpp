@@ -1059,4 +1059,170 @@ TEST(DrawingViewer, WhatWasGivenUpBeforeItWasAllKeptIsDrawnAgain) {
   EXPECT_NE(cached.back().find(", after it was found damaged"), std::string::npos) << cached.back();
 }
 
+// ---- Grays ----
+
+// A panel of the fixture's that shows four levels, through a gray pass.
+void WithGrays(Fixture& fixture, bn::core::DisplaySize size = {.width = 40, .height = 24}) {
+  fixture.display.levels = 4;
+  fixture.display.Resize(size);
+}
+
+// The refreshes and gray passes asked for, in order, and what was to follow
+// each: 'F' full, 'H' half, 'G' a gray pass; then 'p' if the voltages were
+// to be switched off after it, 's' if they were to stay up.
+std::string RefreshesAndAfters(const FakeDisplay& display) {
+  std::string out;
+  for (const FakeDisplay::Call& call : display.calls) {
+    if (call.op == Op::kRefresh || call.op == Op::kGrayRefresh) {
+      out += call.op == Op::kGrayRefresh ? 'G' : call.mode == bn::core::RefreshMode::kFull ? 'F' : 'H';
+      out += call.after == bn::core::AfterRefresh::kPowerOff ? 'p' : 's';
+    }
+  }
+  return out;
+}
+
+// Four bands across the picture: black, dark gray, light gray, white.
+std::uint8_t FourBands(std::uint32_t x, std::uint32_t /*y*/) { return static_cast<std::uint8_t>((x / 10) * 85); }
+
+TEST(DrawingViewer, ShowsAPictureInFourLevelsThroughAGrayPassOnAPanelWithGrays) {
+  // Shown first in black and white, each gray black, the voltages kept up;
+  // then the gray pass, after which the four bands are four levels.
+  Fixture fixture;
+  WithGrays(fixture);
+  fixture.storage.Put("/drawings/p.png", GrayPng(40, 24, FourBands));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U) << (fixture.Lines().empty() ? "" : fixture.Lines().back());
+  EXPECT_EQ(RefreshesAndAfters(fixture.display), "FsGp");
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 0; x < 40; ++x) {
+      ASSERT_EQ(fixture.display.LevelAt(x, y), x / 10) << x << "," << y;
+    }
+  }
+  // The planes at the gray pass: the old marks both grays, the new the
+  // dark ones. Pixels 0 to 7 black; 8 and 9 black and 10 to 15 dark; 16
+  // to 19 dark and 20 to 23 light; 32 to 39 white.
+  ASSERT_EQ(fixture.display.oldAtGray.size(), 1U);
+  const std::vector<std::uint8_t>& either = fixture.display.oldAtGray[0];
+  const std::vector<std::uint8_t>& dark = fixture.display.newAtGray[0];
+  EXPECT_EQ(either[0], 0x00);
+  EXPECT_EQ(dark[0], 0x00);
+  EXPECT_EQ(either[1], 0x3F);
+  EXPECT_EQ(dark[1], 0x3F);
+  EXPECT_EQ(either[2], 0xFF);
+  EXPECT_EQ(dark[2], 0xF0);
+  EXPECT_EQ(either[4], 0x00);
+  const std::vector<std::string> timed = fixture.Lines(true);
+  ASSERT_EQ(timed.size(), 1U);
+  EXPECT_NE(timed[0].find(" ms; gray planes "), std::string::npos) << timed[0];
+  EXPECT_NE(timed[0].find(" ms, gray pass "), std::string::npos) << timed[0];
+}
+
+TEST(DrawingViewer, ShowsAPictureInFourLevelsAgainFromTheCacheJustAsItWas) {
+  // In each of the panel's turns: the second time, from the cache, the
+  // same levels by the same two refreshes, the cache keeping two bits a
+  // pixel.
+  const std::vector<std::uint8_t> picture =
+      GrayPng(17, 9, [](std::uint32_t x, std::uint32_t y) { return ((x * 15) + (y * 20)) % 256; });
+  for (const bn::core::PanelTurn turn : {bn::core::PanelTurn::kNone, bn::core::PanelTurn::kClockwise,
+                                         bn::core::PanelTurn::kHalf, bn::core::PanelTurn::kAnticlockwise}) {
+    Fixture fixture;
+    fixture.display.turn = turn;
+    WithGrays(fixture);
+    fixture.storage.Put("/drawings/p.png", picture);
+    fixture.Start();
+    fixture.Settle();
+    ASSERT_EQ(fixture.viewer->Shown(), 1U);
+    const std::vector<std::uint8_t> levels = fixture.display.shownLevels;
+    EXPECT_TRUE(std::any_of(levels.begin(), levels.end(), [](std::uint8_t level) { return level == 1; }));
+    EXPECT_TRUE(std::any_of(levels.begin(), levels.end(), [](std::uint8_t level) { return level == 2; }));
+    fixture.Press(bn::core::Button::kConfirm);
+    fixture.Settle();
+    ASSERT_EQ(fixture.viewer->Shown(), 2U);
+    EXPECT_NE(fixture.Lines()[1].find(", from the cache, "), std::string::npos) << fixture.Lines()[1];
+    EXPECT_EQ(fixture.display.shownLevels, levels) << static_cast<int>(turn);
+    EXPECT_EQ(RefreshesAndAfters(fixture.display), "FsGpHsGp") << static_cast<int>(turn);
+    // At two bits a pixel: the kept file is its header and a row of
+    // (width * 2 + 7) / 8 bytes for each row shown.
+    const std::vector<std::string> files = CacheFiles(fixture);
+    ASSERT_EQ(files.size(), 1U);
+    const bool quarter = turn == bn::core::PanelTurn::kClockwise || turn == bn::core::PanelTurn::kAnticlockwise;
+    const std::size_t shownWidth = quarter ? 24 : 40;
+    const std::size_t shownHeight = ((18 * shownWidth) + 17) / 34;  // 9 rows for 17 across, rounded.
+    EXPECT_EQ(fixture.storage.entries.at(files[0]).data.size(),
+              bn::draw::PictureCache::kHeaderBytes + ((((shownWidth * 2) + 7) / 8) * shownHeight));
+  }
+}
+
+TEST(DrawingViewer, HasNoGrayPassForAPictureWithNoGrays) {
+  Fixture fixture;
+  WithGrays(fixture);
+  fixture.storage.Put("/drawings/p.png", GrayPng(40, 24, [](std::uint32_t x, auto) { return x < 20 ? 0 : 255; }));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  EXPECT_EQ(RefreshesAndAfters(fixture.display), "Fp");
+  const std::vector<std::string> timed = fixture.Lines(true);
+  ASSERT_EQ(timed.size(), 1U);
+  EXPECT_EQ(timed[0].find("gray"), std::string::npos) << timed[0];
+}
+
+TEST(DrawingViewer, LeavesAPictureInBlackAndWhiteWhenItCouldNotBeKept) {
+  // Its grays come back from the cache: with nothing kept, no gray pass,
+  // the voltages switched off, and a line saying why.
+  Fixture fixture;
+  WithGrays(fixture);
+  fixture.storage.Put("/drawings/p.png", GrayPng(40, 24, FourBands));
+  fixture.storage.failWrites = bn::core::StorageStatus::kNoSpace;
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  EXPECT_EQ(RefreshesAndAfters(fixture.display), "Fp");
+  EXPECT_EQ(fixture.display.LevelAt(15, 12), 0);  // Dark gray, left black.
+  const std::vector<std::string> timed = fixture.Lines(true);
+  ASSERT_EQ(timed.size(), 1U);
+  EXPECT_NE(timed[0].find("; not in grays: it was not kept in the cache"), std::string::npos) << timed[0];
+}
+
+TEST(DrawingViewer, DoesNotKeepAPressWaitingForAPicturesGrays) {
+  // Down pressed while the black and white refresh goes on: no gray pass,
+  // the voltages switched off, and on to the next.
+  Fixture fixture;
+  WithGrays(fixture);
+  fixture.storage.Put("/drawings/p.png", GrayPng(40, 24, FourBands));
+  fixture.storage.Put("/drawings/q.png", GrayPng(40, 24, FourBands));
+  fixture.Start();
+  for (int turn = 0; turn < 100000 && fixture.display.Count(Op::kRefresh) == 0; ++turn) {
+    fixture.display.busy = false;
+    fixture.viewer->Tick();
+  }
+  ASSERT_EQ(fixture.display.Count(Op::kRefresh), 1U);
+  fixture.Press(bn::core::Button::kDown);
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 2U);
+  EXPECT_EQ(fixture.display.Count(Op::kPowerOff), 1U);
+  EXPECT_EQ(RefreshesAndAfters(fixture.display), "FsHsGp");
+  const std::vector<std::string> timed = fixture.Lines(true);
+  ASSERT_EQ(timed.size(), 2U);
+  EXPECT_NE(timed[0].find("; not in grays: something else was asked for"), std::string::npos) << timed[0];
+}
+
+TEST(DrawingViewer, ShowsAPictureInBlackAndWhiteOnAPanelWithoutGrays) {
+  Fixture fixture;
+  fixture.storage.Put("/drawings/p.png", GrayPng(40, 24, FourBands));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  EXPECT_EQ(RefreshesAndAfters(fixture.display), "Fp");
+  // Dark gray dithered to black and white: some of each.
+  std::size_t black = 0;
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 10; x < 20; ++x) {
+      black += fixture.Black(x, y) ? 1 : 0;
+    }
+  }
+  EXPECT_GT(black, 240U / 2);
+  EXPECT_LT(black, 240U);
+}
+
 }  // namespace

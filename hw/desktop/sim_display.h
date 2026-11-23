@@ -20,6 +20,11 @@ namespace bn::hw {
 // bytes of a PNG file: 1 bit per pixel, not compressed.
 std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std::uint8_t> rows);
 
+// A picture of `size` in four levels, a byte a pixel from 0 for black to 3
+// for white, row after row, as the bytes of a PNG file: 2 bits per pixel,
+// not compressed.
+std::vector<std::uint8_t> EncodeFourLevelPng(core::DisplaySize size, std::span<const std::uint8_t> levels);
+
 // Behaves like a device's panel as far as the code driving it can tell: it
 // is the device's size, keeps the two planes, refuses work while a refresh
 // is "running" (for as long as the device's takes), and works out what the
@@ -30,6 +35,12 @@ std::vector<std::uint8_t> EncodePng(core::DisplaySize size, std::span<const std:
 //    and drives the rest to what the new-image plane says;
 //  - after a fast refresh the two planes have changed places;
 //  - switching the drive voltages off puts them back in their first places.
+//
+// A device whose panel has grays (its profile's levels are 4) takes the
+// gray pass too, as core/display.h sets it out: a pixel the old-image
+// plane marks is moved two levels towards white, or one where the
+// new-image plane marks it as well. Whether the planes change places in a
+// gray pass has not been read back from a device; here they do not.
 //
 // So code that lets the old-image plane fall out of step with the panel,
 // or that relies across a switch-off on what it wrote before, gets the same
@@ -47,6 +58,7 @@ class SimDisplay final : public core::Display {
 
   core::DisplaySize Size() const noexcept override { return device_.panel; }
   core::PanelTurn ReadingTurn() const noexcept override { return static_cast<core::PanelTurn>(device_.turn); }
+  std::uint32_t Levels() const noexcept override { return device_.levels; }
   [[nodiscard]] bool Start() noexcept override;
   [[nodiscard]] bool WriteRows(core::DisplayPlane plane, std::uint16_t firstRow,
                                std::span<const std::uint8_t> rows) noexcept override;
@@ -55,12 +67,17 @@ class SimDisplay final : public core::Display {
   [[nodiscard]] bool ReadRows(core::DisplayPlane plane, std::uint16_t firstRow,
                               std::span<std::uint8_t> rows) noexcept override;
   [[nodiscard]] bool StartRefresh(core::RefreshMode mode, core::AfterRefresh after) noexcept override;
+  [[nodiscard]] bool StartGrayRefresh(core::AfterRefresh after) noexcept override;
   bool Busy() noexcept override;
   [[nodiscard]] bool PowerOff() noexcept override;
   [[nodiscard]] bool Sleep() noexcept override;
 
-  // What the panel shows (once the refresh in progress, if any, is over).
+  // What the panel shows (once the refresh in progress, if any, is over),
+  // in black and white, as WriteRows() takes rows: a gray counts as black.
   std::span<const std::uint8_t> Shown() const noexcept { return shown_; }
+  // The same, a byte a pixel, row after row: its level, from 0 for black to
+  // Levels() - 1 for white.
+  std::span<const std::uint8_t> ShownLevels() const noexcept { return shownLevels_; }
 
   // The last refresh: how it was made, when it began, and when the picture
   // was finished, on the clock's time and shortened by `speed`. (A switch-off
@@ -68,12 +85,14 @@ class SimDisplay final : public core::Display {
   // shown.) Before the first refresh, one that was over at 0.
   struct Refresh {
     core::RefreshMode mode = core::RefreshMode::kFull;
+    bool gray = false;  // The gray pass, not a refresh of `mode`.
     std::uint64_t startUs = 0;
     std::uint64_t doneUs = 0;
   };
   const Refresh& LastRefresh() const noexcept { return lastRefresh_; }
   // What the panel showed before the last refresh began.
   std::span<const std::uint8_t> ShownBefore() const noexcept { return shownBefore_; }
+  std::span<const std::uint8_t> ShownLevelsBefore() const noexcept { return shownLevelsBefore_; }
 
   // What the plane now in that role holds.
   std::span<const std::uint8_t> Plane(core::DisplayPlane plane) const noexcept;
@@ -83,6 +102,10 @@ class SimDisplay final : public core::Display {
 
  private:
   void SavePicture();
+  // Sets the levels of the pixels that a refresh drove to what `rows`
+  // says, those where `driven` has a set bit: black, or white.
+  void ShowLevels(std::span<const std::uint8_t> rows, std::span<const std::uint8_t> driven) noexcept;
+  void Finish(std::uint64_t durationUs, core::SpanId span, core::AfterRefresh after, Refresh refresh);
   // The memory now in the role of `plane`.
   std::vector<std::uint8_t>& Memory(core::DisplayPlane plane) noexcept;
   const std::vector<std::uint8_t>& Memory(core::DisplayPlane plane) const noexcept;
@@ -98,6 +121,8 @@ class SimDisplay final : public core::Display {
   std::size_t newIs_ = 0;
   std::vector<std::uint8_t> shown_;
   std::vector<std::uint8_t> shownBefore_;
+  std::vector<std::uint8_t> shownLevels_;
+  std::vector<std::uint8_t> shownLevelsBefore_;
   Refresh lastRefresh_;
   bool started_ = false;
   bool powered_ = false;

@@ -41,6 +41,15 @@ option(BN_PLANE_CHECK "Read the panel's planes back and check them whenever it c
 # seconds, and then starts as usual.
 option(BN_WINDOW_CHECK "Check at start that the panel takes windows narrower than whole rows" OFF)
 
+# For looking, on a device, at a picture shown in the panel's grays, and
+# timing the gray pass (main/gray_check.h says what is done):
+#
+#   tools/idf -DBN_GRAY_CHECK=ON build flash    (back to normal: -DBN_GRAY_CHECK=OFF)
+#
+# Such a firmware shows the picture in stages at start, for about two
+# minutes, and then starts as usual.
+option(BN_GRAY_CHECK "Show a picture in the panel's grays at start, in stages, and time the gray pass" OFF)
+
 # For checking, on a device, that the SD card can be relied on and how fast
 # it is (reader/storage_check.h says what is done):
 #

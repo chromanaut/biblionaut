@@ -159,6 +159,23 @@ class Display {
   // Returns false, starting nothing, if the panel is not started or is busy.
   [[nodiscard]] virtual bool StartRefresh(RefreshMode mode, AfterRefresh after) noexcept = 0;
 
+  // Starts the gray pass, on a panel that shows grays, and returns at once;
+  // Busy() says when it is over. It follows a full or half refresh that
+  // showed a picture with each of its grays black. The planes then mark
+  // which pixels are gray, a set bit marking one: the old-image plane every
+  // gray pixel, the new-image plane the dark grays among them. A pixel the
+  // old plane marks is moved from black towards white: to a dark gray where
+  // the new plane marks it too, to a light gray where it does not. A pixel
+  // the old plane does not mark is left as it is. The planes say nothing of
+  // the picture afterwards; the next full or half refresh shows black and
+  // white again, from what is written for it. Returns false, starting
+  // nothing, on a panel that shows no grays, or if it is not started or is
+  // busy.
+  [[nodiscard]] virtual bool StartGrayRefresh(AfterRefresh after) noexcept {
+    static_cast<void>(after);
+    return false;
+  }
+
   // True while the panel is working on something and will take nothing new.
   virtual bool Busy() noexcept = 0;
 

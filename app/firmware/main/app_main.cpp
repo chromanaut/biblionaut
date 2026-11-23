@@ -11,6 +11,7 @@
 #include "core/crash.h"
 #include "core/heap.h"
 #include "crash_test.h"
+#include "gray_check.h"
 #include "hw/platform.h"
 #include "partition_check.h"
 #include "reader/app.h"
@@ -66,6 +67,7 @@ extern "C" void app_main() {
   bn::firmware::AnnounceCrashTest();
   bn::firmware::RunPartitionCheck();
   bn::firmware::RunWindowCheck();
+  bn::firmware::RunGrayCheck();
 
   static bn::reader::App app(bn::reader::DefaultServices());
 #ifdef BN_PLANE_CHECK

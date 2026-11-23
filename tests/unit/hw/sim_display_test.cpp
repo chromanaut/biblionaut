@@ -187,6 +187,20 @@ TEST(SimDisplay, AFullRefreshShowsTheNewPlaneAndKeepsThePanelBusyMeanwhile) {
   EXPECT_TRUE(fixture.display.Powered());
 }
 
+TEST(SimDisplay, RefusesTheGrayPassAsAPanelThatShowsNoGrays) {
+  SimFixture fixture;
+  ASSERT_TRUE(fixture.display.Start());
+  const std::vector<std::uint8_t> picture = WithBlackRows(100, 50);
+  ASSERT_TRUE(fixture.display.WriteRows(DisplayPlane::kNew, 0, picture));
+  ASSERT_TRUE(fixture.display.StartRefresh(RefreshMode::kHalf, AfterRefresh::kPowerOff));
+  fixture.Finish();
+
+  EXPECT_FALSE(fixture.display.StartGrayRefresh(AfterRefresh::kPowerOff));
+  EXPECT_FALSE(fixture.display.Busy());
+  EXPECT_EQ(fixture.display.RefreshCount(), 1);
+  EXPECT_TRUE(RowIsBlack(fixture.display.Shown(), 100));
+}
+
 TEST(SimDisplay, IsTheSizeOfItsDeviceAndTakesAsLongAsItsPanelDoes) {
   const bn::hw::DeviceProfile device{
       .name = "other",

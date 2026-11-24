@@ -12,10 +12,10 @@ is, and put in the middle of the page. The pictures are set beside what
 `bn-png read` or `bn-jpeg read` makes of each at the size it should be
 shown at, in the same way: a PNG file; a baseline JPEG large enough to be
 read at a half; and a progressive JPEG, read from its first scan at an
-eighth and made larger. The simulated X4 shows four levels: a drawing is
-dithered to black and white, and a picture to the four, shown first in
-black and white and then by a gray pass, which saves a second picture of
-the panel. So the two are compared in blocks of pixels: how dark each
+eighth and made larger. The simulated X4 shows four levels: each drawing
+and picture, all of which have grays, is dithered to the four, shown first
+in black and white and then by a gray pass, which saves a second picture
+of the panel. So the two are compared in blocks of pixels: how dark each
 block is, on the whole. The lines of log text the viewer sends are read
 back with bn-trace.
 
@@ -274,10 +274,10 @@ def main() -> int:
     for name, data in PICTURES.items():
         (folder / name).write_bytes(data)
     names = sorted([*DRAWINGS, *PICTURES])
-    # Each in turn, and round to the first. A picture is two refreshes: in
-    # black and white, and the gray pass.
+    # Each in turn, and round to the first. Each is two refreshes: in black
+    # and white, and the gray pass.
     shown = names + names[:1]
-    refreshes = len(shown) + sum(1 for name in shown if name in PICTURES)
+    refreshes = 2 * len(shown)
     try:
         # Down after each drawing has had its time, and round to the first.
         for seconds in (4, 8, 16):
@@ -311,31 +311,30 @@ def main() -> int:
         expect(", 960x576 gray read at 1/2 shown 480x288: reading " in lines[4], f"the baseline JPEG's line: {lines[4]!r}")
         expect(", 240x384 progressive 4:2:0 read at 1/8 shown 480x768: reading " in lines[5],
                f"the progressive JPEG's line: {lines[5]!r}")
-        # The first timed line of each: not a drawing's second, of its spool.
-        timed = [line for line in log_lines(bn_trace, work / "serial.bin", "timed")
-                 if " timed: spool " not in line and " timed: not spooled" not in line]
-        for line, name in zip(timed, shown):
-            expect((name in PICTURES) == ("; gray planes " in line), f"the gray pass of {name}: {line!r}")
+        # Each says its gray pass: a picture on its timed line, a drawing on
+        # a line of its own.
+        timed = log_lines(bn_trace, work / "serial.bin", "timed")
+        grays = [line for line in timed if " gray planes " in line]
+        expect(len(grays) == len(shown) and not any("not in grays" in line for line in timed),
+               f"the gray passes: {timed}")
         worst = 0.0
         panel = iter(pictures)
         for name in shown:
+            # First in black and white, then in grays.
+            first, second = next(panel), next(panel)
+            expect(read_png(first)[0] == 1, f"{first.name} ({name}) is not black and white")
+            depth, levels = read_png(second)
+            expect(depth == 2, f"{second.name} ({name}) shows no grays")
             if name in PICTURES:
-                # First in black and white, then in grays.
-                first, second = next(panel), next(panel)
-                expect(read_png(first)[0] == 1, f"{first.name} ({name}) is not black and white")
-                depth, levels = read_png(second)
-                expect(depth == 2, f"{second.name} ({name}) shows no grays")
                 dark = expected_picture(bn_png if name.endswith(".png") else bn_jpeg, work, name)
-                worst = max(worst, compare(levels, dark, f"{second.name} ({name})"))
             else:
-                picture = next(panel)
                 dark = expected_panel(bn_svg, work, name)
-                worst = max(worst, compare(read_png(picture)[1], dark, f"{picture.name} ({name})"))
+            worst = max(worst, compare(levels, dark, f"{second.name} ({name})"))
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"3 drawings and 3 pictures shown and gone round, the first again from the cache, each as bn-svg draws it "
-          f"or bn-png or bn-jpeg reads it turned onto the panel, the pictures in four levels, every block of "
+          f"or bn-png or bn-jpeg reads it turned onto the panel, in four levels, every block of "
           f"{BLOCK} by {BLOCK} pixels within {worst:.3f} of as dark as it should be")
     return 0
 

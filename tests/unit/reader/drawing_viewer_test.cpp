@@ -1225,4 +1225,82 @@ TEST(DrawingViewer, ShowsAPictureInBlackAndWhiteOnAPanelWithoutGrays) {
   EXPECT_LT(black, 240U);
 }
 
+TEST(DrawingViewer, ShowsADrawingInFourLevelsThroughAGrayPassOnAPanelWithGrays) {
+  // Four bands across the page, each a level exactly: shown first in black
+  // and white, the voltages kept up, then by the gray pass in four levels.
+  Fixture fixture;
+  WithGrays(fixture);
+  fixture.Put("a.svg", Svg(40, 24,
+                           "<rect x='0' width='10' height='24' fill='#000'/><rect x='10' width='10' height='24' "
+                           "fill='#555'/><rect x='20' width='10' height='24' fill='#aaa'/><rect x='30' width='10' "
+                           "height='24' fill='#fff'/>"));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U) << (fixture.Lines().empty() ? "" : fixture.Lines().back());
+  EXPECT_EQ(RefreshesAndAfters(fixture.display), "FsGp");
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 0; x < 40; ++x) {
+      ASSERT_EQ(fixture.display.LevelAt(x, y), x / 10) << x << "," << y;
+    }
+  }
+  // The planes the gray pass was given: rows of the panel, the old plane
+  // marking both grays, the new the dark ones.
+  ASSERT_EQ(fixture.display.oldAtGray.size(), 1U);
+  EXPECT_EQ(fixture.display.oldAtGray[0][(12 * 5) + 1], 0x3F);
+  EXPECT_EQ(fixture.display.newAtGray[0][(12 * 5) + 1], 0x3F);
+  EXPECT_EQ(fixture.display.oldAtGray[0][(12 * 5) + 2], 0xFF);
+  EXPECT_EQ(fixture.display.newAtGray[0][(12 * 5) + 2], 0xF0);
+  const std::vector<std::string> timed = fixture.Lines(true);
+  // A line of its own, the last, after the drawing's long one and its
+  // spool's.
+  ASSERT_EQ(timed.size(), 3U);
+  EXPECT_EQ(timed[2].rfind("drawing 1 timed: gray planes ", 0), 0U) << timed[2];
+  EXPECT_NE(timed[2].find(" ms, gray pass "), std::string::npos) << timed[2];
+}
+
+TEST(DrawingViewer, ShowsADrawingInFourLevelsAgainFromTheCacheJustAsItWas) {
+  // A drawing of grays with shapes reaching past its edges, not the page's
+  // shape, in each of the panel's turns: the second time, from the cache,
+  // the same levels by the same two refreshes, kept at two bits a pixel.
+  const std::string drawing = Svg(37, 19,
+                                  "<circle cx='0' cy='0' r='15' fill='#777'/><rect x='20' y='-5' width='30' "
+                                  "height='10' fill='#333'/><ellipse cx='18' cy='12' rx='9' ry='4' fill='#bbb'/>");
+  for (const bn::core::PanelTurn turn : {bn::core::PanelTurn::kNone, bn::core::PanelTurn::kClockwise,
+                                         bn::core::PanelTurn::kHalf, bn::core::PanelTurn::kAnticlockwise}) {
+    Fixture fixture;
+    fixture.display.turn = turn;
+    WithGrays(fixture);
+    fixture.Put("a.svg", drawing);
+    fixture.Start();
+    fixture.Settle();
+    ASSERT_EQ(fixture.viewer->Shown(), 1U);
+    const std::vector<std::uint8_t> levels = fixture.display.shownLevels;
+    EXPECT_TRUE(std::any_of(levels.begin(), levels.end(), [](std::uint8_t level) { return level == 1; }));
+    EXPECT_TRUE(std::any_of(levels.begin(), levels.end(), [](std::uint8_t level) { return level == 2; }));
+    fixture.Press(bn::core::Button::kConfirm);
+    fixture.Settle();
+    ASSERT_EQ(fixture.viewer->Shown(), 2U);
+    EXPECT_NE(fixture.Lines()[1].find(", from the cache, "), std::string::npos) << fixture.Lines()[1];
+    EXPECT_EQ(fixture.display.shownLevels, levels) << static_cast<int>(turn);
+    EXPECT_EQ(RefreshesAndAfters(fixture.display), "FsGpHsGp") << static_cast<int>(turn);
+    const std::vector<std::string> files = CacheFiles(fixture);
+    ASSERT_EQ(files.size(), 1U);
+    const std::vector<std::uint8_t>& kept = fixture.storage.entries.at(files[0]).data;
+    ASSERT_GE(kept.size(), bn::draw::PictureCache::kHeaderBytes);
+    EXPECT_EQ(kept[6], 4);  // The key's levels.
+  }
+}
+
+TEST(DrawingViewer, HasNoGrayPassForADrawingInBlackAndWhite) {
+  Fixture fixture;
+  WithGrays(fixture);
+  fixture.Put("a.svg", Svg(40, 24, "<rect x='0' width='20' height='24'/>"));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U);
+  EXPECT_EQ(RefreshesAndAfters(fixture.display), "Fp");
+  EXPECT_EQ(fixture.display.LevelAt(5, 12), 0);
+  EXPECT_EQ(fixture.display.LevelAt(25, 12), 3);
+}
+
 }  // namespace

@@ -230,9 +230,12 @@ tools/idf -DBN_DRAWING_VIEWER=ON -DBN_DRAWING_TOUR=ON build flash
 ```
 
 A drawing is drawn a band of 16 of the panel's rows at a time, its file
-read once and what it draws kept (below), and each band dithered and written to
-both of the panel's planes, so that the half or full refresh that shows it
-leaves both right; the drive voltages go off as the refresh ends. A turn of
+read once and what it draws kept (below), and each band dithered to the
+panel's levels and written to both of the panel's planes, so that the half
+or full refresh that shows it leaves both right; the drive voltages go off
+as the refresh ends. On a panel with grays, as the X4's, each gray is black
+in those planes, and a gray pass after the refresh brings the grays out,
+as it does for a picture (below). A turn of
 the loop draws for about 20 ms and returns, so a drawing of megabytes takes
 many turns and the buttons are heard throughout: a press while a drawing is
 being drawn gives it up for the one asked for. For each drawing a line of
@@ -242,13 +245,17 @@ renderer left
 out:
 
 ```
-drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 29 ms
+drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 37 ms
 ```
 
 That is an engraving of 932 KB from a public book, drawn by the optimised
-desktop application; on a device it has not been timed. No stroke is drawn
-thinner than a pixel (`SetThinnestStroke()`, below): one much thinner would
-be a light gray, which black and white show as a broken line.
+desktop application. On the X4, nine drawings of every kind take from
+0.7 s to 18 s from the press to their refresh the first time, and 0.1 to
+0.2 s from the cache; their grays come 0.3 to 0.4 s after the refresh,
+the gray planes taking 88 to 207 ms and the gray pass about 205. No stroke
+is drawn thinner than a pixel (`SetThinnestStroke()`, below): one much
+thinner would be a light gray, which the panel's levels show as a broken
+line.
 
 A drawing is read once, and kept on the card while it is shown, in a
 hidden file at the top of the card (`/.drawing-spool`, made again for each
@@ -256,20 +263,20 @@ drawing): what it draws for each band of the panel ("Keeping a drawing",
 below). Each band is then drawn from what was kept, its own part and no
 more. If the card will not keep it, or it would be more than 4 MB, the
 drawing is read again for each band instead, as it could always be, and a
-line says why. The viewer takes about 103 KB of the heap when it starts:
+line says why. The viewer takes about 105 KB of the heap when it starts:
 26 KB for the filler's cells, which also hold what each band has in hand
 while the file is read, 24 KB for what a drawing defines, 16 KB for the
 links of what is kept, 13 KB for a band of grays, which also gathers what
 is kept into writes of up to 8 KB while the file is read, since the card
 writes a few kilobytes at once faster than a chunk at a time, 8 KB for the renderer, a
 kilobyte for the recorder, 6 KB for what is carried in dithering and a
-band of bits, 8 KB of the file read at a time, and 2 KB for a band of what
-goes to the cache or comes from it.
+band of bits, 8 KB of the file read at a time, and 3 KB for a band of what
+goes to the cache or comes from it, at two bits a pixel.
 
 What is shown is kept as well, in the cache of pictures on the card
 (`/.picture-cache`, "Keeping what is shown", below), the size it is
-shown and in its levels, a bit a pixel for a drawing and two for a
-picture in the X4's four: a drawing as it lies on the panel, and a
+shown and in its levels, two bits a pixel in the X4's four: a drawing as
+it lies on the panel, and a
 picture as it lies on the page, its rows in the order they came. Shown again, while its file is the same size and was last written
 at the same time, it is read from there a band at a time and written to
 the panel, and nothing is drawn. What the cache does not have is drawn,
@@ -279,9 +286,9 @@ could not all be read, or a picture not read whole, is not kept. A line
 says what the cache did:
 
 ```
-drawing 2 cache: kept, 22 KB in 1 ms
-drawing 2 of 3: lewis-carroll-illustration-7.svg, from the cache, 5 ms
-drawing 2 cache: read 22 KB in 0 ms
+drawing 2 cache: kept, 45 KB in 1 ms
+drawing 2 of 3: lewis-carroll-illustration-7.svg, from the cache, 3 ms
+drawing 2 cache: read 45 KB in 0 ms
 ```
 
 That is the same engraving, the first time and then gone back to, on the
@@ -299,11 +306,14 @@ for the panel to take a band, in the viewer's own turns otherwise
 third says how much was kept and read back, how long each took (and in
 how many writes to the card) and how
 long drawing the bands from it took; or why the drawing was not kept. A
-picture's says how long its refresh took.
+last says how long writing the planes of its gray pass took, and the pass,
+or why there was none. A picture's says how long its refresh took, and
+then the same of its gray pass.
 
 ```
-drawing 2 timed: 30 bands, 918 KB read in 0 ms; rendering 12 ms, dithering 6 ms, writing 0 ms, waiting 5 ms, other 0 ms, between turns 0 ms, refreshing 1719 ms
-drawing 2 timed: spool 623 KB written in 0 ms (78 writes), 623 KB read in 0 ms; replaying 3 ms
+drawing 2 timed: 30 bands, 918 KB read in 0 ms; rendering 19 ms, dithering 8 ms, writing 0 ms, waiting 6 ms, other 0 ms, between turns 0 ms, refreshing 1571 ms
+drawing 2 timed: spool 623 KB written in 0 ms (78 writes), 623 KB read in 1 ms; replaying 4 ms
+drawing 2 timed: gray planes 1 ms, gray pass 218 ms
 ```
 
 That is the same engraving as above, 932 KB read once for its size and
@@ -377,8 +387,8 @@ buttons' places along the edges are drawn near enough. A profile does
 not say how its controller keeps its two planes: everything that drives a
 panel (`core/display.h`) keeps to the rules found on the X4. A panel's
 grays are its own business: the drawing code draws in 256 and dithers to
-as many as a panel shows, which on the X4 is four for pictures, by a gray
-pass, and two for drawings for now. The simulated panel keeps a level for
+as many as a panel shows, which on the X4 is four, by a gray pass. The
+simulated panel keeps a level for
 each pixel and shows them in the window; it saves its picture at one bit
 a pixel while it shows only black and white, and at two once it shows
 grays.

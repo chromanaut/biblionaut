@@ -66,25 +66,27 @@ PanelPixel OnPanel(core::PanelTurn turn, std::size_t pageWidth, std::size_t page
   return {.x = x, .y = y};
 }
 
-// Copies `count` pixels, a bit each, the leftmost the top bit of a byte:
-// from `from`, starting at pixel `fromAt`, to `to` at `toAt`.
-void CopyPixels(std::span<const std::uint8_t> from, std::size_t fromAt, std::span<std::uint8_t> to, std::size_t toAt,
-                std::size_t count) noexcept {
-  for (std::size_t at = 0; at < count; ++at) {
-    const std::size_t source = fromAt + at;
-    const std::size_t target = toAt + at;
-    const auto mask = static_cast<std::uint8_t>(0x80U >> (target % 8));
-    if ((from[source / 8] & (0x80U >> (source % 8))) != 0) {
-      to[target / 8] = static_cast<std::uint8_t>(to[target / 8] | mask);
-    } else {
-      to[target / 8] = static_cast<std::uint8_t>(to[target / 8] & ~std::uint32_t{mask});
-    }
-  }
-}
-
 // The level of a pixel made one of `top` + 1 levels: its gray is that
 // level's, from 0 for black to 255 for white.
 unsigned LevelOf(std::uint8_t gray, unsigned top) noexcept { return ((gray * top) + 127U) / 255U; }
+
+// Packs the levels of `grays`, each the gray of one of `top` + 1 levels,
+// into `kept` at `bits` bits a pixel, the leftmost in the top bits of the
+// first byte.
+void PackLevels(std::span<const std::uint8_t> grays, unsigned bits, unsigned top,
+                std::span<std::uint8_t> kept) noexcept {
+  std::fill(kept.begin(), kept.end(), std::uint8_t{0});
+  for (std::size_t x = 0; x < grays.size(); ++x) {
+    const std::size_t bit = x * bits;
+    kept[bit / 8] = static_cast<std::uint8_t>(kept[bit / 8] | (LevelOf(grays[x], top) << (8U - bits - (bit % 8))));
+  }
+}
+
+// The level of pixel `x` of a kept row of `bits` bits a pixel.
+unsigned KeptLevel(std::span<const std::uint8_t> kept, std::size_t x, unsigned bits) noexcept {
+  const std::size_t bit = x * bits;
+  return (static_cast<unsigned>(kept[bit / 8]) >> (8U - bits - (bit % 8))) & ((1U << bits) - 1U);
+}
 
 // A row kept in the cache, `width` pixels of `bits` bits, the leftmost in
 // the top bits of the first byte: as a row of a bit a pixel, set where
@@ -155,9 +157,12 @@ void DrawingViewer::Start() noexcept {
   bits_.reset(new (std::nothrow) std::uint8_t[size.RowBytes() * kBandRows]);
   definitions_.reset(new (std::nothrow) std::uint8_t[kDefinitionBytes]);
   chunk_.reset(new (std::nothrow) std::uint8_t[kReadBytes]);
+  // As many levels as the panel shows, if it is two or four: its grays
+  // come from a gray pass, which has two.
+  levels_ = display_.Levels() == 4 ? 4 : 2;
   // A band of a drawing as it lies on the panel, or of a picture's rows
-  // across the page.
-  cacheRowsBytes_ = ((widest + 7) / 8) * kBandRows;
+  // across the page, in those levels.
+  cacheRowsBytes_ = (((widest * draw::PictureCache::BitsFor(static_cast<std::uint32_t>(levels_))) + 7) / 8) * kBandRows;
   cacheRows_.reset(new (std::nothrow) std::uint8_t[cacheRowsBytes_]);
   if (!renderer_ || !gray_ || !cells_ || !errors_ || !bits_ || !definitions_ || !chunk_ || !cacheRows_) {
     stream_.SendText("drawings: no memory to draw them in");
@@ -455,7 +460,7 @@ void DrawingViewer::TickSome() noexcept {
 
     case Phase::kGraying: {
       const std::uint64_t started = clock_.NowUs();
-      const bool written = GrayStrips(now + kSliceUs);
+      const bool written = picture_ ? GrayStrips(now + kSliceUs) : GrayBands(now + kSliceUs);
       grayPlanesUs_ += clock_.NowUs() - started;
       if (phase_ != Phase::kGraying || !written) {
         return;  // Not yet; or given up, and the phase moved on.
@@ -885,14 +890,20 @@ bool DrawingViewer::WriteBand() noexcept {
     if (!ditherer_.Row(grays)) {
       return false;
     }
-    // A set bit is white, the leftmost pixel the top bit of the first byte.
+    // In black and white, each gray black: a set bit is white, the
+    // leftmost pixel the top bit of the first byte.
     const std::span<std::uint8_t> out(bits_.get() + (row * rowBytes), rowBytes);
     std::fill(out.begin(), out.end(), std::uint8_t{0});
+    bool seen = false;
     for (std::size_t x = 0; x < width; ++x) {
-      if (grays[x] >= 128) {
+      if (grays[x] == 255) {
         out[x / 8] = static_cast<std::uint8_t>(out[x / 8] | (0x80U >> (x % 8)));
+      } else {
+        seen = seen || grays[x] != 0;
       }
     }
+    // Only the drawing's own part counts: the page around it is white.
+    graysSeen_ = graysSeen_ || seen;
   }
   const std::uint64_t writing = clock_.NowUs();
   ditheringUs_ += writing - dithering;
@@ -902,7 +913,7 @@ bool DrawingViewer::WriteBand() noexcept {
                        display_.WriteRows(core::DisplayPlane::kOld, top, bits);
   writingUs_ += clock_.NowUs() - writing;
   ++passes_;
-  CacheRows(bits, bandTop_, rows);
+  CacheRows(std::span(gray_.get(), rows * width), bandTop_, rows);
   return written;
 }
 
@@ -937,12 +948,6 @@ void DrawingViewer::SayTimes(std::uint64_t refreshUs) noexcept {
   LogLine line;
   if (picture_) {
     line.Text("picture ").Number(current_ + 1).Text(" timed: refreshing ").Number(refreshUs / 1000).Text(" ms");
-    if (grayShown_) {
-      line.Text("; gray planes ").Number(grayPlanesUs_ / 1000).Text(" ms, gray pass ");
-      line.Number(grayPassUs_ / 1000).Text(" ms");
-    } else if (grayNote_ != nullptr) {
-      line.Text("; not in grays: ").Text(grayNote_);
-    }
   } else {
     line.Text("drawing ").Number(current_ + 1).Text(" timed: ");
     line.Count(passes_, " band", " bands").Text(", ").Number(bytesRead_ / 1024).Text(" KB read in ");
@@ -960,22 +965,37 @@ void DrawingViewer::SayTimes(std::uint64_t refreshUs) noexcept {
     line.Text(" ms, between turns ").Number((untilRefresh > inTurns ? untilRefresh - inTurns : 0) / 1000);
     line.Text(" ms, refreshing ").Number(refreshUs / 1000).Text(" ms");
   }
+  // The gray pass: on a picture's line, and on a line of its own after a
+  // drawing's, which is long enough already.
+  LogLine grays;
+  LogLine& gray = picture_ ? line : grays;
+  if (!picture_) {
+    gray.Text("drawing ").Number(current_ + 1).Text(" timed");
+  }
+  if (grayShown_) {
+    gray.Text(picture_ ? "; " : ": ").Text("gray planes ").Number(grayPlanesUs_ / 1000).Text(" ms, gray pass ");
+    gray.Number(grayPassUs_ / 1000).Text(" ms");
+  } else if (grayNote_ != nullptr) {
+    gray.Text(picture_ ? "; " : ": ").Text("not in grays: ").Text(grayNote_);
+  }
   stream_.SendText(line.View());
-  if (picture_ || (!spooling_ && spoolFailure_ == nullptr)) {
-    return;
+  if (!picture_ && (spooling_ || spoolFailure_ != nullptr)) {
+    LogLine spooled;
+    spooled.Text("drawing ").Number(current_ + 1).Text(" timed: ");
+    if (!spooling_) {
+      spooled.Text("not spooled: ").Text(spoolFailure_);
+    } else {
+      spooled.Text("spool ").Number(spoolStore_.bytesWritten / 1024).Text(" KB written in ");
+      spooled.Number(spoolStore_.writingUs / 1000).Text(" ms (").Count(spoolStore_.writes, " write", " writes");
+      spooled.Text("), ").Number(spoolStore_.bytesRead / 1024);
+      spooled.Text(" KB read in ").Number(spoolStore_.readingUs / 1000).Text(" ms; replaying ");
+      spooled.Number(replayingUs_ / 1000).Text(" ms");
+    }
+    stream_.SendText(spooled.View());
   }
-  LogLine spooled;
-  spooled.Text("drawing ").Number(current_ + 1).Text(" timed: ");
-  if (!spooling_) {
-    spooled.Text("not spooled: ").Text(spoolFailure_);
-  } else {
-    spooled.Text("spool ").Number(spoolStore_.bytesWritten / 1024).Text(" KB written in ");
-    spooled.Number(spoolStore_.writingUs / 1000).Text(" ms (").Count(spoolStore_.writes, " write", " writes");
-    spooled.Text("), ").Number(spoolStore_.bytesRead / 1024);
-    spooled.Text(" KB read in ").Number(spoolStore_.readingUs / 1000).Text(" ms; replaying ");
-    spooled.Number(replayingUs_ / 1000).Text(" ms");
+  if (!picture_ && (grayShown_ || grayNote_ != nullptr)) {
+    stream_.SendText(grays.View());
   }
-  stream_.SendText(spooled.View());
 }
 
 void DrawingViewer::Fail() noexcept {
@@ -1085,12 +1105,8 @@ bool DrawingViewer::BeginPicture(std::size_t index) noexcept {
   bytesRead_ = 0;
   passes_ = 0;
   turnsUs_ = 0;
-  // As many levels as the panel shows, if it is two or four: its grays
-  // come from a gray pass, which has two.
-  pictureLevels_ = display_.Levels() == 4 ? 4 : 2;
   // Kept as it lies on the page, its rows in the order they come: not
   // turned, whichever way the panel is.
-  key_.levels = static_cast<std::uint16_t>(pictureLevels_);
   key_.width = static_cast<std::uint16_t>(shownWidth_);
   key_.height = static_cast<std::uint16_t>(shownHeight_);
   key_.turn = static_cast<std::uint8_t>(core::PanelTurn::kNone);
@@ -1185,7 +1201,8 @@ bool DrawingViewer::StartPictureRead() noexcept {
   }
   const std::size_t widest = std::max<std::size_t>(size.width, size.height);
   if (scaler_->Begin(readWidth_, readHeight_, shownWidth_, shownHeight_, pictureRows_) != draw::ScaleStatus::kOk ||
-      !ditherer_.Begin(shownWidth_, pictureLevels_, {errors_.get(), draw::Ditherer::ErrorsFor(widest)})) {
+      !ditherer_.Begin(shownWidth_, static_cast<std::uint32_t>(levels_),
+                       {errors_.get(), draw::Ditherer::ErrorsFor(widest)})) {
     return false;
   }
   phase_ = Phase::kPicturing;
@@ -1398,14 +1415,8 @@ void DrawingViewer::CachePictureRow(std::span<const std::uint8_t> grays) noexcep
   }
   // Each pixel its level, BitsFor() bits of it, the leftmost in the top
   // bits of the first byte.
-  const std::span<std::uint8_t> kept(cacheRows_.get() + (cachedRows_ * keptBytes), keptBytes);
-  std::fill(kept.begin(), kept.end(), std::uint8_t{0});
-  const unsigned bits = draw::PictureCache::BitsFor(key_.levels);
-  const unsigned top = key_.levels - 1U;
-  for (std::size_t x = 0; x < grays.size(); ++x) {
-    const std::size_t bit = x * bits;
-    kept[bit / 8] = static_cast<std::uint8_t>(kept[bit / 8] | (LevelOf(grays[x], top) << (8U - bits - (bit % 8))));
-  }
+  PackLevels(grays, draw::PictureCache::BitsFor(key_.levels), key_.levels - 1U,
+             std::span(cacheRows_.get() + (cachedRows_ * keptBytes), keptBytes));
   ++cachedRows_;
 }
 
@@ -1519,9 +1530,20 @@ bool DrawingViewer::FromCache(std::uint64_t until) noexcept {
         return false;
       }
       cacheBytes_ += kept.size();
+      // In black and white, each gray black.
+      const unsigned bits = draw::PictureCache::BitsFor(key_.levels);
+      const unsigned top = key_.levels - 1U;
       for (std::size_t row = first; row < last; ++row) {
-        CopyPixels(kept.subspan((row - first) * keptBytes, keptBytes), 0,
-                   band.subspan((row - bandTop_) * rowBytes, rowBytes), cacheX_, key_.width);
+        const std::span<const std::uint8_t> one = kept.subspan((row - first) * keptBytes, keptBytes);
+        const std::span<std::uint8_t> out = band.subspan((row - bandTop_) * rowBytes, rowBytes);
+        for (std::size_t x = 0; x < key_.width; ++x) {
+          const unsigned level = KeptLevel(one, x, bits);
+          graysSeen_ = graysSeen_ || (level != 0 && level != top);
+          if (level != top) {
+            const std::size_t at = cacheX_ + x;
+            out[at / 8] = static_cast<std::uint8_t>(out[at / 8] & ~(0x80U >> (at % 8)));
+          }
+        }
       }
     }
     const std::uint64_t writing = clock_.NowUs();
@@ -1591,7 +1613,7 @@ bool DrawingViewer::PictureFromCache(std::uint64_t until) noexcept {
 }
 
 bool DrawingViewer::GraysWanted() noexcept {
-  if (!picture_ || pictureLevels_ != 4 || !graysSeen_) {
+  if (levels_ != 4 || !graysSeen_) {
     return false;
   }
   // Its grays are read back from the cache.
@@ -1612,7 +1634,7 @@ bool DrawingViewer::StartGrays() noexcept {
   }
   bandTop_ = 0;
   ResetStrips();
-  stripGrays_ = true;
+  stripGrays_ = picture_;
   phase_ = Phase::kGraying;
   phaseStartedUs_ = clock_.NowUs();
   return true;
@@ -1664,6 +1686,59 @@ bool DrawingViewer::GrayStrips(std::uint64_t until) noexcept {
   }
 }
 
+bool DrawingViewer::GrayBands(std::uint64_t until) noexcept {
+  const core::DisplaySize size = display_.Size();
+  const std::size_t rowBytes = size.RowBytes();
+  const std::size_t keptBytes = draw::PictureCache::RowBytesFor(key_);
+  const unsigned bits = draw::PictureCache::BitsFor(key_.levels);
+  for (;;) {
+    if (bandTop_ >= size.height) {
+      cache_.Close();
+      return true;
+    }
+    // A band of the panel, ending where the rows of the drawing read at
+    // once do; the rows outside the drawing mark nothing.
+    std::size_t rows = std::min<std::size_t>(kBandRows, size.height - bandTop_);
+    const std::size_t first = std::max(bandTop_, cacheY_);
+    std::size_t keptRows = 0;
+    if (first < std::min(bandTop_ + rows, cacheY_ + key_.height)) {
+      keptRows = std::min(std::min(bandTop_ + rows, cacheY_ + key_.height) - first,
+                          cacheRowsBytes_ / std::max<std::size_t>(keptBytes, 1));
+      rows = (first - bandTop_) + keptRows;
+      if (cache_.ReadRows(std::span(cacheRows_.get(), keptRows * keptBytes)) != draw::PictureCacheStatus::kOk) {
+        cache_.Close();
+        WithoutGrays("it could not be read back from the cache", clock_.NowUs());
+        return false;
+      }
+    }
+    // In the new-image plane the dark grays, in the old every gray.
+    for (const core::DisplayPlane plane : {core::DisplayPlane::kNew, core::DisplayPlane::kOld}) {
+      const std::span<std::uint8_t> band(bits_.get(), rows * rowBytes);
+      std::fill(band.begin(), band.end(), std::uint8_t{0});
+      for (std::size_t row = 0; row < keptRows; ++row) {
+        const std::span<const std::uint8_t> one(cacheRows_.get() + (row * keptBytes), keptBytes);
+        const std::span<std::uint8_t> out = band.subspan((first - bandTop_ + row) * rowBytes, rowBytes);
+        for (std::size_t x = 0; x < key_.width; ++x) {
+          const unsigned level = KeptLevel(one, x, bits);
+          if (level == 1 || (level == 2 && plane == core::DisplayPlane::kOld)) {
+            const std::size_t at = cacheX_ + x;
+            out[at / 8] = static_cast<std::uint8_t>(out[at / 8] | (0x80U >> (at % 8)));
+          }
+        }
+      }
+      if (!display_.WriteRows(plane, static_cast<std::uint16_t>(bandTop_), band)) {
+        cache_.Close();
+        WithoutGrays("the panel would not take its planes", clock_.NowUs());
+        return false;
+      }
+    }
+    bandTop_ += rows;
+    if (clock_.NowUs() >= until) {
+      return false;
+    }
+  }
+}
+
 void DrawingViewer::WithoutGrays(const char* why, std::uint64_t now) noexcept {
   grayNote_ = why;
   // The voltages were kept up for the gray pass.
@@ -1688,12 +1763,11 @@ void DrawingViewer::DrawInstead(draw::PictureCacheStatus read) noexcept {
   }
 }
 
-void DrawingViewer::CacheRows(std::span<const std::uint8_t> panelRows, std::size_t firstRow,
-                              std::size_t rows) noexcept {
+void DrawingViewer::CacheRows(std::span<const std::uint8_t> grays, std::size_t firstRow, std::size_t rows) noexcept {
   if (!caching_) {
     return;
   }
-  const std::size_t rowBytes = display_.Size().RowBytes();
+  const std::size_t width = display_.Size().width;
   const std::size_t keptBytes = draw::PictureCache::RowBytesFor(key_);
   const std::size_t first = std::max(firstRow, cacheY_);
   const std::size_t last = std::min(firstRow + rows, cacheY_ + key_.height);
@@ -1702,10 +1776,10 @@ void DrawingViewer::CacheRows(std::span<const std::uint8_t> panelRows, std::size
   }
   const std::uint64_t started = clock_.NowUs();
   const std::span<std::uint8_t> kept(cacheRows_.get(), (last - first) * keptBytes);
-  std::fill(kept.begin(), kept.end(), std::uint8_t{0});
   for (std::size_t row = first; row < last; ++row) {
-    CopyPixels(panelRows.subspan((row - firstRow) * rowBytes, rowBytes), cacheX_,
-               kept.subspan((row - first) * keptBytes, keptBytes), 0, key_.width);
+    PackLevels(grays.subspan(((row - firstRow) * width) + cacheX_, key_.width),
+               draw::PictureCache::BitsFor(key_.levels), key_.levels - 1U,
+               kept.subspan((row - first) * keptBytes, keptBytes));
   }
   const draw::PictureCacheStatus written = cache_.WriteRows(kept);
   cacheUs_ += clock_.NowUs() - started;

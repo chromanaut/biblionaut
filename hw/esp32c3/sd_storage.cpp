@@ -57,11 +57,43 @@ constexpr std::size_t kMaxMapped = 4;
 // cost that read at every opening for nothing.
 constexpr std::uint32_t kMapFromClusters = 128;
 
+// A card's sector, which is what it is read and written in.
+constexpr std::size_t kSectorBytes = 512;
+
+// How many bytes of a read or a write of `size` bytes at `offset` in a
+// file, into or out of `memory`, the card's driver moves by way of a block
+// it takes from the heap for the purpose and gives back after.
+//
+// FatFS moves the part of a sector at either end through a sector of its
+// own, and hands the driver the whole sectors between, at their place in
+// the caller's memory. The driver goes straight between the card and
+// memory that begins at a multiple of four. Anything else it copies
+// through a block of its own, as large as the sectors if the heap has one.
+// So it is the whole sectors that count, and where in memory the first of
+// them falls: a read or write that begins where a sector does, with memory
+// that begins at a multiple of four, never costs this.
+std::uint32_t CopiedByTheDriver(std::uint32_t offset, std::size_t size, const void* memory) noexcept {
+  const std::size_t before = (kSectorBytes - (offset % kSectorBytes)) % kSectorBytes;
+  if (size < before + kSectorBytes) {
+    return 0;  // No whole sector in it.
+  }
+  if ((reinterpret_cast<std::uintptr_t>(memory) + before) % 4 == 0) {
+    return 0;
+  }
+  return static_cast<std::uint32_t>(((size - before) / kSectorBytes) * kSectorBytes);
+}
+
 // Files given a map, files in too many pieces to have one, files that
 // went without because every map was in use, and how many numbers the map
 // of each file needed: the most is the room that would have done for all
 // of them. And the size of the card's clusters.
 core::Counter sdMaps{"sd_maps"};
+// Reads and writes that the card's driver could not make straight between
+// the card and the caller's memory, and the bytes of the last such (so the
+// most of any, as a gauge keeps it): see CopiedByTheDriver().
+core::Counter sdReadsCopied{"sd_reads_copied"};
+core::Counter sdWritesCopied{"sd_writes_copied"};
+core::Gauge sdCopiedBytes{"sd_copied_bytes"};
 core::Counter sdMapsRefused{"sd_maps_refused"};
 core::Counter sdMapsNoneFree{"sd_maps_none_free"};
 core::Gauge sdMapItems{"sd_map_items"};
@@ -195,6 +227,10 @@ class SdCardStorage final : public core::Storage {
     }
     UINT count = 0;
     if (result == FR_OK) {
+      if (const std::uint32_t copied = CopiedByTheDriver(offset, dst.size(), dst.data()); copied != 0) {
+        sdReadsCopied.Add();
+        sdCopiedBytes.Set(copied);
+      }
       result = f_read(&found->file, dst.data(), static_cast<UINT>(dst.size()), &count);
     }
     read = count;
@@ -218,6 +254,10 @@ class SdCardStorage final : public core::Storage {
     }
     UINT count = 0;
     if (result == FR_OK) {
+      if (const std::uint32_t copied = CopiedByTheDriver(offset, src.size(), src.data()); copied != 0) {
+        sdWritesCopied.Add();
+        sdCopiedBytes.Set(copied);
+      }
       result = f_write(&found->file, src.data(), static_cast<UINT>(src.size()), &count);
     }
     if (result != FR_OK) {

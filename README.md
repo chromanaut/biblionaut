@@ -4189,7 +4189,15 @@ its blocks: the 8 or 16 rows of pixels that are made at once.
   each way (`JpegReduction`), for less work and less memory. Each pixel is
   then the average of those it stands for in the block at its whole size,
   worked out from the block's frequencies in one transform; at an eighth
-  that is the block's average alone. `ReductionFor()` gives the most a
+  that is the block's average alone. The transform is a product of the
+  block with a table of cosines, down and then across, and each row of the
+  table reads the same from either end but for its sign; so a pixel and
+  the one opposite it in its row or column are made from the same
+  products, which halves the multiplying and changes no number. On the
+  X4 the 11 JPEGs of the card's set are read 4 to 13% sooner for it, the
+  small ones read whole the most: 12.1 s for them all where multiplying
+  the whole table out took 12.7 s.
+  `ReductionFor()` gives the most a
   picture can be made smaller as it is read and still be as large as it is
   shown, and the scaler does the rest. Shown on the X4's page, 480 by 800,
   the rows of every JPEG in the library and the public books fit in 16 KB
@@ -4292,7 +4300,11 @@ every kind the reader reads, and set what it gives beside what those
 coefficients come to in real numbers: T.81's inverse transform a pixel at
 a time, and at a half and a quarter the average of the whole block's
 pixels (`tests/support/jpeg_builder.h`); within a gray, and at an eighth
-exactly. Then pictures of each kind it refuses, and pictures spoiled in
+exactly. One test holds every pixel, at the whole size, a half and a
+quarter, to the number that multiplying the block by the whole of a table
+comes to, in whole numbers rounded as the reader rounds them, with tables
+the test makes from the cosines for itself. Then pictures of each kind it
+refuses, and pictures spoiled in
 each way it looks for, every step held to its bound. An end-to-end test
 (`tests/e2e/jpeg_tool.py`) compares `bn-jpeg` with a second reading of the
 same files in Python, of pictures made up at random by an encoder of its
@@ -4318,9 +4330,10 @@ target's inputs and the end-to-end test found 15. A 16th, a step that
 decoded a unit more than it says, they found only once a test was written
 for it: the bound on what a step takes is for the worst a file can be, far
 past what any picture is. The other two move pixels by less than a gray,
-which a comparison of 8-bit pixels cannot tell from rounding: the first
+which a comparison within a gray cannot tell from rounding: the first
 direction of the transform not rounded, and one number of the table for a
-half 10 in 4,096 off.
+half 10 in 4,096 off. The test of the whole product, written since, finds
+both.
 
 ### Scaling
 

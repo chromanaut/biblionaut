@@ -95,6 +95,23 @@ HyphenStatus Hyphenator::Open(std::span<const std::uint8_t> table) noexcept {
   rightMin_ = right;
   deepest_ = deepest;
   widest_ = widest;
+  // Which letter each character below 128 is: found here by the same
+  // halving that finds any other, so that it is the same answer.
+  for (std::uint32_t codePoint = 0; codePoint < plain_.size(); ++codePoint) {
+    plain_[codePoint] = LetterOf(codePoint);
+  }
+  // And which edge of the first state is taken on each letter: the first
+  // of that letter, among as many edges as FindIn() would look through.
+  first_.fill(0);
+  for (std::size_t n = 0; n < widest_ && n < edges; ++n) {
+    const std::size_t at = n * kEdgeBytes;
+    if (first_[edges_[at]] == 0) {
+      first_[edges_[at]] = static_cast<std::uint8_t>(n + 1);
+    }
+    if ((Read16(edges_, at + 3) & kLastEdge) != 0) {
+      break;
+    }
+  }
   status_ = HyphenStatus::kOk;
   return status_;
 }
@@ -135,6 +152,12 @@ std::size_t Hyphenator::Find(std::string_view word, std::span<std::uint8_t> plac
   if (status_ != HyphenStatus::kOk) {
     return 0;
   }
+  // A word with fewer bytes than a break needs letters about it has none
+  // to give, whatever its characters are: half the words of a page, sent
+  // back before any of them is looked at.
+  if (word.size() < std::size_t{leftMin_} + rightMin_) {
+    return 0;
+  }
   // The word's characters, each as the letter it is.
   std::size_t letters = 0;
   for (std::size_t at = 0; at < word.size();) {
@@ -142,7 +165,11 @@ std::size_t Hyphenator::Find(std::string_view word, std::span<std::uint8_t> plac
       return 0;  // Too long a word to look at.
     }
     const core::Character one = core::CharacterAt(word, at);
-    symbols_[letters] = one.good ? LetterOf(one.codePoint) : kNoLetter;
+    std::uint8_t letter = kNoLetter;
+    if (one.good) {
+      letter = one.codePoint < plain_.size() ? plain_[one.codePoint] : LetterOf(one.codePoint);
+    }
+    symbols_[letters] = letter;
     offsets_[letters] = static_cast<std::uint8_t>(at);
     ++letters;
     at += one.bytes;
@@ -188,26 +215,36 @@ std::size_t Hyphenator::FindIn(std::size_t first, std::size_t end, std::span<std
     const std::size_t reach = std::min<std::size_t>(symbols - from, deepest_);
     for (std::size_t step = 0; step < reach; ++step) {
       const std::uint8_t wanted = symbolAt(from + step);
+      // The edge taken on that letter: its bytes begin at `taken`.
       bool found = false;
-      std::uint32_t next = kNoNext;
-      std::uint32_t value = 0;
-      for (std::size_t n = 0; n < widest_ && state + n < edgeCount; ++n) {
+      std::size_t taken = 0;
+      if (state == 0) {
+        // The first state, where every start begins and where there is an
+        // edge for nearly every letter: noted when the table was opened.
         ++work_;
-        const std::size_t at = (state + n) * kEdgeBytes;
-        const std::uint32_t valueAndLast = Read16(edges_, at + 3);
-        if (edges_[at] == wanted) {
+        if (first_[wanted] != 0) {
           found = true;
-          next = Read16(edges_, at + 1);
-          value = valueAndLast & kValueMask;
-          break;
+          taken = (std::size_t{first_[wanted]} - 1) * kEdgeBytes;
         }
-        if ((valueAndLast & kLastEdge) != 0) {
-          break;
+      } else {
+        for (std::size_t n = 0; n < widest_ && state + n < edgeCount; ++n) {
+          ++work_;
+          const std::size_t at = (state + n) * kEdgeBytes;
+          if (edges_[at] == wanted) {
+            found = true;
+            taken = at;
+            break;
+          }
+          if ((edges_[at + 4] & (kLastEdge >> 8U)) != 0) {
+            break;
+          }
         }
       }
       if (!found) {
         break;
       }
+      const std::uint32_t next = Read16(edges_, taken + 1);
+      const std::uint32_t value = Read16(edges_, taken + 3) & kValueMask;
       if (value != 0) {
         Apply(static_cast<std::uint16_t>(value), from, step + 1, levels);
       }

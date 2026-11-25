@@ -50,6 +50,10 @@
 //     value     (2)   bit 15: this is the last edge of its state. The rest:
 //                     0 if no pattern ends with this edge; otherwise one
 //                     more than where its numbers begin among the values
+//   A state's edges are gone through in order, as far as the one marked
+//   last and no further than `widest` of them, and the first that is on
+//   the letter wanted is the one taken: so it is for a table whose states
+//   are not what bn-hyphen would write, in the first state as in any other.
 //   the values. A pattern's numbers, left out where they are nothing:
 //     count           how many there are
 //     count times:
@@ -86,7 +90,10 @@ class Hyphenator final {
 
   // Takes `table` as the language's patterns. Its bytes are used where they
   // lie, and have to stay there for as long as words are asked about. Goes
-  // over the letter list once, and nothing else of the table.
+  // over the letter list once and the edges of the first state, and
+  // nothing else of the table: it notes which letter each character below
+  // 128 is, and which edge of the first state is taken on each letter,
+  // since those are asked at every letter of every word.
   [[nodiscard]] HyphenStatus Open(std::span<const std::uint8_t> table) noexcept;
 
   HyphenStatus Status() const noexcept { return status_; }
@@ -113,8 +120,10 @@ class Hyphenator final {
   // word. A word is gone through from each of its letters, and from each
   // end of each stretch of letters; from each, no further than the longest
   // pattern; and at each step, over no more edges than leave one state, and
-  // no more numbers than a pattern has places. Finding which letter a
-  // character is takes ten steps at the most, and is not counted.
+  // no more numbers than a pattern has places. (The first state's edge is
+  // found at one look, having been noted when the table was opened.)
+  // Finding which letter a character is takes ten steps at the most, and
+  // is not counted.
   std::uint32_t MostWorkFor(std::size_t letters) const noexcept;
   // The work the last Find() did, counted the same way.
   std::uint32_t LastWork() const noexcept { return work_; }
@@ -143,6 +152,11 @@ class Hyphenator final {
   // bytes of the word come before it.
   std::array<std::uint8_t, kMaxLetters> symbols_{};
   std::array<std::uint8_t, kMaxLetters + 1> offsets_{};
+  // Noted from the table when it is opened. Which letter each character
+  // below 128 is, as LetterOf() finds it; and for each letter, one more
+  // than which edge of the first state is taken on it, 0 if none is.
+  std::array<std::uint8_t, 128> plain_{};
+  std::array<std::uint8_t, 256> first_{};
 };
 
 }  // namespace bn::layout

@@ -2282,7 +2282,7 @@ call may.
 | `css_rules` | `epub::CssRules` and `epub::CssCascade`: up to four sheets into a table of one of four sizes, a document gone through with a cascade that has one of four amounts of memory, the table taken back to before its last sheet, and the document gone through again | The table stays inside its memory. If it left no rule out, every element and every first letter is given exactly what a plain working-out of the same rules gives it (`tests/support/css_reference.h`). No element takes more work than `MostWorkFor()` says. A table taken back is the size it was and says of the document what a table never told of the last sheet says; and it takes the sheet again to the same end. |
 | `document_sheets` | `epub::DocumentSheets`: a book of up to eight files held in memory, with one of four amounts of memory for the sheets' names, for a document's `<style>` text and for the table, read in pieces of one of four sizes, one file failing part way; the sheets of each document found, every other one handed over open, the first given up part way and begun again, and the first found again at the end | Every document ends with a list. A step opens one file at the most or reads `kMostBytesPerStep` of the book at the most, and never both. A list has no sheet twice, and every sheet in it is in the table and, but for the document's own, is a file of the book. The table has the sheets that were read and no others. What is said to be left out is what the counts come to. Until something is left out for want of room, the list and the counts are those of a plain working-out (`tests/support/sheets_reference.h`), and where the table kept every rule it was given, the document's own rules are as many as its `<style>` texts come to, each read to its own end. A document found again has the same list, and nothing is opened for it but itself. No file but a document is opened twice for the book, the sheet in hand when a document was given up apart. The digest of what the documents were given (`epub/sheets_digest.h`) counts what was found, and is the checksum of the lines the plain working-out comes to |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
-| `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
+| `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory, in a hyphenator that had another table open before it, answers the same. With a table, the places are the ones the target finds by reading the table an edge at a time. With patterns, they are the ones found by laying every pattern over every place in the word |
 | `paragraph` | `layout::ParagraphSetter`, with a paragraph's text in runs of up to seven styles and line ends asked for, on lines from 1 wide to 30,000, measured four ways | A paragraph is done with in a number of calls that depends only on its length. No call does more than `MostWorkFor()` allows, gives the breaker more than one item, asks the hyphenator about more than one word, or has more than a word's worth of bytes measured. The lines hold all the text once and in order. Each is as wide as its text adds up to and has the places between words it says; one is only too wide for a single character that is. The measure is never given a soft hyphen, nor a piece that begins inside a character. The lines are the same when the text is offered all at once |
 | `svg_tags` | `draw::SvgTagReader`, twice: whole, and cut up, with the ends of the pieces it gives handed back to it | A call takes a byte or tells something. Things are told in an order tags can have, and `Depth()` is how many elements were opened and not closed. Each tag is in the file where `TagOffset()` says it began. No more bytes are told of than were taken, and what an entity stands for is one character. Once reading has failed nothing more is told. Both readings tell the same things |
 | `svg_sheet` | `draw::SvgSheetReader`, twice: the sheet whole, and cut into pieces of one of eight sizes | A call takes a byte or tells something. A rule is told as its selectors, what it sets and its end, in that order. A selector is a class or an element's name made of what a name may be made of; a property's name is in small letters with no space; neither is longer than it may be, nor a value. Both readings tell the same things and say the same of what they dropped |
@@ -2433,9 +2433,23 @@ allow a break and a longer one forbid it again.
   than the longest pattern, no more edges at a step than the widest state
   has (`Hyphenator::MostWorkFor`). With the American English table that is
   81,915 edges and numbers for a word of 63 letters. Over the 235,976
-  words of a dictionary, the most any one took was 940, and they took 325
+  words of a dictionary, the most any one took was 633, and they took 214
   each on average.
-- **Flash**: 1.6 KB, as compiled for the device, without a table.
+- **What is noted of a table** when it is opened, 384 bytes in the
+  object: which letter each character below 128 is, and which edge leaves
+  the first state on each letter. Every start in a word begins at the
+  first state, which has an edge for nearly every letter (27 in English),
+  so finding the one wanted there was a third of all the looking over
+  that dictionary. And a
+  word of fewer bytes than a break needs letters about it is sent back
+  before it is read: 47% of the words of the Project Gutenberg books in
+  `corpus/` are such. What a table says is not changed by any of it: the
+  first state's edges are noted in the order they would be gone through.
+  On the X4, setting the text of 34 books with the words hyphenated
+  took 159 s, and 100 s with none: 18 µs for each of the 3.3 million
+  words asked about. Going through the first state's edges and looking
+  every character up in the letter list, it was 187 s, 26 µs a word.
+- **Flash**: 1.8 KB, as compiled for the device, without a table.
 
 `bn-hyphen` makes a table and breaks words with one:
 
@@ -2479,7 +2493,13 @@ Its tests write tables of their own, the plain way and with nothing
 shared, and compare the places found with laying every pattern over every
 place: 300 made-up sets of patterns, 60 words each. A table with any one
 byte changed, and tables of bytes that are no table at all, have to be
-answered within the work they state and without a read outside them. The
+answered within the work they state and without a read outside them. A
+table whose first state is not what `bn-hyphen` would write (two edges on
+one letter, no edge marked last, more edges than the table says a state
+has, bytes changed anywhere among its edges) is held to a second reading
+of it, an edge at a time (`tests/support/hyphen_patterns.h`), in some
+three thousand such tables; and a table opened on a hyphenator that had
+another open to nothing being left of the first. The
 tables `bn-hyphen` makes are checked the same way, against the plain ones
 too. And an end-to-end test (`tests/e2e/hyphen_tool.py`) sets `bn-hyphen`
 beside a second way of breaking the same words that shares none of its
@@ -2722,23 +2742,23 @@ What it finds goes out as log text. Over the text of the 28 books in
 the card, so the one built in):
 
 ```
-layout check: the made-up face alone, 65536 bytes in 509 us (125736 KB/s).
-layout check: breaker, 64 nodes: the dearest call 8 us, 2146 of 3328 work; 388 calls in 33 us.
-layout check: breaker, 256 nodes: the dearest call 78 us, 33154 of 37888 work; 1540 calls in 338 us.
-layout check: breaker, 1024 nodes: the dearest call 1112 us, 525826 of 544768 work; 6148 calls in 4533 us.
+layout check: the made-up face alone, 65536 bytes in 449 us (142538 KB/s).
+layout check: breaker, 64 nodes: the dearest call 6 us, 2146 of 3328 work; 388 calls in 28 us.
+layout check: breaker, 256 nodes: the dearest call 63 us, 33154 of 37888 work; 1540 calls in 279 us.
+layout check: breaker, 1024 nodes: the dearest call 912 us, 525826 of 544768 work; 6148 calls in 3789 us.
 layout check: no table at /layout/hyphenation.bnhy (not found): the built-in table, 38049 bytes; no break before 2 letters or after 3 letters.
-layout check: setter, awkward text: the dearest call 32 us, the most work 504 of 1533, the breaker's 11361 of 37888; 35666 calls in 5730 us.
-layout check: hyphenator, 8 long words: the dearest 146 us for 64 (2281 ns a word), 2083 of 81915 work.
+layout check: setter, awkward text: the dearest call 28 us, the most work 504 of 1533, the breaker's 11361 of 37888; 35666 calls in 5080 us.
+layout check: hyphenator, 8 long words: the dearest 109 us for 64 (1703 ns a word), 1653 of 81915 work.
 layout check: text: 17350039 bytes in /layout/paragraphs.txt.
 layout check: hyphenated: 50313 paragraphs, 17233557 bytes, 329876 lines (30747 with a hyphen, 0 too wide); checksum 8ee4f78b.
-layout check: hyphenated: setting 1272 ms (13230 KB/s), 115 us for 30 lines; the face about 114 ms of it; card 6 ms.
-layout check: hyphenated: the longest paragraph 2027 us, 141354 bytes in 1585 lines; the most work in a call: setter 494, breaker 3242, hyphenator 1638.
+layout check: hyphenated: setting 873 ms (19258 KB/s), 79 us for 30 lines; the face about 100 ms of it; card 5 ms.
+layout check: hyphenated: the longest paragraph 1750 us, 141354 bytes in 1585 lines; the most work in a call: setter 494, breaker 3242, hyphenator 1064.
 layout check: hyphenated: 2435592 words asked about, 104 last resort, 76811 lines early in 2397, 0 cut short; 256 nodes; 14704031 bytes measured.
 layout check: hyphenated: 13872034 calls.
 ...
-layout check: hyphenated, every call timed: 13872034 calls, the longest 57 us.
+layout check: hyphenated, every call timed: 50313 paragraphs, 17233557 bytes, 329876 lines (30747 with a hyphen, 0 too wide); checksum 8ee4f78b.
 layout check: passed.
-layout check: the longest step: 1146 us, breaking the dearest paragraph.
+layout check: the longest step: 939 us, breaking the dearest paragraph.
 ```
 
 The lines for each setting say what it came to, with the checksum of its

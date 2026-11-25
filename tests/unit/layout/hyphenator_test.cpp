@@ -381,6 +381,134 @@ TEST(Hyphenator, AgreesWithLayingEveryPatternOverEveryPlace) {
   EXPECT_GT(placesInAll, 10000U);
 }
 
+// Where `table` lets `word` be broken, by reading the table an edge at a
+// time. `word` is small letters and nothing else, which are the letters 1 to
+// 26, and the table is one that opens.
+std::vector<std::size_t> PlacesByReadingTheTable(const Table& table, std::string_view word) {
+  std::vector<std::uint8_t> letters;
+  for (const char letter : word) {
+    letters.push_back(static_cast<std::uint8_t>(letter - 'a' + 1));
+  }
+  return bn::test::PlacesByReadingTable(table, letters);
+}
+
+TEST(Hyphenator, ReadsItsFirstStateAsItReadsEveryOther) {
+  // Every start in a word begins at the first state, which is why what
+  // that state holds is noted when a table is opened. It has to come to
+  // what going through its edges comes to, in a table whose first state is
+  // not what bn-hyphen would write as much as in one that is: two edges on
+  // one letter, no edge marked last, more edges than the table says a
+  // state has; and with bytes changed anywhere among the edges.
+  Dice dice(29);
+  Patterns patterns = kHyphenation;
+  for (int i = 0; i < 60; ++i) {
+    patterns.push_back(MadeUpPattern(dice, 5));
+  }
+  const Table good = PlainHyphenTable(patterns, 1, 1);
+  const std::size_t edges = kHeaderBytes + ((std::size_t{good[8]} | (std::size_t{good[9]} << 8U)) * kListedBytes);
+  const std::size_t edgeCount = std::size_t{good[10]} | (std::size_t{good[11]} << 8U);
+  // How many edges the first state has.
+  std::size_t first = 1;
+  while ((good[edges + ((first - 1) * 5) + 4] & 0x80U) == 0) {
+    ++first;
+  }
+  ASSERT_GE(first, 5U);
+  ASSERT_GT(edgeCount, first + 8);
+
+  std::vector<Table> tables = {good};
+  // Two edges of the first state on one letter.
+  for (std::size_t one = 0; one < first; ++one) {
+    for (std::size_t other = 0; other < first; ++other) {
+      if (one != other) {
+        Table spoiled = good;
+        spoiled[edges + (other * 5)] = good[edges + (one * 5)];
+        tables.push_back(spoiled);
+      }
+    }
+  }
+  // No edge of it marked last, and a state said to have more edges or
+  // fewer than it has.
+  for (int widest = 1; widest <= 40; ++widest) {
+    Table spoiled = good;
+    spoiled[14] = static_cast<std::uint8_t>(widest);
+    tables.push_back(spoiled);
+    spoiled[edges + ((first - 1) * 5) + 4] &= 0x7FU;
+    tables.push_back(spoiled);
+  }
+  // And bytes changed anywhere among the edges, the first state's above all.
+  for (int round = 0; round < 3000; ++round) {
+    Table spoiled = good;
+    const std::uint32_t changes = dice.Between(1, 3);
+    for (std::uint32_t change = 0; change < changes; ++change) {
+      const std::size_t at = edges + (dice.Below(2) == 0 ? dice.Below(static_cast<std::uint32_t>(first * 5))
+                                                         : dice.Below(static_cast<std::uint32_t>(edgeCount * 5)));
+      spoiled[at] = dice.Below(2) == 0 ? static_cast<std::uint8_t>(dice.Below(8))
+                                       : static_cast<std::uint8_t>(spoiled[at] ^ (1U << dice.Below(8)));
+    }
+    if (dice.Below(4) == 0) {
+      spoiled[14] = static_cast<std::uint8_t>(dice.Between(1, 60));
+    }
+    tables.push_back(spoiled);
+  }
+
+  std::size_t placesInAll = 0;
+  std::size_t otherThanTheGoodTables = 0;
+  for (std::size_t which = 0; which < tables.size(); ++which) {
+    Hyphenator hyphenator;
+    ASSERT_EQ(hyphenator.Open(tables[which]), HyphenStatus::kOk) << "table " << which;
+    Hyphenator untouched;
+    ASSERT_EQ(untouched.Open(good), HyphenStatus::kOk);
+    for (int n = 0; n < 30; ++n) {
+      const std::string word = n == 0 ? "hyphenation" : MadeUpWord(dice, dice.Between(1, 30), 5);
+      const std::vector<std::size_t> places = PlacesByTable(hyphenator, word);
+      ASSERT_EQ(places, PlacesByReadingTheTable(tables[which], word)) << "table " << which << ", " << word;
+      ASSERT_LE(hyphenator.LastWork(), hyphenator.MostWorkFor(word.size())) << "table " << which << ", " << word;
+      placesInAll += places.size();
+      otherThanTheGoodTables += places != PlacesByTable(untouched, word) ? 1 : 0;
+    }
+  }
+  EXPECT_GT(placesInAll, 10000U);
+  // The changes are ones that matter to where words are broken.
+  EXPECT_GT(otherThanTheGoodTables, 1000U);
+}
+
+TEST(Hyphenator, TakesAnotherTableWithNothingLeftOfTheOneBefore) {
+  // What is noted of a table when it is opened is that table's alone. A
+  // table with an edge from its first state for every letter, then one
+  // with an edge for a single letter, and so with far fewer edges than the
+  // first one's noted ones would point at; and then the first again.
+  Dice dice(41);
+  Patterns many = kHyphenation;
+  for (int i = 0; i < 80; ++i) {
+    many.push_back(MadeUpPattern(dice, 5));
+  }
+  const Patterns few = {"1b"};
+  const Table manyTable = PlainHyphenTable(many, 1, 1);
+  // On the heap and exactly as long as the table, so that a read past its
+  // end is caught.
+  const Table fewTable = PlainHyphenTable(few, 1, 1);
+  ASSERT_LT(fewTable.size(), manyTable.size());
+
+  Hyphenator hyphenator;
+  ASSERT_EQ(hyphenator.Open(manyTable), HyphenStatus::kOk);
+  EXPECT_EQ(PlacesByTable(hyphenator, "hyphenation"), PlacesByHand(many, "hyphenation", 1, 1));
+  ASSERT_EQ(hyphenator.Open(fewTable), HyphenStatus::kOk);
+  for (int n = 0; n < 200; ++n) {
+    const std::string word = MadeUpWord(dice, dice.Between(1, 30), 5);
+    ASSERT_EQ(PlacesByTable(hyphenator, word), PlacesByHand(few, word, 1, 1)) << word;
+  }
+  ASSERT_EQ(hyphenator.Open(manyTable), HyphenStatus::kOk);
+  for (int n = 0; n < 200; ++n) {
+    const std::string word = MadeUpWord(dice, dice.Between(1, 30), 5);
+    ASSERT_EQ(PlacesByTable(hyphenator, word), PlacesByHand(many, word, 1, 1)) << word;
+  }
+  // And a table that is refused leaves nothing of the one before either.
+  Table refused = manyTable;
+  refused[4] ^= 0xFFU;
+  ASSERT_EQ(hyphenator.Open(refused), HyphenStatus::kBadTable);
+  EXPECT_TRUE(PlacesByTable(hyphenator, "hyphenation").empty());
+}
+
 TEST(Hyphenator, DoesNoMoreWorkThanItSaysItWill) {
   // Patterns made to cost a word the most: every run of the letter a, up to
   // the longest a table lets a pattern be, each with a number at every

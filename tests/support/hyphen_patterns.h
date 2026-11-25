@@ -195,6 +195,80 @@ inline std::vector<std::uint8_t> PlainHyphenTable(const std::vector<std::string>
   return table;
 }
 
+// Where a table lets a stretch of letters be broken, found by reading the
+// table the plain way, as layout/hyphenator.h lays it out: from every place
+// in the stretch, and from the mark at each end of it, down the states for
+// as long as there are letters to follow; every state gone through an edge
+// at a time from its first, as far as the one marked last and no further
+// than the table says a state is wide, the first edge on the letter wanted
+// being the one taken. `letters` are the letters the table gives the
+// stretch's characters, and the places are how many of them come before
+// each break. The table has to be one that opens; nothing outside it is
+// read, whatever its edges and values are.
+inline std::vector<std::size_t> PlacesByReadingTable(std::span<const std::uint8_t> table,
+                                                     std::span<const std::uint8_t> letters) {
+  const auto number16 = [&](std::size_t at) { return std::uint32_t{table[at]} | (std::uint32_t{table[at + 1]} << 8U); };
+  const std::size_t leftMin = table[5];
+  const std::size_t rightMin = table[6];
+  const std::size_t deepest = table[7];
+  const std::size_t edgeCount = number16(10);
+  const std::size_t valueCount = number16(12);
+  const std::size_t widest = table[14];
+  const std::size_t edges = 16 + (number16(8) * 4);
+  const std::size_t values = edges + (edgeCount * 5);
+
+  std::vector<std::uint8_t> symbols = {0};
+  symbols.insert(symbols.end(), letters.begin(), letters.end());
+  symbols.push_back(0);
+  std::vector<std::uint8_t> levels(symbols.size() + 1, 0);
+  for (std::size_t from = 0; from < symbols.size(); ++from) {
+    std::size_t state = 0;
+    for (std::size_t step = 0; step < std::min(symbols.size() - from, deepest); ++step) {
+      std::size_t taken = edgeCount;
+      for (std::size_t n = 0; n < widest && state + n < edgeCount; ++n) {
+        const std::size_t at = edges + ((state + n) * 5);
+        if (table[at] == symbols[from + step]) {
+          taken = state + n;
+          break;
+        }
+        if ((number16(at + 3) & 0x8000U) != 0) {
+          break;
+        }
+      }
+      if (taken == edgeCount) {
+        break;
+      }
+      const std::size_t at = edges + (taken * 5);
+      // The numbers of the pattern that ends here, if they are among the
+      // values and no more than a pattern has places.
+      const std::size_t value = number16(at + 3) & 0x7FFFU;
+      if (value != 0 && value - 1 < valueCount) {
+        const std::size_t count = table[values + value - 1];
+        if (count <= deepest + 1 && valueCount - value >= count * 2) {
+          for (std::size_t i = 0; i < count; ++i) {
+            const std::size_t back = table[values + value + (2 * i)];
+            const std::uint8_t number = table[values + value + (2 * i) + 1];
+            if (back <= step + 1) {
+              levels[from + step + 1 - back] = std::max(levels[from + step + 1 - back], number);
+            }
+          }
+        }
+      }
+      if (number16(at + 1) == 0xFFFFU) {
+        break;
+      }
+      state = number16(at + 1);
+    }
+  }
+  std::vector<std::size_t> places;
+  for (std::size_t before = leftMin; before + rightMin <= letters.size(); ++before) {
+    if ((levels[before + 1] & 1U) != 0) {
+      places.push_back(before);
+    }
+  }
+  return places;
+}
+
 // Where an open table lets `word` be broken: how many bytes of the word
 // come before each break.
 inline std::vector<std::size_t> PlacesByTable(layout::Hyphenator& hyphenator, std::string_view word) {

@@ -672,6 +672,31 @@ def hyphenator_seeds() -> None:
     table("letters-of-several-bytes", 7, wider,
           "résumé\nÉTÉ\nλλλλ\nΛΛλλ\nStraße\n𐐨𐐨𐐨𐐀\nдддаДД\nété-λλλ".encode())
 
+    # Characters past the plain ones that the language has no letter for,
+    # each the same in its low seven bits as a letter it has: é as i, ï as
+    # o, ü as a capital of the kind, ā as a, and the long s as a word's end
+    # would be. With a break before every letter, one would come beside
+    # each if it were taken for that letter.
+    table("characters-past-the-plain-ones", 7, HyphenTable(["1a", "1e", "1i", "1o", "1u", "1n", "1v", "1r"], 1, 1),
+          "aéa\nnaïve\nüber\nrāna\noſo\nné\néé\nvoilà\n".encode())
+
+    # A first state that is not what would be written for it: two of its
+    # edges on one letter, of which the first is the one taken; and none
+    # marked last with fewer said to be in a state than it has, so that
+    # some of its letters cannot be reached.
+    twice = HyphenTable(PATTERNS, 1, 1)
+    twice.edges[3][0] = twice.edges[1][0]
+    twice.edges[6][0] = twice.edges[2][0]
+    table("two-edges-of-the-first-state-on-one-letter", 7, twice)
+    narrow = HyphenTable(PATTERNS, 1, 1)
+    narrow.widest = 4
+    table("a-first-state-wider-than-the-table-says", 7, narrow)
+    onward = HyphenTable(PATTERNS, 1, 1)
+    first_state = next(at for at, edge in enumerate(onward.edges) if edge[2] & 0x8000)
+    onward.edges[first_state][2] &= 0x7FFF
+    onward.widest = first_state + 6
+    table("a-first-state-that-runs-on-into-the-next", 7, onward)
+
     # Words with things in them that are not letters, and with bytes that
     # are not UTF-8: a character written in more bytes than it needs (a
     # stroke, and then a letter, where a break would otherwise come), a

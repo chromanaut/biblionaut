@@ -77,8 +77,15 @@ class OneFile final : public core::Storage {
       }
       read += static_cast<std::size_t>(got);
     }
+    ++reads_;
+    readBytes_ += read;
     return core::StorageStatus::kOk;
   }
+
+  // How many reads have been asked of it, and what they brought: what a
+  // device would count as reads of its card.
+  std::uint32_t Reads() const noexcept { return reads_; }
+  std::uint64_t ReadBytes() const noexcept { return readBytes_; }
 
   // Nothing here changes anything.
   [[nodiscard]] core::StorageStatus WriteAt(core::FileHandle /*file*/, std::uint32_t /*offset*/,
@@ -116,6 +123,8 @@ class OneFile final : public core::Storage {
   std::string path_;
   int descriptor_ = -1;
   std::uint32_t size_ = 0;
+  std::uint32_t reads_ = 0;
+  std::uint64_t readBytes_ = 0;
 };
 
 }  // namespace bn::tools

@@ -11,6 +11,7 @@
 #include "core/inflate.h"
 #include "core/storage.h"
 #include "core/trace_stream.h"
+#include "epub/document_sheets.h"
 #include "epub/package.h"
 #include "epub/toc.h"
 #include "epub/toc_digest.h"
@@ -33,9 +34,14 @@ namespace bn::reader {
 //      first opens it as a reader would: finds its directory, reads its
 //      package (epub/package.h), which says what the book is called and
 //      where its documents are, and then reads its table of contents
-//      (epub/toc.h). Then, before closing it again, reads a little at
-//      sixteen places far apart in the file, to and fro, which is what
-//      going to a place in a file costs on this card;
+//      (epub/toc.h). Then finds the style sheets each document of its
+//      spine asks for (epub/document_sheets.h), in reading order, opening
+//      each document from where the package says it is and reading its
+//      head: the sheets it links, those they import, and its own `<style>`
+//      rules, all into one table of the book's rules. Then, before closing
+//      it again, reads a little at sixteen places far apart in the file,
+//      to and fro, which is what going to a place in a file costs on this
+//      card;
 //   4. opens it afresh, reads every entry to its end, which checks the
 //      entry's size and checksum, and looks each entry up by its name;
 //   5. parses every entry with an XML file's name as it is read, counting
@@ -43,13 +49,15 @@ namespace bn::reader {
 //   6. says what each book came to, and all of them together, in lines of
 //      text on the diagnostic stream.
 //
-// Step 3 is what `bn-epub info` and `bn-epub toc` do to a file on the
-// desktop, step 4 what `bn-zip check` does, read for read, and step 5 what
-// `bn-xml book` does, so that each can be compared: a book should come to
-// the same package and the same table of contents (by their checksums,
-// epub/package_digest.h and epub/toc_digest.h) in the same number of
-// reads, the same entries, the same bytes and the same number of reads
-// again, and its XML to the same events.
+// Step 3 is what `bn-epub info`, `bn-epub toc` and `bn-css sheets --spine`
+// do to a file on the desktop, step 4 what `bn-zip check` does, read for
+// read, and step 5 what `bn-xml book` does, so that each can be compared:
+// a book should come to the same package and the same table of contents
+// (by their checksums, epub/package_digest.h and epub/toc_digest.h) in
+// the same number of reads, its documents to the same sheets (by theirs,
+// epub/sheets_digest.h) in the same number of reads, the same entries,
+// the same bytes and the same number of reads again, and its XML to the
+// same events.
 //
 // Time is counted four ways: inside storage, which on a device is the
 // card; reading out compressed entries with storage's share taken off,
@@ -57,26 +65,32 @@ namespace bn::reader {
 // reading and inflating of it taken off; and all of it. Reading the
 // package and reading the table of contents are each counted by
 // themselves, in time and in reads, and are in none of those; nor is the
-// going from place to place.
+// finding of the sheets, nor the going from place to place.
 //
-// A brief check stops at step 3 for each book and reads none through: it
-// takes seconds where the whole takes minutes, and still says of each
-// book whether it opens, what its package and table of contents are, and
-// what opening it and going about in it cost.
+// A brief check stops at step 3 for each book and reads none through, nor
+// finds any document's sheets, which is a reading of every document's
+// head: it takes seconds where the whole takes minutes, and still says of
+// each book whether it opens, what its package and table of contents are,
+// and what opening it and going about in it cost.
 //
 // It works for about 20 ms each Tick() and then lets the application
 // carry on, so a run takes longer by the clock than the times it reports,
 // which count its own work only. Everything it does is done in steps, a
 // step being one call into what is being checked: a read of an entry, a
 // piece of a document parsed, a piece of a package or of a table of
-// contents read. A Tick() runs over its 20 ms by as long as its last
-// step takes, so the last thing it says is which step took longest and
-// how long that was: on a device, that is whether each of those calls is
-// as short as the application needs it to be.
+// contents read, a document opened or a step of finding its sheets. A
+// Tick() runs over its 20 ms by as long as its last step takes, so the
+// last thing it says is which step took longest and how long that was: on
+// a device, that is whether each of those calls is as short as the
+// application needs it to be.
 //
 // Used by one task. It is about 109 KB, most of that the inflater's
 // window, the XML parser's memory and the package reader's: too big for a
-// stack.
+// stack. What finding the sheets needs is a second block, of about 42 KB,
+// which a check that is not brief gets for itself when it is made: the
+// table of a book's rules (kTableBytes), the names of its sheets, a
+// document's `<style>` text, and the reader of CSS. If that block cannot
+// be had, the check says so and finds no document's sheets.
 class BookCheck final : public DeviceCheck {
  public:
   enum class State : std::uint8_t {
@@ -142,6 +156,28 @@ class BookCheck final : public DeviceCheck {
     std::uint64_t tocUs = 0;         // and all the time it took.
     std::uint64_t tocLongestUs = 0;  // The longest one book took.
 
+    // Finding the sheets each document of the spine asks for, which
+    // follows with the book still open. None of this is in the figures
+    // above either.
+    std::uint32_t stylesBooks = 0;      // Books whose documents had their sheets found.
+    std::uint32_t stylesDocuments = 0;  // The documents of their spines that are in the book,
+    std::uint32_t stylesUnopened = 0;   // those of them that could not be opened,
+    std::uint32_t stylesAbsent = 0;     // and the documents a spine names that the book has not got.
+    std::uint64_t stylesGiven = 0;      // The sheets the documents were given, one for each document that has it.
+    std::uint32_t stylesRead = 0;       // The sheets read, each once for its book.
+    std::uint32_t stylesOwn = 0;        // The documents with `<style>` rules of their own.
+    // What was left out in the finding, by its kind.
+    std::array<std::uint32_t, epub::kSheetLeftOutKinds> stylesLeftOut{};
+    std::uint32_t stylesRules = 0;         // The rules kept from the books' sheets,
+    std::uint32_t stylesRulesLeftOut = 0;  // and those the table had no room for.
+    std::uint32_t stylesTableBytes = 0;    // The most of its memory one book's table of rules took,
+    std::uint32_t stylesNamesBytes = 0;    // and the most the names of one book's sheets took.
+    std::uint32_t stylesReads = 0;         // Reads of storage,
+    std::uint64_t stylesReadBytes = 0;     // and what they brought.
+    std::uint64_t stylesStorageUs = 0;     // Time spent inside storage,
+    std::uint64_t stylesUs = 0;            // and all the time it took.
+    std::uint64_t stylesLongestUs = 0;     // The longest one book took.
+
     // Opening the book's file, which is done four times for a book: twice
     // to read its package and twice to read it through. The time is in
     // the figures above, as storage's; here it is by itself.
@@ -169,6 +205,9 @@ class BookCheck final : public DeviceCheck {
   // The memory the package reader is given for a book's files and
   // documents: 16 bytes a file and 28 a document.
   static constexpr std::size_t kPackageMemoryBytes = 24576;
+  // The memory the table of a book's rules is given: more than any book
+  // of the library wants (the most is 24 KB).
+  static constexpr std::size_t kTableBytes = 32768;
   // How many places in a book's file are gone to: its start, its end, and
   // fourteen between, in an order that makes each a long way from the one
   // before.
@@ -209,6 +248,12 @@ class BookCheck final : public DeviceCheck {
   // And of the entries of its table of contents (epub/toc_digest.h); 0 if
   // it has none, or none that could be read.
   std::uint32_t TocChecksum() const noexcept { return tocChecksum_; }
+  // And of the sheets its documents were given (epub/sheets_digest.h); 0
+  // if they were not looked for.
+  std::uint32_t StylesChecksum() const noexcept { return stylesChecksum_; }
+  // Whether this check finds the sheets of documents at all: not if it is
+  // brief, and not if there was no memory for it.
+  bool FindsStyles() const noexcept { return styles_ != nullptr; }
 
  private:
   // Storage that passes everything on to another, counting the reads and
@@ -295,6 +340,7 @@ class BookCheck final : public DeviceCheck {
     kNextBook,
     kReadPackage,
     kReadToc,
+    kReadStyles,
     kReadPlaces,
     kOpenBook,
     kNextEntry,
@@ -311,6 +357,9 @@ class BookCheck final : public DeviceCheck {
   void NextBook() noexcept;
   void ReadPackage() noexcept;
   void ReadToc() noexcept;
+  void ReadStyles() noexcept;
+  // Says what finding the sheets of the book in hand came to.
+  void SayStyles() noexcept;
   void ReadPlaces() noexcept;
   void OpenBook() noexcept;
   void NextEntry() noexcept;
@@ -422,6 +471,13 @@ class BookCheck final : public DeviceCheck {
   epub::TocReader toc_;
   epub::TocDigest tocDigest_;
   std::uint32_t tocChecksum_ = 0;
+
+  // For the sheets the documents ask for: everything that finding them
+  // needs besides what is above, in a block of its own. Null in a brief
+  // check, and if there was no memory for it.
+  struct Styles;
+  Styles* styles_ = nullptr;
+  std::uint32_t stylesChecksum_ = 0;
 };
 
 }  // namespace bn::reader

@@ -2,12 +2,18 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 #include "core/checksum.h"
 #include "core/fixed_text.h"
 #include "core/metrics.h"
 #include "core/trace.h"
+#include "epub/book_files.h"
+#include "epub/book_path.h"
+#include "epub/css.h"
+#include "epub/css_rules.h"
 #include "epub/package_digest.h"
+#include "epub/sheets_digest.h"
 #include "log_line.h"
 #include "reader/trace_ids.h"
 
@@ -30,6 +36,9 @@ core::Gauge checksumKbPerSecond{"checksum_kb_per_s"};
 // And at parsing XML, counted in what the parser was given. The check's
 // own counting and checksumming of what was found is in this.
 core::Gauge xmlKbPerSecond{"xml_kb_per_s"};
+// The most of its memory the table of one book's rules took in the last
+// check, in bytes.
+core::Gauge cssTableBytes{"css_table_bytes"};
 
 constexpr std::string_view kBooksDirectory = "/books";
 constexpr std::string_view kTopDirectory = "/";
@@ -153,6 +162,54 @@ void AddTocCost(LogLine& line, const BookCheck::Figures& figures) noexcept {
   AddCost(line, figures.tocUs, figures.tocStorageUs, figures.tocReads, figures.tocReadBytes);
 }
 
+// And finding the sheets of one book's documents, or of all of them.
+void AddStylesCost(LogLine& line, const BookCheck::Figures& figures) noexcept {
+  AddCost(line, figures.stylesUs, figures.stylesStorageUs, figures.stylesReads, figures.stylesReadBytes);
+}
+
+// "... documents, ... sheets given, ... read, ... with rules of their
+// own", what the documents of one book were given, or of all of them.
+void AddStylesCounts(LogLine& line, const BookCheck::Figures& figures) noexcept {
+  line.Count(figures.stylesGiven, " sheet given, ", " sheets given, ")
+      .Number(figures.stylesRead)
+      .Text(" read, ")
+      .Number(figures.stylesOwn)
+      .Text(figures.stylesOwn == 1 ? " with rules of its own" : " with rules of their own");
+}
+
+// What was amiss with the documents themselves, if anything was.
+void AddStylesAmiss(LogLine& line, const BookCheck::Figures& figures) noexcept {
+  if (figures.stylesUnopened != 0) {
+    line.Text(" Not opened: ").Number(figures.stylesUnopened).Text(".");
+  }
+  if (figures.stylesAbsent != 0) {
+    line.Text(" Not in the book: ").Number(figures.stylesAbsent).Text(".");
+  }
+  if (figures.stylesRulesLeftOut != 0) {
+    line.Text(" Rules with no room: ").Number(figures.stylesRulesLeftOut).Text(".");
+  }
+}
+
+// A line for each kind of thing that was left out in finding sheets, with
+// how many: none, if nothing was. `begin` writes what each line starts
+// with: the book it is about, or that it is about all of them.
+template <typename Begin>
+void SendStylesLeftOut(core::TraceStream& stream, const BookCheck::Figures& figures, Begin begin) noexcept {
+  for (std::size_t kind = 0; kind < figures.stylesLeftOut.size(); ++kind) {
+    if (figures.stylesLeftOut[kind] == 0) {
+      continue;
+    }
+    LogLine line;
+    begin(line);
+    line.Text("styles: left out ")
+        .Number(figures.stylesLeftOut[kind])
+        .Text(": ")
+        .Text(epub::SheetLeftOutName(static_cast<epub::SheetLeftOut>(kind)))
+        .Text(".");
+    (void)stream.SendText(line.View());
+  }
+}
+
 // One of the names a book gives itself, as it is shown: in quotation
 // marks, and cut to `Room` bytes at a character with "..." after it if it
 // is longer; or that the book has none.
@@ -215,6 +272,25 @@ void Add(BookCheck::Figures& total, const BookCheck::Figures& book) noexcept {
   total.tocStorageUs += book.tocStorageUs;
   total.tocUs += book.tocUs;
   total.tocLongestUs = std::max(total.tocLongestUs, book.tocLongestUs);
+  total.stylesBooks += book.stylesBooks;
+  total.stylesDocuments += book.stylesDocuments;
+  total.stylesUnopened += book.stylesUnopened;
+  total.stylesAbsent += book.stylesAbsent;
+  total.stylesGiven += book.stylesGiven;
+  total.stylesRead += book.stylesRead;
+  total.stylesOwn += book.stylesOwn;
+  for (std::size_t kind = 0; kind < total.stylesLeftOut.size(); ++kind) {
+    total.stylesLeftOut[kind] += book.stylesLeftOut[kind];
+  }
+  total.stylesRules += book.stylesRules;
+  total.stylesRulesLeftOut += book.stylesRulesLeftOut;
+  total.stylesTableBytes = std::max(total.stylesTableBytes, book.stylesTableBytes);
+  total.stylesNamesBytes = std::max(total.stylesNamesBytes, book.stylesNamesBytes);
+  total.stylesReads += book.stylesReads;
+  total.stylesReadBytes += book.stylesReadBytes;
+  total.stylesStorageUs += book.stylesStorageUs;
+  total.stylesUs += book.stylesUs;
+  total.stylesLongestUs = std::max(total.stylesLongestUs, book.stylesLongestUs);
 }
 
 }  // namespace
@@ -344,6 +420,33 @@ std::ptrdiff_t BookCheck::Feeder::Read(std::span<std::uint8_t> dst) noexcept {
   return static_cast<std::ptrdiff_t>(count);
 }
 
+// What finding the sheets of a book's documents needs besides the book
+// open, its entry reader and the XML parser, which the check has anyway:
+// the table of the book's rules with its memory, the memory for the names
+// of its sheets and for a document's `<style>` text, the reader of CSS,
+// the book's files by their paths, and what takes account of what each
+// document was given.
+struct BookCheck::Styles {
+  Styles(epub::ZipArchive& archive, core::BlockFile& entries, epub::ZipEntryReader& entryReader,
+         epub::XmlParser& xml) noexcept
+      : rules(tableMemory), files(archive, entries, entryReader), sheets(files, xml, reader, rules, names, styleText) {}
+
+  alignas(8) std::array<std::uint8_t, kTableBytes> tableMemory{};
+  std::array<char, epub::DocumentSheets::kNamesBytes> names{};
+  std::array<std::uint8_t, epub::DocumentSheets::kStyleBytes> styleText{};
+  epub::CssReader reader;
+  epub::CssRules rules;
+  epub::ZipBookFiles files;
+  epub::DocumentSheets sheets;
+  epub::SheetsDigest digest;
+  // The document in hand: its place in the spine, its path in the book,
+  // and whether its sheets are being found.
+  std::size_t next = 0;
+  std::array<char, epub::kMaxBookPath> path{};
+  std::size_t pathLength = 0;
+  bool finding = false;
+};
+
 BookCheck::BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStream& stream, bool brief) noexcept
     : clock_(clock),
       stream_(stream),
@@ -354,11 +457,18 @@ BookCheck::BookCheck(core::Storage& storage, core::Clock& clock, core::TraceStre
       entryReader_(window_),
       xml_(xmlMemory_),
       feeder_(*this),
-      package_(packageMemory_) {}
+      package_(packageMemory_) {
+  if (!brief_) {
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): owned until the check is destroyed, like the check itself.
+    styles_ = new (std::nothrow) Styles(archive_, entriesFile_, entryReader_, xml_);
+  }
+}
 
 BookCheck::~BookCheck() {
   CloseBook();
   CloseListings();
+  // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): see where it is made.
+  delete styles_;
 }
 
 void BookCheck::Begin() noexcept {
@@ -395,6 +505,8 @@ const char* BookCheck::LongestStepName() const noexcept {
       return "reading a package";
     case Step::kReadToc:
       return "reading a table of contents";
+    case Step::kReadStyles:
+      return "finding a document's sheets";
     case Step::kReadPlaces:
       return "going to a place in a book";
     case Step::kOpenBook:
@@ -482,6 +594,9 @@ void BookCheck::DoStep() noexcept {
       break;
     case Step::kReadToc:
       ReadToc();
+      break;
+    case Step::kReadStyles:
+      ReadStyles();
       break;
     case Step::kReadPlaces:
       ReadPlaces();
@@ -648,6 +763,7 @@ void BookCheck::NextBook() noexcept {
   digest_.Reset();
   packageChecksum_ = 0;
   tocChecksum_ = 0;
+  stylesChecksum_ = 0;
   bookBeganTrace_ = BN_TRACE_NOW();
   LogLine line;
   line.Text("book ").Number(books_).Text(": ").Number(bookSize_).Text(" bytes, ").Text(Path());
@@ -739,6 +855,30 @@ void BookCheck::LookInTopDirectoryOrFinish() noexcept {
       contents.Text(" Not read: ").Number(totals_.tocsNotRead).Text(".");
     }
     (void)stream_.SendText(contents.View());
+  }
+  if (totals_.stylesBooks != 0) {
+    LogLine styles;
+    styles.Text("book check: styles: ")
+        .Count(totals_.stylesDocuments, " document of ", " documents of ")
+        .Count(totals_.stylesBooks, " book, ", " books, ");
+    AddStylesCounts(styles, totals_);
+    styles.Text(".");
+    AddStylesAmiss(styles, totals_);
+    (void)stream_.SendText(styles.View());
+    styles.Clear();
+    styles.Text("book check: styles: ");
+    AddStylesCost(styles, totals_);
+    styles.Text("; the longest ")
+        .Number(totals_.stylesLongestUs / 1000)
+        .Text(" ms; the most a table took ")
+        .Number(totals_.stylesTableBytes)
+        .Text(" bytes, names ")
+        .Number(totals_.stylesNamesBytes)
+        .Text(".");
+    (void)stream_.SendText(styles.View());
+    SendStylesLeftOut(stream_, totals_, [](LogLine& begun) { begun.Text("book check: "); });
+  } else if (!brief_ && styles_ == nullptr) {
+    (void)stream_.SendText("book check: styles: NOT READ: no memory for them.");
   }
   LogLine opening;
   opening.Text("book check: files opened ")
@@ -892,8 +1032,9 @@ void BookCheck::ReadToc() noexcept {
     return;
   }
 
-  // It is over, well or badly. The book stays open for one thing more.
-  MoveTo(Step::kReadPlaces);
+  // It is over, well or badly. The book stays open for what comes next:
+  // the sheets its documents ask for, if this check finds them.
+  MoveTo(styles_ != nullptr ? Step::kReadStyles : Step::kReadPlaces);
   book_.tocLongestUs = book_.tocUs;
   const epub::TocStatus status = toc_.Status();
   LogLine line;
@@ -932,6 +1073,109 @@ void BookCheck::ReadToc() noexcept {
     line.Text(" Cut short.");
   }
   (void)stream_.SendText(line.View());
+}
+
+void BookCheck::ReadStyles() noexcept {
+  // The sheets each document of the spine asks for, with the book still
+  // open, and a piece at a time: a piece opens the next document from
+  // where the package says it is, having read its name there, or is one
+  // step of finding its sheets.
+  Styles& styles = *styles_;
+  const Meter::Counts before = meter_.Now();
+  const std::uint64_t began = clock_.NowUs();
+  if (count_ == 0) {
+    styles.sheets.BeginBook();
+    styles.digest.Reset();
+    styles.next = 0;
+    styles.finding = false;
+  }
+  ++count_;
+  bool more = true;
+  const std::string_view path(styles.path.data(), styles.pathLength);
+  if (styles.finding) {
+    if (!styles.sheets.Step()) {
+      styles.digest.Add(path, styles.sheets);
+      styles.finding = false;
+    }
+  } else {
+    const std::span<const epub::SpineItem> spine = package_.Spine();
+    // A document the package names and the book has not got is counted
+    // and passed over.
+    while (styles.next < spine.size() && !spine[styles.next].present) {
+      ++book_.stylesAbsent;
+      ++styles.next;
+    }
+    if (styles.next == spine.size()) {
+      more = false;
+    } else {
+      // Opened from its place, with its name read where its reading
+      // begins. One that cannot be opened, or whose name is too long to be
+      // a path in a book, is counted by as much of its name as there is.
+      core::ByteSource* const document =
+          styles.files.OpenAt(spine[styles.next++].entry, styles.path, styles.pathLength);
+      const std::string_view name(styles.path.data(), styles.pathLength);
+      if (document == nullptr) {
+        styles.digest.AddUnopened(name);
+      } else {
+        styles.sheets.Begin(name, *document);
+        styles.finding = true;
+      }
+    }
+  }
+  const Meter::Counts& counts = meter_.Now();
+  book_.stylesReads += counts.reads - before.reads;
+  book_.stylesReadBytes += counts.readBytes - before.readBytes;
+  book_.stylesStorageUs += counts.timeUs - before.timeUs;
+  book_.stylesUs += clock_.NowUs() - began;
+  if (more) {
+    return;
+  }
+
+  // Every document has been gone through. The last one's own rules come
+  // out of the table, which then holds what the book's sheets take.
+  styles.sheets.Begin({});
+  book_.stylesBooks = 1;
+  book_.stylesLongestUs = book_.stylesUs;
+  book_.stylesDocuments = styles.digest.Documents();
+  book_.stylesUnopened = styles.digest.Unopened();
+  book_.stylesGiven = styles.digest.Given();
+  book_.stylesRead = static_cast<std::uint32_t>(styles.sheets.SheetsRead());
+  book_.stylesOwn = styles.digest.WithOwnStyle();
+  for (std::size_t kind = 0; kind < book_.stylesLeftOut.size(); ++kind) {
+    book_.stylesLeftOut[kind] = styles.sheets.LeftOut(static_cast<epub::SheetLeftOut>(kind));
+  }
+  book_.stylesRules = styles.rules.Rules();
+  book_.stylesRulesLeftOut = styles.rules.LeftOutForRoom() + styles.rules.LeftOutForNodes();
+  book_.stylesTableBytes = static_cast<std::uint32_t>(styles.rules.Bytes());
+  book_.stylesNamesBytes = static_cast<std::uint32_t>(styles.sheets.NamesBytes());
+  stylesChecksum_ = styles.digest.Checksum();
+  SayStyles();
+  MoveTo(Step::kReadPlaces);
+}
+
+void BookCheck::SayStyles() noexcept {
+  LogLine line;
+  line.Text("book ").Number(books_).Text(": styles: ").Count(book_.stylesDocuments, " document, ", " documents, ");
+  AddStylesCounts(line, book_);
+  line.Text("; checksum ").Hex8(stylesChecksum_).Text(".");
+  AddStylesAmiss(line, book_);
+  (void)stream_.SendText(line.View());
+
+  line.Clear();
+  line.Text("book ")
+      .Number(books_)
+      .Text(": styles: table ")
+      .Number(book_.stylesTableBytes)
+      .Text(" bytes, ")
+      .Count(book_.stylesRules, " rule, names ", " rules, names ")
+      .Number(book_.stylesNamesBytes)
+      .Text(" bytes; ");
+  AddStylesCost(line, book_);
+  line.Text(".");
+  (void)stream_.SendText(line.View());
+
+  const std::uint32_t book = books_;
+  SendStylesLeftOut(stream_, book_, [book](LogLine& begun) { begun.Text("book ").Number(book).Text(": "); });
 }
 
 void BookCheck::ReadPlaces() noexcept {
@@ -1218,6 +1462,9 @@ void BookCheck::Finish(bool passed) noexcept {
   bookCheckBooks.Set(books_);
   inflateKbPerSecond.Set(Clamped(KbPerSecond(totals_.inflatedOut, totals_.inflateUs)));
   xmlKbPerSecond.Set(Clamped(KbPerSecond(totals_.xmlBytes, totals_.xmlUs)));
+  if (totals_.stylesBooks != 0) {
+    cssTableBytes.Set(totals_.stylesTableBytes);
+  }
   BN_TRACE_TOP_SPAN_SINCE(kSpanBookCheck, beganTrace_, passed ? 1 : 0);
 }
 

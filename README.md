@@ -899,8 +899,11 @@ dot is hidden and passed over, as everything that lists the card does: a
 Mac writes a `._` file beside each file it copies to a card. With each book it does two things. First
 it opens the book as a reader would: finds the ZIP directory and reads the
 book's package, which says what the book is called and where its documents
-are (see "What a book says of itself" below); and then, with the book
+are (see "What a book says of itself" below); then, with the book
 still open, reads its table of contents ("The table of contents" below);
+then finds the style sheets that each document of its spine asks for, in
+reading order ("What a document asks for" below), opening each document
+from where the package says it is and reading its head;
 and last, before closing it, reads a byte at each of sixteen places far
 apart in the file, to and fro: the start, the end, the middle, and so on
 by halves. That is what going to a place in a file costs, which on a card
@@ -913,37 +916,44 @@ for about 20 ms a turn, so the panel and the buttons carry on around it,
 and a run takes longer by the clock than the times it reports. All of it
 is done in steps, each one call into what is being checked: a read from
 an entry, a piece of a document parsed, a piece of a package or a table
-of contents read. A turn runs over its 20 ms by however long its last
+of contents read, a document opened or a step of finding its sheets. A
+turn runs over its 20 ms by however long its last
 step takes, so the last line of a run says which step took longest, and
 how long: on a device, that is whether those calls are as short as an
 application that has a panel and buttons to see to needs them to be.
 
 What it finds goes out as log text: a line when a book is begun, three for
-its package, one for its table of contents, one for the places, four when
-it ends, and nine at the end for all of them.
+its package, one for its table of contents, two for the sheets its
+documents ask for, with one more for each kind of thing left out in
+finding them, one for the places, four when it ends, and eleven at the
+end for all of them, with those kinds again.
 
 ```
-book check: the checksum alone, 262144 bytes in 1484 us (172506 KB/s).
+book check: the checksum alone, 262144 bytes in 2013 us (127173 KB/s).
 book 1: 1832425 bytes, /books/core/The First Book.epub
 book 1: package: title "The First Book", author "A. Writer", language "en".
 book 1: package: 374 files, 368 documents, cover jpeg, nav, ncx; memory 16288; checksum 7b162ac4.
-book 1: package: 1 ms: card 0 ms for 24 reads of 90555 bytes.
-book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 0 ms: card 0 ms for 2 reads of 8192 bytes.
-book 1: places: 16 far apart, 16 reads in 1638 us, the longest 180 us.
+book 1: package: 2 ms: card 0 ms for 24 reads of 90555 bytes.
+book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 1 ms: card 0 ms for 2 reads of 8192 bytes.
+book 1: styles: 368 documents, 1102 sheets given, 3 read, 0 with rules of their own; checksum c31e8f44.
+book 1: styles: table 2288 bytes, 46 rules, names 38 bytes; 11 ms: card 1 ms for 374 reads of 1531904 bytes.
+book 1: places: 16 far apart, 16 reads in 14 us, the longest 1 us.
 book 1: ok. 377 entries, 4353104 bytes out of 1769871. Directory found in 1 read, 0 ms.
-book 1: card 1 ms for 468 reads of 1909179 bytes (1681183 KB/s); inflating 39 ms: 1661195 bytes in (40681 KB/s), 4244428 out (103943 KB/s); all 79 ms.
-book 1: opened 4 times in 108 us, the longest 58 us; number 1 in its folder.
-book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 37 ms (111862 KB/s); most memory 11632.
+book 1: card 0 ms for 468 reads of 1909179 bytes (2378102 KB/s); inflating 41 ms: 1661195 bytes in (39341 KB/s), 4244428 out (100520 KB/s); all 81 ms.
+book 1: opened 4 times in 151 us, the longest 71 us; number 1 in its folder.
+book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 38 ms (108931 KB/s); most memory 11632.
 ...
 book check: passed. 34 books, 5152 entries, 63899132 bytes out of 39526769.
-book check: card 23 ms for 10091 reads of 41148789 bytes (1713984 KB/s); inflating 426 ms: 24130522 bytes in (55299 KB/s), 48502885 out (111152 KB/s); all 808 ms.
-book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 279 ms (110533 KB/s); 32821373 bytes of events checksummed.
+book check: card 20 ms for 10091 reads of 41148789 bytes (1934265 KB/s); inflating 428 ms: 24130522 bytes in (55011 KB/s), 48502885 out (110574 KB/s); all 807 ms.
+book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 277 ms (110995 KB/s); 32821373 bytes of events checksummed.
 book check: XML memory: the most a document used 18952 bytes; documents over 8 KB: 2072, over 12 KB: 24, over 16 KB: 5.
-book check: packages: 33 read; 25 ms: card 15 ms for 258 reads of 901750 bytes; the longest 3 ms; the most memory 22448. Not read: 1.
-book check: contents: 33 read (25 nav), 2666 entries; 7 ms: card 0 ms for 49 reads of 195690 bytes; the longest 0 ms.
-book check: files opened 136 times in 4 ms; the longest 112 us.
-book check: places: 544 reads in 35 ms; the longest 356 us.
-book check: the longest step: 426 us, listing a directory.
+book check: packages: 33 read; 27 ms: card 17 ms for 258 reads of 901750 bytes; the longest 2 ms; the most memory 22448. Not read: 1.
+book check: contents: 33 read (25 nav), 2666 entries; 7 ms: card 0 ms for 49 reads of 195690 bytes; the longest 1 ms.
+book check: styles: 1916 documents of 33 books, 3582 sheets given, 76 read, 4 with rules of their own.
+book check: styles: 68 ms: card 22 ms for 1808 reads of 7368383 bytes; the longest 11 ms; the most a table took 19959 bytes, names 117.
+book check: files opened 136 times in 4 ms; the longest 97 us.
+book check: places: 544 reads in 17 ms; the longest 202 us.
+book check: the longest step: 1602 us, parsing an entry.
 ```
 
 (Those figures are a desktop's, and the book's names are made up.) A
@@ -995,6 +1005,26 @@ short. A book with no table of contents says `contents: none.`, and one
 with a file that could not be read as one says why (`contents: NOT READ:
 not a table of contents.`); neither makes the book a failure.
 
+The two lines for the styles have what finding the sheets of the spine's
+documents came to. The first: how many documents of the spine were gone
+through; how many sheets they were given between them, a sheet counted
+once for each document that has it; how many sheets were read, each once
+for the book; how many documents have `<style>` rules of their own; and
+a checksum of what every document was given (`epub/sheets_digest.h`).
+After that, if there are any: how many documents could not be opened,
+how many the spine names that the book has not got, and how many rules
+the table had no room for. The second: what the table of the book's
+rules takes of the 32 KB the check gives it, and how many rules are in
+it, once the last document's own rules are out of it; what the names of
+its sheets take; and what the finding cost, which is counted by itself
+as the package's is. Then comes a line for each kind of thing that was
+left out, with how many (`styles: left out 12: import of no file of the
+book.`). A book whose package could not be read has no spine to go
+through, and nothing is said of its styles. What the finding needs is a
+second block of memory, of about 42 KB, which the check gets when it is
+made: if that cannot be had, the run says so (`styles: NOT READ: no
+memory for them.`) and finds no sheets.
+
 `bn-zip check` reads a file the same way, read for read. So the same book
 on the desktop should come to the same entries, the same bytes and the same
 reads (`sd_reads` and `sd_read_bytes`, in the last line `bn-zip check`
@@ -1005,16 +1035,22 @@ the book and reads its package the same way, and prints the checksum, the
 memory and the reads that the package's lines should have. `bn-epub toc`
 goes on to read the table of contents, and prints its kind, its entries
 and their checksum; the reads it reports are the package's and the
-table's together.
+table's together. `bn-css sheets --spine` opens the book, reads its
+package and its table of contents, and then finds the sheets of the
+spine's documents the same way: its `sheets_checksum`, its counts, its
+`css_table_bytes` and its `sheets_reads` are what the lines for the
+styles should have.
 
 The outcome is also in the metrics (`book_check=1` if every book was sound,
 `book_check_books`, `inflate_kb_per_s`, `checksum_kb_per_s`,
-`xml_kb_per_s`, and `xml_memory` for the most the parser has used) and in
+`xml_kb_per_s`, `xml_memory` for the most the parser has used, and
+`css_table_bytes` for the most the table of one book's rules took) and in
 the trace (`reader/book_check`, and `reader/book_check_book` for each
 book), where every read of the card is too (`hw/sd_read`), and the reading
 of each package with its four parts (`epub/package_read`, and
 `epub/package_container`, `package_file`, `package_resolve` and
-`package_find_files`).
+`package_find_files`), and the finding of each document's sheets
+(`epub/document_sheets`, with how many it was given).
 
 ```
 tools/idf -DBN_BOOK_CHECK=ON build flash
@@ -1029,7 +1065,8 @@ of neither in it.
 With `-DBN_BOOK_CHECK_BRIEF=ON` as well (on the desktop,
 `BN_BOOK_CHECK_BRIEF` set as well) the check is a brief one: each book is
 opened, its package and its table of contents are read and its sixteen
-places gone to, and no book is read through. That takes seconds where the
+places gone to, and no book is read through, nor are any document's
+sheets found, which would be a reading of every document's head. That takes seconds where the
 whole takes minutes, and still says whether each book opens, what it
 holds, and what opening it and going about in it cost. A book's file is
 then opened twice, its last line is `book 1: ok. Not read through.`, and
@@ -1756,6 +1793,15 @@ whole book, and gives the list that `CssCascade::Begin()` takes.
   itself. The files are reached through `epub/book_files.h`: a book's
   files by their paths, one open at a time, which `ZipBookFiles` gives
   for a ZIP file and a test gives from memory.
+- **A document can be handed over open.** `Begin()` takes a path, and the
+  document is found in the book by it; or a path and the document
+  already open, and then nothing is looked for but its sheets, each once
+  for the book. Whoever has the book's package has where each document
+  of the spine is in the ZIP file, and need not find it by its name. The
+  path still says where the document's links are from. The document is
+  read only as far as its head goes, and never after a sheet has been
+  opened, so the one reader a book's files are opened with can hand it
+  over.
 - **It is done in steps.** A step opens one file of the book, or has the
   XML parser read 1 KB of the document, or the reader of CSS 1 KB of a
   sheet, or makes one move in working the list out; and never two of
@@ -1839,8 +1885,9 @@ and the second with this,
 where `book.css` imports `fonts.css`, and `poems.css` imports
 `book.css`, it prints each document (`D`), the sheets it is given in the
 order their rules apply (`S`), and with `--dropped` what was left out for
-it (`X`); then what it all came to, each kind of thing left out with how
-many, and what the table of the book's rules takes:
+it (`X`); then what it all came to, with a checksum of it; the reads of
+the file that the finding took; each kind of thing left out with how
+many; and what the table of the book's rules takes:
 
 ```
 D OEBPS/text/one.xhtml
@@ -1853,13 +1900,65 @@ D OEBPS/text/two.xhtml
 S OEBPS/css/fonts.css
 S OEBPS/css/book.css
 S OEBPS/css/poems.css
-sheets_documents=2 sheets_unopened=0 sheets_given=6 sheets_read=3 sheets_names_bytes=75 sheets_left_out=2
+sheets_documents=2 sheets_unopened=0 sheets_given=6 sheets_read=3 sheets_names_bytes=75 sheets_left_out=2 sheets_own=1 sheets_absent=0 sheets_checksum=b2af330b
+sheets_reads=1 sheets_read_bytes=2478
 left_out link_for_another_medium=1 link_to_no_file_of_the_book=1
 css_table_bytes=121 css_table_names=4 css_table_nodes=0 css_table_rules=3 css_table_selectors=3 css_table_left_out=0
 ```
 
-Three sheets were read for the six that were given. The night sheet is an
-alternate, and was never asked for: it is not among what was left out.
+Three sheets were read for the six that were given, and one document has
+rules of its own. The night sheet is an alternate, and was never asked
+for: it is not among what was left out.
+
+**The spine.** With `--spine` the documents are those of the book's
+spine, in reading order, and each is opened from where the book's package
+says it is and handed over open: which is how a reader goes through a
+book, and what the book check does on a device (Reading the books on a
+card, above). The tool reads the package and the table of contents first,
+as the check does, so that its reads are the check's reads. For the same
+book, whose spine has the second document first:
+
+```
+./build/host/tools/css/bn-css sheets book.epub --spine --dropped
+```
+
+```
+D OEBPS/text/two.xhtml
+S OEBPS/css/fonts.css
+S OEBPS/css/book.css
+S OEBPS/css/poems.css
+D OEBPS/text/one.xhtml
+S OEBPS/css/fonts.css
+S OEBPS/css/book.css
+S <style>
+X link for another medium: ../css/kindle.css
+X link to no file of the book: OEBPS/text/gone.css
+sheets_documents=2 sheets_unopened=0 sheets_given=6 sheets_read=3 sheets_names_bytes=75 sheets_left_out=2 sheets_own=1 sheets_absent=0 sheets_checksum=b55acb95
+sheets_reads=0 sheets_read_bytes=0
+left_out link_for_another_medium=1 link_to_no_file_of_the_book=1
+css_table_bytes=121 css_table_names=4 css_table_nodes=0 css_table_rules=3 css_table_selectors=3 css_table_left_out=0
+```
+
+Each document is given what it was given before; the order is the
+spine's, and so the checksum is another. `sheets_absent` counts the
+documents a spine names that the book has not got. (The file is so small
+that the finding read nothing: it was all in the two blocks that reading
+the package had left in memory.) With `--by-name` as well, each document
+of the spine is found in the ZIP file by its name all the same, which
+gives the same lists and costs more reads: Real books, below, has how
+many.
+
+**The checksum** (`epub/sheets_digest.h`) is how what the documents of a
+book were given is said in one number, so that a device's finding can be
+set beside the desktop's, or beside another finding altogether. It is the
+CRC-32 of these lines, each with its line end: for each document in turn
+`D` and its path; `S` and a path for each sheet in its list, `S <style>`
+for its own; and `X`, a kind and a count for each kind of thing left out
+for it, in the order of the table above (`X link for another medium 1`).
+A document that could not be opened is its `D` line and a line `N`. Two
+findings with the same checksum gave the same documents, in the same
+order, the same sheets in the same order, and left out as many things of
+each kind for each.
 
 `bn-css document` finds one document's sheets in the same way, and then
 goes through the document with them as `bn-css cascade` does with the
@@ -1882,14 +1981,22 @@ may. Beside it goes a plain working-out of the same thing
 lists, calls itself for each import and reads a sheet again every time it
 comes to it; the two have to give every document of 300 books made at
 random the same list, leave the same things out, and find as many rules
-in its own `<style>` elements. `e2e.SheetsTool`
+in its own `<style>` elements, every other document handed over open.
+`e2e.SheetsTool`
 compares `bn-css sheets` with a third finding, in Python
 (`tests/e2e/sheets_tool.py`), which reads the head with Python's expat
 and a sheet's imports with the second reader of CSS, on books it makes;
 and compares `bn-css document` with the second working-out of the
 cascade given the sheets the Python found, so that the path from a
-document's bytes to an element's style is checked end to end.
-`tools/check-books.py` runs both comparisons on real books (Real books,
+document's bytes to an element's style is checked end to end. It gives
+each of its books a package as well, whose spine has the documents in
+another order, leaves some out and names one that is not there, and
+holds `bn-css sheets --spine` to that order both ways, by place and by
+name. The checksum is worked out three times over: by the unit tests
+from lines written out by hand, by the fuzz target from what the plain
+working-out gives, and by that end-to-end test from the Python's finding
+and not from anything the tool printed.
+`tools/check-books.py` runs these comparisons on real books (Real books,
 below).
 
 The tests were set against 26 faults put into it on purpose, one at a
@@ -1906,6 +2013,20 @@ sheet is opened twice for a book, and that a document's own rules are
 those of its `<style>` texts each read to its own end. The kept inputs
 now find all 26.
 
+What came after, a document handed over open, a file opened from its
+place, the checksum, and the book check's finding of the sheets of a
+spine, was set against 30 faults more. 24 were found at first. Four of
+the other six had not been planted as they were meant to be; planted so,
+three were found, and the fourth, with the two left, showed tests that
+could not fail. A document that cannot be opened had only ever been the
+first of its spine, where there was nothing of a document before it to
+take for its own. The most that a table took had only ever been the last
+book's. And the tool's reads were the book check's only by chance, in
+books whose tables of contents lie beside their first chapters: the tool
+could have left the table of contents unread, which it reads so that its
+reads are the check's, and nothing would have said so. Each has a test
+now, and all 30 are found.
+
 **On real books.** `tools/check-books.py --css-report` says what the
 documents of a folder of books ask for. Over `corpus/`:
 
@@ -1915,6 +2036,10 @@ What documents ask for: 859 documents are given 1676 sheets, 0 of them with rule
   the most sheets one document is given: 3 at the median, 4 for nine in ten, 4 at the most
   bytes for the names of a book's sheets: 38 at the median, 50 for nine in ten, 50 at the most
   nothing was left out
+
+Through the spines, in reading order: 840 documents. Reads of the file to find their sheets:
+  each document opened from where the package says it is: 938 in all; for a book, 16 at the median, 102 for nine in ten, 154 at the most
+  each document found in the ZIP file by its name: 1080 in all; for a book, 17 at the median, 115 for nine in ten, 185 at the most
 ```
 
 In 335 books from trade publishers, 20,588 documents are given 28,410
@@ -1926,6 +2051,20 @@ sheet for `amzn-mobi`, and 145 in eight of the public ones, the second
 sheet behind `(min-device-width: 0px)` and one for `speech`. No link that
 counts is to a file its book does not have, and no head fails to be read
 through.
+
+Through the spines it is the same: the 20,640 documents of the trade
+books' spines and the 10,559 of the public books', each book's in its
+reading order, come to the checksum the finding in Python comes to, book
+for book. What it costs to find them is in the last two lines of the
+report. With each document opened from where the package says it is, the
+trade books take 25,910 reads of 4 KB between them, and 509 for the book
+that takes the most; with each found in the ZIP file by its name, 61,435,
+and 3,458 for one book. The public books take 12,111 and 22,537. A ZIP
+file's directory is searched from where the last search ended, which
+costs next to nothing while names are asked for in the directory's own
+order; a spine is often in another order, and a sheet read between two
+documents moves the search as well. So a reader that has the package
+opens a document from its place.
 
 ## Real books
 
@@ -1984,7 +2123,11 @@ The tools and Python agree about every book.
   a document asks for, above, has what that finding is). A book where
   the tool says it had no room for a sheet, or could not read one to its
   end, is passed over and counted: the second finding does not work
-  those out.
+  those out. The same is done for the documents of the book's spine, in
+  reading order, by the checksum of what they are all given: `bn-css
+  sheets --spine` against that checksum worked out from the second
+  finding; and the tool has to come to it both ways, with each document
+  opened from its place and with each found by its name.
 - **What the rules come to**: for the first few documents of a book, up
   to 1,500 elements between them, what `bn-css document` gives each
   element is what a second working-out gives it, by checksum: the tool
@@ -2112,13 +2255,13 @@ call may.
 | Target | What it reads its input with | What it holds the reader to, besides staying in its memory |
 |---|---|---|
 | `inflate` | `core::Inflater`, twice, with the stream and the output cut up two ways | No call takes more from its source than `MostInputFor()` allows. Both readings give the same bytes. They are the bytes zlib gives for the same stream, and a stream is whole only if zlib says so |
-| `zip` | `epub::ZipArchive` and `ZipEntryReader`: the directory from end to end, and the first few entries looked up and read | What each call may read from storage (19 reads to open a file, 2 for an entry of the directory, and for a call on an entry what the inflater's bound comes to in blocks). An entry called sound gave as many bytes as the directory says, with its checksum |
+| `zip` | `epub::ZipArchive`, `ZipEntryReader` and `ZipBookFiles`: the directory from end to end, and the first few entries looked up and read, and then opened as a book's files are, from their places and by their names | What each call may read from storage (19 reads to open a file, 2 for an entry of the directory, and for a call on an entry what the inflater's bound comes to in blocks). An entry called sound gave as many bytes as the directory says, with its checksum. A file opened from its place has the path its own header gives, as much of it as there is room for, and is opened if and only if that path was read whole and the entry can be opened |
 | `xml` | `epub::XmlParser`, with more or less memory, and a handler that may stop it or try to use it from inside | A step asks its source once, for 1 KB. The parser's heap is in order after every step. Text comes in whole characters, and never more of it than twice the bytes read, which is the most a change of encoding makes of them. A handler that stops the parser is told nothing more. The parser reads a good document rightly afterwards |
 | `package` | `epub::Package`, a step at a time, twice | No step reads more than five blocks from storage. Nothing is said of the book until the reading is over. A book that was read has documents, each found again by its entry's name. A second reading says what the first said |
 | `toc` | `epub::TocReader`, a step at a time, twice, with a handler that may ask for no more | No step reads more than five blocks. Every label is whole characters with its spaces collapsed, within its length; every entry points at a document of the book or at none. A stopped reading says so |
 | `css` | `epub::CssReader`, twice, with the sheet cut up two ways; and the same bytes as a `style` attribute | A step asks its source once, for 1 KB. A rule is told whole and in order. A selector has no more parts or classes than there is room for, asks no more of attributes, and has a rank its parts account for. A number is within its bounds, and not below zero where the property cannot be. The reader's counts are the counts of what it told. Both readings tell the same |
 | `css_rules` | `epub::CssRules` and `epub::CssCascade`: up to four sheets into a table of one of four sizes, a document gone through with a cascade that has one of four amounts of memory, the table taken back to before its last sheet, and the document gone through again | The table stays inside its memory. If it left no rule out, every element and every first letter is given exactly what a plain working-out of the same rules gives it (`tests/support/css_reference.h`). No element takes more work than `MostWorkFor()` says. A table taken back is the size it was and says of the document what a table never told of the last sheet says; and it takes the sheet again to the same end. |
-| `document_sheets` | `epub::DocumentSheets`: a book of up to eight files held in memory, with one of four amounts of memory for the sheets' names, for a document's `<style>` text and for the table, read in pieces of one of four sizes, one file failing part way; the sheets of each document found, the first given up part way and begun again, and the first found again at the end | Every document ends with a list. A step opens one file at the most or reads `kMostBytesPerStep` of the book at the most, and never both. A list has no sheet twice, and every sheet in it is in the table and, but for the document's own, is a file of the book. The table has the sheets that were read and no others. What is said to be left out is what the counts come to. Until something is left out for want of room, the list and the counts are those of a plain working-out (`tests/support/sheets_reference.h`), and where the table kept every rule it was given, the document's own rules are as many as its `<style>` texts come to, each read to its own end. A document found again has the same list, and nothing is opened for it but itself. No file but a document is opened twice for the book, the sheet in hand when a document was given up apart |
+| `document_sheets` | `epub::DocumentSheets`: a book of up to eight files held in memory, with one of four amounts of memory for the sheets' names, for a document's `<style>` text and for the table, read in pieces of one of four sizes, one file failing part way; the sheets of each document found, every other one handed over open, the first given up part way and begun again, and the first found again at the end | Every document ends with a list. A step opens one file at the most or reads `kMostBytesPerStep` of the book at the most, and never both. A list has no sheet twice, and every sheet in it is in the table and, but for the document's own, is a file of the book. The table has the sheets that were read and no others. What is said to be left out is what the counts come to. Until something is left out for want of room, the list and the counts are those of a plain working-out (`tests/support/sheets_reference.h`), and where the table kept every rule it was given, the document's own rules are as many as its `<style>` texts come to, each read to its own end. A document found again has the same list, and nothing is opened for it but itself. No file but a document is opened twice for the book, the sheet in hand when a document was given up apart. The digest of what the documents were given (`epub/sheets_digest.h`) counts what was found, and is the checksum of the lines the plain working-out comes to |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
 | `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
 | `paragraph` | `layout::ParagraphSetter`, with a paragraph's text in runs of up to seven styles and line ends asked for, on lines from 1 wide to 30,000, measured four ways | A paragraph is done with in a number of calls that depends only on its length. No call does more than `MostWorkFor()` allows, gives the breaker more than one item, asks the hyphenator about more than one word, or has more than a word's worth of bytes measured. The lines hold all the text once and in order. Each is as wide as its text adds up to and has the places between words it says; one is only too wide for a single character that is. The measure is never given a soft hyphen, nor a piece that begins inside a character. The lines are the same when the text is offered all at once |

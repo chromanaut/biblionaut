@@ -5,16 +5,20 @@ The book check (reader/book_check.h) is what a device runs to find out
 whether it can read books off its card. Here the desktop application runs
 it over a folder standing for the card, and what it reports is compared
 with things that share none of its code path: `bn-zip check`, `bn-xml
-book` and `bn-epub info` on each of the same files, and Python's zipfile
-module. A book should come to the same entries, the same bytes and the
-same number of reads of storage in the application as it does in bn-zip,
-its XML to the same events as in bn-xml, and its package and its table of
-contents to the same checksums in the same number of reads as in bn-epub,
-which is how a run on a device is compared with the desktop. A brief
-check of the same card should come to the same packages and tables of
-contents, and read no book through.
+book`, `bn-epub info` and `bn-css sheets --spine` on each of the same
+files, and Python's zipfile module. A book should come to the same
+entries, the same bytes and the same number of reads of storage in the
+application as it does in bn-zip, its XML to the same events as in bn-xml,
+its package and its table of contents to the same checksums in the same
+number of reads as in bn-epub, and the sheets its documents ask for to
+the same checksum, the same table of rules and the same number of reads
+as in bn-css, which is how a run on a device is compared with the
+desktop. That checksum is also worked out here, from what the test put in
+each chapter's head. A brief check of the same card should come to the
+same packages and tables of contents, read no book through, and find no
+sheets.
 
-usage: book_check.py APP BN_TRACE BN_ZIP BN_XML BN_EPUB WORK_DIR
+usage: book_check.py APP BN_TRACE BN_ZIP BN_XML BN_EPUB BN_CSS WORK_DIR
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 WORDS = ["the ", "reader ", "turned ", "a ", "page, ", "and ", "then ", "another; ", "night ", "fell ", "quietly.\n"]
@@ -54,10 +59,54 @@ def expect(condition: bool, message: str) -> None:
         raise Failure(message)
 
 
-def xhtml(size: int, seed: int) -> bytes:
-    """A chapter: XML, with `size` bytes of text in it."""
-    return (b'<?xml version="1.0" encoding="utf-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml"><body>\n<p class="a">'
+def xhtml(size: int, seed: int, head: str = "") -> bytes:
+    """A chapter: XML, with `size` bytes of text in it, and `head` in its head if it is to have one."""
+    top = f"<head><title>A chapter</title>{head}</head>".encode() if head else b""
+    return (b'<?xml version="1.0" encoding="utf-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">' + top
+            + b'<body>\n<p class="a">'
             + text(size, seed).replace(b"\n", b"</p>\n<p>") + b" &amp; so on.</p>\n</body></html>\n")
+
+
+# The book's one sheet, which every chapter links. It imports a sheet the book has not got.
+SHEET = (b'@import "fonts/faces.css";\np { text-indent: 1em; margin: 0 }\np.a { text-indent: 0 }\n'
+         b"h1, h2 { font-weight: bold }\n")
+
+
+def head_of_chapter(chapter: int) -> str:
+    """What a chapter's head asks for: the book's sheet; a sheet for print, if its number is odd; a sheet the book
+    has not got, if it is the second; and rules of its own, if it is the first."""
+    head = '<link rel="stylesheet" type="text/css" href="book.css"/>'
+    if chapter % 2 == 1:
+        head += '<link rel="stylesheet" href="print.css" media="print"/>'
+    if chapter == 1:
+        head += '<link rel="stylesheet" href="styles/gone.css"/>'
+    if chapter == 0:
+        head += "<style>p.a { text-indent: 2em }</style>"
+    return head
+
+
+def sheets_expected(chapters: int) -> dict:
+    """What the documents of a book of so many chapters are given, worked out from what make_book() puts in them:
+    the lines the checksum is of (epub/sheets_digest.h), and the counts."""
+    lines = b""
+    left_out = {"link for another medium": 0, "link to no file of the book": 0, "import of no file of the book": 0}
+    for chapter in range(chapters):
+        lines += b"D OEBPS/chapter%02d.xhtml\nS OEBPS/book.css\n" % chapter
+        if chapter == 0:
+            lines += b"S <style>\n"
+        # What was left out for it, in the order the kinds have.
+        if chapter % 2 == 1:
+            lines += b"X link for another medium 1\n"
+            left_out["link for another medium"] += 1
+        if chapter == 1:
+            lines += b"X link to no file of the book 1\n"
+            left_out["link to no file of the book"] += 1
+        lines += b"X import of no file of the book 1\n"
+        left_out["import of no file of the book"] += 1
+    # The spine's last document, which has no head.
+    lines += b"D OEBPS/kept-as-it-is.xhtml\n"
+    return {"documents": chapters + 1, "given": chapters + 1, "read": 1, "own": 1, "checksum": zlib.crc32(lines),
+            "left_out": {kind: count for kind, count in left_out.items() if count}}
 
 
 def make_book(path: Path, seed: int, chapters: int) -> None:
@@ -71,7 +120,7 @@ def make_book(path: Path, seed: int, chapters: int) -> None:
     manifest += ('<item id="kept" href="kept-as-it-is.xhtml" media-type="application/xhtml+xml"/>'
                  '<item id="odd" href="not-xml.xhtml" media-type="application/xhtml+xml"/>'
                  '<item id="cover" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>'
-                 '<item id="css" href="empty.css" media-type="text/css"/>'
+                 '<item id="css" href="book.css" media-type="text/css"/>'
                  '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
     with_nav = seed % 200 == 0
     if with_nav:
@@ -97,16 +146,20 @@ def make_book(path: Path, seed: int, chapters: int) -> None:
         archive.writestr("META-INF/container.xml", '<container><rootfiles><rootfile full-path="OEBPS/content.opf" '
                          'media-type="application/oebps-package+xml"/></rootfiles></container>', zipfile.ZIP_DEFLATED)
         archive.writestr("OEBPS/content.opf", package, zipfile.ZIP_DEFLATED)
-        archive.writestr("OEBPS/toc.ncx", ncx, zipfile.ZIP_DEFLATED)
-        if with_nav:
-            archive.writestr("OEBPS/nav.xhtml", nav, zipfile.ZIP_DEFLATED)
         for chapter in range(chapters):
-            archive.writestr(f"OEBPS/chapter{chapter:02d}.xhtml", xhtml(6_000 + 900 * chapter, seed + chapter),
+            archive.writestr(f"OEBPS/chapter{chapter:02d}.xhtml",
+                             xhtml(6_000 + 900 * chapter, seed + chapter, head_of_chapter(chapter)),
                              zipfile.ZIP_DEFLATED, compresslevel=1 + chapter % 9)
         archive.writestr("OEBPS/kept-as-it-is.xhtml", xhtml(9_000, seed + 50))
         archive.writestr("OEBPS/not-xml.xhtml", b"<html><body><p>" + text(7_000, seed + 60), zipfile.ZIP_DEFLATED)
         archive.writestr("OEBPS/images/cover.jpg", noise(30_000, seed))
-        archive.writestr("OEBPS/empty.css", b"", zipfile.ZIP_DEFLATED)
+        archive.writestr("OEBPS/book.css", SHEET, zipfile.ZIP_DEFLATED)
+        # The tables of contents come last, a long way from the package and from the first chapter: reading one
+        # leaves another part of the file in memory than reading the package did, so that what is read next, the
+        # first chapter's head, costs a read it would not have cost straight after the package.
+        archive.writestr("OEBPS/toc.ncx", ncx, zipfile.ZIP_DEFLATED)
+        if with_nav:
+            archive.writestr("OEBPS/nav.xhtml", nav, zipfile.ZIP_DEFLATED)
 
 
 def run_application(app: str, card: Path, capture: Path, milliseconds: int, brief: bool = False) -> None:
@@ -187,6 +240,24 @@ def epub_toc(epub_tool: str, path: Path) -> dict:
             "checksum": int(said["checksum"], 16), "reads": int(reads[1]), "read_bytes": int(reads[2])}
 
 
+def css_sheets(css_tool: str, path: Path) -> dict:
+    """What `bn-css sheets --spine` says the documents of a book's spine are given, and what finding that cost."""
+    result = subprocess.run([css_tool, "sheets", str(path), "--spine"], capture_output=True, check=False)
+    out = result.stdout.decode("utf-8", "replace")
+    expect(result.returncode == 0, f"bn-css sheets --spine {path.name} ended with {result.returncode}: {result.stderr!r}")
+    said = dict(re.findall(r"\b((?:sheets|css_table)_\w+)=(\w+)", out))
+    kinds = re.search(r"^left_out(.*)$", out, re.MULTILINE)
+    expect("sheets_checksum" in said and "css_table_bytes" in said and kinds is not None,
+           f"bn-css sheets --spine {path.name} said {out[-500:]!r}")
+    left_out = {kind.replace("_", " "): int(count) for kind, count in re.findall(r"(\w+)=(\d+)", kinds[1])}
+    return {"documents": int(said["sheets_documents"]), "given": int(said["sheets_given"]),
+            "read": int(said["sheets_read"]), "own": int(said["sheets_own"]),
+            "checksum": int(said["sheets_checksum"], 16), "table": int(said["css_table_bytes"]),
+            "rules": int(said["css_table_rules"]), "names": int(said["sheets_names_bytes"]),
+            "reads": int(said["sheets_reads"]), "read_bytes": int(said["sheets_read_bytes"]), "left_out": left_out,
+            "unopened": int(said["sheets_unopened"]), "absent": int(said["sheets_absent"])}
+
+
 def reported(lines: list[str]) -> dict[str, dict]:
     """What the book check said of each book, by the book's path."""
     books: dict[int, dict] = {}
@@ -242,17 +313,28 @@ def reported(lines: list[str]) -> dict[str, dict]:
                         toc_reads=int(toc[5]), toc_read_bytes=int(toc[6]), toc_amiss=toc[7])
         elif re.match(r"contents: (none\.|NOT READ: .*)$", rest):
             book.update(toc_missing=rest)
+        elif styles := re.match(r"styles: (\d+) documents?, (\d+) sheets? given, (\d+) read, (\d+) with rules of "
+                                r"(?:its|their) own; checksum ([0-9a-f]{8})\.(.*)$", rest):
+            book.update(styles_documents=int(styles[1]), styles_given=int(styles[2]), styles_read=int(styles[3]),
+                        styles_own=int(styles[4]), styles_checksum=int(styles[5], 16), styles_amiss=styles[6])
+        elif table := re.match(r"styles: table (\d+) bytes, (\d+) rules?, names (\d+) bytes; \d+ ms: card \d+ ms "
+                               r"for (\d+) reads? of (\d+) bytes\.$", rest):
+            book.update(styles_table=int(table[1]), styles_rules=int(table[2]), styles_names=int(table[3]),
+                        styles_reads=int(table[4]), styles_read_bytes=int(table[5]))
+        elif left := re.match(r"styles: left out (\d+): (.*)\.$", rest):
+            book.setdefault("styles_left_out", {})[left[2]] = int(left[1])
         else:
             raise Failure(f"a line about book {number} that is not understood: {line!r}")
     return {book["path"]: book for book in books.values()}
 
 
 def main() -> int:
-    if len(sys.argv) != 7:
+    if len(sys.argv) != 8:
         print(__doc__, file=sys.stderr)
         return 2
-    app, trace_tool, zip_tool, xml_tool, epub_tool = (str(Path(argument).resolve()) for argument in sys.argv[1:6])
-    work = Path(sys.argv[6]).resolve()
+    app, trace_tool, zip_tool, xml_tool, epub_tool, css_tool = (str(Path(argument).resolve())
+                                                                for argument in sys.argv[1:7])
+    work = Path(sys.argv[7]).resolve()
     shutil.rmtree(work, ignore_errors=True)
     card = work / "card"
     books = card / "books"
@@ -308,6 +390,9 @@ def main() -> int:
         xml_total = {"documents": 0, "events": 0, "not": 0}
         package_total = {"reads": 0, "read_bytes": 0, "memory": 0}
         toc_total = {"read": 0, "nav": 0, "entries": 0, "reads": 0, "read_bytes": 0}
+        styles_total = {"documents": 0, "given": 0, "read": 0, "own": 0, "reads": 0, "read_bytes": 0, "table": 0,
+                        "names": 0}
+        styles_left_out: dict[str, int] = {}
         for name in sorted(names - {"/books/not-a-book.epub"}):
             path = card / name[1:]
             book = found[name]
@@ -380,6 +465,37 @@ def main() -> int:
                    (("nav", (chapters + 1) // 2, 1) if tables == 2 else ("ncx", chapters + 1, 2)),
                    f"{name}: {chapters} chapters, and its table of contents has {book['toc_entries']} entries "
                    f"in {book['toc_levels']} levels as {book['toc_kind']}:\n{said}")
+            # The sheets its documents ask for against bn-css, which opens the book, reads its package and its
+            # table of contents and then finds them the same way, read for read; and against what this test put
+            # in each chapter's head. (The damaged book's heads are whole: the damage is further in.)
+            theirs_styles = css_sheets(css_tool, path)
+            expect("styles_checksum" in book and "styles_table" in book,
+                   f"{name}: the sheets of its documents should have been found:\n{said}")
+            mine_styles = {"documents": book["styles_documents"], "given": book["styles_given"],
+                           "read": book["styles_read"], "own": book["styles_own"], "checksum": book["styles_checksum"],
+                           "table": book["styles_table"], "rules": book["styles_rules"], "names": book["styles_names"],
+                           "reads": book["styles_reads"], "read_bytes": book["styles_read_bytes"],
+                           "left_out": book.get("styles_left_out", {})}
+            for key, value in mine_styles.items():
+                expect(value == theirs_styles[key],
+                       f"{name}: the book check has the styles' {key} = {value!r}, bn-css has "
+                       f"{theirs_styles[key]!r}:\n{said}")
+            expect(book["styles_amiss"] == "" and theirs_styles["unopened"] == 0 and theirs_styles["absent"] == 0,
+                   f"{name}: every document of its spine is there to be opened:\n{said}")
+            put_there = sheets_expected(chapters)
+            for key, value in put_there.items():
+                expect(mine_styles[key] == value,
+                       f"{name}: the book check has the styles' {key} = {mine_styles[key]!r}, and what was put in "
+                       f"its {chapters} chapters comes to {value!r}:\n{said}")
+            # Its one sheet: three rules, and the names of it and of the two that are not there.
+            expect(book["styles_rules"] == 3 and book["styles_table"] > 100 and book["styles_names"] > 30,
+                   f"{name}: the table of its rules:\n{said}")
+            for key in ("documents", "given", "read", "own", "reads", "read_bytes"):
+                styles_total[key] += mine_styles[key]
+            for key in ("table", "names"):
+                styles_total[key] = max(styles_total[key], mine_styles[key])
+            for kind, count in mine_styles["left_out"].items():
+                styles_left_out[kind] = styles_left_out.get(kind, 0) + count
             toc_total["read"] += 1
             toc_total["nav"] += book["toc_kind"] == "nav"
             toc_total["entries"] += book["toc_entries"]
@@ -424,6 +540,18 @@ def main() -> int:
                    f" ms for {toc_total['reads']} reads of {toc_total['read_bytes']} bytes; the longest " in line
                    for line in lines) and toc_total["nav"] == 2,
                f"the tables of contents of all the books together should be {toc_total}:\n{said}")
+        expect(f"book check: styles: {styles_total['documents']} documents of 4 books, {styles_total['given']} "
+               f"sheets given, {styles_total['read']} read, {styles_total['own']} with rules of their own." in lines,
+               f"the styles of all the books together should be {styles_total}:\n{said}")
+        expect(any(line.startswith("book check: styles: ") and
+                   f" ms for {styles_total['reads']} reads of {styles_total['read_bytes']} bytes; the longest "
+                   in line and line.endswith(f" ms; the most a table took {styles_total['table']} bytes, names "
+                                             f"{styles_total['names']}.") for line in lines),
+               f"what finding the styles of all the books cost should be {styles_total}:\n{said}")
+        for kind, count in styles_left_out.items():
+            expect(f"book check: styles: left out {count}: {kind}." in lines,
+                   f"{count} of {kind!r} were left out in all the books:\n{said}")
+        expect(len(styles_left_out) == 3, f"three kinds of thing were left out: {styles_left_out}")
         # Each book that could be opened was opened four times, twice for its package and twice to be read through;
         # and no two books of one folder come at the same place in its listing.
         opened = [book for book in found.values() if "opens" in book]
@@ -465,6 +593,8 @@ def main() -> int:
             book, whole = briefly[name], found[name]
             expect(book.get("not_read_through") is True and "entries" not in book and "xml_documents" not in book,
                    f"{name}: a brief check should not read it through:\n{brief_said}")
+            expect(not any(key.startswith("styles") for key in book),
+                   f"{name}: a brief check should find no sheets:\n{brief_said}")
             expect(book["opens"] == 2, f"{name}: a brief check should open the file twice:\n{brief_said}")
             for figure in ("package_checksum", "package_reads", "toc_checksum", "toc_reads", "toc_entries",
                            "place_reads"):

@@ -17,8 +17,9 @@
 //
 // The sheets of each document are found, in the order of the files, and
 // then those of the first document again, with the plain working-out
-// (the reference in tests/support) beside it. What has to hold, whatever
-// the bytes:
+// (the reference in tests/support) beside it. Every other document is
+// opened here and handed over open, as a reader that knows where a book's
+// documents are hands them over. What has to hold, whatever the bytes:
 //
 //   - every document ends with a list, in a number of steps that the
 //     book's size bounds; but one whose path is longer than a book's path
@@ -39,7 +40,11 @@
 //   - a document found a second time has the same list, and by then
 //     nothing is opened for it but the document;
 //   - no file but a document is opened twice for the book, the sheet in
-//     hand when a document was given up apart.
+//     hand when a document was given up apart;
+//   - the digest of what the documents were given (epub/sheets_digest.h)
+//     counts what was found, and, as long as the plain working-out can be
+//     set beside it and no document was given up, is the checksum of the
+//     lines that working-out comes to.
 
 #include <algorithm>
 #include <array>
@@ -53,9 +58,11 @@
 #include <vector>
 
 #include "book_fakes.h"
+#include "core/checksum.h"
 #include "epub/css.h"
 #include "epub/css_rules.h"
 #include "epub/document_sheets.h"
+#include "epub/sheets_digest.h"
 #include "epub/xml.h"
 #include "fuzz_support.h"
 #include "sheets_reference.h"
@@ -194,9 +201,20 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   sheets.BeginBook();
   bn::test::SheetsReference reference(book, styleBytes);
 
-  // A document the book has not: no list, and nothing counted.
+  // A document the book has not: no list, and nothing counted. (If the
+  // bytes have made a file of that name, it is a document like any other.)
+  // Then the book is begun again, which forgets it and whatever it asked
+  // for: what follows is the book from its start.
   BN_FUZZ_CHECK(sheets.Find("no such document") == bn::epub::SheetsStatus::kNoDocument || book.Has("no such document"),
                 "a document that is not there was found");
+  sheets.BeginBook();
+  BN_FUZZ_CHECK(
+      rules.Sheets() == 0 && sheets.SheetsRead() == 0 && sheets.NamesBytes() == 0 && CountsOf(sheets) == Counts{},
+      "a book begun again was not begun from nothing");
+  told.leftOut = {};
+  told.read = 0;
+  book.opens = 0;
+  book.opened.clear();
 
   // Whether what the finder gives can still be set beside the plain
   // working-out: not once it has had no room for something, and not what
@@ -204,6 +222,12 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   // since it may have said that then.
   bool comparable = true;
   bool gaveUp = false;
+  // What the documents were given, boiled down; and the lines it should
+  // be the checksum of, from the plain working-out.
+  bn::epub::SheetsDigest digest;
+  digest.Reset();
+  std::string lines;
+  std::uint64_t given = 0;
   std::vector<std::string> firstList;
   std::uint32_t firstRules = 0;
 
@@ -220,17 +244,29 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     }
     const Counts before = CountsOf(sheets);
     const std::size_t opens = book.opens;
-    sheets.Begin(document);
+    // Every other document is handed over open, from the book's one source
+    // for whatever is open: the same list has to come of it.
+    bn::core::ByteSource* const handed =
+        turn % 2 == 1 && document.size() <= bn::epub::kMaxBookPath ? book.Open(document) : nullptr;
+    if (handed != nullptr) {
+      sheets.Begin(document, *handed);
+    } else {
+      sheets.Begin(document);
+    }
     Run(sheets, book, kMostSteps);
+    digest.Add(document, sheets);
+    lines += "D " + document + "\n";
     if (document.size() > bn::epub::kMaxBookPath) {
       BN_FUZZ_CHECK(sheets.Status() == bn::epub::SheetsStatus::kNoDocument && sheets.Sheets().empty(),
                     "a document with a path too long to be one was given a list");
       BN_FUZZ_CHECK(book.opens == opens, "a file was opened for a path too long to be a document's");
+      lines += "N\n";
       continue;
     }
     BN_FUZZ_CHECK(sheets.Status() == bn::epub::SheetsStatus::kOk && sheets.Finished(),
                   "a document of the book did not end with a list");
     const std::vector<std::string> listed = Listed(sheets, rules, book);
+    given += listed.size();
     BN_FUZZ_CHECK(rules.Sheets() == sheets.SheetsRead() + (sheets.HasOwnStyle() ? 1U : 0U),
                   "the table has other sheets than those read and the document's own");
     BN_FUZZ_CHECK(sheets.SheetsRead() == told.read, "a sheet was read that was not told of, or the other way");
@@ -247,7 +283,14 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       ownRules = bn::test::SheetsReference::OwnRules(expected);
       BN_FUZZ_CHECK(expected.document, "the plain working-out has no such document");
       BN_FUZZ_CHECK(listed == expected.sheets, "the list is not the one the plain working-out gives");
+      for (const std::string& sheet : expected.sheets) {
+        lines += "S " + sheet + "\n";
+      }
       for (std::size_t kind = 0; kind < after.size(); ++kind) {
+        if (expected.leftOut[kind] != 0) {
+          lines += std::string("X ") + bn::epub::SheetLeftOutName(static_cast<SheetLeftOut>(kind)) + " " +
+                   std::to_string(expected.leftOut[kind]) + "\n";
+        }
         if (gaveUp && static_cast<SheetLeftOut>(kind) == SheetLeftOut::kSheetNotRead) {
           continue;
         }
@@ -276,6 +319,16 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     }
   }
 
+  // The digest counted what there was, and is the checksum of the lines.
+  BN_FUZZ_CHECK(digest.Documents() == order.size(), "the digest has not as many documents as were found");
+  BN_FUZZ_CHECK(digest.Given() == given, "the digest has not as many sheets as the lists had");
+  BN_FUZZ_CHECK(digest.Unopened() <= digest.Documents(), "the digest has more documents unopened than there were");
+  if (comparable && !gaveUp) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): characters as the bytes they are.
+    const std::uint32_t expected = bn::core::Crc32({reinterpret_cast<const std::uint8_t*>(lines.data()), lines.size()});
+    BN_FUZZ_CHECK(digest.Checksum() == expected, "the digest is not the checksum of the lines it is said to be");
+  }
+
   // A sheet is read once for the whole book, and one the book has not is
   // looked for once; but the sheet in hand when a document was given up is
   // begun again.
@@ -286,7 +339,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   std::size_t again = 0;
   for (const auto& [name, count] : times) {
     const bool isDocument = std::find(documents.begin(), documents.end(), name) != documents.end();
-    if (!isDocument && name != "no such document") {
+    if (!isDocument) {
       again += count - 1;
     }
   }

@@ -125,6 +125,7 @@ bn_add_unit_test(epub_tests
     unit/epub/css_test.cpp
     unit/epub/document_sheets_test.cpp
     unit/epub/package_test.cpp
+    unit/epub/sheets_digest_test.cpp
     unit/epub/toc_test.cpp
     unit/epub/xml_test.cpp
     unit/epub/zip_test.cpp
@@ -424,12 +425,12 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(e2e.DrawingViewer PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # The book check, run by the desktop application over a folder of books,
-  # against bn-zip, bn-xml, bn-epub and zipfile on the same files.
+  # against bn-zip, bn-xml, bn-epub, bn-css and zipfile on the same files.
   add_test(
     NAME e2e.BookCheck
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/book_check.py
       $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-trace> $<TARGET_FILE:bn-zip> $<TARGET_FILE:bn-xml>
-      $<TARGET_FILE:bn-epub> ${CMAKE_CURRENT_BINARY_DIR}/book_check)
+      $<TARGET_FILE:bn-epub> $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/book_check)
   set_tests_properties(e2e.BookCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # bn-zip, bn-xml, bn-epub, bn-css, bn-png and bn-jpeg over the real books

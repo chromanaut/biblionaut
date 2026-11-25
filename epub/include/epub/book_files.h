@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <span>
 #include <string_view>
 
 #include "core/block_file.h"
@@ -48,6 +50,22 @@ class ZipBookFiles final : public BookFiles {
       : archive_(archive), entries_(entries), reader_(reader) {}
 
   [[nodiscard]] core::ByteSource* Open(std::string_view path) noexcept override;
+
+  // Opens the file whose place in the ZIP file its caller already has, as
+  // the directory or a book's package gave it, without finding it by its
+  // name. The file's path is read from the entry's own header into `path`:
+  // the way back from a place to the name its links are from. `length` is
+  // how much of `path` that is.
+  //
+  // Null if the entry cannot be opened, or its path cannot be read, or the
+  // path is longer than `path` has room for (kUnsupported): as much of the
+  // path as there was room for is in `path` all the same, to say which
+  // file it was, and nothing of it if it could not be read.
+  //
+  // This is how a document of a book's spine is opened to be handed to
+  // DocumentSheets::Begin(): the package has its place (SpineItem::entry),
+  // and a search of the directory for its name is saved.
+  [[nodiscard]] core::ByteSource* OpenAt(const ZipEntry& entry, std::span<char> path, std::size_t& length) noexcept;
 
   // How finding or opening the last file asked for ended: kOk if it was
   // opened, kNotFound if the book has none of that name, or what was wrong.

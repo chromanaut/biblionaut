@@ -10,6 +10,7 @@ add_library(bn_epub STATIC
   src/document_sheets.cpp
   src/package.cpp
   src/package_digest.cpp
+  src/sheets_digest.cpp
   src/toc.cpp
   src/toc_digest.cpp
   src/xml.cpp

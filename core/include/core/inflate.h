@@ -102,7 +102,8 @@ class Inflater final : public ByteSource {
     std::uint16_t symbolCount = 0;
     // Looked up by the next `fastBits` bits of input: the symbol those bits
     // begin with and how long its code is, or 0 if the code is longer than
-    // that. Empty for a code that has no such table.
+    // that. Empty for a code that has no such table. Build() fills it, and
+    // Decompress() reads it.
     std::span<std::uint16_t> fast;
     std::uint8_t fastBits = 0;
   };
@@ -117,7 +118,8 @@ class Inflater final : public ByteSource {
   bool Bits(unsigned count, std::uint32_t& value) noexcept;
 
   static Built Build(Code& code, std::span<const std::uint8_t> lengths) noexcept;
-  // The next symbol of `code`, or -1 if the input does not hold one.
+  // The next symbol of `code`, found a bit at a time without its table,
+  // or -1 if the input does not hold one.
   int Decode(const Code& code) noexcept;
 
   void StartBlock() noexcept;

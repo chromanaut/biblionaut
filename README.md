@@ -373,7 +373,10 @@ its 100 strips to both planes. Its grays come 0.4 s after the refresh:
 169 ms reading it back and writing the gray planes, and the gray pass,
 with the switch-off after it, 207 ms. A title page of 2,800 by 880 takes
 1.9 s, two thirds of it reading. A colour photograph of 4 megapixels takes
-14 s, nearly all of it the inflater giving out its 12 MB of rows. From the
+14 s, nearly all of it the inflater giving out its 12 MB of rows. (Those
+three times were taken before the inflater was made faster, as told under
+"Decompression" below, which shortens the reading in each. They have not
+been taken again.) From the
 cache, a picture is at its refresh in 0.1 to 0.3 s. What a picture needs
 is taken from the heap the first time one is shown, and kept: about 73 KB,
 32 KB of it PNG's window, 16 KB the reader's rows, 9 KB the JPEG reader,
@@ -759,11 +762,21 @@ and the device.
 
 - **Memory**: the caller provides the 32 KB window the format needs. The
   object itself is 2.6 KB on the device. It allocates nothing.
-- **Flash**: 4.2 KB, as compiled for the device.
-- **Speed**: not yet tuned. On an X4, over 34 books, it gave out about
-  1,530 KB a second with the ZIP checksum included (which is about a
-  fifth of that time), taking in about 760 KB a second, where the SD
-  card delivered about 960.
+- **Flash**: 4.7 KB, as compiled for the device.
+- **Speed**: on an X4, over 34 books, it gives out about 2,740 KB a
+  second with the ZIP checksum included (which is a third of that time),
+  taking in about 1,360 KB a second, where the SD card delivers about
+  980. Three things got it there from the 1,550 KB a second it gave out
+  at first. The loop that reads a compressed block keeps the state of
+  the input in local variables and not in the object, where the compiler
+  had to load and store it again for every symbol, since any byte
+  written might have changed it. What is produced is written once, into
+  the window, and copied to the caller in one piece when the call ends.
+  And a repeat of earlier output, or the bytes of a stored block, are
+  copied in runs and not a byte at a time. On the desktop the same
+  change doubles its speed on the text of the books in `corpus/`, and
+  multiplies it by more than eleven on the data of their PNG pictures,
+  which is mostly long runs.
 - **Bad input**: whatever bytes it is given, it either produces the data
   they stand for or stops, saying why (`kBadData`, `kTruncated`,
   `kSourceFailed`). It does not check that the data is the right data: that
@@ -787,9 +800,14 @@ and the device.
 Its tests build streams by hand for each rule of the format and each way of
 breaking it, and compare it with zlib on streams zlib compresses: 800 of
 them across kinds of data, sizes, compression levels and strategies, and
-again with the input and output cut into pieces of many sizes. They also
-turn over every bit of a stream, one at a time, and cut it short at every
-length, to see that the inflater always stops. Every call in every one of
+again with the input and output cut into pieces of many sizes. Since
+output is copied in runs within a window that is a ring, there are streams
+made for the places where a run has to stop: repeats short and long, from
+one byte back to 32,768, each laid across the window's end twice, and
+stored blocks of many lengths, some begun with two of their bytes already
+taken into the buffer of bits and some with none. They also turn over
+every bit of a stream, one at a time, and cut it short at every length, to
+see that the inflater always stops. Every call in every one of
 those tests is held to what one call may take from its source; and there
 are streams made for that alone: a megabyte of blocks with nothing in
 them, and blocks of one byte each whose codes are written the longest way
@@ -890,27 +908,27 @@ its package, one for its table of contents, one for the places, four when
 it ends, and nine at the end for all of them.
 
 ```
-book check: the checksum alone, 262144 bytes in 1783 us (143578 KB/s).
+book check: the checksum alone, 262144 bytes in 1484 us (172506 KB/s).
 book 1: 1832425 bytes, /books/core/The First Book.epub
 book 1: package: title "The First Book", author "A. Writer", language "en".
 book 1: package: 374 files, 368 documents, cover jpeg, nav, ncx; memory 16288; checksum 7b162ac4.
-book 1: package: 3 ms: card 1 ms for 24 reads of 90555 bytes.
-book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 1 ms: card 0 ms for 2 reads of 8192 bytes.
-book 1: places: 16 far apart, 16 reads in 1775 us, the longest 188 us.
+book 1: package: 1 ms: card 0 ms for 24 reads of 90555 bytes.
+book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 0 ms: card 0 ms for 2 reads of 8192 bytes.
+book 1: places: 16 far apart, 16 reads in 1638 us, the longest 180 us.
 book 1: ok. 377 entries, 4353104 bytes out of 1769871. Directory found in 1 read, 0 ms.
-book 1: card 1 ms for 468 reads of 1909179 bytes (1416742 KB/s); inflating 49 ms: 1661195 bytes in (32687 KB/s), 4244428 out (83518 KB/s); all 90 ms.
-book 1: opened 4 times in 121 us, the longest 53 us; number 1 in its folder.
-book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 38 ms (108702 KB/s); most memory 11632.
+book 1: card 1 ms for 468 reads of 1909179 bytes (1681183 KB/s); inflating 39 ms: 1661195 bytes in (40681 KB/s), 4244428 out (103943 KB/s); all 79 ms.
+book 1: opened 4 times in 108 us, the longest 58 us; number 1 in its folder.
+book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 37 ms (111862 KB/s); most memory 11632.
 ...
 book check: passed. 34 books, 5152 entries, 63899132 bytes out of 39526769.
-book check: card 26 ms for 10091 reads of 41148789 bytes (1540870 KB/s); inflating 527 ms: 24130522 bytes in (44677 KB/s), 48502885 out (89802 KB/s); all 918 ms.
-book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 284 ms (108377 KB/s); 32821373 bytes of events checksummed.
+book check: card 23 ms for 10091 reads of 41148789 bytes (1713984 KB/s); inflating 426 ms: 24130522 bytes in (55299 KB/s), 48502885 out (111152 KB/s); all 808 ms.
+book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 279 ms (110533 KB/s); 32821373 bytes of events checksummed.
 book check: XML memory: the most a document used 18952 bytes; documents over 8 KB: 2072, over 12 KB: 24, over 16 KB: 5.
-book check: packages: 33 read; 33 ms: card 21 ms for 258 reads of 901750 bytes; the longest 3 ms; the most memory 22448. Not read: 1.
-book check: contents: 33 read (25 nav), 2666 entries; 8 ms: card 0 ms for 49 reads of 195690 bytes; the longest 1 ms.
-book check: files opened 136 times in 4 ms; the longest 98 us.
-book check: places: 544 reads in 33 ms; the longest 332 us.
-book check: the longest step: 2937 us, parsing an entry.
+book check: packages: 33 read; 25 ms: card 15 ms for 258 reads of 901750 bytes; the longest 3 ms; the most memory 22448. Not read: 1.
+book check: contents: 33 read (25 nav), 2666 entries; 7 ms: card 0 ms for 49 reads of 195690 bytes; the longest 0 ms.
+book check: files opened 136 times in 4 ms; the longest 112 us.
+book check: places: 544 reads in 35 ms; the longest 356 us.
+book check: the longest step: 426 us, listing a directory.
 ```
 
 (Those figures are a desktop's, and the book's names are made up.) A

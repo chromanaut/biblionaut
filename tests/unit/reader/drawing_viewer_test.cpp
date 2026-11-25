@@ -1118,6 +1118,41 @@ TEST(DrawingViewer, ShowsAPictureInFourLevelsThroughAGrayPassOnAPanelWithGrays) 
   EXPECT_NE(timed[0].find(" ms, gray pass "), std::string::npos) << timed[0];
 }
 
+TEST(DrawingViewer, PutsAPicturesGraysWhereItsPixelsFallInEachTurnOfThePanel) {
+  // A square panel, so a picture of its size is shown unscaled in every
+  // turn: each of its four bands, black to white, a level, wherever the
+  // turn puts it.
+  for (const bn::core::PanelTurn turn : {bn::core::PanelTurn::kNone, bn::core::PanelTurn::kClockwise,
+                                         bn::core::PanelTurn::kHalf, bn::core::PanelTurn::kAnticlockwise}) {
+    Fixture fixture;
+    fixture.display.turn = turn;
+    WithGrays(fixture, {.width = 40, .height = 40});
+    fixture.storage.Put("/drawings/p.png", GrayPng(40, 40, FourBands));
+    fixture.Start();
+    fixture.Settle();
+    ASSERT_EQ(fixture.viewer->Shown(), 1U);
+    ASSERT_EQ(RefreshesAndAfters(fixture.display), "FsGp") << static_cast<int>(turn);
+    for (std::size_t y = 0; y < 40; ++y) {
+      for (std::size_t x = 0; x < 40; ++x) {
+        // Where the page's pixel (x, y) is on the panel.
+        std::size_t panelX = x;
+        std::size_t panelY = y;
+        if (turn == bn::core::PanelTurn::kClockwise) {
+          panelX = y;
+          panelY = 39 - x;
+        } else if (turn == bn::core::PanelTurn::kHalf) {
+          panelX = 39 - x;
+          panelY = 39 - y;
+        } else if (turn == bn::core::PanelTurn::kAnticlockwise) {
+          panelX = 39 - y;
+          panelY = x;
+        }
+        ASSERT_EQ(fixture.display.LevelAt(panelX, panelY), x / 10) << static_cast<int>(turn) << ": " << x << "," << y;
+      }
+    }
+  }
+}
+
 TEST(DrawingViewer, ShowsAPictureInFourLevelsAgainFromTheCacheJustAsItWas) {
   // In each of the panel's turns: the second time, from the cache, the
   // same levels by the same two refreshes, the cache keeping two bits a

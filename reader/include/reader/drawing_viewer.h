@@ -298,10 +298,12 @@ class DrawingViewer final : public Screen {
   void ResetStrips() noexcept;
   // A row of the picture, `bits` a bit a pixel (a set bit white) from the
   // picture's left edge, put in its strip; each strip before it, white
-  // where no row was put, is written first. For the gray pass a strip is
-  // two, `which` saying which: 0 for the new-image plane's marks, 1 for the
-  // old's, each given as a row where a clear bit is a pixel marked.
-  void PutRow(std::size_t pageRow, std::span<const std::uint8_t> bits, std::size_t which = 0) noexcept;
+  // where no row was put, is written first.
+  void PutRow(std::size_t pageRow, std::span<const std::uint8_t> bits) noexcept;
+  // The same for the gray pass, whose strip is two: a row of the picture
+  // as the cache keeps it, two bits a pixel, its dark grays marked in the
+  // new-image plane's strip and every gray in the old's.
+  void PutGrayRow(std::size_t pageRow, std::span<const std::uint8_t> kept) noexcept;
   // Every strip up to and including that of `pageRow` begun, and those
   // before it written.
   void ReachRow(std::size_t pageRow) noexcept;
@@ -515,7 +517,7 @@ class DrawingViewer final : public Screen {
   std::unique_ptr<std::uint32_t[]> sums_;
   std::unique_ptr<std::uint8_t[]> scaledRow_;
   std::unique_ptr<std::uint8_t[]> stripBits_;  // The strip being filled: two, for the gray pass.
-  std::unique_ptr<std::uint8_t[]> rowBits_;    // A row of the picture, a bit a pixel: two, for the gray pass.
+  std::unique_ptr<std::uint8_t[]> rowBits_;    // A row of the picture, a bit a pixel.
   std::unique_ptr<core::BlockFile> pictureFile_;
   std::unique_ptr<draw::PngReader> png_;
   std::unique_ptr<draw::JpegReader> jpegReader_;  // Its rows in pngRows_ too: one picture is read at a time.

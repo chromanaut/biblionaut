@@ -88,6 +88,13 @@ unsigned KeptLevel(std::span<const std::uint8_t> kept, std::size_t x, unsigned b
   return (static_cast<unsigned>(kept[bit / 8]) >> (8U - bits - (bit % 8))) & ((1U << bits) - 1U);
 }
 
+// Whether any of the four pixels of a byte of a row kept at two bits a
+// pixel is one of the two grays (01 or 10): where its two bits differ.
+bool HasGray(std::uint8_t byte) noexcept {
+  const unsigned bits = byte;
+  return ((bits ^ (bits >> 1U)) & 0x55U) != 0;
+}
+
 // A row kept in the cache, `width` pixels of `bits` bits, the leftmost in
 // the top bits of the first byte: as a row of a bit a pixel, set where
 // `keep` says yes to the pixel's level.
@@ -1034,7 +1041,7 @@ bool DrawingViewer::PictureMemory() noexcept {
   // A strip: one byte of each of the panel's rows, or eight of its rows;
   // two, for the gray pass's two planes. And two rows of a bit a pixel.
   stripBits_.reset(new (std::nothrow) std::uint8_t[2 * std::max<std::size_t>(size.height, 8 * size.RowBytes())]);
-  rowBits_.reset(new (std::nothrow) std::uint8_t[2 * ((static_cast<std::size_t>(widest) + 7) / 8)]);
+  rowBits_.reset(new (std::nothrow) std::uint8_t[(static_cast<std::size_t>(widest) + 7) / 8]);
   if (fileBuffer_ && window_ && pngRows_ && sums_ && scaledRow_ && stripBits_ && rowBits_) {
     pictureFile_.reset(new (std::nothrow) core::BlockFile({fileBuffer_.get(), kFileBufferBytes}));
     png_.reset(new (std::nothrow)
@@ -1316,7 +1323,12 @@ void DrawingViewer::OpenStrip(std::size_t pageRow) noexcept {
                     .firstByte = 0,
                     .bytes = static_cast<std::uint16_t>(size.RowBytes())};
   }
-  std::fill_n(stripBits_.get(), stripWindow_.Size() * (stripGrays_ ? 2 : 1), std::uint8_t{0xFF});
+  // White for a picture; nothing marked for the gray pass.
+  if (stripGrays_) {
+    std::fill_n(stripBits_.get(), 2 * stripWindow_.Size(), std::uint8_t{0x00});
+  } else {
+    std::fill_n(stripBits_.get(), stripWindow_.Size(), std::uint8_t{0xFF});
+  }
   stripOpen_ = true;
 }
 
@@ -1331,14 +1343,10 @@ void DrawingViewer::FlushStrip() noexcept {
   const std::uint64_t started = clock_.NowUs();
   const std::span<std::uint8_t> bits(stripBits_.get(), stripWindow_.Size());
   if (stripGrays_) {
-    // The marks were put as black is: a clear bit. The planes mark with a
-    // set one.
-    const std::span<std::uint8_t> both(stripBits_.get(), 2 * stripWindow_.Size());
-    for (std::uint8_t& byte : both) {
-      byte = static_cast<std::uint8_t>(~byte);
-    }
+    // The new-image plane's marks, and after them the old's.
+    const std::span<const std::uint8_t> old(stripBits_.get() + stripWindow_.Size(), stripWindow_.Size());
     stripFailed_ = !display_.WriteWindow(core::DisplayPlane::kNew, stripWindow_, bits) ||
-                   !display_.WriteWindow(core::DisplayPlane::kOld, stripWindow_, both.subspan(stripWindow_.Size()));
+                   !display_.WriteWindow(core::DisplayPlane::kOld, stripWindow_, old);
     return;
   }
   stripFailed_ = !display_.WriteWindow(core::DisplayPlane::kNew, stripWindow_, bits) ||
@@ -1358,15 +1366,14 @@ void DrawingViewer::ReachRow(std::size_t pageRow) noexcept {
   }
 }
 
-void DrawingViewer::PutRow(std::size_t pageRow, std::span<const std::uint8_t> bits, std::size_t which) noexcept {
+void DrawingViewer::PutRow(std::size_t pageRow, std::span<const std::uint8_t> bits) noexcept {
   ReachRow(pageRow);
   // Rows come in order; one whose strip is gone is passed over.
   if (pageRow >= pageHeight_ || !stripOpen_ || StripOf(pageRow) != strip_) {
     return;
   }
   const core::PanelTurn turn = display_.ReadingTurn();
-  const std::span<std::uint8_t> strip =
-      std::span(stripBits_.get(), 2 * stripWindow_.Size()).subspan(which * stripWindow_.Size(), stripWindow_.Size());
+  const std::span<std::uint8_t> strip(stripBits_.get(), stripWindow_.Size());
   // Along a row of the page, the panel's pixel moves one place a pixel: up
   // or down a column of the panel's when it is turned a quarter, along a
   // row of it otherwise. So where the row's first pixel falls is found
@@ -1393,6 +1400,46 @@ void DrawingViewer::PutRow(std::size_t pageRow, std::span<const std::uint8_t> bi
     if ((bits[x / 8] & (0x80U >> (x % 8))) == 0) {
       const std::size_t at = right ? first.x + x : first.x - x;
       row[at / 8] = static_cast<std::uint8_t>(row[at / 8] & ~(0x80U >> (at % 8)));
+    }
+  }
+}
+
+void DrawingViewer::PutGrayRow(std::size_t pageRow, std::span<const std::uint8_t> kept) noexcept {
+  ReachRow(pageRow);
+  if (pageRow >= pageHeight_ || !stripOpen_ || StripOf(pageRow) != strip_) {
+    return;
+  }
+  const core::PanelTurn turn = display_.ReadingTurn();
+  const std::size_t size = stripWindow_.Size();
+  const std::span<std::uint8_t> dark(stripBits_.get(), size);
+  const std::span<std::uint8_t> either(stripBits_.get() + size, size);
+  // Where each pixel falls, as in PutRow(): turned a quarter, a byte down
+  // or up the strip and the same bit of it; else along a row of it.
+  const PanelPixel first = OnPanel(turn, pageWidth_, pageHeight_, left_, pageRow);
+  const bool quarter = turn == core::PanelTurn::kClockwise || turn == core::PanelTurn::kAnticlockwise;
+  const bool forward = turn == core::PanelTurn::kAnticlockwise || turn == core::PanelTurn::kNone;
+  const std::size_t rowAt = quarter ? 0 : (first.y - stripWindow_.firstRow) * stripWindow_.bytes;
+  const std::size_t along = quarter ? first.y : first.x;
+  const auto columnBit = static_cast<std::uint8_t>(0x80U >> (first.x % 8));
+  // Four pixels a byte; most bytes hold no gray and are passed over whole.
+  for (std::size_t at = 0; at < kept.size(); ++at) {
+    const std::uint8_t byte = kept[at];
+    if (!HasGray(byte)) {
+      continue;
+    }
+    for (unsigned pixel = 0; pixel < 4; ++pixel) {
+      const std::size_t x = (at * 4) + pixel;
+      const unsigned level = (static_cast<unsigned>(byte) >> (6U - (2U * pixel))) & 3U;
+      if (x >= shownWidth_ || (level != 1 && level != 2)) {
+        continue;
+      }
+      const std::size_t place = forward ? along + x : along - x;
+      const std::size_t index = quarter ? place : rowAt + (place / 8);
+      const auto mask = quarter ? columnBit : static_cast<std::uint8_t>(0x80U >> (place % 8));
+      either[index] = static_cast<std::uint8_t>(either[index] | mask);
+      if (level == 1) {
+        dark[index] = static_cast<std::uint8_t>(dark[index] | mask);
+      }
     }
   }
 }
@@ -1642,12 +1689,6 @@ bool DrawingViewer::StartGrays() noexcept {
 
 bool DrawingViewer::GrayStrips(std::uint64_t until) noexcept {
   const std::size_t keptBytes = draw::PictureCache::RowBytesFor(key_);
-  const unsigned bits = draw::PictureCache::BitsFor(key_.levels);
-  const std::size_t rowBytes = (key_.width + 7) / 8;
-  // Rows where a clear bit marks a pixel, as PutRow() takes them: in the
-  // new-image plane the dark grays, in the old every gray.
-  const std::span<std::uint8_t> dark(rowBits_.get(), rowBytes);
-  const std::span<std::uint8_t> either(rowBits_.get() + rowBytes, rowBytes);
   for (;;) {
     if (bandTop_ >= key_.height) {
       cache_.Close();
@@ -1668,11 +1709,7 @@ bool DrawingViewer::GrayStrips(std::uint64_t until) noexcept {
       return false;
     }
     for (std::size_t row = 0; row < rows; ++row) {
-      const std::span<const std::uint8_t> one = kept.subspan(row * keptBytes, keptBytes);
-      Unpack(one, key_.width, bits, dark, [](unsigned level) { return level != 1; });
-      Unpack(one, key_.width, bits, either, [](unsigned level) { return level != 1 && level != 2; });
-      PutRow(top_ + bandTop_ + row, dark, 0);
-      PutRow(top_ + bandTop_ + row, either, 1);
+      PutGrayRow(top_ + bandTop_ + row, kept.subspan(row * keptBytes, keptBytes));
     }
     if (stripFailed_) {
       cache_.Close();
@@ -1711,26 +1748,45 @@ bool DrawingViewer::GrayBands(std::uint64_t until) noexcept {
         return false;
       }
     }
-    // In the new-image plane the dark grays, in the old every gray.
-    for (const core::DisplayPlane plane : {core::DisplayPlane::kNew, core::DisplayPlane::kOld}) {
-      const std::span<std::uint8_t> band(bits_.get(), rows * rowBytes);
-      std::fill(band.begin(), band.end(), std::uint8_t{0});
-      for (std::size_t row = 0; row < keptRows; ++row) {
-        const std::span<const std::uint8_t> one(cacheRows_.get() + (row * keptBytes), keptBytes);
-        const std::span<std::uint8_t> out = band.subspan((first - bandTop_ + row) * rowBytes, rowBytes);
-        for (std::size_t x = 0; x < key_.width; ++x) {
+    // In the new-image plane the dark grays, in the old every gray: both
+    // made in one pass, the old's in the band of grays, which the drawing
+    // is done with.
+    const std::span<std::uint8_t> dark(bits_.get(), rows * rowBytes);
+    const std::span<std::uint8_t> either(gray_.get(), rows * rowBytes);
+    std::fill(dark.begin(), dark.end(), std::uint8_t{0});
+    std::fill(either.begin(), either.end(), std::uint8_t{0});
+    for (std::size_t row = 0; row < keptRows; ++row) {
+      const std::span<const std::uint8_t> one(cacheRows_.get() + (row * keptBytes), keptBytes);
+      const std::size_t rowAt = (first - bandTop_ + row) * rowBytes;
+      // Four pixels a byte; most bytes hold no gray and are passed over.
+      for (std::size_t at = 0; at < one.size(); ++at) {
+        if (!HasGray(one[at])) {
+          continue;
+        }
+        for (unsigned pixel = 0; pixel < 4; ++pixel) {
+          const std::size_t x = (at * 4) + pixel;
+          if (x >= key_.width) {
+            continue;
+          }
           const unsigned level = KeptLevel(one, x, bits);
-          if (level == 1 || (level == 2 && plane == core::DisplayPlane::kOld)) {
-            const std::size_t at = cacheX_ + x;
-            out[at / 8] = static_cast<std::uint8_t>(out[at / 8] | (0x80U >> (at % 8)));
+          if (level != 1 && level != 2) {
+            continue;
+          }
+          const std::size_t place = cacheX_ + x;
+          const auto mask = static_cast<std::uint8_t>(0x80U >> (place % 8));
+          either[rowAt + (place / 8)] = static_cast<std::uint8_t>(either[rowAt + (place / 8)] | mask);
+          if (level == 1) {
+            dark[rowAt + (place / 8)] = static_cast<std::uint8_t>(dark[rowAt + (place / 8)] | mask);
           }
         }
       }
-      if (!display_.WriteRows(plane, static_cast<std::uint16_t>(bandTop_), band)) {
-        cache_.Close();
-        WithoutGrays("the panel would not take its planes", clock_.NowUs());
-        return false;
-      }
+    }
+    const auto top = static_cast<std::uint16_t>(bandTop_);
+    if (!display_.WriteRows(core::DisplayPlane::kNew, top, dark) ||
+        !display_.WriteRows(core::DisplayPlane::kOld, top, either)) {
+      cache_.Close();
+      WithoutGrays("the panel would not take its planes", clock_.NowUs());
+      return false;
     }
     bandTop_ += rows;
     if (clock_.NowUs() >= until) {

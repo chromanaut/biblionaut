@@ -251,8 +251,8 @@ drawing 2 of 3: lewis-carroll-illustration-7.svg, ok, 17 shapes, 0 strokes, 37 m
 That is an engraving of 932 KB from a public book, drawn by the optimised
 desktop application. On the X4, nine drawings of every kind take from
 0.7 s to 18 s from the press to their refresh the first time, and 0.1 to
-0.2 s from the cache; their grays come 0.3 to 0.4 s after the refresh,
-the gray planes taking 88 to 207 ms and the gray pass about 205. No stroke
+0.2 s from the cache; their grays come about 0.3 s after the refresh,
+the gray planes taking 79 to 151 ms and the gray pass about 205. No stroke
 is drawn thinner than a pixel (`SetThinnestStroke()`, below): one much
 thinner would be a light gray, which the panel's levels show as a broken
 line.
@@ -363,8 +363,8 @@ an engraving of 600 by 825 pixels in 16 colours from another book in
 `corpus/`, made 480 by 660, takes 1.3 s from the press to its refresh:
 nearly a third keeping it in the cache at two bits a pixel (77 KB, below),
 a quarter dithering, a fifth reading, a seventh scaling, and 60 ms writing
-its 100 strips to both planes. Its grays come 0.5 s after the refresh:
-311 ms reading it back and writing the gray planes, and the gray pass,
+its 100 strips to both planes. Its grays come 0.4 s after the refresh:
+169 ms reading it back and writing the gray planes, and the gray pass,
 with the switch-off after it, 207 ms. A title page of 2,800 by 880 takes
 1.9 s, two thirds of it reading. A colour photograph of 4 megapixels takes
 14 s, nearly all of it the inflater giving out its 12 MB of rows. From the

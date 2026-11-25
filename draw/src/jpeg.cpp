@@ -100,31 +100,67 @@ std::uint8_t ToPixel(std::int32_t value) noexcept {
   return static_cast<std::uint8_t>(std::clamp<std::int32_t>(value + 128, 0, 255));
 }
 
+// Each row of the three tables reads the same from either end, with its
+// sign turned for an odd frequency: the cosine of an even frequency is the
+// same either side of the block's middle, and of an odd one the opposite.
+// The transform below leans on it, so it is held here.
+template <std::size_t N>
+constexpr bool ReadsTheSameFromEitherEnd(const std::array<std::array<std::int32_t, N>, 8>& table) noexcept {
+  for (std::size_t u = 0; u < 8; ++u) {
+    for (std::size_t x = 0; x < N; ++x) {
+      if (table[u][N - 1 - x] != (u % 2 == 0 ? table[u][x] : -table[u][x])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+static_assert(ReadsTheSameFromEitherEnd(kWhole) && ReadsTheSameFromEitherEnd(kHalf) &&
+              ReadsTheSameFromEitherEnd(kQuarter));
+
 // The block's coefficients turned into N by N pixels, down each column of
 // frequencies and then across each row, rows `stride` apart. Every
 // coefficient right of `lastAcross` or below `lastDown` is 0.
+//
+// A pixel and the one as far from the other end of its row or column are
+// worked out together. What the even frequencies give the two is the same,
+// and what the odd ones give them is the same with its sign turned, so
+// each product is made once and serves both: one is the two sums added,
+// the other the one taken from the other. They are the numbers a product
+// of the whole table gives, to the bit, with half the multiplying.
 template <std::size_t N>
 void Transform(const std::array<std::int32_t, 64>& block, std::array<std::int32_t, 64>& work,
                const std::array<std::array<std::int32_t, N>, 8>& table, std::size_t lastAcross, std::size_t lastDown,
                std::uint8_t* out, std::size_t stride) noexcept {
   for (std::size_t u = 0; u <= lastAcross; ++u) {
-    for (std::size_t y = 0; y < N; ++y) {
-      std::int32_t sum = 0;
-      for (std::size_t v = 0; v <= lastDown; ++v) {
-        sum += table[v][y] * block[(v * 8) + u];
+    for (std::size_t y = 0; y < N / 2; ++y) {
+      std::int32_t even = 0;
+      for (std::size_t v = 0; v <= lastDown; v += 2) {
+        even += table[v][y] * block[(v * 8) + u];
+      }
+      std::int32_t odd = 0;
+      for (std::size_t v = 1; v <= lastDown; v += 2) {
+        odd += table[v][y] * block[(v * 8) + u];
       }
       // Three bits kept below the point.
-      work[(y * 8) + u] = std::clamp<std::int32_t>(ShiftDown(sum + 256, 9), -kMostBetween, kMostBetween);
+      work[(y * 8) + u] = std::clamp<std::int32_t>(ShiftDown(even + odd + 256, 9), -kMostBetween, kMostBetween);
+      work[((N - 1 - y) * 8) + u] =
+          std::clamp<std::int32_t>(ShiftDown(even - odd + 256, 9), -kMostBetween, kMostBetween);
     }
   }
   for (std::size_t y = 0; y < N; ++y) {
     std::uint8_t* row = out + (y * stride);
-    for (std::size_t x = 0; x < N; ++x) {
-      std::int32_t sum = 0;
-      for (std::size_t u = 0; u <= lastAcross; ++u) {
-        sum += table[u][x] * work[(y * 8) + u];
+    for (std::size_t x = 0; x < N / 2; ++x) {
+      std::int32_t even = 0;
+      for (std::size_t u = 0; u <= lastAcross; u += 2) {
+        even += table[u][x] * work[(y * 8) + u];
       }
-      row[x] = ToPixel(ShiftDown(sum + 16384, 15));
+      std::int32_t odd = 0;
+      for (std::size_t u = 1; u <= lastAcross; u += 2) {
+        odd += table[u][x] * work[(y * 8) + u];
+      }
+      row[x] = ToPixel(ShiftDown(even + odd + 16384, 15));
+      row[N - 1 - x] = ToPixel(ShiftDown(even - odd + 16384, 15));
     }
   }
 }

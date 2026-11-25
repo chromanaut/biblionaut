@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -282,6 +283,152 @@ TEST(Jpeg, GivesAColourPicturesGrayHoweverItIsSampled) {
       ExpectPicture(ReadJpeg(JpegFile(picture), reduction), picture, reduction, 0, "colour");
     }
   }
+}
+
+// The table that turns a block into `side` pixels a side, made the way the
+// reader's source says its tables are: what frequency u gives a pixel,
+// C(u)/2 * cos((2x + 1)u pi / 16), averaged over the pixels of the whole
+// block that the pixel stands for, times 4096 and rounded.
+std::array<std::array<std::int32_t, 8>, 8> TransformTable(std::size_t side) {
+  std::array<std::array<std::int32_t, 8>, 8> table{};
+  const std::size_t each = 8 / side;
+  for (std::size_t u = 0; u < 8; ++u) {
+    for (std::size_t x = 0; x < side; ++x) {
+      double sum = 0;
+      for (std::size_t k = 0; k < each; ++k) {
+        const double scale = u == 0 ? std::numbers::sqrt2 / 4 : 0.5;
+        sum += scale * std::cos(((2.0 * static_cast<double>((x * each) + k)) + 1) * static_cast<double>(u) *
+                                std::numbers::pi / 16);
+      }
+      table[u][x] = static_cast<std::int32_t>(std::lround(4096.0 * sum / static_cast<double>(each)));
+    }
+  }
+  return table;
+}
+
+// What a picture's first component comes to with each block `side` pixels a
+// side, by multiplying every coefficient by every entry of that table,
+// down and then across, in whole numbers rounded as the reader's source
+// rounds them: 9 bits dropped after the first product, 15 after the second.
+Bytes PixelsByTheWholeProduct(const JpegPicture& picture, std::size_t side) {
+  // A sum with so many bits dropped from it, rounded down whatever its sign.
+  const auto dropped = [](std::int64_t sum, std::int64_t one) {
+    return sum >= 0 ? sum / one : -((-sum + one - 1) / one);
+  };
+  const std::array<std::array<std::int32_t, 8>, 8> table = TransformTable(side);
+  const std::size_t by = 8 / side;
+  const std::size_t wide = (picture.width + by - 1) / by;
+  const std::size_t rows = (picture.height + by - 1) / by;
+  const std::size_t across = picture.BlocksAcross(0);
+  const auto& steps = picture.steps.at(picture.components.at(0).table);
+  Bytes pixels(wide * rows);
+  for (std::size_t at = 0; at < picture.blocks.at(0).size(); ++at) {
+    const bn::test::JpegBlock& block = picture.blocks[0][at];
+    std::array<std::array<std::int64_t, 8>, 8> between{};
+    for (std::size_t u = 0; u < 8; ++u) {
+      for (std::size_t y = 0; y < side; ++y) {
+        std::int64_t sum = 0;
+        for (std::size_t v = 0; v < 8; ++v) {
+          sum += std::int64_t{table[v][y]} * block[(v * 8) + u] * steps[(v * 8) + u];
+        }
+        between[y][u] = dropped(sum + 256, 512);
+      }
+    }
+    for (std::size_t y = 0; y < side; ++y) {
+      for (std::size_t x = 0; x < side; ++x) {
+        std::int64_t sum = 0;
+        for (std::size_t u = 0; u < 8; ++u) {
+          sum += std::int64_t{table[u][x]} * between[y][u];
+        }
+        const std::size_t px = ((at % across) * side) + x;
+        const std::size_t py = ((at / across) * side) + y;
+        if (px < wide && py < rows) {
+          pixels[(py * wide) + px] =
+              static_cast<std::uint8_t>(std::clamp<std::int64_t>(dropped(sum + 16384, 32768) + 128, 0, 255));
+        }
+      }
+    }
+  }
+  return pixels;
+}
+
+TEST(Jpeg, GivesThePixelsMultiplyingTheWholeTableOutGives) {
+  // The reader makes each product once for a pixel and the one as far from
+  // the other end of its row or column, and stops at the last coefficient
+  // a block has. Neither may show: every pixel is the number the whole
+  // product comes to, not within a gray of it, at the whole size, a half
+  // and a quarter, for gray and for colour, with sides that are no whole
+  // number of blocks.
+  EXPECT_EQ(TransformTable(8)[1][0], 2009);
+  EXPECT_EQ(TransformTable(8)[7][3], -2009);
+  EXPECT_EQ(TransformTable(4)[1][0], 1856);
+  EXPECT_EQ(TransformTable(4)[7][0], -369);
+  EXPECT_EQ(TransformTable(2)[1][0], 1312);
+  EXPECT_EQ(TransformTable(2)[7][1], 261);
+  auto random = Repeatable(61);
+  std::size_t pixelsInAll = 0;
+  // Sides that are a block, less, more, and no whole number of them: the
+  // same on every machine, which what a distribution takes from the
+  // numbers it is given is not.
+  constexpr std::array<std::uint32_t, 12> kWidths = {1, 7, 8, 9, 16, 31, 33, 45, 50, 64, 67, 70};
+  constexpr std::array<std::uint32_t, 12> kHeights = {3, 8, 23, 17, 16, 9, 40, 29, 5, 48, 31, 50};
+  for (std::size_t round = 0; round < kWidths.size(); ++round) {
+    std::vector<JpegComponent> components = Gray();
+    if (round % 3 != 0) {
+      components = Colour(2, round % 3 == 1 ? 2 : 1);
+    }
+    const JpegPicture picture = RandomPicture(random, kWidths[round], kHeights[round], components);
+    const std::vector<std::uint8_t> file = JpegFile(picture);
+    for (const JpegReduction reduction : {JpegReduction::kNone, JpegReduction::kHalf, JpegReduction::kQuarter}) {
+      const Reading reading = ReadJpeg(file, reduction);
+      ASSERT_EQ(reading.status, JpegStatus::kOk) << round;
+      const Bytes expected = PixelsByTheWholeProduct(picture, 8 / static_cast<std::size_t>(reduction));
+      ASSERT_EQ(reading.pixels.size(), expected.size()) << round;
+      for (std::size_t i = 0; i < expected.size(); ++i) {
+        ASSERT_EQ(reading.pixels[i], expected[i])
+            << "round " << round << ", reduced by " << static_cast<int>(reduction) << ", pixel " << i;
+      }
+      pixelsInAll += expected.size();
+    }
+  }
+  EXPECT_GT(pixelsInAll, 10000U);
+
+  // A sum that lies exactly on the half that rounding turns on comes to
+  // one pixel in 32,768 by chance, so a block is looked for that has one
+  // in the far half of its rows, where a pixel is the two sums taken one
+  // from the other: an average and one frequency across, the same down
+  // every column, so that each row of pixels is the same.
+  const std::array<std::array<std::int32_t, 8>, 8> table = TransformTable(8);
+  const auto dropped = [](std::int64_t sum, std::int64_t one) {
+    return sum >= 0 ? sum / one : -((-sum + one - 1) / one);
+  };
+  int onTheHalf = 0;
+  for (int average = -300; average <= 300 && onTheHalf < 3; ++average) {
+    for (int across = -40; across <= 40 && onTheHalf < 3; ++across) {
+      const std::int64_t first = dropped((std::int64_t{table[0][0]} * average) + 256, 512);
+      const std::int64_t second = dropped((std::int64_t{table[0][0]} * across) + 256, 512);
+      bool here = false;
+      for (std::size_t x = 4; x < 8; ++x) {
+        const std::int64_t sum = (table[0][x] * first) + (table[1][x] * second);
+        here = here || (((sum + 16384) % 32768 == 0) && std::abs(sum) < 3276800);
+      }
+      if (!here) {
+        continue;
+      }
+      ++onTheHalf;
+      JpegPicture edge;
+      edge.width = 8;
+      edge.height = 8;
+      edge.components = Gray();
+      edge.Make();
+      edge.blocks[0][0][0] = static_cast<std::int16_t>(average);
+      edge.blocks[0][0][1] = static_cast<std::int16_t>(across);
+      const Reading reading = ReadJpeg(JpegFile(edge));
+      ASSERT_EQ(reading.status, JpegStatus::kOk);
+      ASSERT_TRUE(reading.pixels == PixelsByTheWholeProduct(edge, 8)) << average << " and " << across;
+    }
+  }
+  EXPECT_EQ(onTheHalf, 3);
 }
 
 TEST(Jpeg, ReadsAPictureSmallerAtEachReduction) {

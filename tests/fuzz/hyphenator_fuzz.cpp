@@ -41,9 +41,12 @@
 //     anything that is not a letter;
 //   - a word of more than kMaxLetters characters has no places;
 //   - with room for fewer places, the first ones are given;
-//   - the same table somewhere else in memory gives the same places;
+//   - the same table somewhere else in memory, taken by a hyphenator that
+//     had another table open before it, gives the same places;
+//   - with a table, the places are the ones found by reading the table an
+//     edge at a time, each stretch of the word's letters by itself;
 //   - with patterns, the places are the ones found by laying every pattern
-//     over every place in the word (tests/support/hyphen_patterns.h).
+//     over every place in the word (both in tests/support/hyphen_patterns.h).
 
 #include <algorithm>
 #include <array>
@@ -100,15 +103,15 @@ std::span<const std::uint8_t> LetterListOf(std::span<const std::uint8_t> table) 
   return table.subspan(kHeaderBytes, Number16(table, 8) * kListedBytes);
 }
 
-// Whether a letter list names `codePoint`: looked for from the front, an
-// entry at a time.
-bool IsListed(std::span<const std::uint8_t> listed, std::uint32_t codePoint) {
+// Which letter a letter list says `codePoint` is, and 0 if it names no such
+// character: looked for from the front, an entry at a time.
+std::uint8_t LetterListed(std::span<const std::uint8_t> listed, std::uint32_t codePoint) {
   for (std::size_t at = 0; at + kListedBytes <= listed.size(); at += kListedBytes) {
     if ((Number16(listed, at) | (std::uint32_t{listed[at + 2]} << 16U)) == codePoint) {
-      return true;
+      return listed[at + 3];
     }
   }
-  return false;
+  return 0;
 }
 
 // How many bytes UTF-8 writes a code point in.
@@ -124,8 +127,9 @@ std::size_t BytesFor(std::uint32_t codePoint) {
 
 // One character of a word, as the target reads the word for itself.
 struct Character {
-  std::size_t at = 0;   // How many bytes of the word come before it.
-  bool letter = false;  // It is one of the language's letters.
+  std::size_t at = 0;       // How many bytes of the word come before it.
+  bool letter = false;      // It is one of the language's letters:
+  std::uint8_t symbol = 0;  // this one.
 };
 
 // The characters of `word`. A byte that begins no character of UTF-8 is a
@@ -156,17 +160,30 @@ std::vector<Character> CharactersOf(std::string_view word, std::span<const std::
       codePoint = (codePoint << 6U) | (next & 0x3FU);
     }
     good = good && BytesFor(codePoint) == length && codePoint <= 0x10FFFF && (codePoint < 0xD800 || codePoint > 0xDFFF);
-    characters.push_back({.at = at, .letter = good && IsListed(listed, codePoint)});
+    const std::uint8_t symbol = good ? LetterListed(listed, codePoint) : std::uint8_t{0};
+    characters.push_back({.at = at, .letter = symbol != 0, .symbol = symbol});
     at += good ? length : 1;
   }
   return characters;
 }
 
+// A table that is none of an input's: one with an edge from its first
+// state for each of twelve letters and for a word's end, and states after
+// them.
+const std::vector<std::uint8_t>& TableOpenedBefore() {
+  static const std::vector<std::uint8_t> kTable = bn::test::PlainHyphenTable(
+      {"1a", "b1", "1c2", "d3d", "e1e1", ".f1", "g1.", "hy3ph", "1in", "j2k", "k1l1m", "2l1", ".m2n."}, 1, 1);
+  return kTable;
+}
+
 // A language as the target holds it: the table in memory of exactly its
-// size, the same bytes again somewhere else, and a hyphenator on each.
+// size, the same bytes again somewhere else, and a hyphenator on each. The
+// second has had another table open, of which nothing may be left.
 struct Language {
   explicit Language(std::span<const std::uint8_t> bytes)
-      : table(bytes.begin(), bytes.end()), copy(bytes.begin(), bytes.end()) {}
+      : table(bytes.begin(), bytes.end()), copy(bytes.begin(), bytes.end()) {
+    BN_FUZZ_CHECK(elsewhere.Open(TableOpenedBefore()) == HyphenStatus::kOk, "the target's own table was refused");
+  }
 
   std::vector<std::uint8_t> table;
   std::vector<std::uint8_t> copy;
@@ -263,6 +280,29 @@ void ReadTable(bn::fuzz::Input& input, std::size_t room) {
     const std::vector<char> word(line.begin(), line.end());
     const std::vector<std::uint8_t> places = PlacesOf(language, {word.data(), word.size()}, room);
     BN_FUZZ_CHECK(opened || places.empty(), "a table that was refused gave a word a place");
+    if (!opened) {
+      continue;
+    }
+    // The table read by the target, an edge at a time: each stretch of
+    // letters by itself, in a word that is not too long to look at.
+    const std::vector<Character> characters = CharactersOf({word.data(), word.size()}, language.listed);
+    std::vector<std::uint8_t> byReading;
+    for (std::size_t first = 0; first < characters.size() && characters.size() <= Hyphenator::kMaxLetters;) {
+      if (!characters[first].letter) {
+        ++first;
+        continue;
+      }
+      std::vector<std::uint8_t> stretch;
+      std::size_t end = first;
+      for (; end < characters.size() && characters[end].letter; ++end) {
+        stretch.push_back(characters[end].symbol);
+      }
+      for (const std::size_t before : bn::test::PlacesByReadingTable(language.table, stretch)) {
+        byReading.push_back(static_cast<std::uint8_t>(characters[first + before].at));
+      }
+      first = end;
+    }
+    BN_FUZZ_CHECK(places == byReading, "a word's places are not the ones reading the table an edge at a time gives");
   }
 }
 

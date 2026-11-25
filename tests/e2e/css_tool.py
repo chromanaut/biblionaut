@@ -15,12 +15,20 @@ They are compared on sheets written here, on those sheets with bytes
 changed, taken out and put in at random, and on the sheets of an EPUB read
 out of the ZIP file. tools/check-books.py compares them on real books.
 
+The kind of face a font-family value comes to is worked out a second time
+here as well (`class_of_families`). The names of faces that are known are
+asked of the tool (`bn-css family --names`): they are a list of facts, and
+the unit tests say what is in it. What is done with them is written here
+another way: the words of a name found all at once, and the best of all
+that is found taken at the end.
+
 usage: css_tool.py BN_CSS WORK_DIR
 """
 
 from __future__ import annotations
 
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -167,8 +175,8 @@ def next_piece(rest: str) -> tuple[str, str]:
     return rest[:at], rest[at:]
 
 
-def families(text: str) -> str:
-    """The names of a font-family value, as the tool writes them."""
+def family_list(text: str, most: int) -> list[str]:
+    """The names of a font-family value, each cut to `most` bytes."""
     names = []
     rest = text
     while rest:
@@ -201,8 +209,81 @@ def families(text: str) -> str:
             at += 1
         rest = rest[at + 1:]
         if name:
-            names.append(name[:256])
-    return ", ".join(names)
+            names.append(name[:most])
+    return names
+
+
+def families(text: str) -> str:
+    """The names of a font-family value, as the tool writes them."""
+    return ", ".join(family_list(text, 256))
+
+
+FAMILY_KEYWORDS = {"serif": "serif", "ui-serif": "serif", "math": "serif", "sans-serif": "sans", "system-ui": "sans",
+                   "ui-sans-serif": "sans", "monospace": "mono", "ui-monospace": "mono", "cursive": "script",
+                   "fantasy": "other"}
+MOST_FAMILY_NAME = 128
+MOST_FAMILY_LETTERS = 64
+MOST_FAMILY_WORDS = 16
+
+
+def known_families(tool: str) -> list[tuple[str, str, bool]]:
+    """The names of faces that are known: each with its kind of face, and whether it counts only as a whole word."""
+    result = subprocess.run([tool, "family", "--names"], capture_output=True, check=False)
+    expect(result.returncode == 0, f"bn-css family --names ended with {result.returncode}: {result.stderr!r}")
+    known = []
+    for line in result.stdout.decode("latin-1").splitlines():
+        parts = line.split(" ")
+        expect(len(parts) in (2, 3) and parts[0] in ("serif", "sans", "mono", "script", "other", "nothing") and
+               (len(parts) == 2 or parts[2] == "word") and parts[1].isascii() and parts[1].isalpha() and
+               parts[1].islower(), f"bn-css family --names: a line is {line!r}")
+        known.append((parts[1], parts[0], len(parts) == 3))
+    expect(len(known) > 100 and [name for name, _, _ in known] == sorted({name for name, _, _ in known}),
+           f"bn-css family --names: {len(known)} names, or not each once and in order")
+    return known
+
+
+def class_of_family(name: str, known: list[tuple[str, str, bool]]) -> tuple[str | None, str]:
+    """The kind of face one name is, and what said so (`keyword`, `name`); (None, `-`) if nothing says."""
+    if name in FAMILY_KEYWORDS:
+        return FAMILY_KEYWORDS[name], "keyword"
+    # Its words: the runs of Latin letters. Then the letters of all of them, the first so many; and where
+    # among those each of the first few words lies, a word that runs past the last letter kept being cut there.
+    found = re.findall(r"[a-z]+", lower(name))
+    letters = "".join(found)[:MOST_FAMILY_LETTERS]
+    words = []
+    start = 0
+    for word in found:
+        if start >= MOST_FAMILY_LETTERS or len(words) == MOST_FAMILY_WORDS:
+            break
+        words.append((start, letters[start:start + len(word)]))
+        start += len(word)
+    def places_of(known_name: str) -> list[int]:
+        return [at for at in range(len(letters)) if letters.startswith(known_name, at)]
+
+    # A word that says nothing of a face is never taken, and hides what is found inside it.
+    nothings = [(at, at + len(known_name)) for known_name, kind, _ in known if kind == "nothing"
+                for at in places_of(known_name)]
+    candidates = []
+    for known_name, kind, whole_word in known:
+        if kind == "nothing":
+            continue
+        places = [at for at, word in words if word == known_name] if whole_word else places_of(known_name)
+        places = [at for at in places
+                  if not any(start <= at and at + len(known_name) <= end for start, end in nothings)]
+        if places:
+            candidates.append((len(known_name), max(places), kind))
+    if not candidates:
+        return None, "-"
+    return max(candidates)[2], "name"  # The longest, and of two as long the later.
+
+
+def class_of_families(text: str, known: list[tuple[str, str, bool]]) -> tuple[str, str]:
+    """The kind of face a font-family value comes to, and what said so."""
+    for name in family_list(text, MOST_FAMILY_NAME):
+        kind, how = class_of_family(name, known)
+        if kind is not None:
+            return kind, how
+    return "other", "-"
 
 
 def is_weight(text: str) -> str | None:
@@ -212,8 +293,12 @@ def is_weight(text: str) -> str | None:
     return value
 
 
-def declare(text: str, out: list[str]) -> None:
-    """One declaration: what it sets, or why it was dropped."""
+def declare(text: str, out: list[str], known: list | None = None, faces: list[str] | None = None) -> None:
+    """One declaration: what it sets, or why it was dropped.
+
+    A list of font families is told by its names; or, if the names of faces that are `known` are given, by the
+    kind of face it comes to, which is how a cascade gives it. Each list read is added to `faces` as written.
+    """
     text = text.strip(SPACE)
     if not text:
         return
@@ -235,6 +320,11 @@ def declare(text: str, out: list[str]) -> None:
 
     def say(which: str, what: str) -> None:
         told.append(f"D {which}: {what}{important}")
+
+    def family_value(written: str) -> str:
+        if faces is not None:
+            faces.append(written)
+        return families(written) if known is None else class_of_families(written, known)[0]
 
     def words(which: str, table: dict[str, str], extra=None) -> bool:
         what = EVERYWHERE.get(lower(value)) or table.get(lower(value)) or (extra(value) if extra else None)
@@ -304,7 +394,7 @@ def declare(text: str, out: list[str]) -> None:
         family = rest.strip(SPACE)
         if not family:
             return False
-        for which, what in zip(names, (style, variant, weight, size, height, families(family))):
+        for which, what in zip(names, (style, variant, weight, size, height, family_value(family))):
             say(which, what)
         return True
 
@@ -329,7 +419,7 @@ def declare(text: str, out: list[str]) -> None:
     elif prop == "font-variant":
         understood = words("font-variant", FONT_VARIANTS)
     elif prop == "font-family":
-        understood = bool(value) and words("font-family", {}, families)
+        understood = bool(value) and words("font-family", {}, family_value)
     elif prop == "font-size":
         understood = words("font-size", FONT_SIZES, not_below)
     elif prop == "font":
@@ -372,8 +462,8 @@ def declare(text: str, out: list[str]) -> None:
         out.extend(told)
 
 
-def read_style(text: bytes) -> list[bytes]:
-    """What `bn-css style` prints for a `style` attribute."""
+def read_style(text: bytes, known: list | None = None) -> list[bytes]:
+    """What `bn-css style` prints for a `style` attribute; with `known`, a list of families as its kind of face."""
     out: list[str] = []
     source = text.decode("latin-1")
     start = 0
@@ -394,7 +484,7 @@ def read_style(text: bytes) -> list[bytes]:
         elif at < len(source) and ch == ")":
             depth -= 1 if depth else 0
         elif ch == ";" and (depth == 0 or at >= len(source)):
-            declare(source[start:min(at, len(source))], out)
+            declare(source[start:min(at, len(source))], out, known)
             start = at + 1
         at += 1
     return [line.translate(ESCAPES).encode("latin-1") for line in out]
@@ -774,7 +864,8 @@ def unwrapped(text: str) -> str:
 ESCAPES = str.maketrans({"\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r"})
 
 
-def read_css(data: bytes, rules: list | None = None) -> list[bytes]:
+def read_css(data: bytes, rules: list | None = None, known: list | None = None,
+             faces: list[str] | None = None) -> list[bytes]:
     """What `bn-css rules` prints for a sheet, a line to an item.
 
     Each rule that is told is also added to `rules`, if that is given: its selectors as read_selector() gives
@@ -838,7 +929,7 @@ def read_css(data: bytes, rules: list | None = None) -> list[bytes]:
             if too_long:
                 out.append("X too long: " + what[:MOST_DROPPED_TEXT])
             else:
-                declare(what, out)
+                declare(what, out, known, faces)
             text = []
             too_long = False
             parens = braces = 0
@@ -1045,6 +1136,22 @@ p[a=b, b { margin: 0 }
                                  (" !important" if rng.random() < 0.1 else "") for _ in range(rng.randrange(1, 5)))
         lines.append(f"{selector} {{ {declarations} }}")
     made["every-value.css"] = "\n".join(lines).encode()
+    # Font families of every kind: by a keyword, by a known name however it is written, by a short one that
+    # counts only as a whole word, by nothing; and names that hold a known one that must not be taken.
+    made["faces.css"] = rb"""body { font-family: "AGaramondPro-Italic-0855", Georgia, serif }
+h1 { font-family: 'Trade Gothic LT Std', Arial-R, sans-serif; font: italic bold 1.5em/1.2 "Helvetica Neue", Arial }
+pre, code { font-family: "Letter Gothic", Ubuntu Mono, "Courier New", monospace }
+kbd { font-family: monospace } samp { font-family: Foo, ui-monospace }
+.hand { font-family: Monotype Corsiva, "Bradley Hand", cursive }
+.icon { font-family: "Material Icons", FontAwesome, fantasy } .show { font-family: fantasy }
+.odd { font-family: Monotype Sorts, Handel, "Shift Light", "No Such Face" }
+.free { font-family: "Hand of Handel", Georgia } .freer { font-family: Mono Monotype Monotype, serif }
+.odder { font-family: "No Such Face" } .oddest { font-family: Monotype Sorts, Handel, "Shift Light", "No Such Face" }
+.words { font-family: Aerial, Sometimes, Latona, Times_New_Roman, TIMES, lato-light }
+.far { font-family: \65 b garamond, "caf\e9  sans", ui-monospace, system-ui, math, "", ,, }
+.none { font-family: "", ,, } .tab { font-family: "a	b\\c" }
+.end { font-family: inherit; font: 12px x }
+"""
     made["empty.css"] = b""
     made["no-rules.css"] = b"/* nothing but a comment */\n\n"
     return made
@@ -1088,6 +1195,53 @@ def compare(tool: str, path: Path, data: bytes, what: str) -> int:
     return len(got)
 
 
+def family_lines(text: str, known: list[tuple[str, str, bool]]) -> list[bytes]:
+    """What `bn-css family` prints for a font-family value."""
+    out = []
+    for name in family_list(text, MOST_FAMILY_NAME):
+        kind, how = class_of_family(name, known)
+        out.append(f"N {name}: " + (f"{kind} {how}" if kind is not None else "-"))
+    out.append("class " + class_of_families(text, known)[0])
+    return [line.translate(ESCAPES).encode("latin-1") for line in out]
+
+
+def random_families(rng: random.Random, known: list[tuple[str, str, bool]]) -> bytes:
+    """A font-family value: names that are known written every way, names that are not, and things that are
+    neither, in any order."""
+
+    def dressed(name: str) -> str:
+        # A known name as a book might write it: in capitals, in pieces, with a maker's letters and a weight.
+        if rng.randrange(3) == 0:
+            name = name.upper() if rng.randrange(2) else name.capitalize()
+        if rng.randrange(4) == 0:
+            cut = rng.randrange(len(name) + 1)
+            name = name[:cut] + rng.choice([" ", "-", "_", "1", "  ", "\xe9"]) + name[cut:]
+        before = rng.choice(["", "", "", "a", "itc ", "ms ", "Adobe ", "x", "Monotype ", "mono", "@"])
+        after = rng.choice(["", "", "", " LT Std", "Pro", "-Bold-0656", " mt", "s", "ish", " 55 Roman", "MT"])
+        return before + name + after
+
+    def one() -> str:
+        choice = rng.randrange(12)
+        if choice < 5:
+            name = dressed(rng.choice(known)[0])
+        elif choice < 7:
+            name = rng.choice(sorted(FAMILY_KEYWORDS) + ["emoji", "inherit", "Serif", "SANS-SERIF", "sans serif"])
+        elif choice < 9:
+            name = "".join(rng.choice("abcdefghijklmnopqrstuvwxyz -_0123456789") for _ in range(rng.randrange(1, 20)))
+        elif choice == 9:
+            name = " ".join(dressed(rng.choice(known)[0]) for _ in range(rng.randrange(2, 5)))
+        elif choice == 10:
+            # Long: past the letters that are looked at, the words that are told apart, or the bytes taken.
+            name = rng.choice(["q" * rng.randrange(50, 70), "w " * rng.randrange(10, 80), "1 2 " * rng.randrange(20, 40),
+                               "zz" * rng.randrange(20, 80) + " "]) + dressed(rng.choice(known)[0])
+        else:
+            name = rng.choice(["", " ", "\t", "\\", "a\\\"b", "\xff\xfe", "(", "!important"])
+        quote = rng.choice(["", "", "\"", "'"])
+        return quote + name + (quote if rng.randrange(20) else "")
+
+    return rng.choice([", ", ",", " ,\n"]).join(one() for _ in range(rng.randrange(0, 6))).encode("latin-1")
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
@@ -1119,6 +1273,32 @@ def main() -> int:
         expect(result.returncode == 0 and result.stdout.split(b"\n")[:-1] == read_style(style),
                f"a style attribute: bn-css says {result.stdout!r}, the second reading {read_style(style)!r}")
 
+        # The kind of face a font-family value comes to: the tool's working-out beside the second one here, on
+        # the values the unit tests are sure of, and on values made at random from the names that are known.
+        known = known_families(tool)
+        for value, kind in (("Georgia, serif", "serif"), ("\"Helvetica Neue\", Arial", "sans"),
+                            ("\"Courier New\", serif", "mono"), ("cursive", "script"), ("\"No Such Face\"", "other"),
+                            ("\"No Such Face\", sans-serif", "sans"), ("Monotype Corsiva", "script"),
+                            ("Monotype Sorts", "other"), ("AGaramondPro-Italic-0855", "serif"), ("Aerial", "other")):
+            expect(class_of_families(value, known)[0] == kind,
+                   f"the second working-out has {value!r} as {class_of_families(value, known)[0]}, not {kind}")
+        rng = random.Random(1125)
+        family_rounds = 0
+        kinds_seen: dict[bytes, int] = {}
+        for _ in range(1500):
+            value = random_families(rng, known)
+            if b"\0" in value or value.startswith(b"--"):
+                continue
+            result = subprocess.run([tool.encode(), b"family", value], capture_output=True, check=False)
+            expected = family_lines(value.decode("latin-1"), known)
+            got = result.stdout.split(b"\n")[:-1]
+            expect(result.returncode == 0 and got == expected,
+                   f"family {value!r}: bn-css says {got!r}, the second working-out {expected!r}")
+            kinds_seen[got[-1]] = kinds_seen.get(got[-1], 0) + 1
+            family_rounds += 1
+        expect(len(kinds_seen) == 5 and min(kinds_seen.values()) >= 20,
+               f"the values made at random came to {kinds_seen}: not every kind of face, or too few of one")
+
         # In an EPUB: read out of the ZIP file, inflated and read in one go.
         book = work / "book.epub"
         with zipfile.ZipFile(book, "w") as archive:
@@ -1132,15 +1312,22 @@ def main() -> int:
         said = {}
         totals = b""
         table: dict[str, int] = {}
+        faces_said: dict[str, int] = {}
         dropped: dict[bytes, int] = {}
+        unclassed: dict[bytes, int] = {}
         for line in result.stdout.split(b"\n")[:-1]:
             if line.startswith(b"css_sheets="):
                 totals = line
             elif line.startswith(b"css_table_bytes="):
                 table = {key: int(value) for key, value in (item.split("=") for item in line.decode().split())}
+            elif line.startswith(b"css_families="):
+                faces_said = {key: int(value) for key, value in (item.split("=") for item in line.decode().split())}
             elif line.startswith(b"dropped "):
                 _, count, what = line.split(b" ", 2)
                 dropped[what] = int(count)
+            elif line.startswith(b"unclassed "):
+                _, count, _, what = line.split(b" ", 3)
+                unclassed[what] = int(count)
             else:
                 how, crc, rules, declarations, passed, name = line.split(None, 5)
                 said[name.decode()] = (how, int(crc, 16), int(rules), int(declarations), int(passed))
@@ -1148,8 +1335,9 @@ def main() -> int:
                f"book.epub: the sheets read were {sorted(said)}")
         all_rules = all_declarations = all_dropped = 0
         expected_dropped: dict[bytes, int] = {}
+        faces: list[str] = []
         for name, data in list(made.items()) + [("../Capitals.CSS", b"P { MARGIN: 0 }")]:
-            expected = read_css(data)
+            expected = read_css(data, faces=faces)
             rules = sum(1 for line in expected if line == b"}")
             declarations = sum(1 for line in expected if line.startswith(b"D "))
             passed = sum(1 for line in expected if line.startswith(b"X "))
@@ -1169,6 +1357,25 @@ def main() -> int:
                f"book.epub: the totals are {totals!r}")
         expect(dropped == expected_dropped, "book.epub: what was passed over, by kind and text, is not what the second "
                                             f"reading passed over: {sorted(set(dropped.items()) ^ set(expected_dropped.items()))[:6]}")
+        # Its font-family values: how many, how each was classed, and what kind of face each came to.
+        faces_expected = {key: 0 for key in ("css_families", "css_families_keyword", "css_families_name",
+                                              "css_families_unclassed", "css_families_serif", "css_families_sans",
+                                              "css_families_mono", "css_families_script", "css_families_other")}
+        unclassed_expected: dict[bytes, int] = {}
+        for written in faces:
+            kind, how = class_of_families(written, known)
+            faces_expected["css_families"] += 1
+            faces_expected["css_families_" + kind] += 1
+            faces_expected["css_families_" + {"keyword": "keyword", "name": "name", "-": "unclassed"}[how]] += 1
+            if how == "-":
+                names = families(written).translate(ESCAPES).encode("latin-1")
+                unclassed_expected[names] = unclassed_expected.get(names, 0) + 1
+        expect(faces_said == faces_expected and unclassed == unclassed_expected,
+               f"book.epub: of its font-family values bn-css says {faces_said}, not classed {unclassed}; the second "
+               f"working-out has {faces_expected}, {unclassed_expected}")
+        expect(faces_expected["css_families"] >= 12 and faces_expected["css_families_unclassed"] >= 2 and
+               all(faces_expected["css_families_" + kind] for kind in ("serif", "sans", "mono", "script", "other")),
+               f"book.epub: its sheets have too few kinds of font-family to say much: {faces_expected}")
         # The table of all their rules keeps each rule that has a selector and sets something.
         kept_rules = kept_selectors = 0
         for name, data in list(made.items()) + [("../Capitals.CSS", b"P { MARGIN: 0 }")]:
@@ -1192,7 +1399,7 @@ def main() -> int:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"bn-css agrees with the second reading: {lines} lines of {len(made)} sheets, {rounds} damaged sheets, "
-          "a style attribute and a book")
+          f"a style attribute, {family_rounds} font-family values and a book")
     return 0
 
 

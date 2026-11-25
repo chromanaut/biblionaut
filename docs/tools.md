@@ -12,7 +12,7 @@ piece it runs.
 | `bn-zip` | `tools/zip` | Reads a ZIP file as the firmware does | [ZIP files](zip.md) |
 | `bn-xml` | `tools/xml` | Does the same for XML | [XML](xml.md) |
 | `bn-epub` | `tools/epub` | Says what a book says of itself, and reads its table of contents | [What a book says of itself](package.md), [The table of contents](toc.md) |
-| `bn-css` | `tools/css` | Reads a style sheet, finds the sheets a document asks for, and says what their rules come to | [Style sheets](css.md), [A book's rules](css-cascade.md), [What a document asks for](document-sheets.md) |
+| `bn-css` | `tools/css` | Reads a style sheet, says which kind of face a `font-family` comes to, finds the sheets a document asks for, and says what their rules come to | [Style sheets](css.md), [Kinds of face](css-families.md), [A book's rules](css-cascade.md), [What a document asks for](document-sheets.md) |
 | `bn-svg` | `tools/svg` | Draws an SVG file as the firmware does | [Drawings](svg.md) |
 | `bn-png` | `tools/png` | Reads a PNG picture as the firmware does | [Pictures](pictures.md) |
 | `bn-jpeg` | `tools/jpeg` | Does the same for a JPEG picture | [Pictures](pictures.md#jpeg) |

@@ -1,0 +1,10 @@
+body { font-family: "AGaramondPro-Italic-0855", Georgia, serif }
+h1 { font-family: 'Trade Gothic LT Std', Arial-R, sans-serif; font: italic bold 1.5em/1.2 "Helvetica Neue", Arial }
+pre, code { font-family: "Letter Gothic", Ubuntu Mono, "Courier New", monospace }
+.hand { font-family: Monotype Corsiva, "Bradley Hand", cursive }
+.icon { font-family: "Material Icons", FontAwesome, fantasy }
+.odd { font-family: Monotype Sorts, Handel, "Shift Light", "No Such Face" }
+.free { font-family: "Hand of Handel", Georgia } .freer { font-family: Mono Monotype Monotype, serif }
+.words { font-family: Aerial, Sometimes, Latona, Times_New_Roman, TIMES, lato-light }
+.far { font-family: \65 b garamond, "caf\e9  sans", ui-monospace, system-ui, math, "", ,, }
+.end { font-family: inherit; font: 12px x }

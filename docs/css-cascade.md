@@ -6,7 +6,9 @@ says what they come to for each element of a document.
 - **`CssRules`** is the table. It is what a `CssReader` is handed as its
   handler, a sheet at a time, and it keeps every sheet of a book in one
   block of memory that the caller gives it: each name once, a selector in
-  about 12 bytes and a declaration in about 4. Of a rule that sets a
+  about 12 bytes and a declaration in about 4. Of a list of font families
+  it keeps the kind of face, in a byte, and none of the names ([Kinds of
+  face](css-families.md)). Of a rule that sets a
   property more than once it keeps the declaration that would win. A rule
   there is no room for is left out whole and counted, and the rules
   before it are as they were.
@@ -39,7 +41,10 @@ says what they come to for each element of a document.
 - **Values are as the sheets wrote them.** `inherit`, an em and "larger"
   are given back as they are: what an element takes from the one it is
   inside is for whatever keeps the styles of the open elements, which is
-  not built.
+  not built. The one exception is a list of font families, which is given
+  as the kind of face it comes to: the `body` of the document below, which
+  the sheet gives `Georgia, "Times New Roman", serif`, has
+  `font-family: serif`.
 - **Work is bounded.** A name is looked for among the table's by halving;
   only the selectors kept under an element's id, its classes or its name
   are tried on it, and those kept under none. `CssCascade::MostWorkFor()`
@@ -107,7 +112,7 @@ from its own `style`. With `--sum` it prints one line instead, with the
 checksum of those lines and what the table and the cascade took:
 
 ```
-cascade ec12c5fe elements=8 lines=47 table_bytes=347 nodes=2 level_bytes=2 left_out=0 too_deep=0 too_many_classes=0 most_work=23
+cascade 85c143af elements=8 lines=47 table_bytes=307 nodes=2 level_bytes=2 left_out=0 too_deep=0 too_many_classes=0 most_work=20
 ```
 
 **How much memory.** `bn-css book` puts every sheet of a book into one
@@ -116,13 +121,13 @@ adds it up over a folder. Over `corpus/`:
 
 ```
 A table of all a book's rules, in the 28 books with style sheets:
-  bytes: 2188 at the median, 4090 for nine in ten, 4498 at the most
+  bytes: 2172 at the median, 4090 for nine in ten, 4498 at the most
   rules kept: 43 at the median, 87 for nine in ten, 105 at the most
   nodes: 7 at the median, 42 for nine in ten, 51 at the most
   books whose table is over 8 KB, 12 KB, 16 KB, 20 KB and 24 KB: 0, 0, 0, 0, 0
   rules left out of a table of 64 KB: 0
   bytes kept for each open element, in the documents the cascade was tried on: 2 at the median, 10 for nine in ten, 14 at the most
-  the most work for one element: 41 at the median, 119 for nine in ten, 150 at the most
+  the most work for one element: 42 at the median, 119 for nine in ten, 150 at the most
 ```
 
 **How it is tested.** The unit tests give it sheets and documents written

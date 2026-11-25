@@ -213,7 +213,7 @@ class CssRules final : public CssHandler {
     CssValue::Kind kind = CssValue::Kind::kKeyword;
     CssKeyword keyword = CssKeyword::kNone;
     CssUnit unit = CssUnit::kNumber;
-    std::uint16_t families = 0;  // The place of the list's text among the names.
+    CssFamilyClass familyClass = CssFamilyClass::kUnset;
     std::int32_t number = 0;
   };
   std::array<Setting, kCssProperties> settings_{};
@@ -282,9 +282,8 @@ class CssCascade final {
 
   // An element opens. `style` is made what the rules and the element's
   // own `style` attribute set for it, and `firstLetter` what the rules
-  // set for its first letter ("p::first-letter"). A list of font families
-  // in either is only good while `attributes` are, and until the rules
-  // are changed.
+  // set for its first letter ("p::first-letter"). Of a list of font
+  // families the kind of face it comes to is given, and not the names.
   void Open(std::string_view name, const XmlAttributes& attributes, CssStyle& style, CssStyle& firstLetter) noexcept;
   // The element opened last, and not yet closed, closes.
   void Close() noexcept;

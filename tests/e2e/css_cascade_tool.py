@@ -154,12 +154,16 @@ def bytes_as_text(text: str) -> str:
     return text.encode("utf-8").decode("latin-1")
 
 
-def cascade_lines(sheets: list[bytes], document: bytes) -> tuple[list[bytes], int]:
-    """What `bn-css cascade` prints for a document given these sheets, a line to an item; and how many elements."""
+def cascade_lines(sheets: list[bytes], document: bytes, known: list) -> tuple[list[bytes], int]:
+    """What `bn-css cascade` prints for a document given these sheets, a line to an item; and how many elements.
+
+    `known` is the names of faces that are known (css_tool.known_families): a list of font families is given as
+    the kind of face it comes to, worked out by the second reading.
+    """
     rules: list[tuple[int, int, dict]] = []
     for order, sheet in enumerate(sheets):
         of_sheet: list[dict] = []
-        css_tool.read_css(sheet, of_sheet)
+        css_tool.read_css(sheet, of_sheet, known)
         rules += [(order, index, rule) for index, rule in enumerate(of_sheet)]
 
     out: list[str] = []
@@ -191,7 +195,7 @@ def cascade_lines(sheets: list[bytes], document: bytes) -> tuple[list[bytes], in
         style = element.attribute("style")
         if style is not None:
             position = 0
-            for line in css_tool.read_style(style.encode("latin-1")):
+            for line in css_tool.read_style(style.encode("latin-1"), known):
                 text = line.decode("latin-1")
                 if text.startswith("D "):
                     name_set, _, value = text[2:].partition(": ")
@@ -306,6 +310,8 @@ def random_sheet(rng: random.Random) -> bytes:
             selectors.append(text + ("::first-letter" if rng.random() < 0.08 else ""))
         declarations = "; ".join(rng.choice(["float: left", "float: right", "width: 1px", "width: 2em", "margin: 0 1px",
                                              "text-indent: 0", "font-family: A, \"b c\"", "font-family: serif",
+                                             "font-family: \"Trade Gothic LT Std\", Georgia",
+                                             "font: italic 1em/1.2 Foo, 'Courier New'", "font-family: Monotype Corsiva",
                                              "height: 50%", "font: italic 1em/1.5 x", "color: red"]) +
                                  (" !important" if rng.random() < 0.15 else "") for _ in range(rng.randrange(1, 5)))
         lines.append(", ".join(selectors) + " { " + declarations + " }")
@@ -324,7 +330,8 @@ def random_document(rng: random.Random) -> bytes:
             text += " " + rng.choice(["lang='en'", "lang='en-GB'", "title='v w'", "k='ab'", "o:k='xcB'", "title=''"])
         if rng.random() < 0.15:
             text += " style='" + rng.choice(["float: none", "width: 3px !important", "margin-top: 5px; height: 1px",
-                                             "font-family: \"q\"; color: red"]) + "'"
+                                             "font-family: \"q\"; color: red", "font-family: Arial-R, serif",
+                                             "font-family: &quot;a, lekton&quot;, Times"]) + "'"
         text += ">"
         for _ in range(rng.choice([0, 0, 1, 2, 3, 4]) if depth < 6 else 0):
             text += element(depth + 1) + rng.choice(["", "", " words "])
@@ -333,7 +340,7 @@ def random_document(rng: random.Random) -> bytes:
     return ("<r xmlns:o='o'>" + "".join(element(1) for _ in range(rng.randrange(1, 5))) + "</r>").encode()
 
 
-def compare(tool: str, work: Path, sheets: list[bytes], document: bytes, what: str) -> int:
+def compare(tool: str, work: Path, sheets: list[bytes], document: bytes, what: str, known: list) -> int:
     """Runs `bn-css cascade` on the document and the sheets; returns how many lines agreed."""
     names = []
     for index, sheet in enumerate(sheets):
@@ -345,7 +352,7 @@ def compare(tool: str, work: Path, sheets: list[bytes], document: bytes, what: s
     got = result.stdout.split(b"\n")
     expect(got[-1] == b"", f"{what}: the last line is not ended")
     got.pop()
-    expected, _ = cascade_lines(sheets, document)
+    expected, _ = cascade_lines(sheets, document, known)
     for number, (mine, theirs) in enumerate(zip(got, expected)):
         if mine != theirs:
             raise Failure(f"{what}: line {number + 1} is {mine!r}, the second working-out has {theirs!r}; "
@@ -364,13 +371,14 @@ def main() -> int:
     work.mkdir(parents=True)
 
     try:
+        known = css_tool.known_families(tool)
         # The document with one sheet, with two in either order, with the same one twice, and with none.
         lines = 0
         for what, sheets in (("one sheet", [SHEET]), ("two sheets", [SHEET, SECOND_SHEET]),
                              ("two sheets, the other way", [SECOND_SHEET, SHEET]),
                              ("a sheet given twice", [SHEET, SECOND_SHEET, SHEET]), ("no sheet", [])):
-            lines += compare(tool, work, sheets, DOCUMENT, what)
-        expected, elements = cascade_lines([SHEET, SECOND_SHEET], DOCUMENT)
+            lines += compare(tool, work, sheets, DOCUMENT, what, known)
+        expected, elements = cascade_lines([SHEET, SECOND_SHEET], DOCUMENT, known)
         styled = sum(1 for line in expected if line[:2] in (b"P ", b"F "))
         expect(elements >= 50 and styled > 200, f"only {elements} elements and {styled} things set: not much of a test")
         # The test's own working-out is not saying yes to everything: what it has to say of a few elements is known.
@@ -387,7 +395,7 @@ def main() -> int:
         for _ in range(120):
             sheets = [random_sheet(rng) for _ in range(rng.randrange(1, 4))]
             for _ in range(2):
-                lines += compare(tool, work, sheets, random_document(rng), f"made at random (round {rounds})")
+                lines += compare(tool, work, sheets, random_document(rng), f"made at random (round {rounds})", known)
                 rounds += 1
 
         # One line in place of all of them.
@@ -395,7 +403,7 @@ def main() -> int:
                                 capture_output=True, check=False)
         last_sheets = [(work / "sheet-0.css").read_bytes()]
         last_document = (work / "document.xhtml").read_bytes()
-        expected, elements = cascade_lines(last_sheets, last_document)
+        expected, elements = cascade_lines(last_sheets, last_document, known)
         said = result.stdout.decode().split()
         expect(result.returncode == 0 and said[:4] == ["cascade", f"{checksum(expected):08x}", f"elements={elements}",
                                                        f"lines={len(expected)}"],
@@ -415,7 +423,7 @@ def main() -> int:
             archive.writestr("OEBPS/text/one.xhtml", DOCUMENT, zipfile.ZIP_DEFLATED)
         result = subprocess.run([tool, "cascade", "--in", str(book), "OEBPS/text/one.xhtml", "OEBPS/css/book.css",
                                  "OEBPS/css/more.css"], capture_output=True, check=False)
-        expected, _ = cascade_lines([SHEET, SECOND_SHEET], DOCUMENT)
+        expected, _ = cascade_lines([SHEET, SECOND_SHEET], DOCUMENT, known)
         expect(result.returncode == 0 and result.stdout.split(b"\n")[:-1] == expected,
                f"book.epub: what bn-css prints is not what the second working-out has: it ended with "
                f"{result.returncode}, {result.stderr!r}")

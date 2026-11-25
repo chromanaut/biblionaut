@@ -140,7 +140,7 @@ S OEBPS/css/poems.css
 sheets_documents=2 sheets_unopened=0 sheets_given=6 sheets_read=3 sheets_names_bytes=75 sheets_left_out=2 sheets_own=1 sheets_absent=0 sheets_checksum=b2af330b
 sheets_reads=1 sheets_read_bytes=2478
 left_out link_for_another_medium=1 link_to_no_file_of_the_book=1
-css_table_bytes=121 css_table_names=4 css_table_nodes=0 css_table_rules=3 css_table_selectors=3 css_table_left_out=0
+css_table_bytes=100 css_table_names=3 css_table_nodes=0 css_table_rules=3 css_table_selectors=3 css_table_left_out=0
 ```
 
 Three sheets were read for the six that were given, and one document has
@@ -173,7 +173,7 @@ X link to no file of the book: OEBPS/text/gone.css
 sheets_documents=2 sheets_unopened=0 sheets_given=6 sheets_read=3 sheets_names_bytes=75 sheets_left_out=2 sheets_own=1 sheets_absent=0 sheets_checksum=b55acb95
 sheets_reads=0 sheets_read_bytes=0
 left_out link_for_another_medium=1 link_to_no_file_of_the_book=1
-css_table_bytes=121 css_table_names=4 css_table_nodes=0 css_table_rules=3 css_table_selectors=3 css_table_left_out=0
+css_table_bytes=100 css_table_names=3 css_table_nodes=0 css_table_rules=3 css_table_selectors=3 css_table_left_out=0
 ```
 
 Each document is given what it was given before; the order is the
@@ -206,7 +206,7 @@ sheets it is handed:
 ```
 
 ```
-document e6ca13ad elements=8 lines=22 sheets=3 own_style=1 sheets_left_out=2 table_bytes=118 nodes=0 level_bytes=0 left_out=0 too_deep=0 too_many_classes=0 most_work=11
+document d3517ed8 elements=8 lines=22 sheets=3 own_style=1 sheets_left_out=2 table_bytes=97 nodes=0 level_bytes=0 left_out=0 too_deep=0 too_many_classes=0 most_work=11
 ```
 
 **How it is tested.** The unit tests give it books held in memory

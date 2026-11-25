@@ -536,7 +536,7 @@ def check_book(tool: str, path: Path, files: dict[bytes, bytes], what: str) -> t
         except expat.ExpatError:
             continue
         sheets = [files[sheet] for sheet in listed if sheet != OWN_STYLE] + own
-        lines, elements = css_cascade_tool.cascade_lines(sheets, files[name])
+        lines, elements = css_cascade_tool.cascade_lines(sheets, files[name], css_tool.known_families(tool))
         result = subprocess.run([tool, "document", "--sum", str(path), name.decode()], capture_output=True, check=False)
         words_said = result.stdout.decode("utf-8", "replace").split()
         expect(result.returncode == 0 and len(words_said) > 3 and words_said[0] == "document",

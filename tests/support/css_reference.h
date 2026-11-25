@@ -188,8 +188,9 @@ class CssReference final : public epub::CssHandler {
       if (mine.kind == epub::CssValue::Kind::kLength && (mine.number != theirs.number || mine.unit != theirs.unit)) {
         return false;
       }
-      if (mine.kind == epub::CssValue::Kind::kFamilies && mine.families != theirs.families) {
-        return false;
+      if (mine.kind == epub::CssValue::Kind::kFamilies &&
+          (mine.familyClass != theirs.familyClass || !mine.families.empty() || !theirs.families.empty())) {
+        return false;  // The kind of face has to be the same, and neither may give names.
       }
     }
     return true;
@@ -217,8 +218,7 @@ class CssReference final : public epub::CssHandler {
   };
   struct Declaration {
     epub::CssProperty property = epub::CssProperty::kFontStyle;
-    epub::CssValue value;
-    std::string families;  // The list `value.families` is made to look at.
+    epub::CssValue value;  // Of a list of families, the kind of face and not the names.
     bool important = false;
   };
   struct Rule {
@@ -237,7 +237,6 @@ class CssReference final : public epub::CssHandler {
     Declaration kept;
     kept.property = declaration.property;
     kept.value = declaration.value;
-    kept.families = std::string(declaration.value.families);
     kept.value.families = {};
     kept.important = declaration.important;
     return kept;
@@ -415,7 +414,6 @@ class CssReference final : public epub::CssHandler {
     for (const Setting& setting : settings) {
       const auto property = static_cast<std::size_t>(setting.declaration->property);
       style.values[property] = setting.declaration->value;
-      style.values[property].families = setting.declaration->families;
       style.set |= 1U << property;
     }
   }

@@ -7,6 +7,7 @@ add_library(bn_epub STATIC
   src/book_path.cpp
   src/bundle.cpp
   src/css.cpp
+  src/css_families.cpp
   src/css_rules.cpp
   src/document_sheets.cpp
   src/package.cpp

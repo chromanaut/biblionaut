@@ -62,7 +62,9 @@ std::string StyleText(const CssStyle& style) {
     } else if (value.kind == CssValue::Kind::kLength) {
       text = Number(value.number) + bn::epub::CssUnitName(value.unit);
     } else {
-      text = "[" + std::string(value.families) + "]";
+      // The kind of face; and names, which a cascade never gives, would
+      // show beside it.
+      text = "{" + std::string(bn::epub::CssFamilyClassName(value.familyClass)) + "}" + std::string(value.families);
     }
     out += (out.empty() ? "" : "; ") + std::string(bn::epub::CssPropertyName(property)) + ": " + text;
   }
@@ -284,9 +286,49 @@ TEST(CssCascade, GivesBackEveryKindOfValueAsItWasWritten) {
                    "margin: -0.5em 12pt 150% 0; text-indent: 40000px; width: 32.768px; height: 32.767px; "
                    "font-size: larger; padding-top: 0.001rem }",
                    "<p/>"),
-            "p {font-weight: 700; font-family: [Georgia, \"Times New Roman\" , serif]; font-size: larger; "
+            "p {font-weight: 700; font-family: {serif}; font-size: larger; "
             "line-height: 1.25; text-indent: 40000px; margin-top: -0.5em; margin-right: 16px; margin-bottom: 150%; "
             "margin-left: 0px; padding-top: 0.001rem; width: 32.768px; height: 32.767px}\n");
+}
+
+TEST(CssCascade, GivesAListOfFamiliesAsTheKindOfFaceItComesTo) {
+  EXPECT_EQ(
+      Styles("p { font-family: \"No Such Face\", 'Courier New', serif } i { font-family: \"Trade Gothic LT Std\" } "
+             "b { font-family: Zapfino } u { font-family: \"A Face Nothing Knows\" } "
+             "s { font: italic 1em/1 Georgia } q { font-family: inherit } "
+             "p::first-letter { font-family: Wingdings }",
+             "<d><p/><i/><b/><u/><s/><q/><em/></d>"),
+      "d\n"
+      " p {font-family: {mono}} first-letter {font-family: {other}}\n"
+      " i {font-family: {sans}}\n"
+      " b {font-family: {script}}\n"
+      " u {font-family: {other}}\n"
+      " s {font-style: italic; font-weight: normal; font-variant: normal; font-family: {serif}; font-size: 1em; "
+      "line-height: 1}\n"
+      " q {font-family: inherit}\n"
+      " em\n");
+  // An element's own `style` is given the same way, and wins.
+  EXPECT_EQ(Styles("p { font-family: Georgia }",
+                   "<d><p style='font-family: \"Letter Gothic\", serif'/><p style=\"font: 1em 'Gill Sans'\"/></d>"),
+            "d\n"
+            " p {font-family: {mono}}\n"
+            " p {font-style: normal; font-weight: normal; font-variant: normal; font-family: {sans}; font-size: 1em; "
+            "line-height: normal}\n");
+}
+
+TEST(CssRules, KeepsOfAListOfFamiliesAByteAndNoneOfItsNames) {
+  Book shortName;
+  (void)shortName.Sheet("p { font-family: x }");
+  Book longNames;
+  (void)longNames.Sheet(
+      "p { font-family: \"A Face With A Very Long Name Indeed\", \"And Another After It\", Georgia, "
+      "'Times New Roman', serif }");
+  EXPECT_EQ(longNames.rules.Bytes(), shortName.rules.Bytes());
+  EXPECT_EQ(longNames.rules.Names(), 1U) << "the element's name, and no family's";
+  // It takes what a word does: the property, the form and a byte.
+  Book word;
+  (void)word.Sheet("p { font-style: italic }");
+  EXPECT_EQ(shortName.rules.Bytes(), word.rules.Bytes());
 }
 
 TEST(CssCascade, FollowsASelectorOutThroughTheElementsAnElementIsInside) {
@@ -656,7 +698,9 @@ TEST(CssRules, HoldsRulesUpToTheLastByteOfItsBlock) {
   // The same sheet in blocks of every size up to what it needs: each
   // keeps as many of its rules as fit, from the first, and what it keeps
   // is true of the same elements.
-  const std::string sheet = "p { float: left } div.a > p { width: 1px } h2 + p.b { height: 1px } #c { text-indent: 0 }";
+  const std::string sheet =
+      "p { float: left } div.a > p { width: 1px } h2 + p.b { height: 1px } "
+      "#c { text-indent: 0; font-family: \"Courier New\", serif }";
   const std::string_view document = "<div class='a'><h2/><p class='b' id='c'/></div>";
   Book whole;
   const std::uint8_t number = whole.Sheet(sheet);
@@ -742,7 +786,7 @@ TEST(CssRules, GoesBackToWhereItStood) {
     CssStyle style;
     CssStyle firstLetter;
     cascade.Open("i", bn::epub::XmlAttributes(nullptr), style, firstLetter);
-    EXPECT_EQ(StyleText(style), "font-family: [A Face]; height: 1px");
+    EXPECT_EQ(StyleText(style), "font-family: {other}; height: 1px");
   }
 
   book.rules.BackTo(place);

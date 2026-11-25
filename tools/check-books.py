@@ -423,14 +423,34 @@ def check_tables(tool: str, path: Path, figures: dict[str, int]) -> list[str]:
     return problems
 
 
+KNOWN_FAMILIES: dict[str, list] = {}
+
+
+def known_families(tool: str) -> list:
+    """The names of faces that `bn-css` knows, asked of it once."""
+    if tool not in KNOWN_FAMILIES:
+        KNOWN_FAMILIES[tool] = css_tool.known_families(tool)
+    return KNOWN_FAMILIES[tool]
+
+
 def check_css(tool: str, path: Path, figures: dict) -> list[str]:
-    result = run(tool, "book", str(path))
+    result = run(tool, "book", str(path), "--dropped")
     lines = result.stdout.decode("utf-8", "replace").splitlines()
-    if len(lines) < 2 or not lines[-2].startswith("css_sheets=") or not lines[-1].startswith("css_table_bytes="):
-        return [f"bn-css: ended with {result.returncode} and its last lines are {lines[-2:]!r}: {result.stderr[-120:]!r}"]
+    # After the summary come the things passed over and the families nothing classed, each by itself.
+    unclassed = {}
+    while lines and lines[-1].startswith(("dropped ", "unclassed ")):
+        last = lines.pop()
+        if last.startswith("unclassed "):
+            _, count, _, names = last.split(" ", 3)
+            unclassed[names] = int(count)
+    if len(lines) < 3 or not lines[-3].startswith("css_families=") or not lines[-2].startswith("css_sheets=") or \
+            not lines[-1].startswith("css_table_bytes="):
+        return [f"bn-css: ended with {result.returncode} and its last lines are {lines[-3:]!r}: {result.stderr[-120:]!r}"]
     table = {key: int(value) for key, value in (item.split("=") for item in lines[-1].split())}
+    families = {key: int(value) for key, value in (item.split("=") for item in lines[-3].split())}
+    faces: list[str] = []
     said = {}
-    for line in lines[:-2]:
+    for line in lines[:-3]:
         how, crc, rules, declarations, dropped, name = line.split(None, 5)
         said[name] = (how, crc, int(rules), int(declarations), int(dropped))
     problems = []
@@ -441,7 +461,7 @@ def check_css(tool: str, path: Path, figures: dict) -> list[str]:
         if set(said) != set(named.values()) or len(said) != len(wanted):
             return [f"bn-css: it read {len(said)} sheets, and Python finds {len(wanted)} by their names, not all the same"]
         for info in wanted:
-            expected = css_tool.read_css(archive.read(info))
+            expected = css_tool.read_css(archive.read(info), faces=faces)
             rules = sum(1 for line in expected if line == b"}")
             declarations = sum(1 for line in expected if line.startswith(b"D "))
             dropped = sum(1 for line in expected if line.startswith(b"X "))
@@ -466,6 +486,31 @@ def check_css(tool: str, path: Path, figures: dict) -> list[str]:
                     seen.add(key)
             for key in seen:
                 figures["books " + key] = 1
+    # The kind of face each font-family value comes to, by the second working-out.
+    mine = {key: 0 for key in families}
+    mine_unclassed: dict[str, int] = {}
+    known = known_families(tool)
+    for written in faces:
+        kind, how = css_tool.class_of_families(written, known)
+        mine["css_families"] += 1
+        mine["css_families_" + kind] += 1
+        mine["css_families_" + {"keyword": "keyword", "name": "name", "-": "unclassed"}[how]] += 1
+        if how == "-":
+            names = css_tool.families(written).translate(css_tool.ESCAPES).encode("latin-1").decode("utf-8", "replace")
+            mine_unclassed[names] = mine_unclassed.get(names, 0) + 1
+    if families != mine or unclassed != mine_unclassed:
+        problems.append(f"bn-css: the kinds of face its font-family values come to: {families}, not classed "
+                        f"{sorted(unclassed.items())[:3]}; the second working-out has {mine}, "
+                        f"{sorted(mine_unclassed.items())[:3]}")
+    for key, count in families.items():
+        figures[key] = count
+    if families["css_families"]:
+        figures["books css_families"] = 1
+    if families["css_families_unclassed"]:
+        figures["books css_families_unclassed"] = 1
+    for names, count in unclassed.items():
+        figures[f"unclassed\t{names}"] = count
+        figures[f"books unclassed\t{names}"] = 1
     figures["sheets"] = len(wanted)
     figures["css_rules"] = all_rules
     figures["css_declarations"] = all_declarations
@@ -633,7 +678,7 @@ def check_cascade(tool: str, path: Path, figures: dict) -> list[str]:
             if took["left_out"] or took["too_deep"]:
                 figures["cascade_not_compared"] = figures.get("cascade_not_compared", 0) + 1
                 continue
-            expected, counted = css_cascade_tool.cascade_lines(sheets, document)
+            expected, counted = css_cascade_tool.cascade_lines(sheets, document, known_families(tool))
             mine = (said[1], took["elements"], took["lines"])
             theirs = (f"{css_cascade_tool.checksum(expected):08x}", counted, len(expected))
             if mine != theirs:
@@ -888,6 +933,22 @@ def print_css_report(totals: dict, books: int) -> None:
         for count, text in named[:most]:
             in_books = totals.get(f"books dropped\t{kind}\t{text}", 0)
             print(f"    {count:8}  in {in_books:4} books  {text}")
+    values = totals.get("css_families", 0)
+    if values:
+        def share(key: str) -> str:
+            return f"{totals.get(key, 0)} ({100 * totals.get(key, 0) / values:.1f}%)"
+        print(f"\nKinds of face: {values} font-family values in the sheets of {totals.get('books css_families', 0)} "
+              "books:")
+        print(f"  classed by a keyword {share('css_families_keyword')}, by a known name {share('css_families_name')}, "
+              f"by nothing {share('css_families_unclassed')} in {totals.get('books css_families_unclassed', 0)} books")
+        print("  they come to: " + ", ".join(f"{kind} {totals.get('css_families_' + kind, 0)}"
+                                             for kind in ("serif", "sans", "mono", "script", "other")))
+        named = sorted(((totals.get("books " + key, 0), count, key.split("\t", 1)[1]) for key, count in totals.items()
+                        if key.startswith("unclassed\t")), reverse=True)
+        if named:
+            print(f"  the values nothing classed, the {min(20, len(named))} in most books of {len(named)}:")
+            for in_books, count, names in named[:20]:
+                print(f"    {count:8}  in {in_books:4} books  {names}")
     if totals.get("table bytes"):
         sizes = totals["table bytes"]
         print(f"\nA table of all a book's rules, in the {len(sizes)} books with style sheets:")

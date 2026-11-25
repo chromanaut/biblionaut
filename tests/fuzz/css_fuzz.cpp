@@ -21,6 +21,8 @@
 //   - a declaration is of a property and a keyword there are, a number is
 //     within kCssMaxNumber, and is not below zero where the property
 //     cannot be;
+//   - a list of families comes to a kind of face, which is that of the
+//     first of its names that says, and `other` if none does;
 //   - the reader's counts are the counts of what it told;
 //   - the two readings tell the same;
 //   - a `style` attribute gives declarations and nothing else.
@@ -49,6 +51,28 @@ using bn::epub::CssUnit;
 using bn::epub::CssValue;
 
 constexpr std::array<std::size_t, 8> kSourcePieces = {1024, 1, 2, 7, 64, 255, 1000, 1023};
+
+// The kind of face a list of families comes to, worked out a name at a
+// time as the header has it: that of the first name that says, each name
+// asked about by itself; `other` if none says.
+bn::epub::CssFamilyClass ClassNameByName(std::string_view families) noexcept {
+  std::array<char, bn::epub::kCssMostFamilyName> name{};
+  std::string_view rest = families;
+  std::size_t names = 0;
+  for (std::string_view one = bn::epub::CssNextFamily(rest, name); !one.empty();
+       one = bn::epub::CssNextFamily(rest, name)) {
+    BN_FUZZ_CHECK(++names <= families.size(), "the names of a list of families do not end");
+    bn::epub::CssFamilyHow how = bn::epub::CssFamilyHow::kNothing;
+    const bn::epub::CssFamilyClass familyClass = bn::epub::CssClassOfFamily(one, how);
+    BN_FUZZ_CHECK(familyClass <= bn::epub::CssFamilyClass::kOther, "a kind of face there is not");
+    BN_FUZZ_CHECK((familyClass == bn::epub::CssFamilyClass::kUnset) == (how == bn::epub::CssFamilyHow::kNothing),
+                  "a name's kind of face and what said it do not agree");
+    if (familyClass != bn::epub::CssFamilyClass::kUnset) {
+      return familyClass;
+    }
+  }
+  return bn::epub::CssFamilyClass::kOther;
+}
 
 // Checks everything it is told, and adds it up for setting one reading
 // beside another.
@@ -157,6 +181,9 @@ class Listener final : public bn::epub::CssHandler {
                         "a family's name is too long, or the names do not end");
           Add(bn::fuzz::Touch(one));
         }
+        BN_FUZZ_CHECK(value.familyClass == ClassNameByName(value.families),
+                      "a list of families was not given the kind of face of the first of its names that says");
+        Add(static_cast<std::uint32_t>(value.familyClass));
         break;
       }
     }
@@ -255,5 +282,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     BN_FUZZ_CHECK(++names <= text.size(), "the names of a list of families do not end");
   }
   BN_FUZZ_CHECK(rest.empty(), "a list of families ended with something left of it");
+  bn::epub::CssFamilyHow how = bn::epub::CssFamilyHow::kNothing;
+  const bn::epub::CssFamilyClass familyClass = bn::epub::CssClassOfFamilies(text, how);
+  BN_FUZZ_CHECK(familyClass == ClassNameByName(text), "a list of families came to another kind of face by itself");
+  BN_FUZZ_CHECK((familyClass == bn::epub::CssFamilyClass::kOther) || how != bn::epub::CssFamilyHow::kNothing,
+                "a kind of face that nothing is said to have given");
   return 0;
 }

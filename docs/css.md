@@ -38,6 +38,9 @@ to](css-cascade.md)).
   `font` are taken apart into those. Any other property is dropped, and
   so is a value that is not understood. `!important` is told with the
   declaration.
+- **A `font-family`** is told with its names as they were written and
+  with the kind of face they come to: serif, sans, monospace, script or
+  other ([Kinds of face](css-families.md)).
 - **Lengths** are given as a number of thousandths and one of four units:
   pixels, ems, rems and percent. Points, inches and the rest are turned
   into pixels (12pt is 16px), and `ex` into half an em. A length that
@@ -150,12 +153,16 @@ reads every sheet in an EPUB as it comes out of the ZIP file, and prints
 for each how it ended, the checksum of what `rules` would print for it,
 its rules, the declarations in them and how many things were passed over;
 with `--dropped`, also each different thing that was passed over and how
-many times. For Standard Ebooks' *Flatland*, which is in `corpus/`:
+many times. Before what the sheets came to is a line for their
+`font-family` values and the kinds of face they come to ([Kinds of
+face](css-families.md)); *Flatland* names no font. For Standard Ebooks'
+*Flatland*, which is in `corpus/`:
 
 ```
 ok 660f898c     38     89     53 epub/css/core.css
 ok b1313d47      9     27     18 epub/css/local.css
 ok 4bbcc118     15     33     13 epub/css/se.css
+css_families=0 css_families_keyword=0 css_families_name=0 css_families_unclassed=0 css_families_serif=0 css_families_sans=0 css_families_mono=0 css_families_script=0 css_families_other=0
 css_sheets=3 css_failed=0 css_bytes=10955 css_rules=62 css_declarations=149 css_dropped=84
 css_table_bytes=3148 css_table_names=56 css_table_nodes=31 css_table_rules=55 css_table_selectors=95 css_table_left_out=0 css_table_sheets_left_out=0
 ```

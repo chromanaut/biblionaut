@@ -249,6 +249,11 @@ def main() -> int:
     if arguments.list:
         print("\n".join(TARGETS))
         return 0
+    # One heavy check at a time on a machine: this waits for its turn
+    # (tools/queued says how), and starts again from the top when it has it.
+    if "heavy" not in os.environ.get("BN_QUEUE_HELD", "").split(":"):
+        here = Path(__file__).resolve()
+        os.execv(sys.executable, [sys.executable, str(here.parent / "queued"), sys.executable, str(here), *sys.argv[1:]])
     unknown = [target for target in arguments.targets if target not in TARGETS]
     if unknown:
         sys.exit(f"error: no such target: {', '.join(unknown)}. There are: {', '.join(TARGETS)}.")

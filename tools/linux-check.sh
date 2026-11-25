@@ -24,6 +24,12 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# One heavy check at a time on a machine: this waits for its turn
+# (tools/queued says how), and carries on from here when it has it.
+if [[ ":${BN_QUEUE_HELD:-}:" != *":heavy:"* ]]; then
+  exec "$root/tools/queued" "$0" "$@"
+fi
+
 # The image is CI's Ubuntu release with the same compiler. Docker keeps it
 # after the first build.
 docker build --quiet --tag "$image" - >/dev/null <<'DOCKERFILE'

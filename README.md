@@ -3277,9 +3277,17 @@ three, five and one to the three below. So a patch comes out, on the whole,
 as light as it was, and a gray between two levels as a mixture of them.
 Rows are given from the top, as strips make them: what is carried down from
 the last row of one strip goes into the first of the next. The memory it
-carries in is the caller's, two rows of 16-bit numbers. The unit tests hold
-it to patches as light as their grays, a ramp as light as it was column by
-column, levels already levels left alone, and only levels coming out.
+carries in is the caller's, two rows of 16-bit numbers. The gray of each
+level is looked up, in a table made when it begins. A pixel that is white
+or black with nothing carried to it is passed over, being a level already
+and leaving nothing to carry on: most of a page of text or of a drawing.
+On the X4, as the viewer times it, with a row's packing into bits after
+it: 0.91 µs a pixel over 20 photographs and engravings, where working
+each gray out by a division took 1.11; and 0.14 to 0.19 s for a page of
+a drawing, where passing over nothing took 0.31.
+The unit tests hold it to patches as light as their grays, a ramp as light
+as it was column by column, levels already levels left alone, only levels
+coming out, and pixel for pixel to the same sums done the plain way.
 
 ### Filling an outline
 

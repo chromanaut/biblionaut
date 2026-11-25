@@ -16,6 +16,12 @@ bool Ditherer::Begin(std::size_t width, std::uint32_t levels, std::span<std::int
   levels_ = levels;
   errors_ = errors.first(ErrorsFor(width));
   std::fill(errors_.begin(), errors_.end(), std::int16_t{0});
+  // The levels' grays, evenly spaced from 0 to 255: looked up for each
+  // pixel, where working one out is a division.
+  const std::uint32_t steps = levels - 1;
+  for (std::uint32_t level = 0; level < levels; ++level) {
+    grays_[level] = static_cast<std::uint8_t>(((level * 255) + (steps / 2)) / steps);
+  }
   return true;
 }
 
@@ -30,11 +36,18 @@ bool Ditherer::Row(std::span<std::uint8_t> row) noexcept {
   const auto steps = static_cast<std::int32_t>(levels_ - 1);
   for (std::size_t x = 0; x < width_; ++x) {
     // Pixel x is at x + 1 in each row of what is carried.
-    const std::int32_t wanted = (std::int32_t{row[x]} * 16) + here[x + 1];
+    const std::int32_t carried = here[x + 1];
+    const std::uint8_t was = row[x];
+    // White or black, and nothing carried to it: the lowest level or the
+    // highest as it stands, with nothing left over to carry on.
+    if (carried == 0 && (was == 0 || was == 255)) {
+      continue;
+    }
+    const std::int32_t wanted = (std::int32_t{was} * 16) + carried;
     // The nearest level to what is wanted, held to black and white.
     const std::int32_t clamped = std::clamp<std::int32_t>(wanted, 0, 255 * 16);
     const std::int32_t level = ((clamped * steps) + (255 * 8)) / (255 * 16);
-    const std::int32_t gray = ((level * 255) + (steps / 2)) / steps;
+    const std::int32_t gray = grays_[static_cast<std::size_t>(level)];
     row[x] = static_cast<std::uint8_t>(gray);
     // What is left over, to the right and below. Held to what a gray can
     // be, so that what is carried cannot grow without end.

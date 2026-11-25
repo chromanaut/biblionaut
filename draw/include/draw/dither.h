@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -24,7 +25,12 @@ namespace bn::draw {
 // The rows are given in order from the top, as a picture drawn in strips
 // produces them: what is carried down from the last row of one strip goes
 // into the first of the next. The memory it carries in is the caller's,
-// ErrorsFor() of it. Used by one task.
+// ErrorsFor() of it; the object itself is the gray of each level, 256
+// bytes, and little else. Used by one task.
+//
+// A pixel that is white or black, with nothing carried to it, is passed
+// over: it is a level already, and leaves nothing to carry on. That is
+// most of a page of text or of a drawing.
 class Ditherer {
  public:
   // The most levels, and the widest row.
@@ -47,6 +53,7 @@ class Ditherer {
   std::span<std::int16_t> errors_;  // Two rows, each a pixel wider at either end: this one's, and the next's.
   std::size_t width_ = 0;
   std::uint32_t levels_ = 0;
+  std::array<std::uint8_t, kMostLevels> grays_{};  // The gray of each level, worked out once.
 };
 
 }  // namespace bn::draw

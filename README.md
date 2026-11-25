@@ -123,6 +123,7 @@ Reading a book:
 - [What a book says of itself](docs/package.md): the package.
 - [The table of contents](docs/toc.md)
 - [Style sheets](docs/css.md): the reader of CSS.
+- [Kinds of face](docs/css-families.md): what a `font-family` comes to.
 - [A book's rules, and what they come to](docs/css-cascade.md): the table
   of a book's rules, and the cascade.
 - [What a document asks for](docs/document-sheets.md): the sheets a

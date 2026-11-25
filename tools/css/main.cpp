@@ -99,6 +99,7 @@ void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s rules FILE\n"
                "       %s style TEXT\n"
+               "       %s family TEXT | --names\n"
                "       %s book FILE [--dropped]\n"
                "       %s cascade [--in BOOK] [--sum] DOCUMENT SHEET...\n"
                "       %s sheets BOOK [--spine [--by-name]] [--dropped]\n"
@@ -112,11 +113,19 @@ void PrintUsage(const char* program) {
                "           D property: value  something the rule sets\n"
                "           I url   an @import             X kind: text   something passed over\n"
                "  style  prints the same for TEXT read as a `style` attribute: its declarations\n"
+               "  family prints, for TEXT read as a font-family value, each of its names with the\n"
+               "         kind of face it is and what said so (`keyword`, `name`), or `-` for a name\n"
+               "         that is not known; and then the kind of face the whole value comes to,\n"
+               "         which is that of the first name that says. With --names in place of TEXT,\n"
+               "         every name that is known, after its kind of face: `nothing` for a word\n"
+               "         that says none, and `word` after one that counts only as a whole word\n"
                "  book   reads every style sheet in the EPUB (or other ZIP file) FILE, those whose\n"
                "         names end in .css, and prints for each: how it ended, the checksum\n"
                "         (CRC-32) of what `rules` would print for it, its rules, the declarations\n"
-               "         in them, how many things were passed over, and its name; at the end what\n"
-               "         all of them came to; and then what keeping all their rules in one table\n"
+               "         in them, how many things were passed over, and its name; at the end how\n"
+               "         many font-family values they have, how many of those a keyword classed, a\n"
+               "         known name, or nothing, and how many came to each kind of face; what all\n"
+               "         the sheets came to; and then what keeping all their rules in one table\n"
                "         takes: its bytes, and the names, nodes, rules and selectors in it, and how\n"
                "         many rules it had to leave out\n"
                "  cascade  keeps the rules of each SHEET in a table, goes through the XML file\n"
@@ -139,7 +148,9 @@ void PrintUsage(const char* program) {
                "         and prints what `cascade` prints\n"
                "\n"
                "  --dropped  with book: after that, a line for each different thing that was\n"
-               "             passed over: `dropped`, how many times, its kind, and what it was\n"
+               "             passed over: `dropped`, how many times, its kind, and what it was;\n"
+               "             and one for each different font-family value that nothing classed:\n"
+               "             `unclassed`, how many times, and its names\n"
                "  --in BOOK  with cascade: DOCUMENT and each SHEET are the names of entries in the\n"
                "             EPUB (or other ZIP file) BOOK\n"
                "             with sheets: under each document, a line for each thing left out:\n"
@@ -154,7 +165,7 @@ void PrintUsage(const char* program) {
                "             there were, and what the table and the cascade took\n"
                "\n"
                "Ends with 0, or 1 if something could not be read.\n",
-               program, program, program, program, program, program);
+               program, program, program, program, program, program, program);
 }
 
 std::string Escaped(std::string_view raw) {
@@ -198,6 +209,10 @@ std::string ValueText(const bn::epub::CssValue& value) {
     case bn::epub::CssValue::Kind::kLength:
       return Number(value.number) + bn::epub::CssUnitName(value.unit);
     case bn::epub::CssValue::Kind::kFamilies: {
+      if (value.families.empty()) {
+        // From a cascade: the kind of face, the names not kept.
+        return bn::epub::CssFamilyClassName(value.familyClass);
+      }
       std::string out;
       std::array<char, 256> name{};
       std::string_view rest = value.families;
@@ -261,6 +276,16 @@ class Writer final : public bn::epub::CssHandler {
   void OnDeclaration(const bn::epub::CssDeclaration& declaration) noexcept override {
     Line(std::string("D ") + bn::epub::CssPropertyName(declaration.property) + ": " +
          Escaped(ValueText(declaration.value)) + (declaration.important ? " !important" : ""));
+    if (declaration.value.kind == bn::epub::CssValue::Kind::kFamilies) {
+      bn::epub::CssFamilyHow how = bn::epub::CssFamilyHow::kNothing;
+      const bn::epub::CssFamilyClass familyClass = bn::epub::CssClassOfFamilies(declaration.value.families, how);
+      ++families;
+      ++familiesOf.at(static_cast<std::size_t>(familyClass));
+      ++familiesBy.at(static_cast<std::size_t>(how));
+      if (how == bn::epub::CssFamilyHow::kNothing) {
+        ++unclassed[Escaped(ValueText(declaration.value))];
+      }
+    }
   }
   void OnRuleEnd() noexcept override { Line("}"); }
   void OnImport(std::string_view url) noexcept override { Line("I " + Escaped(url)); }
@@ -280,6 +305,14 @@ class Writer final : public bn::epub::CssHandler {
 
   // What was passed over, by kind and text, and how many times.
   std::map<std::pair<std::string, std::string>, std::uint32_t> tally;
+
+  // The font-family values told of: how many, how many came to each kind
+  // of face, how many were classed in each way (by CssFamilyHow), and the
+  // ones that nothing classed, by their names.
+  std::uint32_t families = 0;
+  std::array<std::uint32_t, bn::epub::kCssFamilyClasses> familiesOf{};
+  std::array<std::uint32_t, 3> familiesBy{};
+  std::map<std::string, std::uint32_t> unclassed;
 
  private:
   void Line(const std::string& line) {
@@ -435,6 +468,48 @@ int Style(std::string_view text) {
   return 0;
 }
 
+const char* HowName(bn::epub::CssFamilyHow how) {
+  switch (how) {
+    case bn::epub::CssFamilyHow::kNothing:
+      return "-";
+    case bn::epub::CssFamilyHow::kKeyword:
+      return "keyword";
+    case bn::epub::CssFamilyHow::kName:
+      return "name";
+  }
+  return "?";
+}
+
+// The kind of face each name of a font-family value is, and the kind the
+// value comes to.
+int Family(std::string_view text) {
+  std::array<char, bn::epub::kCssMostFamilyName> name{};
+  std::string_view rest = text;
+  for (std::string_view one = bn::epub::CssNextFamily(rest, name); !one.empty();
+       one = bn::epub::CssNextFamily(rest, name)) {
+    bn::epub::CssFamilyHow how = bn::epub::CssFamilyHow::kNothing;
+    const bn::epub::CssFamilyClass familyClass = bn::epub::CssClassOfFamily(one, how);
+    const std::string shown = Escaped(one);
+    std::printf("N %s: %s%s%s\n", shown.c_str(),
+                how == bn::epub::CssFamilyHow::kNothing ? "" : bn::epub::CssFamilyClassName(familyClass),
+                how == bn::epub::CssFamilyHow::kNothing ? "" : " ", HowName(how));
+  }
+  std::printf("class %s\n", bn::epub::CssFamilyClassName(bn::epub::CssClassOfFamilies(text)));
+  return 0;
+}
+
+// Every name that is known, with its kind of face.
+int FamilyNames() {
+  for (const bn::epub::CssKnownFamily& known : bn::epub::CssKnownFamilies()) {
+    const std::string name(known.name);
+    std::printf("%s %s%s\n",
+                known.familyClass == bn::epub::CssFamilyClass::kUnset ? "nothing"
+                                                                      : bn::epub::CssFamilyClassName(known.familyClass),
+                name.c_str(), known.wholeWord ? " word" : "");
+  }
+  return 0;
+}
+
 bool HasCssEnding(std::string_view name) {
   constexpr std::string_view kEnding = ".css";
   return name.size() > kEnding.size() &&
@@ -514,6 +589,18 @@ int Book(const std::string& path, bool printDropped) {
                 static_cast<unsigned>(reader.Rules()), static_cast<unsigned>(reader.Declarations()),
                 static_cast<unsigned>(DroppedInAll(reader)), Escaped(entryName).c_str());
   }
+  const auto of = [&writer](bn::epub::CssFamilyClass familyClass) {
+    return static_cast<unsigned>(writer.familiesOf.at(static_cast<std::size_t>(familyClass)));
+  };
+  const auto by = [&writer](bn::epub::CssFamilyHow how) {
+    return static_cast<unsigned>(writer.familiesBy.at(static_cast<std::size_t>(how)));
+  };
+  std::printf(
+      "css_families=%u css_families_keyword=%u css_families_name=%u css_families_unclassed=%u "
+      "css_families_serif=%u css_families_sans=%u css_families_mono=%u css_families_script=%u css_families_other=%u\n",
+      static_cast<unsigned>(writer.families), by(bn::epub::CssFamilyHow::kKeyword), by(bn::epub::CssFamilyHow::kName),
+      by(bn::epub::CssFamilyHow::kNothing), of(bn::epub::CssFamilyClass::kSerif), of(bn::epub::CssFamilyClass::kSans),
+      of(bn::epub::CssFamilyClass::kMono), of(bn::epub::CssFamilyClass::kScript), of(bn::epub::CssFamilyClass::kOther));
   std::printf("css_sheets=%u css_failed=%u css_bytes=%llu css_rules=%u css_declarations=%u css_dropped=%u\n",
               static_cast<unsigned>(sheets), static_cast<unsigned>(failed), static_cast<unsigned long long>(bytes),
               static_cast<unsigned>(rules), static_cast<unsigned>(declarations), static_cast<unsigned>(dropped));
@@ -527,6 +614,11 @@ int Book(const std::string& path, bool printDropped) {
     for (const auto& [what, count] : writer.tally) {
       std::printf("dropped %u %s: ", static_cast<unsigned>(count), what.first.c_str());
       std::fwrite(what.second.data(), 1, what.second.size(), stdout);
+      std::fputc('\n', stdout);
+    }
+    for (const auto& [names, count] : writer.unclassed) {
+      std::printf("unclassed %u family: ", static_cast<unsigned>(count));
+      std::fwrite(names.data(), 1, names.size(), stdout);
       std::fputc('\n', stdout);
     }
   }
@@ -948,6 +1040,9 @@ int main(int argc, char** argv) {
   }
   if (command == "style" && argc == 3) {
     return Style(argv[2]);
+  }
+  if (command == "family" && argc == 3) {
+    return std::strcmp(argv[2], "--names") == 0 ? FamilyNames() : Family(argv[2]);
   }
   if (command == "book" && (argc == 3 || (argc == 4 && std::strcmp(argv[3], "--dropped") == 0))) {
     return Book(argv[2], argc == 4);

@@ -44,31 +44,31 @@ finding them, one for the places, four when it ends, and eleven at the
 end for all of them, with those kinds again.
 
 ```
-book check: the checksum alone, 262144 bytes in 2013 us (127173 KB/s).
+book check: the checksum alone, 262144 bytes in 653 us (392036 KB/s).
 book 1: 1832425 bytes, /books/core/The First Book.epub
 book 1: package: title "The First Book", author "A. Writer", language "en".
 book 1: package: 374 files, 368 documents, cover jpeg, nav, ncx; memory 16288; checksum 7b162ac4.
-book 1: package: 2 ms: card 0 ms for 24 reads of 90555 bytes.
-book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 1 ms: card 0 ms for 2 reads of 8192 bytes.
+book 1: package: 1 ms: card 0 ms for 24 reads of 90555 bytes.
+book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 0 ms: card 0 ms for 2 reads of 8192 bytes.
 book 1: styles: 368 documents, 1102 sheets given, 3 read, 0 with rules of their own; checksum c31e8f44.
-book 1: styles: table 2288 bytes, 46 rules, names 38 bytes; 11 ms: card 1 ms for 374 reads of 1531904 bytes.
-book 1: places: 16 far apart, 16 reads in 14 us, the longest 1 us.
+book 1: styles: table 2272 bytes, 46 rules, names 38 bytes; 9 ms: card 1 ms for 374 reads of 1531904 bytes.
+book 1: places: 16 far apart, 16 reads in 22 us, the longest 2 us.
 book 1: ok. 377 entries, 4353104 bytes out of 1769871. Directory found in 1 read, 0 ms.
-book 1: card 0 ms for 468 reads of 1909179 bytes (2378102 KB/s); inflating 41 ms: 1661195 bytes in (39341 KB/s), 4244428 out (100520 KB/s); all 81 ms.
-book 1: opened 4 times in 151 us, the longest 71 us; number 1 in its folder.
-book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 38 ms (108931 KB/s); most memory 11632.
+book 1: card 0 ms for 468 reads of 1909179 bytes (2433985 KB/s); inflating 32 ms: 1661195 bytes in (49732 KB/s), 4244428 out (127067 KB/s); all 64 ms.
+book 1: opened 4 times in 144 us, the longest 52 us; number 1 in its folder.
+book 1: XML: 372 documents, 4240089 bytes, 93155 events, checksum a7e0cc8f; parsing 29 ms (141345 KB/s); most memory 11632.
 ...
 book check: passed. 34 books, 5152 entries, 63899132 bytes out of 39526769.
-book check: card 20 ms for 10091 reads of 41148789 bytes (1934265 KB/s); inflating 428 ms: 24130522 bytes in (55011 KB/s), 48502885 out (110574 KB/s); all 807 ms.
-book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 277 ms (110995 KB/s); 32821373 bytes of events checksummed.
+book check: card 19 ms for 10091 reads of 41148789 bytes (2010122 KB/s); inflating 318 ms: 24130522 bytes in (73979 KB/s), 48502885 out (148701 KB/s); all 590 ms.
+book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 206 ms (149040 KB/s); 32821373 bytes of events checksummed.
 book check: XML memory: the most a document used 18952 bytes; documents over 8 KB: 2072, over 12 KB: 24, over 16 KB: 5.
-book check: packages: 33 read; 27 ms: card 17 ms for 258 reads of 901750 bytes; the longest 2 ms; the most memory 22448. Not read: 1.
-book check: contents: 33 read (25 nav), 2666 entries; 7 ms: card 0 ms for 49 reads of 195690 bytes; the longest 1 ms.
+book check: packages: 33 read; 25 ms: card 17 ms for 258 reads of 901750 bytes; the longest 3 ms; the most memory 22448. Not read: 1.
+book check: contents: 33 read (25 nav), 2666 entries; 6 ms: card 0 ms for 49 reads of 195690 bytes; the longest 0 ms.
 book check: styles: 1916 documents of 33 books, 3582 sheets given, 76 read, 4 with rules of their own.
-book check: styles: 68 ms: card 22 ms for 1808 reads of 7368383 bytes; the longest 11 ms; the most a table took 19959 bytes, names 117.
-book check: files opened 136 times in 4 ms; the longest 97 us.
-book check: places: 544 reads in 17 ms; the longest 202 us.
-book check: the longest step: 1602 us, parsing an entry.
+book check: styles: 59 ms: card 20 ms for 1808 reads of 7368383 bytes; the longest 9 ms; the most a table took 19812 bytes, names 117.
+book check: files opened 136 times in 3 ms; the longest 114 us.
+book check: places: 544 reads in 15 ms; the longest 180 us.
+book check: the longest step: 2935 us, reading a package.
 ```
 
 (Those figures are a desktop's, and the book's names are made up.) A

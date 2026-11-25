@@ -858,6 +858,22 @@ CUT_SHORT_SHEET = (b'[a=b i i], [a="b\\ \n{ margin: 0 }\n[a="b\n{ margin: 0 }\n[
                    b'[a="b\\\n c"], [a=\'b { margin: 0 }\n.end { float: left }\n')
 
 
+# Font families of every kind: named by a keyword, by a name that is known
+# however it is written, by a short one that counts only as a whole word,
+# by nothing; and names that hold a known one that must not be taken.
+FAMILIES_SHEET = rb"""body { font-family: "AGaramondPro-Italic-0855", Georgia, serif }
+h1 { font-family: 'Trade Gothic LT Std', Arial-R, sans-serif; font: italic bold 1.5em/1.2 "Helvetica Neue", Arial }
+pre, code { font-family: "Letter Gothic", Ubuntu Mono, "Courier New", monospace }
+.hand { font-family: Monotype Corsiva, "Bradley Hand", cursive }
+.icon { font-family: "Material Icons", FontAwesome, fantasy }
+.odd { font-family: Monotype Sorts, Handel, "Shift Light", "No Such Face" }
+.free { font-family: "Hand of Handel", Georgia } .freer { font-family: Mono Monotype Monotype, serif }
+.words { font-family: Aerial, Sometimes, Latona, Times_New_Roman, TIMES, lato-light }
+.far { font-family: \65 b garamond, "caf\e9  sans", ui-monospace, system-ui, math, "", ,, }
+.end { font-family: inherit; font: 12px x }
+"""
+
+
 def css_seeds() -> None:
     clear("css")
 
@@ -873,6 +889,11 @@ def css_seeds() -> None:
     seed("values-of-attributes-cut-short", 2, CUT_SHORT_SHEET)
     seed("a-style-attribute", 0, b"margin-left: 2em; font-weight: 700 !important; color: red; font-family: \"a;b\", serif")
     seed("a-media-query", 0, b"only screen and (max-width: 420px), not amzn-mobi")
+    seed("the-kinds-of-face", 0, FAMILIES_SHEET)
+    seed("the-kinds-of-face-a-few-bytes-at-a-time", 3, FAMILIES_SHEET)
+    seed("a-list-of-families", 0, b'"AGaramondPro-Italic-0855", Monotype Sorts, "Shift Light", Arial-R, sans-serif')
+    seed("a-family-with-a-long-name", 0,
+         b"x " * 70 + b"garamond, " + b"q" * 70 + b"courier, " + b"1 2 3 " * 30 + b"script")
     seed("longer-than-there-is-room-for", 6,
          b", ".join(b"p.class-number-%d" % n for n in range(80)) + b" { margin: 0 }\nq { font-family: " + b"x" * 600 +
          b"; float: left }\n" + b" > ".join(b"a" for _ in range(9)) + b" {}\np" + b".c" * 13 + b" {}\n")

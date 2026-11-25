@@ -163,6 +163,7 @@ CssValue FamiliesValue(std::string_view families) noexcept {
   CssValue value;
   value.kind = CssValue::Kind::kFamilies;
   value.families = families;
+  value.familyClass = CssClassOfFamilies(families);
   return value;
 }
 

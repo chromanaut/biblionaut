@@ -146,7 +146,10 @@ void CheckValues(const CssStyle& style) {
       BN_FUZZ_CHECK(value.number >= -bn::epub::kCssMaxNumber && value.number <= bn::epub::kCssMaxNumber,
                     "a number further from zero than a number can be");
     } else {
-      (void)bn::fuzz::Touch(value.families);
+      BN_FUZZ_CHECK(value.familyClass >= bn::epub::CssFamilyClass::kSerif &&
+                        value.familyClass <= bn::epub::CssFamilyClass::kOther,
+                    "a list of families that comes to no kind of face");
+      BN_FUZZ_CHECK(value.families.empty(), "a cascade gave the names of a list of families");
     }
   }
 }
@@ -163,7 +166,7 @@ struct Said {
         const CssValue& value = style.values[property];
         Add(static_cast<std::uint32_t>(value.kind) + static_cast<std::uint32_t>(value.keyword) +
             static_cast<std::uint32_t>(value.number) + static_cast<std::uint32_t>(value.unit) +
-            bn::fuzz::Touch(value.families));
+            static_cast<std::uint32_t>(value.familyClass));
       }
     }
   }

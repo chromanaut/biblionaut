@@ -48,7 +48,9 @@ The tools and Python agree about every book.
 - **The style sheets**: every sheet `bn-css book` reads has the checksum,
   the rules, the declarations and the count of things passed over that a
   second reading of it comes to ([Style sheets](css.md) has what that
-  reading is).
+  reading is); and the book's `font-family` values come to the kinds of
+  face, by keyword, by a known name or by nothing, that a second
+  working-out of them comes to ([Kinds of face](css-families.md)).
 - **What a document asks for**: every document `bn-css sheets` goes
   through is given the sheets, in the order, that a second finding in
   Python gives it, and what was left out is the same kind for kind ([What

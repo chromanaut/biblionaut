@@ -538,20 +538,12 @@ void CssRules::OnDeclaration(const CssDeclaration& declaration) noexcept {
   if (setting.set && setting.important && !declaration.important) {
     return;  // What is important stays, whatever is written after it.
   }
-  std::uint16_t families = 0;
-  if (declaration.value.kind == CssValue::Kind::kFamilies && !declaration.value.families.empty()) {
-    families = Intern(declaration.value.families);
-    if (families == 0) {
-      LeaveOut(LeftOut::kRoom);
-      return;
-    }
-  }
   setting = {.set = true,
              .important = declaration.important,
              .kind = declaration.value.kind,
              .keyword = declaration.value.keyword,
              .unit = declaration.value.unit,
-             .families = families,
+             .familyClass = declaration.value.familyClass,
              .number = declaration.value.number};
 }
 
@@ -570,10 +562,8 @@ void CssRules::OnRuleEnd() noexcept {
     }
     ++set;
     bytes += 2;
-    if (setting.kind == CssValue::Kind::kKeyword) {
+    if (setting.kind == CssValue::Kind::kKeyword || setting.kind == CssValue::Kind::kFamilies) {
       bytes += 1;
-    } else if (setting.kind == CssValue::Kind::kFamilies) {
-      bytes += 2;
     } else if (setting.number != 0) {
       bytes += setting.number >= -32768 && setting.number <= 32767 ? 2 : 4;
     }
@@ -610,8 +600,9 @@ void CssRules::OnRuleEnd() noexcept {
         Push8(static_cast<std::uint8_t>(setting.keyword));
         break;
       case CssValue::Kind::kFamilies:
+        // The kind of face, and none of the names.
         Push8(form);
-        Push16(setting.families);
+        Push8(static_cast<std::uint8_t>(setting.familyClass));
         break;
       case CssValue::Kind::kLength: {
         const std::uint8_t unit = static_cast<std::uint8_t>(static_cast<std::uint8_t>(setting.unit) << kUnitShift);
@@ -779,8 +770,7 @@ void CssCascade::Apply(std::uint16_t declarations, Rank rank, CssStyle& style, R
         value.keyword = static_cast<CssKeyword>(memory[at++]);
         break;
       case CssValue::Kind::kFamilies:
-        value.families = rules_.NameAt(rules_.Load(at));
-        at += 2;
+        value.familyClass = static_cast<CssFamilyClass>(memory[at++]);
         break;
       case CssValue::Kind::kLength: {
         value.unit = static_cast<CssUnit>((static_cast<unsigned>(form) >> kUnitShift) & kUnitMask);
@@ -950,6 +940,9 @@ void CssCascade::Open(std::string_view name, const XmlAttributes& attributes, Cs
         const Rank mine = (declaration.important ? Rank{1} << kRankImportant : Rank{0}) | (Rank{1} << kRankOwn);
         if (!style_.Has(declaration.property) || mine >= ranks_.of[property]) {
           style_.values[property] = declaration.value;
+          // Of a list of families the kind of face is given, as for a
+          // rule's, and not the names.
+          style_.values[property].families = {};
           style_.set |= 1U << property;
           ranks_.of[property] = mine;
         }

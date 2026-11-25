@@ -113,6 +113,82 @@ TEST(Dither, WhatIsCarriedGoesOnFromOneCallToTheNext) {
   EXPECT_TRUE(std::equal(whole.begin(), whole.begin() + 40, fresh.begin()));
 }
 
+// A picture in `levels` levels worked out the plain way, a pixel at a time
+// with every sum written out: what the ditherer has to come to whatever it
+// looks up or passes over.
+std::vector<std::uint8_t> DitheredThePlainWay(std::vector<std::uint8_t> picture, std::size_t width,
+                                              std::uint32_t levels) {
+  const auto steps = static_cast<std::int32_t>(levels - 1);
+  std::vector<std::int32_t> here(width + 2, 0);
+  std::vector<std::int32_t> below(width + 2, 0);
+  for (std::size_t top = 0; top < picture.size(); top += width) {
+    for (std::size_t x = 0; x < width; ++x) {
+      const std::int32_t wanted = (std::int32_t{picture[top + x]} * 16) + here[x + 1];
+      const std::int32_t clamped = std::clamp<std::int32_t>(wanted, 0, 255 * 16);
+      const std::int32_t level = ((clamped * steps) + (255 * 8)) / (255 * 16);
+      const std::int32_t gray = ((level * 255) + (steps / 2)) / steps;
+      picture[top + x] = static_cast<std::uint8_t>(gray);
+      const std::int32_t left = std::clamp<std::int32_t>(wanted - (gray * 16), -255 * 16, 255 * 16);
+      const std::int32_t right = (left * 7) / 16;
+      const std::int32_t belowLeft = (left * 3) / 16;
+      const std::int32_t straightBelow = (left * 5) / 16;
+      // Carried in 16 bits, as the ditherer carries it.
+      here[x + 2] = static_cast<std::int16_t>(here[x + 2] + right);
+      below[x] = static_cast<std::int16_t>(below[x] + belowLeft);
+      below[x + 1] = static_cast<std::int16_t>(below[x + 1] + straightBelow);
+      below[x + 2] = static_cast<std::int16_t>(below[x + 2] + (left - right - belowLeft - straightBelow));
+    }
+    here = below;
+    std::fill(below.begin(), below.end(), 0);
+  }
+  return picture;
+}
+
+TEST(Dither, ComesToWhatThePlainWayDoesForEveryKindOfPicture) {
+  // The ditherer looks each level's gray up, and passes over a pixel that
+  // is white or black with nothing carried to it. Neither may show:
+  // pictures of noise, of mostly paper with a little ink (the pixels it
+  // passes over, and those beside them that it may not), of mostly ink, of
+  // nothing but the levels themselves, and of a ramp, in levels few and
+  // many and at widths from one pixel up.
+  std::mt19937 random = Repeatable(37);
+  for (const std::uint32_t levels : {2U, 3U, 4U, 5U, 16U, 255U, 256U}) {
+    for (const std::size_t width :
+         {std::size_t{1}, std::size_t{2}, std::size_t{7}, std::size_t{64}, std::size_t{481}}) {
+      const std::size_t rows = 23;
+      for (int kind = 0; kind < 5; ++kind) {
+        std::vector<std::uint8_t> picture(width * rows);
+        for (std::size_t at = 0; at < picture.size(); ++at) {
+          const auto chance = static_cast<std::uint32_t>(random());
+          switch (kind) {
+            case 0:  // Noise.
+              picture[at] = static_cast<std::uint8_t>(chance);
+              break;
+            case 1:  // Paper, with a little ink and a little gray.
+              picture[at] = chance % 16 == 0   ? std::uint8_t{0}
+                            : chance % 16 == 1 ? static_cast<std::uint8_t>(chance >> 8U)
+                                               : std::uint8_t{255};
+              break;
+            case 2:  // Ink, with a little paper and a little gray.
+              picture[at] = chance % 16 == 0   ? std::uint8_t{255}
+                            : chance % 16 == 1 ? static_cast<std::uint8_t>(chance >> 8U)
+                                               : std::uint8_t{0};
+              break;
+            case 3:  // The levels themselves, in any order.
+              picture[at] = static_cast<std::uint8_t>((((chance % levels) * 255) + ((levels - 1) / 2)) / (levels - 1));
+              break;
+            default:  // A ramp across.
+              picture[at] = static_cast<std::uint8_t>(((at % width) * 255) / std::max<std::size_t>(width - 1, 1));
+              break;
+          }
+        }
+        ASSERT_TRUE(Dithered(picture, width, levels) == DitheredThePlainWay(picture, width, levels))
+            << levels << " levels, " << width << " wide, kind " << kind;
+      }
+    }
+  }
+}
+
 TEST(Dither, RefusesWhatItCannotDo) {
   std::vector<std::int16_t> errors(Ditherer::ErrorsFor(10));
   Ditherer ditherer;

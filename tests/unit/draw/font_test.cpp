@@ -8,6 +8,8 @@
 #include <span>
 #include <vector>
 
+#include "byte_map_fakes.h"
+#include "core/byte_map.h"
 #include "font_image.h"
 
 namespace {
@@ -531,6 +533,435 @@ TEST(FontImage, WithAnyByteChangedGivesNothingFromOutsideIt) {
   }
   // Most changes are to glyphs and pictures, which opening does not look at.
   EXPECT_GT(opened, good.size());
+}
+
+// ---- An image opened through a map ----
+
+bool SameGlyph(const Glyph& one, const Glyph& other) {
+  return one.index == other.index && one.advance == other.advance && one.width == other.width &&
+         one.height == other.height && one.left == other.left && one.top == other.top &&
+         one.pictureAt == other.pictureAt && std::ranges::equal(one.picture, other.picture);
+}
+
+// Whether `image` opened through a map goes as it goes opened whole; and,
+// where it opens, whether every face has the same numbers, has no glyphs
+// until it is held, and then gives for every code point and glyph asked
+// what the whole image's face gives, the picture where the image has it.
+// Each stretch mapped is a copy of exactly its size, so the sanitizer sees
+// a byte read outside it; and nothing may be left mapped at the end.
+::testing::AssertionResult SameThroughAMap(const std::vector<std::uint8_t>& image) {
+  FontImage whole;
+  const FontStatus status = whole.Open(image);
+  bn::test::CopyingByteMap map(image);
+  {
+    FontImage mapped;
+    if (mapped.Open(map) != status) {
+      return ::testing::AssertionFailure() << "opened whole it is " << bn::draw::FontStatusName(status)
+                                           << ", and through a map " << bn::draw::FontStatusName(mapped.Status());
+    }
+    if (status != FontStatus::kOk) {
+      if (mapped.Faces() != 0 || map.Stretches() != 0) {
+        return ::testing::AssertionFailure() << "an image that was refused has faces, or bytes mapped";
+      }
+      return ::testing::AssertionSuccess();
+    }
+    if (mapped.Faces() != whole.Faces() || map.Stretches() != 1) {
+      return ::testing::AssertionFailure() << "the faces differ, or more is mapped than the table of them";
+    }
+    for (std::size_t i = 0; i < whole.Faces(); ++i) {
+      const Face one = whole.FaceAt(i);
+      Face other = mapped.FaceAt(i);
+      if (!other.Valid() || one.Role() != other.Role() || one.Style() != other.Style() || one.Size() != other.Size() ||
+          one.Ascent() != other.Ascent() || one.Descent() != other.Descent() ||
+          one.LineHeight() != other.LineHeight() || one.XHeight() != other.XHeight() ||
+          one.Glyphs() != other.Glyphs()) {
+        return ::testing::AssertionFailure() << "face " << i << " has other numbers";
+      }
+      Glyph glyph;
+      Glyph same;
+      if (!one.Held() || other.Held() || other.Find('a', glyph) || other.Missing(glyph) || other.LastSteps() != 0) {
+        return ::testing::AssertionFailure() << "face " << i << " has glyphs before it is held";
+      }
+      if (!mapped.Hold(other) || !other.Held() || mapped.Held() != 1) {
+        return ::testing::AssertionFailure() << "face " << i << " could not be held";
+      }
+      for (std::uint32_t codePoint = 0; codePoint < 0x200; ++codePoint) {
+        const bool found = one.Find(codePoint, glyph);
+        if (other.Find(codePoint, same) != found || one.LastSteps() != other.LastSteps() ||
+            (found && !SameGlyph(glyph, same))) {
+          return ::testing::AssertionFailure() << "face " << i << " differs at code point " << codePoint;
+        }
+        // Where the image has the picture, and where it is to be read.
+        if (found && !glyph.picture.empty() &&
+            (glyph.pictureAt != static_cast<std::size_t>(glyph.picture.data() - image.data()) ||
+             mapped.Bytes(same.pictureAt, same.picture.size()).data() != same.picture.data())) {
+          return ::testing::AssertionFailure()
+                 << "face " << i << " has a picture elsewhere, at code point " << codePoint;
+        }
+      }
+      for (std::uint32_t index = 0; index < one.Glyphs() && index < 64; ++index) {
+        const bool found = one.GlyphAt(index, glyph);
+        if (other.GlyphAt(index, same) != found || (found && !SameGlyph(glyph, same))) {
+          return ::testing::AssertionFailure() << "face " << i << " differs at glyph " << index;
+        }
+      }
+      mapped.ReleaseFaces();
+      if (map.Stretches() != 1) {
+        return ::testing::AssertionFailure() << "face " << i << " was not given up";
+      }
+    }
+  }
+  if (map.Stretches() != 0) {
+    return ::testing::AssertionFailure() << "bytes were left mapped when the image was gone";
+  }
+  return ::testing::AssertionSuccess();
+}
+
+TEST(FontImage, OpenedThroughAMapKeepsOnlyItsHeaderAndItsFacesReadable) {
+  const std::vector<std::uint8_t> image =
+      FontImageBytes({SmallFace(), SmallFace(0, kItalic, 20), SmallFace(1, kBold, 30)});
+  bn::core::MemoryByteMap map(image);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+  EXPECT_EQ(fonts.Status(), FontStatus::kOk);
+  EXPECT_EQ(map.Stretches(), 1U);
+  EXPECT_EQ(map.MappedBytes(), 16U + (3 * 48U));
+  EXPECT_EQ(fonts.Held(), 0U);
+  EXPECT_EQ(fonts.HeldBytes(), 0U);
+
+  // A face says what it is, and is found by it, with nothing more mapped.
+  ASSERT_EQ(fonts.Faces(), 3U);
+  const Face sans = fonts.Find(FaceRole::kSans, kBold, 30);
+  ASSERT_TRUE(sans.Valid());
+  EXPECT_EQ(sans.Size(), 30);
+  EXPECT_EQ(sans.Glyphs(), 8U);
+  EXPECT_EQ(fonts.Nearest(FaceRole::kSerif, kBold | kItalic, 20).Style(), kItalic);
+  EXPECT_FALSE(fonts.Find(FaceRole::kMono, 0, 20).Valid());
+  EXPECT_EQ(map.Stretches(), 1U);
+  EXPECT_EQ(map.Maps(), 2U);  // The header by itself, and then with the faces.
+  // And has no glyphs yet.
+  EXPECT_FALSE(sans.Held());
+  Glyph glyph;
+  EXPECT_FALSE(sans.Find('a', glyph));
+  EXPECT_FALSE(sans.GlyphAt(1, glyph));
+  EXPECT_FALSE(sans.Missing(glyph));
+}
+
+TEST(FontImage, GivesAHeldFacesGlyphsAsTheImageOpenedWholeGivesThem) {
+  ImageFace many = SmallFace(1, kItalic, 24);
+  for (std::uint32_t i = 0; i < 40; ++i) {
+    many.glyphs[0x100 + (i * 3)] = Block(static_cast<std::uint16_t>(30 + i), 5, 6, 2);
+  }
+  std::vector<ImageFacePlaces> places;
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), many, SmallFace(3)}, &places);
+  EXPECT_TRUE(SameThroughAMap(image));
+  // An image with no faces, and one whose faces have nothing in them.
+  EXPECT_TRUE(SameThroughAMap(FontImageBytes({})));
+  ImageFace nothing = bn::test::EmptyFace(2, 0, 16);
+  EXPECT_TRUE(SameThroughAMap(FontImageBytes({nothing, nothing})));
+
+  // What is mapped for a face is its own tables and pictures, from the
+  // first byte of them to the last.
+  bn::core::MemoryByteMap map(image);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+  Face face = fonts.FaceAt(1);
+  ASSERT_TRUE(fonts.Hold(face));
+  const std::size_t stretch = places[1].pictures + places[1].pictureBytes - places[1].ranges;
+  EXPECT_EQ(fonts.HeldBytes(), stretch);
+  EXPECT_EQ(map.MappedBytes(), 16U + (3 * 48U) + stretch);
+  Glyph glyph;
+  ASSERT_TRUE(face.Find(0x103, glyph));
+  EXPECT_GE(glyph.picture.data(), image.data() + places[1].pictures);
+  EXPECT_LE(glyph.picture.data() + glyph.picture.size(), image.data() + places[1].pictures + places[1].pictureBytes);
+}
+
+TEST(FontImage, HoldsAFaceOnceHoweverOftenItIsAsked) {
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), SmallFace(1)});
+  bn::core::MemoryByteMap map(image);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+  Face face = fonts.FaceAt(1);
+  ASSERT_TRUE(fonts.Hold(face));
+  const std::size_t maps = map.Maps();
+  Glyph first;
+  ASSERT_TRUE(face.Find('c', first));
+
+  // Asked again, and of the face found again: the same stretch.
+  EXPECT_TRUE(fonts.Hold(face));
+  Face again = fonts.Find(FaceRole::kSans, 0, 20);
+  EXPECT_TRUE(again.Held());  // Found while it is held, it is held.
+  EXPECT_TRUE(fonts.Hold(again));
+  Glyph second;
+  ASSERT_TRUE(again.Find('c', second));
+  EXPECT_EQ(second.picture.data(), first.picture.data());
+  EXPECT_EQ(fonts.Held(), 1U);
+  EXPECT_EQ(map.Maps(), maps);
+  EXPECT_EQ(map.Stretches(), 2U);
+  // The other face is not held for it.
+  EXPECT_FALSE(fonts.FaceAt(0).Held());
+}
+
+TEST(FontImage, GivesUpTheFacesItHoldsAndEverythingWhenItCloses) {
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), SmallFace(1), SmallFace(2)});
+  bn::test::CopyingByteMap map(image);
+  {
+    FontImage fonts;
+    ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+    Face serif = fonts.FaceAt(0);
+    Face mono = fonts.FaceAt(2);
+    ASSERT_TRUE(fonts.Hold(serif));
+    ASSERT_TRUE(fonts.Hold(mono));
+    EXPECT_EQ(fonts.Held(), 2U);
+    EXPECT_EQ(map.Stretches(), 3U);
+
+    fonts.ReleaseFaces();
+    EXPECT_EQ(fonts.Held(), 0U);
+    EXPECT_EQ(fonts.HeldBytes(), 0U);
+    EXPECT_EQ(map.Stretches(), 1U);
+    // Found again, a face is as it was at first, and can be held again.
+    Face again = fonts.FaceAt(0);
+    EXPECT_TRUE(again.Valid());
+    EXPECT_FALSE(again.Held());
+    Glyph glyph;
+    EXPECT_FALSE(again.Find('a', glyph));
+    ASSERT_TRUE(fonts.Hold(again));
+    EXPECT_TRUE(again.Find('a', glyph));
+
+    // Opened again, it has given up what it had: the table of faces too.
+    ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+    EXPECT_EQ(fonts.Held(), 0U);
+    EXPECT_EQ(map.Stretches(), 1U);
+    Face held = fonts.FaceAt(1);
+    ASSERT_TRUE(fonts.Hold(held));
+
+    fonts.Close();
+    EXPECT_EQ(fonts.Status(), FontStatus::kNotOpen);
+    EXPECT_EQ(fonts.Faces(), 0U);
+    EXPECT_FALSE(fonts.FaceAt(0).Valid());
+    EXPECT_EQ(map.Stretches(), 0U);
+
+    // And an image that goes while it holds faces leaves nothing mapped.
+    ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+    Face last = fonts.FaceAt(2);
+    ASSERT_TRUE(fonts.Hold(last));
+    EXPECT_EQ(map.Stretches(), 2U);
+  }
+  EXPECT_EQ(map.Stretches(), 0U);
+  EXPECT_EQ(map.MappedBytes(), 0U);
+}
+
+TEST(FontImage, HoldsOnlySoManyFacesAndOnlyWhatThereIsRoomFor) {
+  std::vector<ImageFace> faces;
+  faces.reserve(FontImage::kMostHeld + 1);
+  for (std::size_t i = 0; i < FontImage::kMostHeld + 1; ++i) {
+    faces.push_back(SmallFace(0, 0, static_cast<std::uint16_t>(10 + i)));
+  }
+  std::vector<ImageFacePlaces> places;
+  const std::vector<std::uint8_t> image = FontImageBytes(faces, &places);
+  {
+    bn::test::CopyingByteMap map(image);
+    FontImage fonts;
+    ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+    for (std::size_t i = 0; i < FontImage::kMostHeld; ++i) {
+      Face face = fonts.FaceAt(i);
+      ASSERT_TRUE(fonts.Hold(face)) << i;
+    }
+    EXPECT_EQ(fonts.Held(), FontImage::kMostHeld);
+    // One more is refused, and nothing was mapped for it; one already held
+    // is still to be had.
+    Face over = fonts.FaceAt(FontImage::kMostHeld);
+    const std::size_t asked = map.asked;
+    EXPECT_FALSE(fonts.Hold(over));
+    EXPECT_FALSE(over.Held());
+    EXPECT_EQ(map.asked, asked);
+    EXPECT_EQ(fonts.Held(), FontImage::kMostHeld);
+    Face held = fonts.FaceAt(3);
+    EXPECT_TRUE(fonts.Hold(held));
+    // With the others given up, it is held.
+    fonts.ReleaseFaces();
+    over = fonts.FaceAt(FontImage::kMostHeld);
+    EXPECT_TRUE(fonts.Hold(over));
+  }
+
+  // Room for the table of faces and for one face's stretch, and no more.
+  const std::size_t head = 16 + (faces.size() * 48);
+  const std::size_t stretch = places[0].pictures + places[0].pictureBytes - places[0].ranges;
+  bn::test::CopyingByteMap small(image, head + stretch);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(small), FontStatus::kOk);
+  Face first = fonts.FaceAt(0);
+  Face second = fonts.FaceAt(1);
+  ASSERT_TRUE(fonts.Hold(first));
+  EXPECT_FALSE(fonts.Hold(second));
+  EXPECT_FALSE(second.Held());
+  Glyph glyph;
+  EXPECT_FALSE(second.Find('a', glyph));
+  EXPECT_EQ(fonts.Held(), 1U);
+  EXPECT_EQ(small.Stretches(), 2U);
+  EXPECT_TRUE(first.Find('a', glyph));  // The one held is as it was.
+  fonts.ReleaseFaces();
+  second = fonts.FaceAt(1);
+  ASSERT_TRUE(fonts.Hold(second));
+  EXPECT_TRUE(second.Find('a', glyph));
+}
+
+TEST(FontImage, SaysWhenItsTableOfFacesCannotBeHad) {
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), SmallFace(1)});
+  // Room for the header, and not for the header with the faces.
+  bn::test::CopyingByteMap small(image, 16 + 48);
+  FontImage fonts;
+  EXPECT_EQ(fonts.Open(small), FontStatus::kNoRoom);
+  EXPECT_STREQ(bn::draw::FontStatusName(fonts.Status()), "no room");
+  EXPECT_EQ(fonts.Faces(), 0U);
+  EXPECT_EQ(small.Stretches(), 0U);
+  // Nor for the header.
+  bn::test::CopyingByteMap none(image, 8);
+  EXPECT_EQ(fonts.Open(none), FontStatus::kNoRoom);
+  EXPECT_EQ(none.Stretches(), 0U);
+  // Bytes too few to be an image are a bad one, whatever room there is.
+  const std::vector<std::uint8_t> few(image.begin(), image.begin() + 15);
+  bn::test::CopyingByteMap tiny(few);
+  EXPECT_EQ(fonts.Open(tiny), FontStatus::kBadImage);
+  EXPECT_EQ(tiny.asked, 0U);
+}
+
+TEST(FontImage, HoldsNoFaceThatIsNotItsOwn) {
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), SmallFace(1)});
+  // Each map gives copies of its own, so the two images' tables of faces
+  // are in different places, as two images' are.
+  bn::test::CopyingByteMap map(image);
+  bn::test::CopyingByteMap otherMap(image);
+  FontImage fonts;
+  FontImage other;
+  ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+  ASSERT_EQ(other.Open(otherMap), FontStatus::kOk);
+  Face none;
+  EXPECT_FALSE(fonts.Hold(none));
+  Face foreign = other.FaceAt(1);
+  EXPECT_FALSE(fonts.Hold(foreign));
+  EXPECT_FALSE(foreign.Held());
+  EXPECT_EQ(fonts.Held(), 0U);
+  EXPECT_EQ(map.Stretches(), 1U);
+  // Nor one of an image since closed.
+  Face stale = fonts.FaceAt(0);
+  fonts.Close();
+  EXPECT_FALSE(fonts.Hold(stale));
+
+  // Every face of an image opened as a span is held from the first, and
+  // holding one changes nothing.
+  FontImage whole;
+  ASSERT_EQ(whole.Open(image), FontStatus::kOk);
+  Face face = whole.FaceAt(1);
+  EXPECT_TRUE(face.Held());
+  EXPECT_TRUE(whole.Hold(face));
+  EXPECT_EQ(whole.Held(), 0U);
+  EXPECT_EQ(whole.HeldBytes(), 0U);
+  whole.ReleaseFaces();
+  Glyph glyph;
+  EXPECT_TRUE(face.Find('a', glyph));
+  EXPECT_FALSE(whole.Hold(foreign));
+}
+
+TEST(FontImage, GivesTheBytesOfWhatIsReadableAndNoOthers) {
+  std::vector<ImageFacePlaces> places;
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), SmallFace(1)}, &places);
+  bn::test::CopyingByteMap map(image);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+  Face sans = fonts.FaceAt(1);
+  ASSERT_TRUE(fonts.Hold(sans));
+  Glyph glyph;
+  ASSERT_TRUE(sans.Find('e', glyph));
+  ASSERT_FALSE(glyph.picture.empty());
+
+  // A picture again, from where the glyph said it is.
+  const std::span<const std::uint8_t> again = fonts.Bytes(glyph.pictureAt, glyph.picture.size());
+  EXPECT_EQ(again.data(), glyph.picture.data());
+  EXPECT_EQ(again.size(), glyph.picture.size());
+  // All of the held face's stretch, and nothing that runs out of it.
+  const std::size_t begins = places[1].ranges;
+  const std::size_t ends = places[1].pictures + places[1].pictureBytes;
+  EXPECT_EQ(fonts.Bytes(begins, ends - begins).size(), ends - begins);
+  EXPECT_EQ(fonts.Bytes(ends - 1, 1).size(), 1U);
+  EXPECT_TRUE(fonts.Bytes(begins - 1, 2).empty());
+  EXPECT_TRUE(fonts.Bytes(ends - 1, 2).empty());
+  EXPECT_TRUE(fonts.Bytes(begins, SIZE_MAX).empty());
+  // Nothing of the face that is not held, nor of the table of faces.
+  EXPECT_TRUE(fonts.Bytes(places[0].pictures, 1).empty());
+  EXPECT_TRUE(fonts.Bytes(0, 16).empty());
+  // And nothing once the face is given up.
+  fonts.ReleaseFaces();
+  EXPECT_TRUE(fonts.Bytes(glyph.pictureAt, 1).empty());
+
+  // Of an image opened as a span: any of it, and nothing past its end.
+  FontImage whole;
+  ASSERT_EQ(whole.Open(image), FontStatus::kOk);
+  EXPECT_EQ(whole.Bytes(0, image.size()).data(), image.data());
+  EXPECT_EQ(whole.Bytes(places[0].pictures, 3).data(), image.data() + places[0].pictures);
+  EXPECT_TRUE(whole.Bytes(image.size(), 1).empty());
+  EXPECT_TRUE(whole.Bytes(1, image.size()).empty());
+  EXPECT_TRUE(whole.Bytes(SIZE_MAX, 2).empty());
+}
+
+TEST(FontImage, HoldsAFaceWhoseTablesAreApartAsOneStretch) {
+  // The first face's pictures are made the third face's, which lie after
+  // the second's: so its stretch runs from its own ranges over the whole
+  // of the second face to the end of those pictures.
+  std::vector<ImageFacePlaces> places;
+  std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), SmallFace(1), SmallFace(2)}, &places);
+  PutLe32(image, places[0].record + 28, static_cast<std::uint32_t>(places[2].pictures));
+  EXPECT_TRUE(SameThroughAMap(image));
+
+  const std::size_t head = 16 + (3 * 48);
+  const std::size_t stretch = places[2].pictures + places[2].pictureBytes - places[0].ranges;
+  bn::test::CopyingByteMap map(image, head + stretch);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+  Face face = fonts.FaceAt(0);
+  ASSERT_TRUE(fonts.Hold(face));
+  EXPECT_EQ(fonts.HeldBytes(), stretch);
+  Glyph glyph;
+  ASSERT_TRUE(face.Find('b', glyph));
+  EXPECT_GE(glyph.pictureAt, places[2].pictures);
+  EXPECT_LE(glyph.pictureAt + glyph.picture.size(), places[2].pictures + places[2].pictureBytes);
+
+  // With a byte less of room than that, it is not held at all.
+  bn::test::CopyingByteMap small(image, head + stretch - 1);
+  FontImage cramped;
+  ASSERT_EQ(cramped.Open(small), FontStatus::kOk);
+  Face apart = cramped.FaceAt(0);
+  EXPECT_FALSE(cramped.Hold(apart));
+  // The second face, whose tables are together, is.
+  Face second = cramped.FaceAt(1);
+  EXPECT_TRUE(cramped.Hold(second));
+}
+
+TEST(FontImage, OpenedThroughAMapRefusesWhatItRefusesWhole) {
+  ImageFace many = SmallFace(1, kItalic, 24);
+  for (std::uint32_t i = 0; i < 40; ++i) {
+    many.glyphs[0x100 + (i * 3)] = Block(static_cast<std::uint16_t>(30 + i), 5, 6, 2);
+  }
+  const std::vector<std::uint8_t> good = FontImageBytes({SmallFace(), many});
+  // Cut short at every byte.
+  for (std::size_t length = 0; length < good.size(); ++length) {
+    const std::vector<std::uint8_t> cut(good.begin(), good.begin() + static_cast<std::ptrdiff_t>(length));
+    ASSERT_TRUE(SameThroughAMap(cut)) << length;
+  }
+  // With more after it, as a partition has.
+  std::vector<std::uint8_t> longer = good;
+  longer.resize(good.size() + 300, 0xFF);
+  EXPECT_TRUE(SameThroughAMap(longer));
+  // And with every byte changed three ways: refused if it is refused
+  // whole, and if not, every face gives what it gives whole, read from
+  // nowhere but its own stretch.
+  for (std::size_t at = 0; at < good.size(); ++at) {
+    for (const std::uint8_t change : {std::uint8_t{0x01}, std::uint8_t{0x80}, std::uint8_t{0xFF}}) {
+      std::vector<std::uint8_t> image = good;
+      image[at] ^= change;
+      ASSERT_TRUE(SameThroughAMap(image)) << at << " " << static_cast<int>(change);
+    }
+  }
 }
 
 }  // namespace

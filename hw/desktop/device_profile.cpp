@@ -1,6 +1,8 @@
 #include "desktop/device_profile.h"
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 
 namespace bn::hw {
 
@@ -34,10 +36,34 @@ constexpr std::array<DeviceProfile, 1> kDevices = {{
                .fastRefreshUs = 418'000,
                .grayRefreshUs = 69'000,
                .powerOffUs = 139'000},
-     .buttons = kX4Buttons},
+     .buttons = kX4Buttons,
+     // Of the 128 the processor has, less those the firmware's own code and
+     // constants take. An X4 with a firmware of 280 KB had 123 free.
+     .fontPages = 120},
 }};
 
+const DeviceProfile& Chosen() noexcept {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any other thread exists.
+  const char* name = std::getenv("BN_DEVICE");
+  if (name == nullptr) {
+    return kDevices[0];
+  }
+  for (const DeviceProfile& device : kDevices) {
+    if (std::string_view(name) == device.name) {
+      return device;
+    }
+  }
+  std::fprintf(stderr, "warning: BN_DEVICE '%s' is not a device the desktop knows, so it simulates the %s\n", name,
+               kDevices[0].name);
+  return kDevices[0];
+}
+
 }  // namespace
+
+const DeviceProfile& ChosenDevice() noexcept {
+  static const DeviceProfile& chosen = Chosen();
+  return chosen;
+}
 
 const DeviceProfile& X4() noexcept { return kDevices[0]; }
 

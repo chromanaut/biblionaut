@@ -93,6 +93,23 @@ elseif(BN_DRAWING_TOUR)
   message(FATAL_ERROR "BN_DRAWING_TOUR goes round the drawing viewer's drawings: configure with BN_DRAWING_VIEWER ON.")
 endif()
 
+# A firmware that shows the text on the SD card in the fonts partition's
+# faces (see BN_TEXT_VIEWER in the project file).
+if(BN_TEXT_VIEWER)
+  if(BN_STORAGE_CHECK OR BN_BOOK_CHECK OR BN_LAYOUT_CHECK OR BN_DRAWING_VIEWER)
+    message(FATAL_ERROR "BN_TEXT_VIEWER takes the panel, and the card's time with the checks: configure with the "
+                        "checks and BN_DRAWING_VIEWER OFF.")
+  endif()
+  message(WARNING "This firmware shows the text of /layout/paragraphs.txt on the SD card in place of the test pattern. "
+                  "Configure with -DBN_TEXT_VIEWER=OFF for a normal build.")
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_TEXT_VIEWER=1)
+  if(BN_TEXT_TOUR)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_TEXT_TOUR=1)
+  endif()
+elseif(BN_TEXT_TOUR)
+  message(FATAL_ERROR "BN_TEXT_TOUR goes through the text viewer's text: configure with BN_TEXT_VIEWER ON.")
+endif()
+
 # A firmware that checks, at start, that the panel takes windows narrower
 # than whole rows (see BN_WINDOW_CHECK in the project file). The code for
 # it, window_check.cpp, is only part of such a build.
@@ -114,13 +131,13 @@ if(BN_GRAY_CHECK)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_GRAY_CHECK=1)
 endif()
 
-# A firmware with a fonts partition, checked at start (see
+# A firmware that checks the fonts partition at start (see
 # BN_PARTITION_CHECK in the project file). The code for it,
 # partition_check.cpp, is only part of such a build.
 if(BN_PARTITION_CHECK)
-  message(WARNING "This firmware has a partition table with a fonts partition, and checks it at start. "
-                  "Flashing it replaces the device's partition table. Build without -DBN_PARTITION_CHECK=ON, "
-                  "in the usual build directory, for a normal firmware.")
+  message(WARNING "This firmware checks the fonts partition at start. Flashing it fills that partition with a "
+                  "pattern, in place of any fonts image. Configure with -DBN_PARTITION_CHECK=OFF for a normal "
+                  "build, and flash the fonts image again (fonts-flash).")
   target_sources(${COMPONENT_LIB} PRIVATE partition_check.cpp)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BN_PARTITION_CHECK=1)
 endif()

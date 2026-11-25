@@ -4,6 +4,9 @@
 //
 //   byte 0        bit 0: the image is made to say it is as long as it is,
 //                 so that tables near its end are in it
+//                 bit 1: the map it is opened through a second time has
+//                 room for only so many eighths of it at once, one more
+//                 than bits 2 to 4 say
 //   bytes 1 to 8  four code points to ask each face for, two bytes each
 //   the rest      a fonts image, or what passes for one
 //
@@ -24,11 +27,23 @@
 //   - in a face whose ranges are in order and apart, as the layout says
 //     they are, a code point has a glyph exactly when going through the
 //     ranges one by one finds it in one, and the glyph is the one the
-//     image's bytes say, read here the plain way.
+//     image's bytes say, read here the plain way;
+//   - opened through a map (core/byte_map.h), an image that opens as a span
+//     opens, unless the map has not room for its table of faces, and has
+//     only that table mapped; a face has the same numbers, and no glyph
+//     until it is held; it is held exactly when there is room for its
+//     stretch of the image, from the first of its tables to the end of the
+//     last, and that stretch is all that is mapped for it; held, it gives
+//     for a code point or a number the glyph the image opened as a span
+//     gives, with the same picture; given up, it has none again; and
+//     nothing is left mapped when the image is gone.
 //
 // The image is in memory of exactly its size, so the sanitizer sees a byte
-// read outside it.
+// read outside it; and each stretch a map gives is a copy of exactly its
+// size, freed when it is given up, so it sees a byte read outside a face's
+// stretch, or after it.
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -36,6 +51,7 @@
 #include <span>
 #include <vector>
 
+#include "byte_map_fakes.h"
 #include "draw/font.h"
 #include "fuzz_support.h"
 
@@ -240,6 +256,95 @@ void CheckFace(const Bytes& image, const FontImage& fonts, std::size_t number, s
   BN_FUZZ_CHECK(face.Missing(missing) == face.GlyphAt(0, first), "the glyph for what a face lacks is not glyph 0");
 }
 
+bool SameGlyph(const Glyph& one, const Glyph& other) {
+  return one.index == other.index && one.advance == other.advance && one.width == other.width &&
+         one.height == other.height && one.left == other.left && one.top == other.top &&
+         one.pictureAt == other.pictureAt && std::ranges::equal(one.picture, other.picture);
+}
+
+// The same image through a map, beside `whole`, which has it opened as a
+// span. With `room`, the map has that many bytes of room and no more.
+void CheckThroughAMap(const Bytes& image, const FontImage& whole, std::span<const std::uint32_t> asked,
+                      std::size_t room) {
+  bn::test::CopyingByteMap map(image, room);
+  {
+    FontImage fonts;
+    const FontStatus status = fonts.Open(map);
+    const std::size_t head = kHeaderBytes + (whole.Faces() * kFaceBytes);
+    if (status == FontStatus::kNoRoom) {
+      BN_FUZZ_CHECK(room < head, "there was room for the table of faces, and it was not had");
+      BN_FUZZ_CHECK(fonts.Faces() == 0 && map.Stretches() == 0, "an image that was refused has faces, or bytes mapped");
+      return;
+    }
+    BN_FUZZ_CHECK(status == FontStatus::kOk, "an image that opens whole does not open through a map");
+    BN_FUZZ_CHECK(fonts.Faces() == whole.Faces(), "not the faces the whole image has");
+    BN_FUZZ_CHECK(map.Stretches() == 1 && map.MappedBytes() == head,
+                  "more is mapped at first than the header and the table of faces");
+    for (std::size_t number = 0; number < fonts.Faces() && number < kFacesTried; ++number) {
+      const Face one = whole.FaceAt(number);
+      Face other = fonts.FaceAt(number);
+      BN_FUZZ_CHECK(other.Valid() && one.Role() == other.Role() && one.Style() == other.Style() &&
+                        one.Size() == other.Size() && one.Ascent() == other.Ascent() &&
+                        one.Descent() == other.Descent() && one.LineHeight() == other.LineHeight() &&
+                        one.XHeight() == other.XHeight() && one.Glyphs() == other.Glyphs(),
+                    "a face has other numbers through a map");
+      Glyph glyph;
+      Glyph same;
+      BN_FUZZ_CHECK(!other.Held() && !other.Missing(glyph) && !other.Find(asked[0], glyph) && other.LastSteps() == 0,
+                    "a face that is not held has a glyph");
+      // Its stretch of the image, worked out here: from the first of its
+      // three tables to the end of the last.
+      const std::size_t record = kHeaderBytes + (number * kFaceBytes);
+      const std::uint64_t rangesAt = Get32(image, record + 16);
+      const std::uint64_t glyphsAt = Get32(image, record + 24);
+      const std::uint64_t picturesAt = Get32(image, record + 28);
+      const std::uint64_t begins = std::min({rangesAt, glyphsAt, picturesAt});
+      const std::uint64_t ends = std::max({rangesAt + (std::uint64_t{Get32(image, record + 12)} * kRangeBytes),
+                                           glyphsAt + (std::uint64_t{Get32(image, record + 20)} * kGlyphBytes),
+                                           picturesAt + Get32(image, record + 32)});
+      const bool held = fonts.Hold(other);
+      BN_FUZZ_CHECK(held == (ends - begins <= room - head),
+                    "a face is held, or is not, against the room there is for its stretch");
+      BN_FUZZ_CHECK(other.Held() == held && fonts.Held() == (held ? 1U : 0U), "a face is not held as Hold() said");
+      if (!held) {
+        BN_FUZZ_CHECK(map.Stretches() == 1 && !other.Missing(glyph), "a face that was refused left something behind");
+        continue;
+      }
+      BN_FUZZ_CHECK(fonts.HeldBytes() == ends - begins && map.MappedBytes() == head + (ends - begins),
+                    "what is mapped for a face is not its own stretch");
+      BN_FUZZ_CHECK(fonts.FaceAt(number).Held() && fonts.Hold(other) && fonts.Held() == 1,
+                    "a face held is not held when found or asked again");
+      // What the whole image's face gives, it gives: read from its stretch
+      // alone, which is a copy of exactly its size.
+      std::vector<std::uint32_t> codePoints(asked.begin(), asked.end());
+      for (const Range& range : RangesOf(image, record)) {
+        codePoints.push_back(range.first);
+        codePoints.push_back(range.first + range.count - 1);
+      }
+      for (const std::uint32_t codePoint : codePoints) {
+        const bool found = one.Find(codePoint, glyph);
+        BN_FUZZ_CHECK(other.Find(codePoint, same) == found && one.LastSteps() == other.LastSteps(),
+                      "a code point is found through a map and not whole, or the other way");
+        BN_FUZZ_CHECK(!found || SameGlyph(glyph, same), "a glyph is another through a map");
+        if (found) {
+          const std::span<const std::uint8_t> bytes = fonts.Bytes(same.pictureAt, same.picture.size());
+          BN_FUZZ_CHECK(same.picture.empty() ? bytes.empty() : bytes.data() == same.picture.data(),
+                        "a picture is not to be had again from where the glyph said it is");
+        }
+      }
+      for (const std::uint32_t index : {std::uint32_t{0}, one.Glyphs() - 1, one.Glyphs(), one.Glyphs() / 2}) {
+        const bool found = one.GlyphAt(index, glyph);
+        BN_FUZZ_CHECK(other.GlyphAt(index, same) == found && (!found || SameGlyph(glyph, same)),
+                      "a glyph by its number is another through a map");
+      }
+      fonts.ReleaseFaces();
+      BN_FUZZ_CHECK(fonts.Held() == 0 && map.Stretches() == 1 && !fonts.FaceAt(number).Held(),
+                    "a face given up is still held");
+    }
+  }
+  BN_FUZZ_CHECK(map.Stretches() == 0 && map.MappedBytes() == 0, "bytes are left mapped when the image is gone");
+}
+
 }  // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
@@ -266,6 +371,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   if (status != FontStatus::kOk) {
     BN_FUZZ_CHECK(status == FontStatus::kBadImage, "an image was refused for no reason there is");
     BN_FUZZ_CHECK(fonts.Faces() == 0 && !fonts.FaceAt(0).Valid(), "an image that was refused has faces");
+    // And is refused through a map that has room for all of it.
+    bn::test::CopyingByteMap map(image);
+    FontImage mapped;
+    BN_FUZZ_CHECK(mapped.Open(map) == FontStatus::kBadImage && mapped.Faces() == 0 && map.Stretches() == 0,
+                  "an image refused as a span is not refused through a map, or is left mapped");
     return 0;
   }
   BN_FUZZ_CHECK(fonts.Faces() <= FontImage::kMostFaces, "more faces than an image may have");
@@ -277,5 +387,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   if (fonts.Faces() > kFacesTried) {
     CheckFace(image, fonts, fonts.Faces() - 1, asked);
   }
+  // Through a map: with room for all of it, or for a part the input says.
+  std::size_t room = image.size() * 2;
+  if ((choices & 2U) != 0) {
+    room = (image.size() * (1 + ((choices >> 2U) & 7U))) / 8;
+  }
+  CheckThroughAMap(image, fonts, asked, room);
   return 0;
 }

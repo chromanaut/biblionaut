@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/byte_map.h"
 #include "display_fakes.h"
 #include "font_image.h"
 #include "storage_fakes.h"
@@ -126,7 +127,14 @@ struct Fixture {
   void Text(const std::string& text) { storage.Put("/layout/paragraphs.txt", {text.begin(), text.end()}); }
   void Start() {
     ASSERT_EQ(storage.Start(), bn::core::StorageStatus::kOk);
-    viewer = std::make_unique<TextViewer>(display, clock, storage, stream, image);
+    // The image as a device has it: all of it mappable at once, unless the
+    // test has said how many pages of kPageBytes there are.
+    map = pages == 0 ? std::make_unique<bn::core::MemoryByteMap>(image)
+                     : std::make_unique<bn::core::MemoryByteMap>(image, kPageBytes, pages);
+    viewer = std::make_unique<TextViewer>(display, clock, storage, stream, *map);
+    if (tour) {
+      viewer->Tour();
+    }
     viewer->Start();
   }
   // Turns of the loop until nothing more is asked of the panel and there is
@@ -164,6 +172,28 @@ struct Fixture {
   std::string LastLine() const {
     const std::vector<std::string> lines = Lines();
     return lines.empty() ? std::string() : lines.back();
+  }
+  // The lines that begin with `with`: "text: page " for those of the pages
+  // shown, "text: s" for those of the faces held.
+  std::vector<std::string> LinesThatBegin(const std::string& with) const {
+    std::vector<std::string> lines;
+    for (const std::string& line : Lines()) {
+      if (line.rfind(with, 0) == 0) {
+        lines.push_back(line);
+      }
+    }
+    return lines;
+  }
+  // The lines of the pages shown, each as far as its face and size:
+  // "text: page 1, serif 20".
+  std::vector<std::string> PagesSaid() const {
+    const std::vector<std::string> lines = LinesThatBegin("text: page ");
+    std::vector<std::string> said;
+    said.reserve(lines.size());
+    for (const std::string& line : lines) {
+      said.push_back(line.substr(0, line.find(" px")));
+    }
+    return said;
   }
   std::vector<Op> PanelOps() const {
     std::vector<Op> ops;
@@ -266,8 +296,13 @@ struct Fixture {
     return lines;
   }
 
+  static constexpr std::size_t kPageBytes = 256;
+
   std::vector<ImageFace> described;
   std::vector<std::uint8_t> image;
+  std::size_t pages = 0;
+  bool tour = false;
+  std::unique_ptr<bn::core::MemoryByteMap> map;
   bn::test::TraceFixture<64> trace;
   bn::test::FakeSink sink;
   bn::core::TraceStream stream{trace.tracer, sink};
@@ -641,7 +676,7 @@ TEST(TextViewer, GivesUpAPagesGraysForWhatIsAskedMeanwhile) {
   EXPECT_EQ(fixture.viewer->Page(), 1U);
   EXPECT_EQ(fixture.viewer->Shown(), 2U);
   EXPECT_TRUE(fixture.viewer->GrayShown());
-  const std::vector<std::string> lines = fixture.Lines();
+  const std::vector<std::string> lines = fixture.LinesThatBegin("text: page ");
   ASSERT_EQ(lines.size(), 2U);
   EXPECT_NE(lines[0].find("; no grays: something else was asked for"), std::string::npos) << lines[0];
   EXPECT_EQ(lines[1].find("no grays"), std::string::npos) << lines[1];
@@ -715,9 +750,10 @@ TEST(TextViewer, ShowsAnEmptyPageWhenTheCardHasNoText) {
   EXPECT_TRUE(std::all_of(fixture.display.shownLevels.begin(), fixture.display.shownLevels.end(),
                           [](std::uint8_t level) { return level == 3; }));
   const std::vector<std::string> lines = fixture.Lines();
-  ASSERT_EQ(lines.size(), 2U);
+  ASSERT_EQ(lines.size(), 3U);
   EXPECT_EQ(lines[0], "text: no text at /layout/paragraphs.txt (not found).");
-  EXPECT_EQ(lines[1].rfind("text: page 1, serif 30 px, 0 lines, 0 glyphs: ", 0), 0U) << lines[1];
+  EXPECT_EQ(lines[1].rfind("text: serif 30 px: 2 faces held, ", 0), 0U) << lines[1];
+  EXPECT_EQ(lines[2].rfind("text: page 1, serif 30 px, 0 lines, 0 glyphs: ", 0), 0U) << lines[2];
 
   // And one of nothing but empty lines.
   Fixture blank;
@@ -892,6 +928,157 @@ TEST(TextViewer, LeavesOutTheGlyphsOfAPageThatHasMoreThanItKeeps) {
   EXPECT_EQ(fixture.viewer->Shown(), 2U);
   EXPECT_EQ(fixture.viewer->Page(), 1U);
   EXPECT_EQ(fixture.viewer->Lines(), 38U);
+}
+
+// The whole pages of Fixture::kPageBytes that `length` bytes of the image
+// from `at` touch.
+std::size_t PagesOf(std::size_t at, std::size_t length) {
+  return ((at % Fixture::kPageBytes) + length + Fixture::kPageBytes - 1) / Fixture::kPageBytes;
+}
+
+TEST(TextViewer, HoldsOnlyTheFacesOfTheSizeAndTheFaceTextIsSetIn) {
+  // The serif and the sans at 20 and 30, the serif with an italic, and a
+  // fallback face at 20.
+  std::vector<ImageFace> faces = TestFaces();
+  faces.push_back(TestFace(3, 0, 20));
+  Fixture fixture(faces);
+  std::vector<bn::test::ImageFacePlaces> places;
+  static_cast<void>(bn::test::FontImageBytes(faces, &places));
+  const auto stretch = [&](std::size_t face) {
+    return places[face].pictures + places[face].pictureBytes - places[face].ranges;
+  };
+  fixture.Text("ab *cd* ef\n");
+  fixture.Start();
+  fixture.Settle();
+
+  // At 30 in the serif: its regular and its italic, and no fallback, which
+  // the image has none of at that size. Beside them only the table of
+  // faces is mapped.
+  ASSERT_EQ(fixture.viewer->Size(), 30);
+  EXPECT_EQ(fixture.map->Stretches(), 3U);
+  EXPECT_EQ(fixture.map->MappedBytes(), 16 + (7 * 48) + stretch(3) + stretch(5));
+  std::vector<std::string> lines = fixture.LinesThatBegin("text: s");
+  ASSERT_EQ(lines.size(), 1U);
+  EXPECT_EQ(lines[0].rfind("text: serif 30 px: 2 faces held, ", 0), 0U) << lines[0];
+  EXPECT_NE(lines[0].find(" KB of the image; "), std::string::npos) << lines[0];
+  EXPECT_EQ(lines[0].find("no room"), std::string::npos) << lines[0];
+  EXPECT_EQ(fixture.viewer->Glyphs().size(), 6U);
+
+  // Confirm, for 20: those are given up, and the three of that size held.
+  fixture.Press(Button::kConfirm);
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Size(), 20);
+  EXPECT_EQ(fixture.map->Stretches(), 4U);
+  EXPECT_EQ(fixture.map->MappedBytes(), 16 + (7 * 48) + stretch(0) + stretch(2) + stretch(6));
+  lines = fixture.LinesThatBegin("text: s");
+  ASSERT_EQ(lines.size(), 2U);
+  EXPECT_EQ(lines[1].rfind("text: serif 20 px: 3 faces held, ", 0), 0U) << lines[1];
+  EXPECT_EQ(fixture.viewer->Glyphs().size(), 6U);
+
+  // Back, for the sans, which has no italic: its regular is both, and is
+  // held once, with the fallback.
+  fixture.Press(Button::kBack);
+  fixture.Settle();
+  EXPECT_EQ(fixture.map->Stretches(), 3U);
+  EXPECT_EQ(fixture.map->MappedBytes(), 16 + (7 * 48) + stretch(1) + stretch(6));
+  lines = fixture.LinesThatBegin("text: s");
+  ASSERT_EQ(lines.size(), 3U);
+  EXPECT_EQ(lines[2].rfind("text: sans 20 px: 2 faces held, ", 0), 0U) << lines[2];
+  EXPECT_EQ(fixture.viewer->Glyphs().size(), 6U);
+  EXPECT_EQ(fixture.viewer->Shown(), 3U);
+  // The whole of the image was never mapped.
+  EXPECT_LT(fixture.map->MostMappedBytes(), fixture.image.size());
+}
+
+TEST(TextViewer, SaysWhenThereIsNoRoomForAFaceAndDrawsNothingInIt) {
+  Fixture fixture;
+  std::vector<bn::test::ImageFacePlaces> places;
+  static_cast<void>(bn::test::FontImageBytes(fixture.described, &places));
+  // Pages for the table of faces and for the serif's regular at 30, which
+  // is held first, and none for its italic.
+  const std::size_t regular = PagesOf(places[3].ranges, places[3].pictures + places[3].pictureBytes - places[3].ranges);
+  fixture.pages = PagesOf(0, 16 + (6 * 48)) + regular;
+  fixture.Text("ab *cd* ef\n");
+  fixture.Start();
+  fixture.Settle();
+  EXPECT_EQ(fixture.viewer->CurrentState(), State::kReady);
+  EXPECT_EQ(fixture.viewer->Shown(), 1U);
+  const std::vector<std::string> lines = fixture.LinesThatBegin("text: s");
+  ASSERT_EQ(lines.size(), 1U);
+  EXPECT_EQ(lines[0].rfind("text: serif 30 px: 1 face held, ", 0), 0U) << lines[0];
+  EXPECT_NE(lines[0].find("; no room for 1 face"), std::string::npos) << lines[0];
+  // The four letters that are not in italic, and not the two that are.
+  ASSERT_EQ(fixture.viewer->Glyphs().size(), 4U);
+  std::set<std::uint8_t> widths;
+  for (const TextViewer::Placed& placed : fixture.viewer->Glyphs()) {
+    widths.insert(placed.width);
+  }
+  EXPECT_EQ(widths, (std::set<std::uint8_t>{12}));
+
+  // With the italic's pages as well, both are held, and all six drawn.
+  Fixture roomy;
+  roomy.pages =
+      fixture.pages + PagesOf(places[5].ranges, places[5].pictures + places[5].pictureBytes - places[5].ranges);
+  roomy.Text("ab *cd* ef\n");
+  roomy.Start();
+  roomy.Settle();
+  EXPECT_EQ(roomy.viewer->Glyphs().size(), 6U);
+  EXPECT_EQ(roomy.LinesThatBegin("text: s").back().find("no room"), std::string::npos);
+  EXPECT_EQ(roomy.map->MappedBytes(), roomy.pages * Fixture::kPageBytes);
+}
+
+TEST(TextViewer, GoesThroughEachFaceAtEachSizeByItselfOnATour) {
+  Fixture fixture;
+  fixture.tour = true;
+  fixture.Text(ManyWords(200));
+  fixture.Start();
+  fixture.Settle();
+  // From the smallest size: two pages in the serif and two in the sans;
+  // then the next size, in the face it was left in, and then the other.
+  const std::vector<std::string> pages = fixture.PagesSaid();
+  EXPECT_EQ(pages,
+            (std::vector<std::string>{"text: page 1, serif 20", "text: page 2, serif 20", "text: page 1, sans 20",
+                                      "text: page 2, sans 20", "text: page 1, sans 30", "text: page 2, sans 30",
+                                      "text: page 1, serif 30", "text: page 2, serif 30"}));
+  EXPECT_TRUE(fixture.viewer->TourDone());
+  EXPECT_EQ(fixture.LastLine(), "text: the tour is done.");
+  EXPECT_EQ(fixture.viewer->Shown(), 8U);
+  // No page lost its grays to the one after it: what the tour asks for, it
+  // asks when a page has been shown, grays and all. (The sans has none.)
+  for (const std::string& line : fixture.LinesThatBegin("text: page ")) {
+    EXPECT_EQ(line.find("no grays"), std::string::npos) << line;
+    if (line.find(" serif ") != std::string::npos) {
+      EXPECT_NE(line.find("gray pass"), std::string::npos) << line;
+    }
+  }
+  // The buttons are then as they always are.
+  fixture.Press(Button::kRight);
+  fixture.Settle();
+  EXPECT_EQ(fixture.viewer->Shown(), 9U);
+  EXPECT_EQ(fixture.viewer->Page(), 2U);
+  EXPECT_EQ(fixture.LastLine().rfind("text: page 3, serif 30 px, ", 0), 0U) << fixture.LastLine();
+}
+
+TEST(TextViewer, OnATourShowsATextOfOnePageOnceInEachFaceAtEachSize) {
+  // A sans alone, at two sizes, and text that ends on its first page.
+  Fixture fixture({TestFace(1, 0, 20), TestFace(1, 0, 30)});
+  fixture.tour = true;
+  fixture.Text("ab cd\n");
+  fixture.Start();
+  fixture.Settle();
+  const std::vector<std::string> pages = fixture.PagesSaid();
+  EXPECT_EQ(pages, (std::vector<std::string>{"text: page 1, sans 20", "text: page 1, sans 30"}));
+  EXPECT_TRUE(fixture.viewer->TourDone());
+
+  // Without a tour, the first page is of the middle size, and no other
+  // follows by itself.
+  Fixture still({TestFace(1, 0, 20), TestFace(1, 0, 30)});
+  still.Text("ab cd\n");
+  still.Start();
+  still.Settle();
+  EXPECT_EQ(still.viewer->Size(), 30);
+  EXPECT_EQ(still.viewer->Shown(), 1U);
+  EXPECT_FALSE(still.viewer->TourDone());
 }
 
 }  // namespace

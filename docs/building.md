@@ -91,7 +91,11 @@ ESP-IDF keeps the settings a build was first made with in
 not taken up.
 
 Flashing replaces whatever firmware is on the device, including its
-bootloader and partition table.
+bootloader and partition table. The table (`app/firmware/partitions.csv`)
+gives the firmware 4 MB and the 12 MB after it to the fonts image, which
+flashing a firmware does not write: `tools/idf
+-DBN_FONTS_IMAGE=/a/fonts/image fonts-flash` does ([Fonts on a
+device](fonts.md#fonts-on-a-device)).
 
 ### Firmwares that check one thing
 
@@ -106,6 +110,7 @@ in place of the test pattern, chosen by an option when it is built.
 | `-DBN_PLANE_CHECK=ON` | Reads the panel's two planes back whenever it comes to rest | [The panel's two planes](panel-and-buttons.md#the-panels-two-planes) |
 | `-DBN_WINDOW_CHECK=ON` | Writes windows of a plane, reads them back and times them | [Windows of a plane](panel-and-buttons.md#windows-of-a-plane) |
 | `-DBN_GRAY_CHECK=ON` | Shows a picture in the panel's four levels, to be looked at | [Grays](panel-and-buttons.md#grays) |
-| `-DBN_PARTITION_CHECK=ON`, in a build directory of its own | Brings a partition for fonts, and checks it | [A partition for fonts](fonts.md#a-partition-for-fonts) |
+| `-DBN_PARTITION_CHECK=ON` | Fills the partition for fonts with a pattern, and checks it | [The partition check](fonts.md#the-partition-check) |
 | `-DBN_DRAWING_VIEWER=ON`, and `-DBN_DRAWING_TOUR=ON` to go round by itself | Shows the drawings and pictures on the card | [Drawings and pictures on the panel](drawing-viewer.md) |
+| `-DBN_TEXT_VIEWER=ON`, and `-DBN_TEXT_TOUR=ON` to go through it by itself | Shows the text on the card in the faces of the fonts partition's image | [Trying faces on the panel](text-viewer.md) |
 | `-DBN_CRASH_TEST=fault`, `abort`, `oom`, `stack` or `hang` | Crashes on purpose, to show a crash report | [Diagnostics](diagnostics.md#crash-reports) |

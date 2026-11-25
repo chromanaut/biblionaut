@@ -66,6 +66,7 @@ bn_add_unit_test(core_tests
   SOURCES
     unit/core/arena_test.cpp
     unit/core/block_file_test.cpp
+    unit/core/byte_map_test.cpp
     unit/core/byte_source_test.cpp
     unit/core/checksum_test.cpp
     unit/core/crash_test.cpp

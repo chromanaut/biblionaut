@@ -57,8 +57,8 @@ paragraph, the lines of a page, the fonts); and the pieces that draw (SVG
 drawings, PNG and JPEG pictures, scaled and dithered to the panel's grays,
 and what was drawn kept on the card). The X4's panel, buttons and card
 are driven. The application shows a test pattern; it can be built to show
-the drawings and pictures on a card in its place, and on the desktop it
-can show text set in a fonts image's faces.
+in its place the drawings and pictures on a card, or the card's text set in
+the faces of a fonts image, which a device has in a partition of its flash.
 
 ## Layout
 

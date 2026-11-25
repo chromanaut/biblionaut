@@ -54,7 +54,13 @@ struct DeviceProfile {
   // a device with Up and Down on both sides may have them, is listed once
   // for each, and is the same button whichever is pressed.
   std::span<const ButtonSpot> buttons;
+  // How many pages of kFontPageBytes of the fonts image can be mapped at
+  // once: what the processor's address space has left beside the firmware.
+  std::size_t fontPages = 0;
 };
+
+// The size of the pages a device maps its flash in.
+inline constexpr std::size_t kFontPageBytes = 65536;
 
 // The most spots a device's buttons may be at.
 inline constexpr std::size_t kMaxButtonSpots = 16;
@@ -67,5 +73,9 @@ std::span<const DeviceProfile> Devices() noexcept;
 
 // The device of that name; null if there is none.
 const DeviceProfile* FindDevice(std::string_view name) noexcept;
+
+// The device the BN_DEVICE environment variable names, or the X4 if it
+// names none, or none the desktop knows, which is said once.
+const DeviceProfile& ChosenDevice() noexcept;
 
 }  // namespace bn::hw

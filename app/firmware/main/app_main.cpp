@@ -113,6 +113,23 @@ extern "C" void app_main() {
     esp_rom_printf("There is not the memory for the drawing viewer: it will not run.\n");
   }
 #endif
+#ifdef BN_TEXT_VIEWER
+  esp_rom_printf(
+      "Text viewer build: the text of /layout/paragraphs.txt on the SD card is shown in the faces of the fonts "
+      "partition's image, Right and Left turning the page, Confirm changing the size and Back the face.\n");
+  if (bn::hw::SystemFonts().Size() == 0) {
+    esp_rom_printf("This device's flash has no fonts partition: flash the firmware's partition table.\n");
+  }
+#ifdef BN_TEXT_TOUR
+  esp_rom_printf("Text tour: two pages in each face at each size are shown, by itself, and timed.\n");
+  app.ViewText(true);
+#else
+  app.ViewText();
+#endif
+  if (app.TextsViewer() == nullptr) {
+    esp_rom_printf("There is not the memory for the text viewer: it will not run.\n");
+  }
+#endif
   app.Start();
 
   // From here on the loop is watched. Each turn reports to the watchdog,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/byte_map.h"
 #include "core/byte_sink.h"
 #include "core/clock.h"
 #include "core/crash.h"
@@ -59,6 +60,14 @@ core::Input& SystemInput() noexcept;
 // folder named by the BN_STORAGE environment variable, and when that is not
 // set there is none, as on a device with no card in it.
 core::Storage& SystemStorage() noexcept;
+
+// The bytes of the fonts image (draw/font.h). On a device they are the
+// flash partition called `fonts`, a stretch of which is read by being
+// mapped into the processor's address space; a device whose flash has no
+// such partition has no bytes. On the desktop they are the file the BN_TEXT
+// environment variable names, none if it names none, with room to map as
+// much of it at once as the device simulated has (hw/desktop/device_profile.h).
+core::ByteMap& SystemFonts() noexcept;
 
 // Why this run began: what the hardware says ended the one before. On the
 // desktop every run begins with power coming on.

@@ -2,6 +2,7 @@
 add_library(bn_core STATIC
   src/arena.cpp
   src/block_file.cpp
+  src/byte_map.cpp
   src/byte_source.cpp
   src/checksum.cpp
   src/crash.cpp

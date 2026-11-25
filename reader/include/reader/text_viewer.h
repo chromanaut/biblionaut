@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/block_file.h"
+#include "core/byte_map.h"
 #include "core/clock.h"
 #include "core/display.h"
 #include "core/input.h"
@@ -43,6 +44,15 @@ namespace bn::reader {
 // built-in table for American English, with lines spread to the full width
 // but the last; a paragraph longer than kMostParagraphBytes is cut there.
 // Paragraphs are a third of a line apart.
+//
+// The image is read through a core::ByteMap, as a device has it, which has
+// not the address space for the whole of one. Only the faces text is being
+// set in are held (draw::FontImage::Hold()): the regular and the italic of
+// the serif or the sans at one size, and the fallback face at that size.
+// Changing the size or the face gives those up and holds the next, and a
+// line says how many are held and how much is mapped for them. A face
+// there is no room for is said, and what would have been drawn in it is
+// not drawn.
 //
 // No picture of the page is kept. Setting a page leaves a list of its
 // glyphs, each with where on the page its picture goes; and the panel's
@@ -116,13 +126,24 @@ class TextViewer final : public Screen {
     std::uint32_t picture = 0;
   };
 
-  // `fonts` is the fonts image (draw/font.h), which has to stay where it is
-  // for as long as the viewer does.
+  // The pages a tour shows in each face at each size.
+  static constexpr std::size_t kTourPages = 2;
+
+  // `fonts` has the bytes of the fonts image (draw/font.h), and has to
+  // outlast the viewer.
   TextViewer(core::Display& display, core::Clock& clock, core::Storage& storage, core::TraceStream& stream,
-             std::span<const std::uint8_t> fonts);
+             core::ByteMap& fonts);
   ~TextViewer() override;
   TextViewer(const TextViewer&) = delete;
   TextViewer& operator=(const TextViewer&) = delete;
+
+  // Has the viewer go through the text by itself, for timing it on a device
+  // with nobody at the buttons: from the image's smallest size to its
+  // largest, kTourPages pages in the serif or the sans and then as many in
+  // the other, if the image has both at that size; a line says when it is
+  // done, and the buttons are then as they always are. Call before Start().
+  void Tour() noexcept { tour_ = true; }
+  bool TourDone() const noexcept { return tourDone_; }
 
   void Start() noexcept override;
   void OnInput(const core::InputEvent& event) noexcept override;
@@ -197,8 +218,11 @@ class TextViewer final : public Screen {
   // What a button asked for, to be done when it can be.
   enum class Asked : std::uint8_t { kNothing, kNext, kPrevious, kSize, kFace };
 
-  // Sets the faces in use from the role and the size.
+  // Sets the faces in use from the role and the size: gives up those held,
+  // and with them the glyphs of the page set in them, and holds these.
   void UseFaces() noexcept;
+  // What a tour does when a page has been shown.
+  void TourOn() noexcept;
   // Does what a button asked for, if it can be done from the page shown.
   // True if a page is now to be set.
   bool TakeAsked() noexcept;
@@ -229,7 +253,16 @@ class TextViewer final : public Screen {
   core::Clock& clock_;
   core::Storage& storage_;
   core::TraceStream& stream_;
-  std::span<const std::uint8_t> fontBytes_;
+  core::ByteMap& fontMap_;
+
+  // A tour: how many pages of its face and size have been shown, whether
+  // the other face has had its turn at this size, and how many sizes are
+  // done.
+  bool tour_ = false;
+  bool tourDone_ = false;
+  bool tourOtherFace_ = false;
+  std::size_t tourPages_ = 0;
+  std::size_t tourSizes_ = 0;
 
   State state_ = State::kNotStarted;
   Phase phase_ = Phase::kIdle;

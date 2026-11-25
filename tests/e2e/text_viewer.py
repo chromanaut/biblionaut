@@ -23,7 +23,12 @@ however the lines fall:
     nothing else; and the glyphs the viewer says it placed are as many;
   - going back shows the first page again, pixel for pixel;
   - the other size and the other face begin where the page shown began,
-    and the bold face puts more ink on the same letters.
+    and the bold face puts more ink on the same letters;
+  - at the start and at each change of size or face the viewer says which
+    faces it holds of the image, which it reads a face at a time as a
+    device does: the one face text is set in, mapped in whole pages;
+  - with BN_TEXT_TOUR it goes through both sizes in both faces by itself,
+    and says when it is done; and an image that cannot be read is said.
 
 The presses are timed by the clock, not by the application's turns, and a
 run that has not shown everything in time is run again with more.
@@ -139,6 +144,10 @@ def log_lines(bn_trace: str, capture: Path) -> list[str]:
 
 LINE = re.compile(r"^text: page (\d+), (serif|sans) (\d+) px, (\d+) lines?, (\d+) glyphs?: set \d+ ms, planes \d+ ms, "
                   r"refresh \d+ ms, gray planes \d+ ms, gray pass \d+ ms(; the end of the text)?$")
+# What the viewer says when the faces text is set in change.
+HELD = re.compile(r"^text: (serif|sans) (\d+) px: (\d+) faces? held, (\d+) KB of the image; (\d+) KB mapped$")
+# The pages an X4 maps its flash in, which the desktop counts room in.
+PAGE_KB = 64
 
 
 def main() -> int:
@@ -186,7 +195,8 @@ def main() -> int:
                            "BN_INPUT": presses}
             done = run([app, "--run-ms", str(seconds * 1000 * shown)], env=environment)
             expect(done.returncode == 0, f"the application ended with {done.returncode}: {done.stderr!r}")
-            lines = log_lines(bn_trace, work / "serial.bin")
+            every = log_lines(bn_trace, work / "serial.bin")
+            lines = [line for line in every if line.startswith("text: page ")]
             # A press that came before a page's grays leaves it without them.
             if (len(list(work.glob("panel-*.png"))) >= 2 * shown and len(lines) >= shown and
                     not any("no grays" in line for line in lines)):
@@ -203,6 +213,21 @@ def main() -> int:
         expect([(page["page"], page["face"], page["size"], page["end"]) for page in said] ==
                [(1, "serif", 30, False), (2, "serif", 30, True), (1, "serif", 30, False), (1, "serif", 22, False),
                 (1, "sans", 22, False)], f"the pages shown: {lines}")
+
+        # The image is read as a device reads it, a face at a time: at the
+        # start, and at each change of size or face, the viewer says which
+        # faces it holds. Each of these has a regular and no italic, so one
+        # is held, in whole pages beside the page the table of faces is in.
+        held = [line for line in every if not line.startswith("text: page ")]
+        faces = []
+        for line in held:
+            match = HELD.match(line)
+            expect(match is not None, f"a line of the viewer's: {line!r}")
+            faces.append((match.group(1), int(match.group(2)), int(match.group(3))))
+            in_image, mapped = int(match.group(4)), int(match.group(5))
+            expect(mapped % PAGE_KB == 0 and PAGE_KB + in_image <= mapped <= 3 * PAGE_KB + in_image,
+                   f"{mapped} KB mapped for a face of {in_image} KB and the table of faces: {line!r}")
+        expect(faces == [("serif", 30, 1), ("serif", 22, 1), ("sans", 22, 1)], f"the faces held: {held}")
 
         # Each page's two pictures.
         pages = []
@@ -256,6 +281,35 @@ def main() -> int:
         smaller, bolder = (sum(sum(row) for row in page) for page in pages[3:5])
         expect(bolder > smaller * 1.05, f"the bold's page has ink of {bolder}, and the regular's {smaller}")
         expect(bold["a"]["ink"] > serif["a"]["ink"], "the bold has no more ink in an a")
+
+        # A tour: the application goes through the text by itself, from the
+        # smaller size, in the serif and then the sans, and at the larger in
+        # the sans and then the serif; and says when it is done. The panel
+        # is made twenty times quicker than an X4's, and no button pressed.
+        legs: list[tuple[str, int]] = []
+        for seconds in (8, 20, 60):
+            environment = {**os.environ, "BN_STORAGE": str(work / "card"), "BN_TEXT": str(image),
+                           "BN_TEXT_TOUR": "1", "BN_DISPLAY_SPEED": "20", "BN_SERIAL_OUT": str(work / "tour.bin")}
+            environment.pop("BN_DISPLAY_OUT", None)
+            done = run([app, "--run-ms", str(seconds * 1000)], env=environment)
+            expect(done.returncode == 0, f"the application on a tour ended with {done.returncode}: {done.stderr!r}")
+            every = log_lines(bn_trace, work / "tour.bin")
+            if every and every[-1] == "text: the tour is done.":
+                break
+        expect(bool(every) and every[-1] == "text: the tour is done.", f"the tour did not end: {every}")
+        for line in every:
+            match = LINE.match(line)
+            if match is not None and (not legs or legs[-1] != (match.group(2), int(match.group(3)))):
+                legs.append((match.group(2), int(match.group(3))))
+        expect(legs == [("serif", 22), ("sans", 22), ("sans", 30), ("serif", 30)], f"the tour's faces and sizes: {every}")
+        toured = len([line for line in every if line.startswith("text: page ")])
+        expect(4 <= toured <= 8, f"the tour showed {toured} pages, and two at the most in each of four: {every}")
+
+        # An image that is not there is said, and nothing is run.
+        environment = {**os.environ, "BN_STORAGE": str(work / "card"), "BN_TEXT": str(work / "no-such-image.bnfn")}
+        done = run([app, "--run-ms", "100"], env=environment)
+        expect(done.returncode == 2 and b"BN_TEXT: cannot read" in done.stderr,
+               f"an image that is not there: {done.returncode}, {done.stderr!r}")
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1

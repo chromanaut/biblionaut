@@ -1,8 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+
+#include "core/byte_map.h"
 
 // The fonts image: every face the firmware draws text in, at every size it
 // draws it, in one run of bytes that is read where it lies. On the device it
@@ -20,6 +23,16 @@
 // faces, and nothing else; whatever a face's tables hold, finding a glyph
 // looks at no more than kMostSteps of them, reads nothing outside the image,
 // and gives a picture that lies wholly inside it, or no glyph.
+//
+// An image can be opened where all of it can be read at once, as a span of
+// bytes, or through a core::ByteMap, for a device that has not the address
+// space to map the whole of an image. Opened so, only its header and its
+// table of faces are kept readable. A face says its role, style, size and
+// metrics from the first, and has glyphs once it is held
+// (FontImage::Hold()), which makes readable the one stretch of the image
+// that has its tables and its pictures: `bn-font` writes a face's together,
+// and an image that scatters them asks for more than may be had. So the
+// faces a page is set in are held, and given up for the next page's.
 //
 // The layout, whose numbers are little-endian:
 //
@@ -71,6 +84,7 @@ enum class FontStatus : std::uint8_t {
   kOk = 0,
   kNotOpen,   // Open() has not been called.
   kBadImage,  // The bytes are not a fonts image, or say things outside it.
+  kNoRoom,    // Its header and table of faces could not be had to read.
 };
 
 // The name of a status, for diagnostics: "ok", "not open", ...
@@ -96,6 +110,7 @@ struct Glyph {
   std::int8_t left = 0;                   // Pixels from the pen to the picture's left edge,
   std::int8_t top = 0;                    // and from the baseline up to its top row.
   std::span<const std::uint8_t> picture;  // Inside the image; empty for a glyph with nothing to draw.
+  std::uint32_t pictureAt = 0;            // Where in the image the picture begins, from the image's start.
 
   // How much ink pixel (x, y) of the picture has: 0 for none, 3 for full.
   // The pixel has to be inside the picture.
@@ -111,7 +126,8 @@ constexpr std::size_t PictureBytes(std::uint32_t width, std::uint32_t height) no
 }
 
 // One face of an image. Has to be used only while the image's bytes are
-// where they were when it was found.
+// where they were when it was found, and its glyphs only until the image's
+// faces are released.
 class Face {
  public:
   // The most steps finding a glyph takes: looking at a range is a step.
@@ -121,6 +137,11 @@ class Face {
 
   // Whether this is a face. One that is not has no glyphs.
   bool Valid() const noexcept { return !record_.empty(); }
+  // Whether its tables and pictures can be read. A face of an image opened
+  // as a span always is; one of an image opened through a core::ByteMap is
+  // once FontImage::Hold() has been given it. A face that is not held has
+  // its metrics and no glyphs.
+  bool Held() const noexcept { return held_; }
 
   FaceRole Role() const noexcept;
   std::uint8_t Style() const noexcept;
@@ -144,11 +165,19 @@ class Face {
 
  private:
   friend class FontImage;
-  Face(std::span<const std::uint8_t> image, std::span<const std::uint8_t> record) noexcept
-      : image_(image), record_(record) {}
+  Face(std::span<const std::uint8_t> record, std::size_t index) noexcept : record_(record), index_(index) {}
 
-  std::span<const std::uint8_t> image_;
+  // The bytes of the image from `at`, which whoever asks has seen to be
+  // among the face's own.
+  std::span<const std::uint8_t> From(std::size_t at) const noexcept { return bytes_.subspan(at - base_); }
+
   std::span<const std::uint8_t> record_;  // The face's 48 bytes.
+  std::size_t index_ = 0;                 // Which of the image's faces.
+  // What can be read of the image for this face, and where in the image
+  // that begins: all of it from 0, or the face's own stretch.
+  std::span<const std::uint8_t> bytes_;
+  std::size_t base_ = 0;
+  bool held_ = false;
   mutable std::uint32_t steps_ = 0;
 };
 
@@ -157,13 +186,45 @@ class FontImage {
  public:
   // The most faces an image may have: one that says more is refused.
   static constexpr std::size_t kMostFaces = 1024;
+  // The most faces of an image opened through a core::ByteMap that are
+  // held at once.
+  static constexpr std::size_t kMostHeld = 16;
 
   FontImage() noexcept = default;
+  ~FontImage() { Close(); }
+  FontImage(const FontImage&) = delete;
+  FontImage& operator=(const FontImage&) = delete;
 
   // Takes `image` as the fonts image. Its bytes are used where they lie,
-  // and have to stay there for as long as faces of it are used.
+  // and have to stay there for as long as faces of it are used. Every face
+  // is held from the first.
   [[nodiscard]] FontStatus Open(std::span<const std::uint8_t> image) noexcept;
+  // Takes the bytes of `map` as the fonts image, and keeps readable only
+  // its header and its table of faces: 49,168 bytes at the most. `map` has
+  // to outlast the image, or its Close().
+  [[nodiscard]] FontStatus Open(core::ByteMap& map) noexcept;
+  // Gives up everything the image has readable. It is then not open.
+  void Close() noexcept;
   FontStatus Status() const noexcept { return status_; }
+
+  // Has `face`'s tables and pictures readable, so that it has glyphs. True
+  // if they are: as they always are in an image opened as a span. False if
+  // `face` is not a face of this image, if kMostHeld others are held, or if
+  // there is no room for its stretch of the image, and then nothing has
+  // changed. A face found again while it is held is held as found.
+  [[nodiscard]] bool Hold(Face& face) noexcept;
+  // Gives up every face held. Their glyphs, and the faces themselves, have
+  // not to be used afterwards: find the faces again. Nothing in an image
+  // opened as a span.
+  void ReleaseFaces() noexcept;
+  // How many faces are held, and how many bytes of the image they come to;
+  // 0 of both in an image opened as a span.
+  std::size_t Held() const noexcept { return held_; }
+  std::size_t HeldBytes() const noexcept;
+  // The `length` bytes of the image from `at`, if they are readable: any of
+  // an image opened as a span, and those of a held face otherwise. Empty if
+  // not. It is how a picture is had again from Glyph::pictureAt.
+  std::span<const std::uint8_t> Bytes(std::size_t at, std::size_t length) const noexcept;
 
   std::size_t Faces() const noexcept { return faces_; }
   // Face `index`, in the order the image has them.
@@ -178,7 +239,20 @@ class FontImage {
   Face Nearest(FaceRole role, std::uint8_t style, std::uint16_t size) const noexcept;
 
  private:
-  std::span<const std::uint8_t> image_;
+  // A face held: which, the stretch of the image that is its, and where in
+  // the image the stretch begins.
+  struct HeldFace {
+    std::size_t index = 0;
+    std::span<const std::uint8_t> bytes;
+    std::size_t base = 0;
+  };
+
+  // The header and the table of faces; in an image opened as a span, all
+  // of the image.
+  std::span<const std::uint8_t> head_;
+  core::ByteMap* map_ = nullptr;  // Null in an image opened as a span.
+  std::array<HeldFace, kMostHeld> heldFaces_{};
+  std::size_t held_ = 0;
   std::size_t faces_ = 0;
   FontStatus status_ = FontStatus::kNotOpen;
 };

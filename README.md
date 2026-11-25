@@ -693,6 +693,21 @@ ESP-IDF's SD driver and FatFS, which is called directly
 is what cards of up to 32 GB are sold with; a bigger card comes with exFAT
 and has to be formatted as FAT32 first.
 
+The driver moves whole sectors straight between the card and the caller's
+memory only if that memory begins at a multiple of four. If it does not,
+it takes a block as large as the sectors from the heap, goes by way of
+that, and gives it back: memory nobody here asked for, at a moment nobody
+chose. FatFS hands the driver the whole sectors of a read or a write
+where they fall in the caller's memory, so that happens when a read or
+write begins part way through a sector, at a place in the file that is no
+multiple of four, and goes on over a whole sector or more. The metrics
+count them (`sd_reads_copied`, `sd_writes_copied`) and say how many bytes
+the last took and the most any did (`sd_copied_bytes`). Reading the 34
+books of an X4's card through the book check there are none: a
+`BlockFile` asks for whole blocks. Going round the card's 29 drawings and
+pictures in the viewer, the cache of pictures made 84 such reads and 28
+such writes, of 1 to 3 KB each.
+
 FAT keeps a file as a chain of pieces, and to go to a place in a file
 FatFS follows the chain there, from the file's start if the place is
 behind where it is, reading the card's table as it goes: the larger the

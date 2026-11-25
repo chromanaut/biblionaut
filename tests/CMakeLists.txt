@@ -118,9 +118,11 @@ target_link_libraries(draw_tests PRIVATE ZLIB::ZLIB)
 # compressing and the checksums.
 bn_add_unit_test(epub_tests
   SOURCES
+    unit/epub/book_files_test.cpp
     unit/epub/book_path_test.cpp
     unit/epub/css_rules_test.cpp
     unit/epub/css_test.cpp
+    unit/epub/document_sheets_test.cpp
     unit/epub/package_test.cpp
     unit/epub/toc_test.cpp
     unit/epub/xml_test.cpp
@@ -294,6 +296,16 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/css_cascade_tool.py
       $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/css_cascade_tool)
   set_tests_properties(e2e.CssCascade PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-css sheets and bn-css document, and through them the finding of the
+  # sheets a document asks for, against a second working-out in the test
+  # for books it makes: each document's list, what was left out by its
+  # kind, and what the rules then come to.
+  add_test(
+    NAME e2e.SheetsTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/sheets_tool.py
+      $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/sheets_tool)
+  set_tests_properties(e2e.SheetsTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # bn-svg, and through it the reading and flattening of SVG path data,
   # against a second reading of the same paths, with the curves they

@@ -8,6 +8,7 @@
 #include <iterator>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "draw/font.h"
@@ -21,20 +22,21 @@ using bn::font_tool::BuildImage;
 using bn::font_tool::Built;
 using bn::font_tool::BuiltFace;
 using bn::font_tool::Preset;
-using bn::font_tool::ReadPreset;
 using bn::font_tool::RoleName;
 using bn::font_tool::StyleName;
 
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
-               "usage: %s build PRESET --out IMAGE\n"
+               "usage: %s build PRESET... --out IMAGE [--fonts FOLDER]\n"
                "       %s info IMAGE [--glyphs U+XXXX[-U+YYYY]...]\n"
                "       %s sizes IMAGE\n"
                "\n"
                "The fonts image: every face the firmware draws text in, at every size.\n"
                "\n"
                "  build  draws the faces a preset names at the sizes it gives, and writes\n"
-               "         the image. A preset is a text file:\n"
+               "         the image. Several presets are read as one, so that the sizes, a\n"
+               "         family's faces and a monospace face can be kept apart. A preset is\n"
+               "         a text file:\n"
                "\n"
                "           sizes 26 30 34\n"
                "           serif regular      Serif-Regular.ttf\n"
@@ -44,8 +46,9 @@ void PrintUsage(const char* program) {
                "\n"
                "         Roles are serif, sans, mono and fallback; styles regular, italic,\n"
                "         bold and bold-italic. A file not named from / is found from the\n"
-               "         preset's folder. `characters U+0020-U+007E ...` chooses what is\n"
-               "         drawn; without it, the set the firmware is built to show.\n"
+               "         preset's folder, or from FOLDER if --fonts names one.\n"
+               "         `characters U+0020-U+007E ...` chooses what is drawn; without it,\n"
+               "         the set the firmware is built to show.\n"
                "\n"
                "  info   says what an image holds: its faces, and with --glyphs what each\n"
                "         has for the characters named: the glyph's number, how far it\n"
@@ -77,27 +80,35 @@ std::string FolderOf(const std::string& path) {
 }
 
 int RunBuild(const std::vector<std::string>& arguments) {
-  std::string presetPath;
+  std::vector<std::string> presetPaths;
   std::string outPath;
+  std::string fontsFolder;
   for (std::size_t i = 0; i < arguments.size(); ++i) {
     if (arguments[i] == "--out" && i + 1 < arguments.size()) {
       outPath = arguments[++i];
-    } else if (!arguments[i].starts_with("--") && presetPath.empty()) {
-      presetPath = arguments[i];
+    } else if (arguments[i] == "--fonts" && i + 1 < arguments.size()) {
+      fontsFolder = arguments[++i];
+    } else if (!arguments[i].starts_with("--")) {
+      presetPaths.push_back(arguments[i]);
     } else {
       return -1;
     }
   }
-  if (presetPath.empty() || outPath.empty()) {
+  if (presetPaths.empty() || outPath.empty()) {
     return -1;
   }
-  std::string text;
-  if (!ReadFile(presetPath, text)) {
-    return 1;
+  std::vector<bn::font_tool::PresetText> texts;
+  for (const std::string& path : presetPaths) {
+    bn::font_tool::PresetText one{
+        .name = path, .text = {}, .folder = fontsFolder.empty() ? FolderOf(path) : fontsFolder};
+    if (!ReadFile(path, one.text)) {
+      return 1;
+    }
+    texts.push_back(std::move(one));
   }
-  const Preset preset = ReadPreset(text, FolderOf(presetPath));
+  const Preset preset = bn::font_tool::ReadPresets(texts);
   if (!preset.ok) {
-    std::fprintf(stderr, "bn-font: %s: %s\n", presetPath.c_str(), preset.error.c_str());
+    std::fprintf(stderr, "bn-font: %s\n", preset.error.c_str());
     return 1;
   }
   const Built built = BuildImage(preset);

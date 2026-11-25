@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,6 +27,10 @@
 // which may be given more than once, are the code points that are drawn,
 // one or a range, written U+ and hexadecimal; without them, the set the
 // firmware is built to show (DefaultCharacters()).
+//
+// `bn-font build` takes several presets and reads them as one
+// (ReadPresets()), and with `--fonts FOLDER` finds the files of all of them
+// from that folder and not from each preset's own.
 
 namespace bn::font_tool {
 
@@ -54,6 +59,21 @@ bool ReadCodePoints(std::string_view text, CodePoints& codePoints);
 
 // Reads a preset. `folder` is where files not named from `/` are found.
 Preset ReadPreset(std::string_view text, std::string_view folder);
+
+// The text of one preset file, what to call it when something in it is
+// wrong, and where its files not named from `/` are found.
+struct PresetText {
+  std::string name;
+  std::string text;
+  std::string folder;
+};
+
+// Reads several presets as one: the sizes of all of them, the faces of all
+// of them, and the characters of all of them. So a preset can be kept in
+// parts (the sizes, a family's faces, a monospace face) that are put
+// together when an image is built. A face named in two of them is wrong, as
+// it is in one.
+Preset ReadPresets(std::span<const PresetText> presets);
 
 // The characters drawn when a preset names none: Latin with its
 // extensions, the phonetic alphabet, the marks set over letters, Greek

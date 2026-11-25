@@ -52,7 +52,8 @@ expat, the XML parser, which is C and is why a C compiler is needed;
 TeX's hyphenation patterns for American English, which the build makes
 into a table (see Where a word may be broken); FreeType, which draws the
 glyphs for `bn-font` (see Fonts); GoogleTest; and, for the tests of
-`bn-font`, the font files of Courier Prime. The tests also link zlib, to check the inflater against and to
+`bn-font`, the font files of Courier Prime. (The fonts of a fonts image are
+downloaded only when one is built: see The presets.) The tests also link zlib, to check the inflater against and to
 make their ZIP files with, and so does `bn-font`, to say what a fonts image
 would take compressed: macOS has it, and on Linux it is the `zlib1g-dev`
 package. Most of the end-to-end
@@ -2698,7 +2699,8 @@ glyph with FreeType, which the host build downloads (`third_party/freetype`)
 and which is no part of the firmware. (A build configured with
 `-DBN_FONT_TOOL=OFF` has no `bn-font` and downloads neither FreeType nor
 the font its tests use; the firmware's build of its own host tools is
-one.) Which files, and at which sizes, is said by a preset, a text file:
+one.) Which files, and at which sizes, is said by a preset, a text file (the
+build has some of its own: The presets, below):
 
 ```
 sizes 26 30 34
@@ -2813,6 +2815,65 @@ glyph by itself is too little for DEFLATE to find much in, and what it
 saves grows with the size; together, glyphs compress to half and less.
 The compressed sizes are zlib's, and another version of zlib may give a
 few bytes more or fewer.
+
+### The presets
+
+A fonts image can be made without bringing any fonts: the build has
+presets, each a serif and a sans in four styles and a monospace face in
+two, whose font files it downloads from their makers' repositories at a
+commit it names, each checked against a hash (`third_party/fonts`). They
+are downloaded when an image is asked for, not when a build is configured:
+
+```
+cmake --build --preset host --target fonts      # writes build/host/fonts/fonts.bnfn
+```
+
+Which typefaces is chosen when the build is configured:
+
+| | |
+|---|---|
+| `-DBN_FONTS=noto` | Noto Serif and Noto Sans. This is what an image is made of unless something else is asked for |
+| `-DBN_FONTS=plex` | IBM Plex Serif and IBM Plex Sans |
+| `-DBN_FONTS=source` | Source Serif 4 and Source Sans 3 |
+| `-DBN_FONTS=/a/preset/of/ones/own` | Whatever that preset names: its own font files, at its own sizes |
+| `-DBN_FONTS_MONO=courier-prime` | Courier Prime as the monospace face. This is so unless something else is asked for |
+| `-DBN_FONTS_MONO=family` | The family's own: Noto Sans Mono, IBM Plex Mono or Source Code Pro |
+
+A preset here is three files of `tools/font/presets` read as one:
+`ladder.preset`, which has the sizes; the family's faces; and a monospace
+face. `bn-font build` takes any number of presets and reads them so, and
+with `--fonts FOLDER` finds their files from that folder, which is how the
+build points them at what it downloaded. The sizes are five, 22, 26, 30,
+34 and 38 pixels to the em, each about an eighth larger than the one
+before, 30 being the size text is first read in: on the X4's panel, about
+7, 8.5, 10, 11.5 and 12.5 points as printed. Plex and Source have fewer of
+the characters an image is made with than Noto has (about 900 and about
+860 to 1,400 a face, against about 1,980), so their images have Noto Sans
+besides, as the fallback face, for what they lack. As built, with the
+12 MB of the `fonts` partition to fit in:
+
+| Preset | Monospace face | Faces | Image |
+|---|---|---|---|
+| `noto` | Courier Prime | 50 | 9.64 MB |
+| `noto` | Noto Sans Mono | 50 | 11.47 MB |
+| `plex` | Courier Prime | 55 | 5.55 MB |
+| `plex` | IBM Plex Mono | 55 | 6.04 MB |
+| `source` | Courier Prime | 55 | 6.03 MB |
+| `source` | Source Code Pro | 55 | 6.67 MB |
+
+```
+$ cmake --build --preset host-release --target fonts
+...
+mono     bold        34 px:  381 glyphs (2074 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16
+mono     bold        38 px:  381 glyphs (2074 lacking), pictures   47138 bytes; ascent 30, descent 13, line 43, x-height 18
+faces 50, pictures 8620836 bytes, image 9639730 bytes
+```
+
+All of these typefaces are under the SIL Open Font License; what that asks
+of a firmware given out with an image made of them is in `THIRD_PARTY.md`
+(Fonts in a firmware). The tests download none of them: they read each
+preset with either monospace face, and `e2e.FontTool` holds every font
+file a preset names to being one the build has a commit and a hash for.
 
 ### Reading the image
 

@@ -34,7 +34,12 @@ of any: a space has none, a letter has ink, and the bold has more of it.
 It also checks that what is not a preset, not a font and not an image are
 refused.
 
-usage: font_tool.py BN_FONT FONT_DIR WORK_DIR
+It checks the repository's own presets too (tools/font/presets), without
+downloading the fonts they name: every font file one of them names is one
+the build has a commit and a hash for (third_party/fonts), and the build
+has none that no preset names.
+
+usage: font_tool.py BN_FONT FONT_DIR WORK_DIR SOURCE_DIR
 """
 
 from __future__ import annotations
@@ -248,10 +253,11 @@ def sizes_of(faces: list[ImageFace]) -> dict[str, int]:
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 5:
         print(__doc__, file=sys.stderr)
         return 2
     tool, fonts, work = sys.argv[1], Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+    source = Path(sys.argv[4]).resolve()
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     asked = [code for first, last in CHARACTERS for code in range(first, last + 1)]
@@ -400,6 +406,47 @@ def main() -> int:
             expect(result.returncode == 1 and result.stderr.decode("utf-8").strip().endswith(": bad image"),
                    f"{name}: sizes ended with {result.returncode} and said {result.stderr!r}")
         expect(run(tool, "sizes").returncode == 1, "sizes with no image")
+
+        # The same preset in parts, its files found from a folder named for
+        # them: the same image.
+        (work / "parts").mkdir()
+        shutil.copy(fonts / FILES[1][2], fonts_copy := work / "parts" / FILES[1][2])
+        shutil.copy(fonts / FILES[0][2], work / "parts" / FILES[0][2])
+        (work / "ladder.preset").write_text(f"sizes {' '.join(str(size) for size in SIZES)}\n")
+        (work / "faces.preset").write_text(f"mono regular {FILES[0][2]}\nmono bold {FILES[1][2]}\n"
+                                          f"characters {written}\n")
+        in_parts = work / "in-parts.bnfn"
+        result = run(tool, "build", str(work / "ladder.preset"), str(work / "faces.preset"), "--fonts",
+                     str(fonts_copy.parent), "--out", str(in_parts))
+        expect(result.returncode == 0, f"build in parts ended with {result.returncode} and said {result.stderr!r}")
+        expect(in_parts.read_bytes() == image, "the preset in parts made another image")
+        # Without the folder, they are looked for beside the preset, and are
+        # not there; and what is wrong in a part is said with its name.
+        result = run(tool, "build", str(work / "ladder.preset"), str(work / "faces.preset"), "--out", str(in_parts))
+        expect(result.returncode == 1 and "FreeType cannot read it as a font" in result.stderr.decode("utf-8"),
+               f"build in parts with no folder: {result.returncode}, {result.stderr!r}")
+        (work / "wrong.preset").write_text("mono regular a.ttf\nmono light b.ttf\n")
+        result = run(tool, "build", str(work / "ladder.preset"), str(work / "wrong.preset"), "--out", str(in_parts))
+        expect(result.returncode == 1 and "wrong.preset: line 2: a style is " in result.stderr.decode("utf-8"),
+               f"a part that is wrong: {result.returncode}, {result.stderr!r}")
+
+        # The repository's presets: every font file they name is pinned, and
+        # none is pinned for nothing.
+        pinned = set()
+        listing = (source / "third_party" / "fonts" / "CMakeLists.txt").read_text()
+        for family, url, digest in re.findall(r'bn_font_file\(([\w-]+) "([^"]+)"\s+([0-9a-f]{64})\)', listing):
+            pinned.add(f"{family}/{url.rsplit('/', 1)[1]}")
+        named = set()
+        presets = sorted((source / "tools" / "font" / "presets").glob("*.preset"))
+        for path in presets:
+            for line in path.read_text().splitlines():
+                words = line.split("#")[0].split()
+                if len(words) >= 3 and words[0] in ("serif", "sans", "mono", "fallback"):
+                    named.add(" ".join(words[2:]))
+        expect(len(presets) == 8 and len(named) >= 28, f"{len(presets)} presets naming {len(named)} font files")
+        expect(named == pinned, f"named and not pinned: {sorted(named - pinned)}; pinned and not named: "
+                                f"{sorted(pinned - named)}")
+        expect(len(re.findall(r"bn_font_file\(", listing)) == len(pinned), "a font file is pinned twice")
 
         # The same preset makes the same image.
         again = work / "again.bnfn"

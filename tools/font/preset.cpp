@@ -87,8 +87,11 @@ const std::vector<CodePoints>& DefaultCharacters() {
   return kDefault;
 }
 
-Preset ReadPreset(std::string_view text, std::string_view folder) {
-  Preset preset;
+namespace {
+
+// Adds what one preset's text says to `preset`. False, with the error said,
+// at the first line that is wrong.
+bool AddPreset(Preset& preset, std::string_view text, std::string_view folder) {
   std::size_t lineNumber = 0;
   while (!text.empty()) {
     ++lineNumber;
@@ -109,7 +112,7 @@ Preset ReadPreset(std::string_view text, std::string_view folder) {
             size > kLargestSize) {
           preset.error = At(lineNumber, "a size is a number of pixels from " + std::to_string(kSmallestSize) + " to " +
                                             std::to_string(kLargestSize) + ", not '" + std::string(number) + "'");
-          return preset;
+          return false;
         }
         preset.sizes.push_back(static_cast<std::uint16_t>(size));
       }
@@ -122,7 +125,7 @@ Preset ReadPreset(std::string_view text, std::string_view folder) {
         if (!ReadCodePoints(range, codePoints)) {
           preset.error =
               At(lineNumber, "characters are written U+0041 or U+0041-U+005A, not '" + std::string(range) + "'");
-          return preset;
+          return false;
         }
         preset.characters.push_back(codePoints);
       }
@@ -134,18 +137,18 @@ Preset ReadPreset(std::string_view text, std::string_view folder) {
                         "a line begins with sizes, characters, or a role (serif, sans, mono, "
                         "fallback), not '" +
                             std::string(word) + "'");
-      return preset;
+      return false;
     }
     const std::string_view styleWord = FirstWord(line);
     const auto style = std::find(kStyleNames.begin(), kStyleNames.end(), styleWord);
     if (style == kStyleNames.end()) {
       preset.error =
           At(lineNumber, "a style is regular, italic, bold or bold-italic, not '" + std::string(styleWord) + "'");
-      return preset;
+      return false;
     }
     if (line.empty()) {
       preset.error = At(lineNumber, "no font file is named");
-      return preset;
+      return false;
     }
     FaceFile face{.role = static_cast<draw::FaceRole>(role - kRoleNames.begin()),
                   .style = static_cast<std::uint8_t>(style - kStyleNames.begin()),
@@ -156,22 +159,48 @@ Preset ReadPreset(std::string_view text, std::string_view folder) {
       if (named.role == face.role && named.style == face.style) {
         preset.error = At(lineNumber, std::string(RoleName(face.role)) + " " + std::string(StyleName(face.style)) +
                                           " was named already, on line " + std::to_string(named.line));
-        return preset;
+        return false;
       }
     }
     preset.faces.push_back(std::move(face));
   }
+  return true;
+}
+
+// What has to be so of a preset once all of it is read.
+void FinishPreset(Preset& preset) {
   if (preset.sizes.empty()) {
     preset.error = "no sizes are given";
-    return preset;
+    return;
   }
   if (preset.faces.empty()) {
     preset.error = "no faces are named";
-    return preset;
+    return;
   }
   std::sort(preset.sizes.begin(), preset.sizes.end());
   preset.sizes.erase(std::unique(preset.sizes.begin(), preset.sizes.end()), preset.sizes.end());
   preset.ok = true;
+}
+
+}  // namespace
+
+Preset ReadPreset(std::string_view text, std::string_view folder) {
+  Preset preset;
+  if (AddPreset(preset, text, folder)) {
+    FinishPreset(preset);
+  }
+  return preset;
+}
+
+Preset ReadPresets(std::span<const PresetText> presets) {
+  Preset preset;
+  for (const PresetText& one : presets) {
+    if (!AddPreset(preset, one.text, one.folder)) {
+      preset.error.insert(0, one.name + ": ");
+      return preset;
+    }
+  }
+  FinishPreset(preset);
   return preset;
 }
 

@@ -168,6 +168,26 @@ TEST(Spool, AShapeGivenBackIsTheShapeDrawn) {
                 40, 30);
 }
 
+TEST(Spool, ATallPictureIsGivenBackAsItWasDrawn) {
+  // Which bands a line crosses is worked out from where it lies, in 256ths
+  // of a pixel: 300 rows are 76,800 of them, more than 16 bits hold. Shapes
+  // from the top of the picture to its foot, and shapes that lie wholly in
+  // its lower half, in bands of several heights.
+  const std::string file =
+      Svg(60, 300,
+          "<path d='M5 2L55 150L5 298z'/><rect x='10' y='200.5' width='40' height='95' fill='#777'/>"
+          "<circle cx='30' cy='262' r='25' fill-opacity='.5'/><path d='M58 130V299' stroke='#000'/>");
+  for (const std::size_t rows : {std::size_t{10}, std::size_t{26}, std::size_t{64}, std::size_t{300}}) {
+    const Spooled spooled = Spool(file, 60, 300, rows);
+    ASSERT_EQ(spooled.status, SpoolStatus::kOk) << rows;
+    EXPECT_EQ(spooled.gray, Direct(file, 60, 300, rows)) << "bands of " << rows << " rows";
+  }
+  // The shapes are there, in the lower half too.
+  const std::vector<std::uint8_t> drawn = Direct(file, 60, 300, 300);
+  EXPECT_NE(drawn[(250 * 60) + 30], kWhite);
+  EXPECT_NE(drawn[(20 * 60) + 8], kWhite);
+}
+
 TEST(Spool, EveryKindOfFillingIsGivenBackAsItWasDrawn) {
   ExpectTheSame(Svg(48, 40,
                     "<linearGradient id='g' x2='0' y2='1' spreadMethod='reflect'><stop stop-color='#000'/>"

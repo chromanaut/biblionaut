@@ -3348,7 +3348,10 @@ covers of it.
 - **Within a box**: `Fill()` can be given a box of the picture to keep to.
   Nothing outside it is drawn, and a pixel that an edge of the box passes
   through takes the share of its cover that the box has of the pixel. That
-  is how what is inside an `svg` is cut off at the edges of the `svg`.
+  is how what is inside an `svg` is cut off at the edges of the `svg`. A
+  pixel wholly inside the box is drawn as if there were no box, with
+  nothing worked out for it: every drawing has a box the size of its
+  picture, so that is nearly every pixel drawn.
 - **A gray that changes**: `Fill()` can be given a `GrayRamp` in place of
   one gray: how far along the ramp the middle of the picture's first pixel
   is, how much further each pixel to the right is and each pixel down,
@@ -3897,7 +3900,11 @@ is one, and draws into its strip as the lines come. `SpoolWriter`
 - **What it keeps**: each line placed as a filler places it, at a 256th of
   a pixel, with the line that closes an outline left open; and each line
   for every band of the picture whose rows it crosses, since a filler does
-  nothing with a line that lies wholly above or below its strip. Each
+  nothing with a line that lies wholly above or below its strip. Which
+  bands those are is two divisions a line, made in 32 bits, which hold a
+  place: the X4 divides 64 bits by a routine many times slower, and with
+  that out of it the card's nine drawings are read into what is kept in
+  12.5 s where they took 13.6 s. Each
   filling is kept for every band that has lines it uses up. A band's lines
   and fillings, given back in the order they came to a filler set to that
   band (`BeginBand()`, `ReplayStep()`), draw it byte for byte as drawing

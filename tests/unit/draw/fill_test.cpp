@@ -803,6 +803,45 @@ TEST(Fill, WithinABoxNothingOutsideItIsDrawnAndWhatIsInsideIsAsEver) {
   }
 }
 
+TEST(Fill, ABoxThatAllButCoversAPixelLeavesTheLittleItDoesNot) {
+  // A pixel that lies wholly inside the box is passed over when the box is
+  // applied, so which pixels those are has to be exact. A box on whole
+  // pixels blackens them all. One that stops a 256th of a pixel short of
+  // an edge, on each side in turn, leaves that one row or column of them a
+  // shade short of black, and every other as it was. Drawn in one strip
+  // and in strips of five rows.
+  const Shape all = {{{-5, -5}, {40, -5}, {40, 40}, {-5, 40}}};
+  const double sliver = 1.0 / 256;
+  struct Short {
+    const char* what = "";
+    Real from;
+    Real to;
+    int column = -1;  // The column that is short, or -1;
+    int row = -1;     // the row, or -1.
+  };
+  for (const Short& box :
+       {Short{"none", {4, 3}, {20, 15}, -1, -1}, Short{"left", {4 + sliver, 3}, {20, 15}, 4, -1},
+        Short{"right", {4, 3}, {20 - sliver, 15}, 19, -1}, Short{"top", {4, 3 + sliver}, {20, 15}, -1, 3},
+        Short{"bottom", {4, 3}, {20, 15 - sliver}, -1, 14}}) {
+    for (const std::size_t stripRows : {std::size_t{0}, std::size_t{5}}) {
+      const Picture cut = DrawnWithin(30, 24, all, box.from, box.to, FillRule::kNonZero, stripRows);
+      for (std::size_t y = 0; y < 24; ++y) {
+        for (std::size_t x = 0; x < 30; ++x) {
+          const bool inside = x >= 4 && x < 20 && y >= 3 && y < 15;
+          const bool isShort = static_cast<int>(x) == box.column || static_cast<int>(y) == box.row;
+          if (!inside) {
+            ASSERT_EQ(cut.At(x, y), 255) << box.what << " at " << x << "," << y;
+          } else if (isShort) {
+            ASSERT_EQ(cut.At(x, y), 1) << box.what << " at " << x << "," << y;
+          } else {
+            ASSERT_EQ(cut.At(x, y), 0) << box.what << " at " << x << "," << y;
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST(Fill, ABoxLeavesAPixelItCrossesTheShareThatLiesInside) {
   // A shape that covers the whole picture, so that what is drawn is the
   // box itself.

@@ -716,6 +716,14 @@ many found no table free (`sd_maps_none_free`), the most numbers a file's
 map needed (`sd_map_items`, two for each piece and two more), and the size
 of the card's clusters (`sd_cluster_bytes`).
 
+The card is clocked at 20 MHz, which is the driver's own choice
+(`sd_clock_khz` in the metrics says what it was set to), though the panel
+on the same wires is sent to at 40. A card may only be clocked faster once
+it has been switched to its high speed, and the 16 GB card in the X4 this
+was tried with offers none over these wires: asked which speeds it has, it
+names the ordinary one alone, and told to switch, it refuses. So no card
+is asked.
+
 On the desktop the card is a folder (`hw/desktop/folder_storage.h`), the
 one named by the `BN_STORAGE` environment variable; without it there is no
 card. It is made to behave as a card does where that is cheap: the same

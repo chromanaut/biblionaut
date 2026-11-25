@@ -66,6 +66,8 @@ core::Counter sdMapsRefused{"sd_maps_refused"};
 core::Counter sdMapsNoneFree{"sd_maps_none_free"};
 core::Gauge sdMapItems{"sd_map_items"};
 core::Gauge sdClusterBytes{"sd_cluster_bytes"};
+// The clock the card is run at, in kHz, as the driver set it.
+core::Gauge sdClockKhz{"sd_clock_khz"};
 
 // The size of a cluster of a mounted file system, in bytes.
 std::uint32_t ClusterBytes(const FATFS& fileSystem) noexcept {
@@ -444,6 +446,13 @@ class SdCardStorage final : public core::Storage {
       BN_TRACE_INSTANT(kInstantSdCardError, static_cast<std::uint32_t>(error));
       return StorageStatus::kFailed;
     }
+    // The card is run at the driver's own choice of clock, 20 MHz, though
+    // the panel on the same wires is sent to at 40. A card may only be
+    // clocked faster once it has been switched to its high speed, and the
+    // card this was tried with (16 GB, in an X4) offers none on these
+    // wires: asked which speeds it has, it names the ordinary one alone,
+    // and told to switch it refuses. So nothing is asked for. A card that
+    // did switch would be untried at 40 MHz here.
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = device;
     error = sdmmc_card_init(&host, &card_);
@@ -453,6 +462,7 @@ class SdCardStorage final : public core::Storage {
       sdspi_host_remove_device(device);
       return StorageStatus::kAbsent;
     }
+    sdClockKhz.Set(static_cast<std::uint32_t>(card_.real_freq_khz));
     const std::uint64_t bytes = static_cast<std::uint64_t>(card_.csd.capacity) * card_.csd.sector_size;
     BN_TRACE_INSTANT(kInstantSdCard, static_cast<std::uint32_t>(bytes >> 20U));
 

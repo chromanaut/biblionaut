@@ -127,6 +127,8 @@ Reading a book:
   of a book's rules, and the cascade.
 - [What a document asks for](docs/document-sheets.md): the sheets a
   document is read with.
+- [The file a book is imported into](docs/bundle.md): the bundle, as a
+  container that loses no chapter when the power goes.
 - [Reading the books on a card](docs/book-check.md): the book check.
 
 Setting text:

@@ -122,6 +122,7 @@ bn_add_unit_test(epub_tests
   SOURCES
     unit/epub/book_files_test.cpp
     unit/epub/book_path_test.cpp
+    unit/epub/bundle_test.cpp
     unit/epub/css_rules_test.cpp
     unit/epub/css_test.cpp
     unit/epub/document_sheets_test.cpp

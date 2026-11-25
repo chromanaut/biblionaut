@@ -96,6 +96,11 @@ bool FolderStorage::IsOpen(std::string_view path) const {
   return false;
 }
 
+bool FolderStorage::IsOpenForWriting(std::string_view path) const {
+  return std::any_of(open_.begin(), open_.end(),
+                     [&](const OpenFile& file) { return file.descriptor >= 0 && file.writable && file.path == path; });
+}
+
 std::size_t FolderStorage::OpenCount() const noexcept {
   const auto files = std::count_if(open_.begin(), open_.end(), [](const OpenFile& f) { return f.descriptor >= 0; });
   const auto directories = std::count_if(listed_.begin(), listed_.end(), [](const DIR* d) { return d != nullptr; });
@@ -116,17 +121,25 @@ StorageStatus FolderStorage::Open(std::string_view path, core::OpenMode mode, co
   if (place == open_.size() || OpenCount() >= kMaxOpen) {
     return StorageStatus::kTooManyOpen;
   }
-  if (mode == core::OpenMode::kCreate && IsOpen(path)) {
-    return StorageStatus::kFailed;  // Emptying a file that is in use.
+  const bool writing = mode != core::OpenMode::kRead;
+  if ((writing && IsOpen(path)) || IsOpenForWriting(path)) {
+    return StorageStatus::kFailed;  // One writer or any number of readers, as on a card.
   }
 
-  const bool create = mode == core::OpenMode::kCreate;
   // The flags are the system's own, and signed.
   // NOLINTBEGIN(bugprone-signed-bitwise,hicpp-signed-bitwise,cppcoreguidelines-pro-type-vararg,hicpp-vararg)
-  const int descriptor = ::open(hostPath.c_str(), (create ? O_RDWR | O_CREAT | O_TRUNC : O_RDONLY) | O_CLOEXEC, 0644);
+  int flags = O_RDONLY;
+  if (mode == core::OpenMode::kCreate) {
+    flags = O_RDWR | O_CREAT | O_TRUNC;
+  } else if (mode == core::OpenMode::kUpdate) {
+    flags = O_RDWR;
+  }
+  const int descriptor = ::open(hostPath.c_str(), flags | O_CLOEXEC, 0644);
   // NOLINTEND(bugprone-signed-bitwise,hicpp-signed-bitwise,cppcoreguidelines-pro-type-vararg,hicpp-vararg)
   if (descriptor < 0) {
-    return FromErrno(errno);
+    // A directory is not a file to change, as it is not one to read; the
+    // system says so differently when it is asked to write.
+    return errno == EISDIR && mode == core::OpenMode::kUpdate ? StorageStatus::kNotFound : FromErrno(errno);
   }
   struct stat found = {};
   if (::fstat(descriptor, &found) != 0 || !S_ISREG(found.st_mode)) {
@@ -137,7 +150,7 @@ StorageStatus FolderStorage::Open(std::string_view path, core::OpenMode mode, co
     ::close(descriptor);
     return StorageStatus::kTooBig;
   }
-  open_[place] = OpenFile{.descriptor = descriptor, .writable = create, .path = std::string(path)};
+  open_[place] = OpenFile{.descriptor = descriptor, .writable = writing, .path = std::string(path)};
   file = static_cast<core::FileHandle>(place);
   return StorageStatus::kOk;
 }

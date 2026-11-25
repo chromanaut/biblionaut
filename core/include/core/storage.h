@@ -35,6 +35,7 @@ const char* StorageStatusName(StorageStatus status) noexcept;
 enum class OpenMode : std::uint8_t {
   kRead,    // An existing file, for reading only.
   kCreate,  // A new, empty file, for writing and reading back. A file already of that name is emptied.
+  kUpdate,  // An existing file, for reading and for writing over and on past its end. What it holds stays.
 };
 
 // An open file. Only meaningful to the Storage that gave it out.
@@ -89,12 +90,17 @@ class Storage {
 
   // How many files can be open at once, counting each directory that is
   // being listed as one.
-  static constexpr std::size_t kMaxOpen = 4;
+  static constexpr std::size_t kMaxOpen = 8;
   // How many of those can be directories.
   static constexpr std::size_t kMaxListed = 2;
 
   // Opens a file. On success `file` is its handle, to be given back to
   // Close(). Only kMaxOpen files can be open at once (kTooManyOpen).
+  //
+  // A file has one writer or any number of readers, never both: one that
+  // is open cannot be opened to be written (kCreate, kUpdate), and one
+  // that is open to be written cannot be opened at all (kFailed). Whoever
+  // reads a file while writing it does both through the one handle.
   [[nodiscard]] virtual StorageStatus Open(std::string_view path, OpenMode mode, FileHandle& file) noexcept = 0;
 
   // Closes a file. What was written to it is not safely on the card until
@@ -110,8 +116,13 @@ class Storage {
                                              std::size_t& read) noexcept = 0;
 
   // Writes all of `src` starting `offset` bytes into a file opened with
-  // kCreate, over what is there and on past the end. `offset` may be at
-  // most the file's size: there are no gaps.
+  // kCreate or kUpdate, over what is there and on past the end. `offset`
+  // may be at most the file's size: there are no gaps.
+  //
+  // If the power goes before Sync() has returned, any part of what was
+  // written since the last one may be on the card and the rest not, and
+  // where it was written over other bytes those may be there in its
+  // place: so write over only what can be done without at that moment.
   [[nodiscard]] virtual StorageStatus WriteAt(FileHandle file, std::uint32_t offset,
                                               std::span<const std::uint8_t> src) noexcept = 0;
 

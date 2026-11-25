@@ -111,11 +111,12 @@ class FakeStorage final : public core::Storage {
     if (create && !HasParent(name)) {
       return core::StorageStatus::kNotFound;
     }
-    if (create && IsOpen(name)) {
-      return core::StorageStatus::kFailed;  // Emptying a file that is in use.
+    const bool writing = mode != core::OpenMode::kRead;
+    if (!sharesWriters && ((writing && IsOpen(name)) || IsOpenForWriting(name))) {
+      return core::StorageStatus::kFailed;  // One writer or any number of readers, as on a card.
     }
     const auto place = std::find_if(open_.begin(), open_.end(), [](const OpenFile& f) { return !f.inUse; });
-    if (place == open_.end() || OpenCount() + ListedCount() >= static_cast<int>(kMaxOpen)) {
+    if (place == open_.end() || OpenCount() + ListedCount() >= static_cast<int>(kMaxOpen) + moreOpen) {
       return core::StorageStatus::kTooManyOpen;
     }
     if (create) {
@@ -124,7 +125,7 @@ class FakeStorage final : public core::Storage {
       entries[name].data.clear();
       entries[name].modified = ++writeStamp_;
     }
-    *place = OpenFile{.inUse = true, .writable = create, .path = name};
+    *place = OpenFile{.inUse = true, .writable = writing, .path = name};
     file = static_cast<core::FileHandle>(place - open_.begin());
     ++opens;
     return core::StorageStatus::kOk;
@@ -366,7 +367,12 @@ class FakeStorage final : public core::Storage {
   bool failSize = false;
   bool failRemoves = false;
   bool failRenames = false;
-  bool failListing = false;   // No directory can be listed.
+  bool failListing = false;  // No directory can be listed.
+  // Two things no storage should do, for whatever is there to notice them:
+  // a file that is open to be written can be opened again, and this many
+  // more files can be open than the interface allows (2 at the most).
+  bool sharesWriters = false;
+  int moreOpen = 0;
   int failListingAfter = -1;  // A listing gives this many more things, then fails. -1: never.
 
   int opens = 0;
@@ -435,6 +441,10 @@ class FakeStorage final : public core::Storage {
   bool IsOpen(const std::string& path) const {
     return std::any_of(open_.begin(), open_.end(), [&](const OpenFile& f) { return f.inUse && f.path == path; });
   }
+  bool IsOpenForWriting(const std::string& path) const {
+    return std::any_of(open_.begin(), open_.end(),
+                       [&](const OpenFile& f) { return f.inUse && f.writable && f.path == path; });
+  }
   bool HasParent(const std::string& path) const {
     const std::size_t slash = path.rfind('/');
     const std::string parent = slash == 0 ? "/" : path.substr(0, slash);
@@ -447,7 +457,8 @@ class FakeStorage final : public core::Storage {
                        [&](const auto& item) { return item.first.starts_with(prefix); });
   }
 
-  std::vector<OpenFile> open_ = std::vector<OpenFile>(kMaxOpen);  // As many as a device allows.
+  // As many as a device allows, and room for the two more `moreOpen` can let in.
+  std::vector<OpenFile> open_ = std::vector<OpenFile>(kMaxOpen + 2);
   std::vector<Listing> listed_ = std::vector<Listing>(kMaxListed);
   std::uint32_t writeStamp_ = 0;  // The last write's Entry::modified.
 };

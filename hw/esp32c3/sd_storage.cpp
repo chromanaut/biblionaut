@@ -43,9 +43,13 @@ constexpr std::size_t kMaxOpenFiles = core::Storage::kMaxOpen;
 
 // FatFS's map of a file (see MakeMap() below) takes two numbers for each
 // run of the file that lies in one piece on the card, and two more: this
-// is room for a file in 63 pieces, and is half a kilobyte for each file
-// that can be open.
+// is room for a file in 63 pieces, and is half a kilobyte.
 constexpr std::size_t kMapItems = 128;
+
+// How many open files can have a map at once. Fewer than can be open: a
+// map is for a large file read from places all over it, which is a book,
+// and what else is open beside a book is small or is being written.
+constexpr std::size_t kMaxMapped = 4;
 
 // A file is given a map if its chain is longer than this many clusters,
 // which is what one sector of a FAT32 card's table holds: a shorter chain
@@ -53,11 +57,13 @@ constexpr std::size_t kMapItems = 128;
 // cost that read at every opening for nothing.
 constexpr std::uint32_t kMapFromClusters = 128;
 
-// Files given a map, files in too many pieces to have one, and how many
-// numbers the map of each file needed: the most is the room that would
-// have done for all of them. And the size of the card's clusters.
+// Files given a map, files in too many pieces to have one, files that
+// went without because every map was in use, and how many numbers the map
+// of each file needed: the most is the room that would have done for all
+// of them. And the size of the card's clusters.
 core::Counter sdMaps{"sd_maps"};
 core::Counter sdMapsRefused{"sd_maps_refused"};
+core::Counter sdMapsNoneFree{"sd_maps_none_free"};
 core::Gauge sdMapItems{"sd_map_items"};
 core::Gauge sdClusterBytes{"sd_cluster_bytes"};
 
@@ -129,16 +135,25 @@ class SdCardStorage final : public core::Storage {
     if (place == nullptr) {
       return StorageStatus::kTooManyOpen;
     }
-    const bool create = mode == core::OpenMode::kCreate;
+    // FatFS itself keeps a file to one writer or any number of readers: it
+    // refuses to open one that is open to be written, and to open one that
+    // is open so as to write it.
+    BYTE access = FA_READ;
+    if (mode == core::OpenMode::kCreate) {
+      access = static_cast<BYTE>(FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
+    } else if (mode == core::OpenMode::kUpdate) {
+      access = static_cast<BYTE>(FA_READ | FA_WRITE);
+    }
     const FatPath name(path);
-    const FRESULT result =
-        f_open(&place->file, name.Text(), create ? static_cast<BYTE>(FA_READ | FA_WRITE | FA_CREATE_ALWAYS) : FA_READ);
+    const FRESULT result = f_open(&place->file, name.Text(), access);
     if (result != FR_OK) {
       Release(*place);
       return FromFatFs(result);
     }
-    place->writable = create;
-    if (!create && f_size(&place->file) > std::uint64_t{kMapFromClusters} * ClusterBytes(fileSystem_)) {
+    place->writable = mode != core::OpenMode::kRead;
+    // A map only for a file that is read: with one, FatFS cannot make a
+    // file longer.
+    if (!place->writable && f_size(&place->file) > std::uint64_t{kMapFromClusters} * ClusterBytes(fileSystem_)) {
       MakeMap(*place);
     }
     file = static_cast<core::FileHandle>(place - open_.data());
@@ -334,11 +349,16 @@ class SdCardStorage final : public core::Storage {
   }
 
  private:
+  struct Map {
+    bool inUse = false;
+    std::array<DWORD, kMapItems> items;
+  };
+
   struct OpenFile {
     FIL file;
     bool inUse = false;
     bool writable = false;
-    std::array<DWORD, kMapItems> map;
+    Map* map = nullptr;  // The map it was given, if it has one.
   };
 
   // Has FatFS make its map of a file just opened to be read: where each
@@ -347,22 +367,51 @@ class SdCardStorage final : public core::Storage {
   // if the place is behind where it is, reading the card's table of
   // chains as it goes, which takes longer the larger the file. With the
   // map it reads nothing. Making the map follows the chain once, here. A
-  // file in more runs than the map has room for goes without one, and is
-  // read as it would have been.
-  static void MakeMap(OpenFile& place) noexcept {
-    place.map[0] = static_cast<DWORD>(place.map.size());
-    place.file.cltbl = place.map.data();
+  // file in more runs than a map has room for goes without one, and so
+  // does one opened while every map is in use: either is read as it would
+  // have been.
+  void MakeMap(OpenFile& place) noexcept {
+    Map* map = ClaimMap();
+    if (map == nullptr) {
+      sdMapsNoneFree.Add();
+      return;
+    }
+    map->items[0] = static_cast<DWORD>(map->items.size());
+    place.file.cltbl = map->items.data();
     const FRESULT mapped = f_lseek(&place.file, CREATE_LINKMAP);
     if (mapped == FR_OK || mapped == FR_NOT_ENOUGH_CORE) {
       // Either way FatFS has said how many numbers the map needs.
-      sdMapItems.Set(static_cast<std::uint32_t>(place.map[0]));
+      sdMapItems.Set(static_cast<std::uint32_t>(map->items[0]));
     }
     if (mapped == FR_OK) {
+      place.map = map;
       sdMaps.Add();
     } else {
       place.file.cltbl = nullptr;
+      ReleaseMap(*map);
       sdMapsRefused.Add();
     }
+  }
+
+  // A free map, marked as taken; null if there is none.
+  Map* ClaimMap() noexcept {
+    Map* claimed = nullptr;
+    xSemaphoreTake(lock_, portMAX_DELAY);
+    for (Map& candidate : maps_) {
+      if (!candidate.inUse) {
+        candidate.inUse = true;
+        claimed = &candidate;
+        break;
+      }
+    }
+    xSemaphoreGive(lock_);
+    return claimed;
+  }
+
+  void ReleaseMap(Map& map) noexcept {
+    xSemaphoreTake(lock_, portMAX_DELAY);
+    map.inUse = false;
+    xSemaphoreGive(lock_);
   }
 
   struct ListedDirectory {
@@ -489,6 +538,10 @@ class SdCardStorage final : public core::Storage {
 
   void Release(OpenFile& place) noexcept {
     xSemaphoreTake(lock_, portMAX_DELAY);
+    if (place.map != nullptr) {
+      place.map->inUse = false;
+      place.map = nullptr;
+    }
     place.inUse = false;
     place.writable = false;
     xSemaphoreGive(lock_);
@@ -517,9 +570,10 @@ class SdCardStorage final : public core::Storage {
   bool hostReady_ = false;
   sdmmc_card_t card_ = {};
   FATFS fileSystem_ = {};
-  SemaphoreHandle_t lock_ = nullptr;  // Guards which places in open_ and listed_ are taken.
+  SemaphoreHandle_t lock_ = nullptr;  // Guards which places in open_, listed_ and maps_ are taken.
   StaticSemaphore_t lockStorage_ = {};
   std::array<OpenFile, kMaxOpenFiles> open_ = {};
+  std::array<Map, kMaxMapped> maps_ = {};
   std::array<ListedDirectory, core::Storage::kMaxListed> listed_ = {};
 };
 

@@ -1,6 +1,7 @@
 #include "reader/storage_check.h"
 
 #include <algorithm>
+#include <array>
 #include <span>
 #include <string_view>
 
@@ -23,6 +24,20 @@ constexpr std::string_view kReplacedFile = "/biblionaut-check/settings";
 
 constexpr std::size_t kFileBytes = StorageCheck::kBlockBytes * StorageCheck::kBlocks;
 
+// The files that are held open together: the data file, and as many more
+// as storage has room for, each made for the purpose. Their names differ
+// in the last character.
+constexpr std::string_view kOneOfMany = "/biblionaut-check/open-0";
+constexpr std::size_t kMadeToBeOpen = core::Storage::kMaxOpen - 1;
+
+using OneOfManyPath = std::array<char, kOneOfMany.size()>;
+
+std::string_view OneOfMany(std::size_t number, OneOfManyPath& path) noexcept {
+  std::copy(kOneOfMany.begin(), kOneOfMany.end(), path.begin());
+  path.back() = static_cast<char>('0' + number);
+  return {path.data(), path.size()};
+}
+
 constexpr std::uint8_t kFirstFill = 0xA1;
 constexpr std::size_t kFirstLength = 100;
 constexpr std::uint8_t kSecondFill = 0xB2;
@@ -35,14 +50,29 @@ constexpr std::uint8_t ByteAt(std::size_t offset) noexcept {
   return static_cast<std::uint8_t>((static_cast<std::uint32_t>(offset) * 2654435761U) >> 24U);
 }
 
-bool HoldsFileFrom(std::span<const std::uint8_t> bytes, std::size_t offset) noexcept {
+// What the block that is written over holds afterwards: every bit of what
+// it held before turned over.
+constexpr std::uint8_t kChangedBits = 0xFF;
+
+// What every byte of a block is combined with: nothing, but for the block
+// that was written over.
+constexpr std::uint8_t BitsOfBlock(std::size_t block) noexcept {
+  return block == StorageCheck::kChangedBlock ? kChangedBits : std::uint8_t{0};
+}
+
+bool HoldsFileFrom(std::span<const std::uint8_t> bytes, std::size_t offset, std::uint8_t bits = 0) noexcept {
   for (std::size_t i = 0; i < bytes.size(); ++i) {
-    if (bytes[i] != ByteAt(offset + i)) {
+    if (bytes[i] != static_cast<std::uint8_t>(ByteAt(offset + i) ^ bits)) {
       return false;
     }
   }
   return true;
 }
+
+// The blocks read back after the file was changed: the one written over,
+// those either side of it, and the one added at the end.
+constexpr std::array<std::size_t, 4> kReadBack = {StorageCheck::kChangedBlock - 1, StorageCheck::kChangedBlock,
+                                                  StorageCheck::kChangedBlock + 1, StorageCheck::kBlocks};
 
 // Where the n-th scattered read begins: all over the file, off the block
 // boundaries, in no particular order.
@@ -119,6 +149,18 @@ void StorageCheck::Tick() noexcept {
     case Step::kReadScattered:
       ReadScattered();
       break;
+    case Step::kUpdate:
+      Update();
+      break;
+    case Step::kAppend:
+      Append();
+      break;
+    case Step::kReadUpdated:
+      ReadUpdated();
+      break;
+    case Step::kOpenMany:
+      OpenMany();
+      break;
     case Step::kReplace:
       Replace(kFirstFill, kFirstLength);
       break;
@@ -181,7 +223,116 @@ void StorageCheck::ReadScattered() noexcept {
   ++count_;
   if (count_ == kScatteredReads) {
     file_.Close();
-    MoveTo(Step::kReplace);
+    MoveTo(Step::kUpdate);
+  }
+}
+
+void StorageCheck::Update() noexcept {
+  const StorageStatus status = file_.Open(storage_, kDataFile, core::OpenMode::kUpdate);
+  if (status != StorageStatus::kOk || file_.Size() != kFileBytes) {
+    Fail(status);  // kOk: it opened, and is not the length it was written.
+    return;
+  }
+  // A file that is open to be written cannot be opened again.
+  core::FileHandle second = core::kNoFile;
+  const StorageStatus again = storage_.Open(kDataFile, core::OpenMode::kRead, second);
+  if (again != StorageStatus::kFailed) {
+    if (again == StorageStatus::kOk) {
+      storage_.Close(second);
+    }
+    Fail(again);
+    return;
+  }
+  // Over one block in the middle.
+  const std::size_t offset = kChangedBlock * kBlockBytes;
+  for (std::size_t i = 0; i < data_.size(); ++i) {
+    data_[i] = static_cast<std::uint8_t>(ByteAt(offset + i) ^ kChangedBits);
+  }
+  if (!file_.Seek(static_cast<std::uint32_t>(offset)) || !file_.Write(data_)) {
+    Fail(file_.LastStatus());
+    return;
+  }
+  MoveTo(Step::kAppend);
+}
+
+void StorageCheck::Append() noexcept {
+  for (std::size_t i = 0; i < data_.size(); ++i) {
+    data_[i] = ByteAt(kFileBytes + i);
+  }
+  if (!file_.Seek(static_cast<std::uint32_t>(kFileBytes)) || !file_.Write(data_) || !file_.Sync()) {
+    Fail(file_.LastStatus());
+    return;
+  }
+  file_.Close();
+  MoveTo(Step::kReadUpdated);
+}
+
+void StorageCheck::ReadUpdated() noexcept {
+  if (count_ == 0) {
+    const StorageStatus status = file_.Open(storage_, kDataFile, core::OpenMode::kRead);
+    if (status != StorageStatus::kOk || file_.Size() != kFileBytes + kBlockBytes) {
+      Fail(status);
+      return;
+    }
+  }
+  const std::size_t block = kReadBack[count_];
+  const std::size_t offset = block * kBlockBytes;
+  data_.fill(0);
+  if (!file_.ReadAt(static_cast<std::uint32_t>(offset), data_)) {
+    Fail(file_.LastStatus());
+    return;
+  }
+  if (!HoldsFileFrom(data_, offset, BitsOfBlock(block))) {
+    Fail(StorageStatus::kOk);
+    return;
+  }
+  ++count_;
+  if (count_ == kReadBack.size()) {
+    file_.Close();
+    MoveTo(Step::kOpenMany);
+  }
+}
+
+void StorageCheck::OpenMany() noexcept {
+  if (count_ == 0) {
+    many_.fill(core::kNoFile);
+  }
+  if (count_ < kMadeToBeOpen) {
+    // One more file made, and kept open.
+    OneOfManyPath path{};
+    const StorageStatus status = storage_.Open(OneOfMany(count_, path), core::OpenMode::kCreate, many_[count_]);
+    if (status != StorageStatus::kOk) {
+      Fail(status);
+      return;
+    }
+    ++count_;
+    return;
+  }
+  // The last place, and then one more than there is room for.
+  StorageStatus status = storage_.Open(kDataFile, core::OpenMode::kRead, many_.back());
+  if (status != StorageStatus::kOk) {
+    Fail(status);
+    return;
+  }
+  core::FileHandle extra = core::kNoFile;
+  status = storage_.Open(kReplacedFile, core::OpenMode::kCreate, extra);
+  if (status != StorageStatus::kTooManyOpen) {
+    if (status == StorageStatus::kOk) {
+      storage_.Close(extra);
+    }
+    Fail(status);
+    return;
+  }
+  CloseMany();
+  MoveTo(Step::kReplace);
+}
+
+void StorageCheck::CloseMany() noexcept {
+  for (core::FileHandle& file : many_) {
+    if (file != core::kNoFile) {
+      storage_.Close(file);
+      file = core::kNoFile;
+    }
   }
 }
 
@@ -230,6 +381,14 @@ void StorageCheck::ReadReplaced() noexcept {
 }
 
 void StorageCheck::CleanUp() noexcept {
+  for (std::size_t number = 0; number < kMadeToBeOpen; ++number) {
+    OneOfManyPath path{};
+    const StorageStatus status = storage_.Remove(OneOfMany(number, path));
+    if (status != StorageStatus::kOk) {
+      Fail(status);
+      return;
+    }
+  }
   for (const std::string_view path : {kDataFile, kReplacedFile, kDirectory}) {
     const StorageStatus status = storage_.Remove(path);
     if (status != StorageStatus::kOk) {
@@ -259,8 +418,13 @@ void StorageCheck::Fail(StorageStatus status) noexcept {
                    (static_cast<std::uint32_t>(step_) * 100U) + static_cast<std::uint32_t>(status));
   // Leave as little behind as can be managed; none of this is checked.
   file_.Close();
+  CloseMany();
   replacement_.Abandon();
   (void)core::RecoverReplacement(storage_, kReplacedFile);
+  for (std::size_t number = 0; number < kMadeToBeOpen; ++number) {
+    OneOfManyPath path{};
+    (void)storage_.Remove(OneOfMany(number, path));
+  }
   for (const std::string_view path : {kDataFile, kReplacedFile, kDirectory}) {
     (void)storage_.Remove(path);
   }

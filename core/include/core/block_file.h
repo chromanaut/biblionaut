@@ -68,7 +68,7 @@ class BlockFile final : public ByteSource {
   [[nodiscard]] bool ReadAt(std::uint32_t offset, std::span<std::uint8_t> dst) noexcept;
 
   // Writes all of `src` at the position, moving it on, over what is there
-  // and on past the end. Only for a file opened with kCreate.
+  // and on past the end. Only for a file opened with kCreate or kUpdate.
   [[nodiscard]] bool Write(std::span<const std::uint8_t> src) noexcept;
 
   // Returns once everything written is safely on the card.

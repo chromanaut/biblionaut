@@ -19,6 +19,8 @@ does not wait for a turn of its own.
                                           one does not wait for another.
                                           Without it the name is "heavy".
     tools/queued --list                   what is running and what waits
+    tools/queued --watch                  the same, kept up to date until
+                                          it is stopped with Ctrl-C
 
 A device with one cable is such a thing too. A run on it, flashing and
 capturing together as one command, can take its turn in a queue named
@@ -38,6 +40,11 @@ both the order and whether its owner is still there.
 
 With BN_QUEUE_OFF set to anything, or if the folder cannot be used, the
 command is run at once.
+
+--watch draws each queue again twice a second: what has the turn and for
+how long, and each that waits, with the checkout's folder and the command,
+a long path in it cut to its last name. Written to a file or a pipe and
+not a terminal, it says the same once each time something changes.
 """
 
 from __future__ import annotations
@@ -46,13 +53,16 @@ import datetime
 import errno
 import fcntl
 import os
+import re
 import shlex
+import shutil
 import sys
 import time
 from pathlib import Path
 
 HELD = "BN_QUEUE_HELD"  # The queues a command's ancestors are having their turn in.
 POLL_SECONDS = 0.5
+LOOK_AGAIN_SECONDS = 0.05
 
 
 def queue_folder() -> Path:
@@ -73,14 +83,18 @@ def try_lock(descriptor: int) -> bool:
         raise
 
 
+def from_home(where: str) -> str:
+    """A folder as it is written from the home folder, if it is in it."""
+    home = str(Path.home())
+    if where == home or where.startswith(home + os.sep):
+        return "~" + where[len(home) :]
+    return where
+
+
 def describe(command: list[str]) -> str:
     """One line saying what a command is, where, and since when."""
     now = datetime.datetime.now().strftime("%H:%M:%S")
-    where = os.getcwd()
-    home = str(Path.home())
-    if where == home or where.startswith(home + os.sep):
-        where = "~" + where[len(home) :]
-    return f"{shlex.join(command)}, in {where}, since {now}, process {os.getpid()}"
+    return f"{shlex.join(command)}, in {from_home(os.getcwd())}, since {now}, process {os.getpid()}"
 
 
 def read_line(path: Path) -> str:
@@ -118,10 +132,12 @@ def waiting(folder: Path, name: str) -> list[Path]:
 
 
 def duration(seconds: float) -> str:
-    whole = int(seconds)
+    whole = max(int(seconds), 0)
     if whole < 60:
         return f"{whole} s"
-    return f"{whole // 60} min {whole % 60} s"
+    if whole < 3600:
+        return f"{whole // 60} min {whole % 60} s"
+    return f"{whole // 3600} h {whole % 3600 // 60} min"
 
 
 def take_turn(folder: Path, name: str, command: list[str]) -> int:
@@ -149,6 +165,12 @@ def take_turn(folder: Path, name: str, command: list[str]) -> int:
         while True:
             ahead = [other for other in waiting(folder, name) if other.name < ticket.name]
             free = try_lock(lock)
+            if not free and said is None:
+                # --list and --watch take the lock for a moment to see
+                # whether anything has it. Look once more before saying that
+                # something is running.
+                time.sleep(LOOK_AGAIN_SECONDS)
+                free = try_lock(lock)
             if free and not ahead:
                 break
             if free:
@@ -179,7 +201,8 @@ def take_turn(folder: Path, name: str, command: list[str]) -> int:
     return lock
 
 
-def show(folder: Path) -> int:
+def queues(folder: Path) -> list[str]:
+    """The names of the queues there have been, in order."""
     names = set()
     try:
         for path in folder.iterdir():
@@ -189,28 +212,146 @@ def show(folder: Path) -> int:
                 names.add(path.name[: -len(".waiting")])
     except OSError:
         pass
+    return sorted(names)
+
+
+def running(folder: Path, name: str) -> str | None:
+    """What has the turn in a queue, as it described itself: nothing, if
+    nothing has, and no words if it has not said."""
+    try:
+        descriptor = os.open(folder / f"{name}.lock", os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        if try_lock(descriptor):
+            return None
+    finally:
+        os.close(descriptor)  # And with it the lock, if it was taken to look.
+    return read_line(folder / f"{name}.lock")
+
+
+def owner_has_ended(line: str) -> bool:
+    """Whether the process a line names is gone, while its turn goes on."""
+    owner = line.rsplit("process ", 1)[-1] if "process " in line else ""
+    return owner.isdigit() and not process_exists(int(owner))
+
+
+def show(folder: Path) -> int:
+    names = queues(folder)
     if not names:
         print(f"Nothing has been queued in {folder}.")
         return 0
-    for name in sorted(names):
-        try:
-            descriptor = os.open(folder / f"{name}.lock", os.O_RDWR)
-        except OSError:
-            descriptor = -1
-        free = descriptor < 0 or try_lock(descriptor)
-        if descriptor >= 0:
-            os.close(descriptor)  # And with it the lock, if it was taken to look.
-        if free:
+    for name in names:
+        line = running(folder, name)
+        if line is None:
             print(f"{name}: nothing running.")
         else:
-            running = read_line(folder / f"{name}.lock")
-            print(f"{name}: running: {running or 'something that has not said what it is'}.")
-            owner = running.rsplit("process ", 1)[-1] if "process " in running else ""
-            if owner.isdigit() and not process_exists(int(owner)):
+            print(f"{name}: running: {line or 'something that has not said what it is'}.")
+            if owner_has_ended(line):
                 print(f"{name}:   that process has ended, and something it started still has the turn.")
         for ticket in waiting(folder, name):
             print(f"{name}: waiting: {read_line(ticket)}.")
     return 0
+
+
+# A path of three folders or more, up to its last name.
+LONG_PATH = re.compile(r"[~/]?(?:[\w.@+-]+/){3,}(?=[\w.@+-])")
+
+
+def taken_apart(line: str) -> tuple[str, str]:
+    """A line of describe() as the command and the last name of where it
+    was started. A line that is not one is all command."""
+    rest, since, _ = line.rpartition(", since ")
+    command, within, where = rest.rpartition(", in ")
+    if not since or not within:
+        return line, ""
+    return command, where.rstrip("/").rsplit("/", 1)[-1]
+
+
+def began(path: Path) -> float | None:
+    """When a turn began, or a wait: the lock is written as a turn begins,
+    and a waiting file is named for when it came."""
+    try:
+        stamp = path.name.split("-", 1)[0]
+        return int(stamp) / 1e9 if stamp.isdigit() else path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def picture(folder: Path) -> list[tuple[str, str, float | None, str, str]]:
+    """A row for everything in every queue: the queue, what it is doing,
+    since when, where it was started, and the command."""
+    rows: list[tuple[str, str, float | None, str, str]] = []
+    for name in queues(folder):
+        line = running(folder, name)
+        if line is None:
+            rows.append((name, "nothing running", None, "", ""))
+        else:
+            command, where = taken_apart(line or "something that has not said what it is")
+            rows.append((name, "running", began(folder / f"{name}.lock"), where, command))
+            if owner_has_ended(line):
+                rows.append((name, "", None, "", "that process has ended, and something it started still has the turn"))
+        for ticket in waiting(folder, name):
+            command, where = taken_apart(read_line(ticket))
+            rows.append((name, "waiting", began(ticket), where, command))
+    return rows
+
+
+def drawn(rows: list[tuple[str, str, float | None, str, str]], now: float, width: int | None) -> list[str]:
+    """The rows as lines of text in columns, a queue's name on the first of
+    its rows only, each line cut to `width` if there is one."""
+    times = [duration(now - since) if since is not None else "" for _, _, since, _, _ in rows]
+    names = max((len(row[0]) for row in rows), default=0)
+    clocks = max((len(text) for text in times), default=0)
+    places = max((len(row[3]) for row in rows), default=0)
+    lines = []
+    before = None
+    for (name, doing, _, where, command), clock in zip(rows, times):
+        shown = name if name != before else ""
+        before = name
+        if doing == "nothing running":
+            line = f"{shown:<{names}}  {doing}"
+        else:
+            line = f"{shown:<{names}}  {doing:<7}  {clock:>{clocks}}  {where:<{places}}  {LONG_PATH.sub('.../', command)}"
+        line = line.rstrip()
+        if width is not None and len(line) > width:
+            line = line[: max(width - 3, 0)] + "..."
+        lines.append(line)
+    return lines
+
+
+def watch(folder: Path) -> int:
+    """Says what is in the queues until it is stopped: on a terminal by
+    drawing them again and again in one place, and otherwise once each time
+    something other than a time changes."""
+    terminal = sys.stdout.isatty()
+    last = None
+    try:
+        if terminal:
+            sys.stdout.write("\x1b[2J")
+        while True:
+            rows = picture(folder)
+            now = time.time()
+            clock = datetime.datetime.now().strftime("%H:%M:%S")
+            nothing = [f"Nothing has been queued in {folder}."] if not rows else []
+            if terminal:
+                width = shutil.get_terminal_size((100, 24)).columns
+                top = f"{clock}  the queues in {from_home(str(folder))}  (Ctrl-C to stop)"
+                lines = [top[:width], "", *nothing, *drawn(rows, now, width)]
+                sys.stdout.write("\x1b[H" + "".join(line + "\x1b[K\n" for line in lines) + "\x1b[J")
+                sys.stdout.flush()
+            else:
+                still = [(name, doing, where, command) for name, doing, _, where, command in rows]
+                if still != last:
+                    print("\n".join([clock, *nothing, *drawn(rows, now, None), ""]), flush=True)
+                    last = still
+            time.sleep(POLL_SECONDS)
+    except KeyboardInterrupt:
+        return 0
+    except BrokenPipeError:
+        # Whoever was reading has gone. Nothing more is written, at the end either.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 def process_exists(process: int) -> bool:
@@ -242,6 +383,8 @@ def main(arguments: list[str]) -> int:
             return 0
         if option == "--list":
             return show(queue_folder())
+        if option == "--watch":
+            return watch(queue_folder())
         if option == "--name" and arguments:
             name = arguments.pop(0)
             if not name or not all(letter.isalnum() or letter in "-_" for letter in name):
@@ -251,7 +394,10 @@ def main(arguments: list[str]) -> int:
         print(f"queued: unknown option {option}; --help says what there is", file=sys.stderr)
         return 2
     if not arguments:
-        print("usage: tools/queued [--name NAME] COMMAND [ARGUMENT...]\n       tools/queued --list", file=sys.stderr)
+        print(
+            "usage: tools/queued [--name NAME] COMMAND [ARGUMENT...]\n       tools/queued --list\n       tools/queued --watch",
+            file=sys.stderr,
+        )
         return 2
 
     held = os.environ.get(HELD, "").split(":")

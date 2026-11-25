@@ -50,12 +50,31 @@ heavy: waiting: tools/linux-check.sh, in ~/biblionaut, since 20:05:22, process 2
 heavy: waiting: tools/fuzz.py --time 420 inflate zip png, in ~/biblionaut-two, since 20:05:33, process 6030.
 ```
 
+`tools/queued --watch` keeps saying it, until it is stopped with Ctrl-C. On
+a terminal it draws the queues again twice a second: for each, what has
+the turn and for how long, then each that waits and for how long, with
+the folder of the checkout it was started in and its command. A long path
+in a command is cut to its last name, and a line to the terminal's width:
+
+```
+15:08:41  the queues in ~/.cache/biblionaut/queue  (Ctrl-C to stop)
+
+heavy  running  3 min 10 s  biblionaut      tools/check-tidy.sh
+       waiting        59 s  biblionaut      tools/linux-check.sh
+       waiting        12 s  biblionaut-two  tools/fuzz.py --time 420 inflate zip png
+```
+
+Written to a file or a pipe and not a terminal, it says the same once each
+time something changes, under the time it changed.
+
 A turn is a lock on a file in `~/.cache/biblionaut/queue`, and the command
 that is running holds it itself: `tools/queued` does not start the command
 and wait for it, it becomes it. So a turn ends when the command ends,
 however that is, and with whatever the command started; one that is killed
 leaves nothing to clear up, and one that is killed while it waits holds
-nobody up. `tools/queued COMMAND` gives any other command a turn in the
+nobody up. `--list` and `--watch` find out whether a turn is taken by
+trying the lock for a moment, so a command that finds it taken looks once
+more before it says that it is waiting. `tools/queued COMMAND` gives any other command a turn in the
 same queue, and `--name` another queue, which a run on a device with one
 cable can use (`tools/queued --help`). Setting `BN_QUEUE_OFF` runs a
 command at once. CI is not changed by any of this: each of its jobs has a

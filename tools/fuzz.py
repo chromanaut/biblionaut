@@ -89,6 +89,7 @@ TARGETS = {
     "jpeg": 8192,
     "scale": 4096,
     "picture_cache": 4096,
+    "font": 4096,
 }
 
 # Pieces of XML, of CSS, of SVG, of PNG and of JPEG that the readers look for, which

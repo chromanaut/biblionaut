@@ -178,7 +178,8 @@ FetchContent_GetProperties(expat SOURCE_DIR bn_expat_source)
 ExternalProject_Add(bn_host_tools
   SOURCE_DIR "${BN_ROOT}"
   BINARY_DIR "${bn_host_tools}"
-  CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DBN_BUILD_TESTS=OFF -DBN_WERROR=OFF
+  # Without bn-font, which would have FreeType downloaded for it.
+  CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DBN_BUILD_TESTS=OFF -DBN_WERROR=OFF -DBN_FONT_TOOL=OFF
              "-DFETCHCONTENT_SOURCE_DIR_EXPAT=${bn_expat_source}" "-DBN_HYPH_EN_US_DIR=${BN_HYPH_EN_US_DIR}"
   BUILD_COMMAND ${CMAKE_COMMAND} --build "${bn_host_tools}" --target bn-hyphen
   # Built each time, so that a change to bn-hyphen's sources is taken up;

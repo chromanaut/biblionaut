@@ -8,6 +8,12 @@ when the test lets them, and what is checked is what it promises:
 
   - a command's output and its exit code are its own;
   - one job at a time, and those that wait go in the order they came;
+  - jobs that say how many processors they use share the machine, as far
+    as it goes, and still go in the order they came: one that wants all
+    of it waits for those before it and holds back those behind;
+  - a tools/queued that knows only of whole turns, as an older checkout
+    has, waits for those that share and is waited for by them;
+  - each turn is written down when it ends, however it ends;
   - `--list` says what is running and what waits, and `--watch` says it
     again each time it changes;
   - a job that is killed gives up its turn, and one that is killed while
@@ -29,7 +35,9 @@ usage: queued.py QUEUED WORK_DIR
 
 from __future__ import annotations
 
+import fcntl
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -83,7 +91,8 @@ class Bench:
         self.log.write_text("")
         self.job = self.folder / "job.py"
         self.job.write_text(JOB)
-        self.environment = {**os.environ, "BN_QUEUE_DIR": str(self.queue)}
+        # A machine of four processors, whatever this one has.
+        self.environment = {**os.environ, "BN_QUEUE_DIR": str(self.queue), "BN_QUEUE_CORES": "4"}
         self.environment.pop("BN_QUEUE_HELD", None)
         self.environment.pop("BN_QUEUE_OFF", None)
         self.started: list[subprocess.Popen] = []
@@ -104,6 +113,14 @@ class Bench:
         )
         self.started.append(process)
         return process
+
+    def start_heard(self, name: str, *options: str) -> Path:
+        """Starts a job through the queue, and returns the file that has
+        what the queue says of it, which can be read while it waits."""
+        heard = self.folder / f"said-of-{name}"
+        with open(heard, "w") as out:
+            self.started.append(subprocess.Popen(self.command(*options, *self.job_command(name)), env=self.environment, stderr=out))
+        return heard
 
     def let_end(self, name: str) -> None:
         (self.folder / f"go-{name}").write_text("")
@@ -126,6 +143,16 @@ class Bench:
             return sum(1 for path in (self.queue / f"{queue}.waiting").iterdir() if not path.name.startswith("."))
         except OSError:
             return 0
+
+    def listed(self) -> list[str]:
+        return subprocess.run(self.command("--list"), env=self.environment, capture_output=True, text=True).stdout.splitlines()
+
+    def turns(self) -> list[list[str]]:
+        """The turns written down so far, each as its fields."""
+        try:
+            return [line.split("\t") for line in (self.queue / "turns.log").read_text().splitlines()]
+        except OSError:
+            return []
 
     def finish(self) -> None:
         for process in self.started:
@@ -158,10 +185,11 @@ def takes_turns_in_order(queued: Path, work: Path) -> None:
     try:
         bench.start("A")
         wait_for(lambda: bench.begun("A"), "the first job to begin")
-        second = bench.start("B")
+        second = bench.start_heard("B")
         wait_for(lambda: bench.waiting() == 1, "the second to be waiting")
-        third = bench.start("C")
+        third = bench.start_heard("C")
         wait_for(lambda: bench.waiting() == 2, "the third to be waiting")
+        wait_for(lambda: "Running now: " in second.read_text() and "Running now: " in third.read_text(), "each to say that it is waiting")
         check(bench.said() == ["begin A"], f"only the first has begun (log: {bench.said()})")
 
         listed = subprocess.run(bench.command("--list"), env=bench.environment, capture_output=True, text=True).stdout
@@ -184,10 +212,10 @@ def takes_turns_in_order(queued: Path, work: Path) -> None:
             bench.said() == ["begin A", "end A", "begin B", "end B", "begin C", "end C"],
             f"one at a time, in the order they came ({bench.said()})",
         )
-        told = second.stderr.read()
+        told = second.read_text()
         check("queued: waiting for a turn (heavy). Running now: " in told and " A " in told, f"one that waits says what for ({told!r})")
         check("queued: its turn came after " in told, "and when its turn comes")
-        check("1 waiting before this" in third.stderr.read(), "and how many are before it")
+        check("1 waiting before this" in third.read_text(), "and how many are before it")
 
         after = subprocess.run(bench.command("--list"), env=bench.environment, capture_output=True, text=True).stdout
         check(after == "heavy: nothing running.\n", f"with all of them over, --list says so ({after!r})")
@@ -202,18 +230,21 @@ def watching_says_each_change(queued: Path, work: Path) -> None:
         watcher = subprocess.Popen(bench.command("--watch"), env=bench.environment, stdout=out, stderr=subprocess.PIPE, text=True)
     bench.started.append(watcher)
 
-    def pictures() -> list[list[str]]:
-        # Written to a file, each is the time, its lines, and an empty line.
-        return [picture.splitlines()[1:] for picture in watched.read_text().split("\n\n") if picture.strip()]
+    def pictures(over: bool = False) -> list[list[str]]:
+        # Written to a file, each is the time, a line for each thing in a
+        # queue, a line for each queue of what today's turns waited, and an
+        # empty line. The rows, or with `over` the lines for today.
+        said = [picture.splitlines()[1:] for picture in watched.read_text().split("\n\n") if picture.strip()]
+        return [[line for line in lines if line.startswith("today, ") == over] for lines in said]
 
-    def last() -> list[str]:
-        return pictures()[-1] if pictures() else []
+    def last(over: bool = False) -> list[str]:
+        return pictures(over)[-1] if pictures(over) else []
 
     try:
         wait_for(lambda: len(last()) == 1 and last()[0].startswith("Nothing has been queued in "), "it to say that nothing has been queued")
         bench.start("A")
         wait_for(lambda: bench.begun("A"), "the first job to begin")
-        bench.start("B")
+        bench.start("B", "--cores", "2")
         wait_for(lambda: bench.waiting() == 1, "the second to be waiting")
         wait_for(lambda: len(last()) == 2 and " A " in last()[0] and " B " in last()[1], "it to show one running and one waiting")
         rows = last()
@@ -222,7 +253,8 @@ def watching_says_each_change(queued: Path, work: Path) -> None:
             check(rows[0].startswith("heavy  running  ") and f"  {here}  " in rows[0], f"the first as running, and where it was started ({rows[0]!r})")
             check(rows[1].startswith("       waiting  ") and f"  {here}  " in rows[1], f"the second under it, as waiting ({rows[1]!r})")
             check(" .../job.py " in rows[0] and str(bench.folder) not in rows[0], f"with a long path cut to its last name ({rows[0]!r})")
-            check(rows[0].split("running", 1)[1].split()[1] in ("s", "min", "h"), f"and for how long ({rows[0]!r})")
+            check(re.search(r"running  all cores +\d+ (s|min|h)\b", rows[0]) is not None, f"with all the processors, and for how long ({rows[0]!r})")
+            check(re.search(r"waiting  2 cores +\d+ (s|min|h)\b", rows[1]) is not None, f"and the second with the two it asked for ({rows[1]!r})")
         # It looks twice a second, and nothing has changed.
         said = len(pictures())
         time.sleep(1.5)
@@ -233,9 +265,157 @@ def watching_says_each_change(queued: Path, work: Path) -> None:
         wait_for(lambda: len(last()) == 1 and last()[0].startswith("heavy  running  ") and " B " in last()[0], "it to show the second running alone")
         bench.let_end("B")
         wait_for(lambda: last() == ["heavy  nothing running"], "it to show nothing running")
+        wait_for(lambda: len(last(over=True)) == 1 and last(over=True)[0].startswith("today, heavy: 2 turns over, which waited "),
+                 "it to say what the two turns of today waited")
         watcher.send_signal(signal.SIGINT)
         check(watcher.wait(timeout=60) == 0, "stopped as Ctrl-C stops it, it ends well")
         check(watcher.stderr.read() == "", "having said nothing else")
+    finally:
+        bench.finish()
+
+
+def those_that_say_how_many_processors_share_the_machine(queued: Path, work: Path) -> None:
+    bench = Bench(queued, work, "cores")
+    try:
+        # Two of the four processors each: both at once.
+        bench.start("A", "--cores", "2")
+        bench.start("B", "--cores", "2")
+        wait_for(lambda: bench.begun("A") and bench.begun("B"), "two jobs of two processors each to be running at once")
+        check(bench.waiting() == 0, "neither waits")
+        # One more is one too many.
+        third = bench.start_heard("C", "--cores", "1")
+        wait_for(lambda: bench.waiting() == 1, "a third to wait, the four being taken")
+        wait_for(lambda: "Running now: " in third.read_text(), "it to say that it is waiting")
+        rows = bench.listed()
+        check(len(rows) == 3, f"--list has a line for each ({rows})")
+        if len(rows) == 3:
+            check(all(row.startswith("heavy: running: ") and row.endswith(", 2 cores.") for row in rows[:2]), f"two as running, each with its two ({rows[:2]})")
+            check(" A " in rows[0] + rows[1] and " B " in rows[0] + rows[1], f"which are the two ({rows[:2]})")
+            check(rows[2].startswith("heavy: waiting: ") and " C " in rows[2] and rows[2].endswith(", 1 core."), f"and the third as waiting for its one ({rows[2]!r})")
+        check(not bench.begun("C"), "the third has not begun")
+        bench.let_end("A")
+        wait_for(lambda: bench.begun("C"), "the third to begin when one of the two ended")
+        check(not bench.ended("B"), "while the other of the two goes on")
+        bench.let_end("B")
+        bench.let_end("C")
+        for process in bench.started:
+            check(process.wait(timeout=60) == 0, "each job ends well")
+        said = third.read_text()
+        check("queued: waiting for a turn (heavy). Running now: " in said and " A " in said and " B " in said, f"one that waits names all that are running ({said!r})")
+        wait_for(lambda: bench.listed() == ["heavy: nothing running."], "--list to say that nothing is running")
+
+        # As many as the machine has, or more, is all of it; and it has to be a number of them.
+        bench.start("D", "--cores", "1")
+        wait_for(lambda: bench.begun("D"), "a job of one processor to begin")
+        bench.start("E", "--cores", "9")
+        wait_for(lambda: bench.waiting() == 1, "one that asks for more than there are to wait for the whole machine")
+        check(not bench.begun("E"), "though three of the four are free")
+        waits = [row for row in bench.listed() if row.startswith("heavy: waiting: ")]
+        check(len(waits) == 1 and " cores" not in waits[0], f"and it is listed as wanting all of it ({waits})")
+        bench.let_end("D")
+        wait_for(lambda: bench.begun("E"), "it to begin when the other ended")
+        bench.let_end("E")
+        for wrong in ("0", "two", "-1"):
+            refused = subprocess.run(bench.command("--cores", wrong, "true"), env=bench.environment, capture_output=True, text=True)
+            check(refused.returncode == 2 and "--cores" in refused.stderr, f"--cores {wrong} is refused ({refused.returncode}, {refused.stderr!r})")
+    finally:
+        bench.finish()
+
+
+def the_order_holds_for_those_that_share(queued: Path, work: Path) -> None:
+    bench = Bench(queued, work, "fair")
+    try:
+        bench.start("A", "--cores", "1")
+        wait_for(lambda: bench.begun("A"), "a job of one processor to begin")
+        bench.start("W")
+        wait_for(lambda: bench.waiting() == 1, "one that wants the whole machine to wait for it")
+        bench.start("C", "--cores", "1")
+        wait_for(lambda: bench.waiting() == 2, "a small one that came after to wait as well")
+        check(bench.said() == ["begin A"], f"neither has begun, though three processors are free ({bench.said()})")
+        bench.let_end("A")
+        wait_for(lambda: bench.begun("W"), "the one that wants the whole machine to begin when it is free")
+        check(not bench.begun("C"), "and the small one behind it still waits")
+        bench.let_end("W")
+        wait_for(lambda: bench.begun("C"), "the small one to begin after it")
+        bench.let_end("C")
+        for process in bench.started:
+            check(process.wait(timeout=60) == 0, "each job ends well")
+        check(bench.said() == ["begin A", "end A", "begin W", "end W", "begin C", "end C"], f"in the order they came ({bench.said()})")
+    finally:
+        bench.finish()
+
+
+def works_beside_one_that_knows_only_whole_turns(queued: Path, work: Path) -> None:
+    bench = Bench(queued, work, "older")
+    bench.queue.mkdir()
+    lock = bench.queue / "heavy.lock"
+
+    def has_it_all() -> int | None:
+        # What such a tools/queued does to take its turn: the one lock, for
+        # itself alone, with what it is written in it.
+        descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(descriptor)
+            return None
+        os.ftruncate(descriptor, 0)
+        os.pwrite(descriptor, f"an older command, in /somewhere, since 00:00:00, process {os.getpid()}\n".encode(), 0)
+        return descriptor
+
+    try:
+        older = has_it_all()
+        check(older is not None, "the lock is free to begin with")
+        first = bench.start("A", "--cores", "1")
+        wait_for(lambda: bench.waiting() == 1, "one that would share to wait for it")
+        rows = bench.listed()
+        check(len(rows) == 2 and rows[0].startswith("heavy: running: an older command, ") and " A " in rows[1], f"--list says what it is waiting for ({rows})")
+        check(not bench.begun("A"), "it has not begun")
+        os.close(older)
+        wait_for(lambda: bench.begun("A"), "it to begin when the older one ended")
+
+        check(has_it_all() is None, "and an older one cannot have its turn while one that shares is running")
+        told = lock.read_text()
+        check("share the machine" in told, f"and is told why, where it looks for what is running ({told!r})")
+        bench.let_end("A")
+        check(first.wait(timeout=60) == 0, "the job ends well")
+        again: list[int] = []
+        wait_for(lambda: again.append(has_it_all() or -1) or again[-1] >= 0, "an older one to have its turn once that ended")
+        os.close(again[-1])
+    finally:
+        bench.finish()
+
+
+def writes_each_turn_down(queued: Path, work: Path) -> None:
+    bench = Bench(queued, work, "log")
+    try:
+        bench.start("A", "--cores", "2")
+        wait_for(lambda: bench.begun("A"), "the first job to begin")
+        killed = bench.start("B")
+        wait_for(lambda: bench.waiting() == 1, "the second to be waiting")
+        check(bench.turns() == [], f"nothing is written of a turn that is not over ({bench.turns()})")
+        bench.let_end("A")
+        wait_for(lambda: len(bench.turns()) == 1, "the first turn to be written down when it ended")
+        wait_for(lambda: bench.begun("B"), "the second to begin")
+        killed.send_signal(signal.SIGKILL)
+        wait_for(lambda: len(bench.turns()) == 2, "the second to be written down, though it was killed")
+        turns = bench.turns()
+        if len(turns) == 2:
+            check(all(len(turn) == 7 for turn in turns), f"each has its seven things ({turns})")
+            check(all(re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", turn[0]) for turn in turns), f"when it began ({[turn[0] for turn in turns]})")
+            check([turn[1:3] for turn in turns] == [["heavy", "2"], ["heavy", "4"]], f"its queue and its processors, all four where it asked for none ({[turn[1:3] for turn in turns]})")
+            check(all(turn[3].isdigit() and turn[4].isdigit() for turn in turns), f"how long it waited and ran ({[turn[3:5] for turn in turns]})")
+            check(all(turn[5].endswith(Path.cwd().name) for turn in turns), f"where it was started ({[turn[5] for turn in turns]})")
+            check(turns[0][6].endswith(" A " + str(bench.folder / "go-A")) and " B " in turns[1][6], f"and the command ({[turn[6] for turn in turns]})")
+        wait_for(lambda: not any((bench.queue / "heavy.running").iterdir()), "nothing to be left that says a turn is going on")
+
+        # What it leaves behind to do the writing holds no turn, and nobody's output.
+        through = subprocess.run(bench.command("sh", "-c", "echo out"), env=bench.environment, capture_output=True, text=True, timeout=60)
+        check(through.stdout == "out\n" and through.stderr == "", f"a command's output ends when the command does ({through.stdout!r}, {through.stderr!r})")
+        wait_for(lambda: len(bench.turns()) == 3, "that turn to be written down too")
+        off = subprocess.run(bench.command("true"), env={**bench.environment, "BN_QUEUE_OFF": "1"}, capture_output=True, text=True, timeout=60)
+        check(off.returncode == 0, "a command that takes no turn runs")
+        check(len(bench.turns()) == 3, "and is not written down")
     finally:
         bench.finish()
 
@@ -278,9 +458,18 @@ def a_turn_lasts_as_long_as_what_the_command_started(queued: Path, work: Path) -
     bench = Bench(queued, work, "children")
     try:
         # A shell that starts a job and ends at once, leaving the job going.
+        # Whoever reads the shell's output has all of it when the shell
+        # ends: nothing the queue leaves behind keeps it open.
         left = " ".join(f"'{part}'" for part in bench.job_command("A"))
-        shell = subprocess.Popen(bench.command("sh", "-c", f"{left} &"), env=bench.environment)
-        check(shell.wait(timeout=60) == 0, "the shell ends")
+        try:
+            shell = subprocess.run(
+                bench.command("sh", "-c", f"{left} > /dev/null 2>&1 < /dev/null & echo started"),
+                env=bench.environment, capture_output=True, text=True, timeout=60,
+            )
+            check(shell.returncode == 0 and shell.stdout == "started\n", f"the shell ends, and its output with it ({shell.stdout!r})")
+        except subprocess.TimeoutExpired:
+            check(False, "the shell's output ended when the shell did")
+        check(not bench.ended("A"), "while what it started goes on")
         wait_for(lambda: bench.begun("A"), "what the shell started to begin")
         bench.start("B")
         wait_for(lambda: bench.waiting() == 1, "the next to be waiting, though the shell has ended")
@@ -347,6 +536,10 @@ def main() -> int:
     for test in (
         passes_a_command_through,
         takes_turns_in_order,
+        those_that_say_how_many_processors_share_the_machine,
+        the_order_holds_for_those_that_share,
+        works_beside_one_that_knows_only_whole_turns,
+        writes_each_turn_down,
         watching_says_each_change,
         a_killed_job_gives_up_its_turn,
         a_killed_waiter_holds_nobody_up,

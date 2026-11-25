@@ -245,33 +245,52 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="print the names of the targets and stop")
     parser.add_argument("--shrink", metavar="FILE", type=Path,
                         help="cut down an input that makes the one TARGET named fail, to FILE.small")
+    # What this script tells itself, from one turn of the machine to the next.
+    parser.add_argument("--only-build", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--built", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
 
     if arguments.list:
         print("\n".join(TARGETS))
         return 0
-    # One heavy check at a time on a machine: this waits for its turn
-    # (tools/queued says how), and starts again from the top when it has it.
-    if "heavy" not in os.environ.get("BN_QUEUE_HELD", "").split(":"):
-        here = Path(__file__).resolve()
-        os.execv(sys.executable, [sys.executable, str(here.parent / "queued"), sys.executable, str(here), *sys.argv[1:]])
     unknown = [target for target in arguments.targets if target not in TARGETS]
     if unknown:
         sys.exit(f"error: no such target: {', '.join(unknown)}. There are: {', '.join(TARGETS)}.")
+    if arguments.shrink and len(arguments.targets) != 1:
+        sys.exit("error: --shrink wants the one target the input is for.")
+    targets = arguments.targets or list(TARGETS)
+    runs = [(preset, target) for target in targets for preset in BUILDS]
+    at_once = max(1, min(arguments.jobs, len(runs)))
+
+    # One heavy check at a time on a machine: this waits for its turn
+    # (tools/queued says how), and starts again from the top when it has it.
+    # Fuzzing takes two. Building the targets takes every processor, and has
+    # the whole machine; the runs take one each, and have as many as go on
+    # at once, so that other commands which say how many they use can have
+    # the rest.
+    if "heavy" not in os.environ.get("BN_QUEUE_HELD", "").split(":"):
+        here = Path(__file__).resolve()
+        queued = [sys.executable, str(here.parent / "queued")]
+        this = [sys.executable, str(here)]
+        if arguments.shrink:
+            os.execv(sys.executable, [*queued, *this, *sys.argv[1:]])
+        built = subprocess.run([*queued, *this, "--only-build"], check=False).returncode
+        if built != 0:
+            return built
+        os.execv(sys.executable, [*queued, "--cores", str(at_once), *this, "--built", *sys.argv[1:]])
     if arguments.shrink:
-        if len(arguments.targets) != 1:
-            sys.exit("error: --shrink wants the one target the input is for.")
         shrink(arguments.targets[0], arguments.shrink, arguments.time)
         return 0
-    targets = arguments.targets or list(TARGETS)
 
-    clang = find_clang()
-    print(f"Building the fuzz targets with {clang} ...", flush=True)
-    build(clang)
+    if not arguments.built:
+        clang = find_clang()
+        print(f"Building the fuzz targets with {clang} ...", flush=True)
+        build(clang)
+        if arguments.only_build:
+            return 0
 
-    runs = [(preset, target) for target in targets for preset in BUILDS]
     print(f"Fuzzing {len(targets)} targets in {len(BUILDS)} builds, {arguments.time} s each, "
-          f"{min(arguments.jobs, len(runs))} at once ...", flush=True)
+          f"{at_once} at once ...", flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=arguments.jobs) as pool:
         results = list(pool.map(lambda run: run_one(run[0], run[1], arguments.time), runs))
 

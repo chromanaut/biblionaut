@@ -53,7 +53,8 @@ TeX's hyphenation patterns for American English, which the build makes
 into a table (see Where a word may be broken); FreeType, which draws the
 glyphs for `bn-font` (see Fonts); GoogleTest; and, for the tests of
 `bn-font`, the font files of Courier Prime. The tests also link zlib, to check the inflater against and to
-make their ZIP files with: macOS has it, and on Linux it is the `zlib1g-dev`
+make their ZIP files with, and so does `bn-font`, to say what a fonts image
+would take compressed: macOS has it, and on Linux it is the `zlib1g-dev`
 package. Most of the end-to-end
 tests are run only if Python 3 is found, and one of them makes more of its
 test files if there is a `zip` command. A build with the desktop
@@ -2701,7 +2702,8 @@ three styles is built, with a warning for each: the reader of the image
 gives the nearest style a role has. The fonts a preset names are whoever
 builds's own business: no font is in this repository, and a preset that
 names fonts from the builder's computer need not be either. The pictures
-are not compressed.
+are not compressed; what they would take if they were is for `bn-font
+sizes` to say (below).
 
 `bn-font info` says what an image holds, reading it by the code the
 firmware reads it with; with `--glyphs` and some characters, what each face
@@ -2723,6 +2725,60 @@ mono     regular     30 px:  381 glyphs; ascent 24, descent 11, line 34, x-heigh
 ```
 
 (and so on for the other four faces).
+
+`bn-font sizes` says what an image's pictures would take if they were kept
+in other ways than the image keeps them, which is as they are: for
+choosing a way, and how many sizes a partition has room for, from the
+fonts themselves. It changes nothing, and the firmware reads none of these
+forms. For the faces of each size, and for all of them:
+
+- **run-length, a glyph**: each glyph by itself as runs of pixels of one
+  level, a byte to a run: the level in two bits and the length, 64 at the
+  most, in six;
+- **DEFLATE, a glyph**: each glyph by itself, compressed by zlib at its
+  best;
+- **the best, a glyph**: each glyph in whichever of those, or as it is, is
+  smallest for it, and the last line says how many glyphs that was for
+  each;
+- **DEFLATE, groups** of 16, 64 and 256 glyphs in the order a face has
+  them, and **a face** as one: compressed together, so that to draw one
+  glyph its group has to be decompressed.
+
+```
+$ bn-font sizes courier.bnfn
+image 204534 bytes: tables 30696, pictures 173838
+26 px: 2 faces, 762 glyphs
+  as they are                42992 bytes  100%
+  run-length, a glyph        63138 bytes  147%
+  DEFLATE, a glyph           39957 bytes   93%
+  the best, a glyph          38914 bytes   91%
+  DEFLATE, groups of 16      24473 bytes   57%
+  DEFLATE, groups of 64      21986 bytes   51%
+  DEFLATE, groups of 256     19218 bytes   45%
+  DEFLATE, a face            17647 bytes   41%
+```
+
+(and the same for 30 px and 34 px)
+
+```
+all: 6 faces, 2286 glyphs
+  as they are               173838 bytes  100%
+  run-length, a glyph       219738 bytes  126%
+  DEFLATE, a glyph          146463 bytes   84%
+  the best, a glyph         144369 bytes   83%
+  DEFLATE, groups of 16      86779 bytes   50%
+  DEFLATE, groups of 64      78341 bytes   45%
+  DEFLATE, groups of 256     68083 bytes   39%
+  DEFLATE, a face            62114 bytes   36%
+the best, a glyph: 691 as they are, 58 run-length, 1537 DEFLATE
+```
+
+Letters drawn in grays are poor in runs: an edge is a pixel or two of each
+level, and a byte to a run comes to more than the picture as it is. A
+glyph by itself is too little for DEFLATE to find much in, and what it
+saves grows with the size; together, glyphs compress to half and less.
+The compressed sizes are zlib's, and another version of zlib may give a
+few bytes more or fewer.
 
 ### Reading the image
 
@@ -2768,8 +2824,10 @@ build downloads for them (`third_party/courier-prime`): the test takes the
 image apart itself, and the font file as far as its tables of characters
 and widths, and holds the image to having a glyph for exactly the
 characters the font has, each moving the pen as far as the font's width
-for it comes to at that size; and `bn-font info --glyphs` to saying of
-every glyph what the image's bytes say. Nothing draws a glyph a second way:
+for it comes to at that size; `bn-font info --glyphs` to saying of
+every glyph what the image's bytes say; and `bn-font sizes` to the sizes
+the test works out again, the runs written out a second time and the
+compressing done by Python's zlib. Nothing draws a glyph a second way:
 that a picture is its letter is for whoever looks at it. The reader has a
 fuzz target as well (`font`, see Fuzzing).
 

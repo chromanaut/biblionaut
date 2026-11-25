@@ -13,6 +13,7 @@
 #include "draw/font.h"
 #include "font/build.h"
 #include "font/preset.h"
+#include "font/sizes.h"
 
 namespace {
 
@@ -28,6 +29,7 @@ void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s build PRESET --out IMAGE\n"
                "       %s info IMAGE [--glyphs U+XXXX[-U+YYYY]...]\n"
+               "       %s sizes IMAGE\n"
                "\n"
                "The fonts image: every face the firmware draws text in, at every size.\n"
                "\n"
@@ -50,9 +52,13 @@ void PrintUsage(const char* program) {
                "         moves the pen in quarters of a pixel, its picture's size and\n"
                "         where it lies from the pen, and its levels of ink added up.\n"
                "\n"
+               "  sizes  says what an image's pictures would take kept in other ways than\n"
+               "         the image keeps them: as runs, compressed a glyph at a time, and\n"
+               "         compressed in groups; for each size, and for all of them.\n"
+               "\n"
                "Ends with 0 if all went well, 1 if the preset or a font cannot be read, or\n"
                "the image cannot be written or is not one.\n",
-               program, program);
+               program, program, program);
 }
 
 bool ReadFile(const std::string& path, std::string& contents) {
@@ -190,6 +196,51 @@ int RunInfo(const std::vector<std::string>& arguments) {
   return 0;
 }
 
+// A count of bytes, and what share of `whole` it is.
+void PrintShare(const char* name, std::size_t bytes, std::size_t whole) {
+  std::printf("  %-22s %9zu bytes  %3zu%%\n", name, bytes, whole == 0 ? 0 : ((bytes * 100) + (whole / 2)) / whole);
+}
+
+int RunSizes(const std::vector<std::string>& arguments) {
+  if (arguments.size() != 1 || arguments[0].starts_with("--")) {
+    return -1;
+  }
+  std::string bytes;
+  if (!ReadFile(arguments[0], bytes)) {
+    return 1;
+  }
+  const bn::font_tool::ImageSizes sizes = bn::font_tool::MeasureImage(
+      {reinterpret_cast<const std::uint8_t*>(bytes.data()),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+       bytes.size()});
+  if (!sizes.ok) {
+    std::fprintf(stderr, "bn-font: %s: %s\n", arguments[0].c_str(), sizes.error.c_str());
+    return 1;
+  }
+  std::printf("image %zu bytes: tables %zu, pictures %zu\n", sizes.imageBytes, sizes.tableBytes,
+              sizes.all.pictures.asTheyAre);
+  const auto print = [](const bn::font_tool::SizeOfFaces& faces) {
+    const bn::font_tool::PictureSizes& pictures = faces.pictures;
+    const std::size_t whole = pictures.asTheyAre;
+    PrintShare("as they are", pictures.asTheyAre, whole);
+    PrintShare("run-length, a glyph", pictures.runLength, whole);
+    PrintShare("DEFLATE, a glyph", pictures.deflate, whole);
+    PrintShare("the best, a glyph", pictures.best, whole);
+    PrintShare("DEFLATE, groups of 16", pictures.groupsOf16, whole);
+    PrintShare("DEFLATE, groups of 64", pictures.groupsOf64, whole);
+    PrintShare("DEFLATE, groups of 256", pictures.groupsOf256, whole);
+    PrintShare("DEFLATE, a face", pictures.wholeFaces, whole);
+  };
+  for (const bn::font_tool::SizeOfFaces& faces : sizes.sizes) {
+    std::printf("%u px: %zu faces, %zu glyphs\n", static_cast<unsigned>(faces.size), faces.faces, faces.glyphs);
+    print(faces);
+  }
+  std::printf("all: %zu faces, %zu glyphs\n", sizes.all.faces, sizes.all.glyphs);
+  print(sizes.all);
+  std::printf("the best, a glyph: %zu as they are, %zu run-length, %zu DEFLATE\n", sizes.all.pictures.bestAsTheyAre,
+              sizes.all.pictures.bestRunLength, sizes.all.pictures.bestDeflate);
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -201,6 +252,8 @@ int main(int argc, char** argv) {
       result = RunBuild(arguments);
     } else if (all[1] == "info") {
       result = RunInfo(arguments);
+    } else if (all[1] == "sizes") {
+      result = RunSizes(arguments);
     }
   }
   if (result < 0) {

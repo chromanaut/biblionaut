@@ -20,6 +20,12 @@ build downloads.
     reads it with, has to say of every character what the image's bytes say
     here: its glyph, its advance, its picture's size and place, and its ink
     added up.
+  - `bn-font sizes` has to say what the pictures would take kept in other
+    ways: as they are and as runs, to the byte, the runs being written out
+    again here; and compressed by DEFLATE a glyph at a time, in groups and a
+    face at a time, as Python's zlib compresses the same bytes, which may be
+    another version of zlib than bn-font has and so is held to within a
+    fiftieth.
 
 Nothing here draws a glyph a second way: that its picture is the letter is
 for whoever looks at it. What is checked of the pictures is what must be so
@@ -38,6 +44,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 SIZES = (13, 22, 37)
@@ -164,7 +171,7 @@ class ImageFace:
                        f"{what}, glyph {index}: the last byte of its picture is not filled out with nothing")
             at += size
             self.glyphs.append({"index": index, "advance": advance, "width": width, "height": height, "left": left,
-                                "top": top, "ink": sum(pixels), "pixels": pixels})
+                                "top": top, "ink": sum(pixels), "pixels": pixels, "packed": packed})
         expect(at == picture_bytes, f"{what}: its pictures take {at} bytes, and it says {picture_bytes}")
 
         # Ranges: in order, apart, their glyphs one after another from 1.
@@ -198,6 +205,46 @@ INFO_LINE = re.compile(r"^(\S+) +(\S+) +(\d+) px: +(\d+) glyphs; ascent (-?\d+),
 GLYPH_LINE = re.compile(r"^  U\+([0-9A-F]{4,6}): (?:no glyph|glyph (\d+), advance (\d+), (\d+) by (\d+) at (-?\d+), "
                         r"(-?\d+), ink (\d+))$")
 STYLES = ("regular", "bold", "italic", "bold-italic")
+SIZES_LINE = re.compile(r"^  (.+?) +(\d+) bytes +(\d+)%$")
+
+
+def deflated(data: bytes) -> int:
+    """How long `data` is compressed by DEFLATE at its best, with nothing round it."""
+    if not data:
+        return 0
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+    return len(compressor.compress(data) + compressor.flush())
+
+
+def runs_of(pixels: list[int]) -> int:
+    """How many runs of one level, of 64 pixels at the most, the pixels are."""
+    runs, level, length = 0, None, 0
+    for pixel in pixels:
+        if length and (pixel != level or length == 64):
+            runs += 1
+            length = 0
+        level = pixel
+        length += 1
+    return runs + (1 if length else 0)
+
+
+def sizes_of(faces: list[ImageFace]) -> dict[str, int]:
+    """What the pictures of `faces` would take in each of the ways `bn-font sizes` names, worked out here."""
+    ways = {name: 0 for name in ("as they are", "run-length, a glyph", "DEFLATE, a glyph", "the best, a glyph",
+                                 "DEFLATE, groups of 16", "DEFLATE, groups of 64", "DEFLATE, groups of 256",
+                                 "DEFLATE, a face")}
+    for face in faces:
+        for glyph in face.glyphs:
+            as_it_is, runs, alone = len(glyph["packed"]), runs_of(glyph["pixels"]), deflated(glyph["packed"])
+            ways["as they are"] += as_it_is
+            ways["run-length, a glyph"] += runs
+            ways["DEFLATE, a glyph"] += alone
+            ways["the best, a glyph"] += min(as_it_is, runs, alone)
+        for group in (16, 64, 256, len(face.glyphs)):
+            name = f"DEFLATE, groups of {group}" if group in (16, 64, 256) else "DEFLATE, a face"
+            for first in range(0, len(face.glyphs), group):
+                ways[name] += deflated(b"".join(glyph["packed"] for glyph in face.glyphs[first:first + group]))
+    return ways
 
 
 def main() -> int:
@@ -314,6 +361,45 @@ def main() -> int:
             expect(ink[(1, size, 0)] > ink[(0, size, 0)], f"at {size}, the bold has no more ink than the regular")
         expect(ink[(0, SIZES[0], 0)] < ink[(0, SIZES[1], 0)] < ink[(0, SIZES[2], 0)],
                "a larger size has no more ink than a smaller")
+
+        # What the pictures would take kept in other ways: for each size,
+        # and for all of them.
+        result = run(tool, "sizes", str(image_path))
+        expect(result.returncode == 0, f"sizes ended with {result.returncode} and said {result.stderr!r}")
+        sized = result.stdout.decode("utf-8").splitlines()
+        pictures = sum(face.picture_bytes for face in faces)
+        expect(sized[0] == f"image {len(image)} bytes: tables {len(image) - pictures}, pictures {pictures}",
+               f"sizes' first line: {sized[0]!r}")
+        at = 1
+        for heading, those in [*((f"{size} px", [face for face in faces if face.size == size]) for size in SIZES),
+                               ("all", faces)]:
+            expect(sized[at] == f"{heading}: {len(those)} faces, {sum(face.glyph_count for face in those)} glyphs",
+                   f"sizes' line for {heading}: {sized[at]!r}")
+            wanted = sizes_of(those)
+            for line, (name, here) in zip(sized[at + 1:at + 9], wanted.items()):
+                said_of = SIZES_LINE.match(line)
+                expect(said_of is not None and said_of.group(1) == name, f"sizes, {heading}: {line!r} is not {name}")
+                there, share = int(said_of.group(2)), int(said_of.group(3))
+                if "DEFLATE" in name or "best" in name:
+                    expect(abs(there - here) * 50 <= here, f"sizes, {heading}, {name}: {there} bytes, and {here} here")
+                else:
+                    expect(there == here, f"sizes, {heading}, {name}: {there} bytes, and {here} here")
+                expect(abs(share - 100 * there / wanted["as they are"]) <= 0.5, f"sizes, {heading}: {line!r}")
+            at += 9
+        counted = re.match(r"^the best, a glyph: (\d+) as they are, (\d+) run-length, (\d+) DEFLATE$", sized[at])
+        expect(counted is not None and sum(int(n) for n in counted.groups()) == sum(face.glyph_count for face in faces),
+               f"sizes' last line: {sized[at]!r}")
+        expect(len(sized) == at + 1, f"sizes said {len(sized)} lines")
+        # Letters in grays do compress, and better together.
+        whole = sizes_of(faces)
+        expect(whole["DEFLATE, a face"] < whole["DEFLATE, groups of 16"] < whole["the best, a glyph"] <
+               whole["as they are"], f"the ways are not in the order they should be: {whole}")
+        for name, path in (("an image cut short", work / "cut.bnfn"),):
+            path.write_bytes(image[:-1])
+            result = run(tool, "sizes", str(path))
+            expect(result.returncode == 1 and result.stderr.decode("utf-8").strip().endswith(": bad image"),
+                   f"{name}: sizes ended with {result.returncode} and said {result.stderr!r}")
+        expect(run(tool, "sizes").returncode == 1, "sizes with no image")
 
         # The same preset makes the same image.
         again = work / "again.bnfn"

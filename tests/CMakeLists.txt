@@ -16,8 +16,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarc
   string(APPEND bn_test_asan_options ":detect_stack_use_after_return=0")
 endif()
 
-# zlib, which only the tests use: what the inflater produces is checked
-# against it, and the tests' ZIP files are made with it.
+# zlib, which the tests use and bn-font besides (tools/font): what the
+# inflater produces is checked against it, and the tests' ZIP files are made
+# with it.
 find_package(ZLIB REQUIRED)
 if(BN_FUZZ AND APPLE AND ZLIB_INCLUDE_DIRS MATCHES "\\.sdk/usr/include$")
   # zlib's header was found in a macOS SDK, and LLVM's clang may be using
@@ -198,7 +199,8 @@ bn_add_unit_test(tools_tests
 if(BN_FONT_TOOL)
   add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/courier-prime ${CMAKE_BINARY_DIR}/third_party/courier-prime)
   target_sources(tools_tests PRIVATE unit/tools/font_tool_test.cpp)
-  target_link_libraries(tools_tests PRIVATE bn_font_tool)
+  # What bn-font says pictures compress to is checked against zlib.
+  target_link_libraries(tools_tests PRIVATE bn_font_tool ZLIB::ZLIB)
   target_compile_definitions(tools_tests PRIVATE "BN_COURIER_PRIME_DIR=\"${BN_COURIER_PRIME_DIR}\"")
 endif()
 

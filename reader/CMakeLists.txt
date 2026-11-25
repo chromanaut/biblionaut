@@ -7,7 +7,8 @@ add_library(bn_reader STATIC
   src/drawing_viewer.cpp
   src/layout_check.cpp
   src/pattern_viewer.cpp
-  src/storage_check.cpp)
+  src/storage_check.cpp
+  src/text_viewer.cpp)
 target_include_directories(bn_reader PUBLIC include)
 target_compile_definitions(bn_reader PRIVATE BN_VERSION_STRING="${BN_VERSION_STRING}")
 target_link_libraries(bn_reader

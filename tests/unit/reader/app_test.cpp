@@ -12,12 +12,14 @@
 #include "core/endian.h"
 #include "crash_fakes.h"
 #include "display_fakes.h"
+#include "font_image.h"
 #include "input_fakes.h"
 #include "memory_fakes.h"
 #include "power_fakes.h"
 #include "reader/book_check.h"
 #include "reader/drawing_viewer.h"
 #include "reader/layout_check.h"
+#include "reader/text_viewer.h"
 #include "reader/trace_ids.h"
 #include "storage_fakes.h"
 #include "stream_fakes.h"
@@ -266,6 +268,45 @@ TEST(App, PausesBeforeATurnOnlyWhenNoWorkIsWaiting) {
   EXPECT_FALSE(fixture.app.WorkWaiting());
   EXPECT_TRUE(std::all_of(pauses.end() - 50, pauses.end(),
                           [](std::uint64_t pause) { return pause == bn::reader::App::kTurnPauseUs; }));
+}
+
+TEST(App, ShowsTextInAFontsImageInPlaceOfTheTestPattern) {
+  // A face with the letters a to e, and a card with a line of them.
+  bn::test::ImageFace face = bn::test::EmptyFace(0, 0, 20);
+  for (std::uint32_t letter = 'a'; letter <= 'e'; ++letter) {
+    face.glyphs[letter] = bn::test::Block(40, 8, 10, 2);
+  }
+  face.glyphs[' '] = bn::test::Blank(20);
+  const std::vector<std::uint8_t> image = bn::test::FontImageBytes({face});
+  AppFixture fixture;
+  fixture.display.present = true;
+  fixture.display.levels = 4;
+  fixture.display.Resize({.width = 200, .height = 120});
+  const std::string text = "abc de\n\ncab\n";
+  fixture.storage.Put("/layout/paragraphs.txt", {text.begin(), text.end()});
+  EXPECT_EQ(fixture.app.TextsViewer(), nullptr);
+  fixture.app.ViewText(image);
+  ASSERT_NE(fixture.app.TextsViewer(), nullptr);
+  fixture.app.Start();
+  // No pause while the page is set and written; then the panel's refresh,
+  // which is over at once here, and the gray pass after it.
+  EXPECT_TRUE(fixture.app.WorkWaiting());
+  EXPECT_EQ(fixture.app.PauseUs(), 0U);
+  for (int turn = 0; turn < 200; ++turn) {
+    fixture.clock.now += 1000;
+    fixture.display.busy = false;
+    fixture.app.Tick();
+  }
+  EXPECT_EQ(fixture.app.TextsViewer()->Shown(), 1U);
+  EXPECT_EQ(fixture.app.TextsViewer()->Glyphs().size(), 8U);
+  EXPECT_TRUE(fixture.app.TextsViewer()->GrayShown());
+  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kRefresh), 1U);
+  EXPECT_EQ(fixture.display.Count(bn::test::FakeDisplay::Op::kGrayRefresh), 1U);
+  EXPECT_FALSE(fixture.app.WorkWaiting());
+  EXPECT_EQ(fixture.app.PauseUs(), bn::reader::App::kTurnPauseUs);
+  // The letters are dark gray: two levels of ink of three.
+  EXPECT_EQ(fixture.display.LevelAt(bn::reader::TextViewer::kMargin + 2, bn::reader::TextViewer::kMargin + 8), 1);
+  EXPECT_EQ(fixture.display.LevelAt(2, 2), 3);
 }
 
 TEST(App, ShowsTheTestPatternAndLetsTheButtonsStepThroughIt) {

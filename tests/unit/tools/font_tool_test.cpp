@@ -101,6 +101,25 @@ TEST(FontPreset, PassesOverCommentsAndEmptyLinesAndPutsTheSizesInOrder) {
   EXPECT_FALSE(bn::font_tool::DefaultCharacters().empty());
 }
 
+TEST(FontPreset, TheCharactersDrawnUnlessOthersAreNamedIncludeTheOneABadByteIsDrawnAs) {
+  const auto drawn = [](std::uint32_t codePoint) {
+    for (const CodePoints& range : bn::font_tool::DefaultCharacters()) {
+      if (codePoint >= range.first && codePoint <= range.second) {
+        return true;
+      }
+    }
+    return false;
+  };
+  EXPECT_TRUE(drawn(0x41));
+  EXPECT_TRUE(drawn(0x2019));
+  // Text is set with U+FFFD in place of a byte that is not UTF-8, so a font
+  // that has a glyph for it has to be asked for it.
+  EXPECT_TRUE(drawn(0xFFFD));
+  // And nothing beside it: the blocks around it are no part of what is drawn.
+  EXPECT_FALSE(drawn(0xFFFC));
+  EXPECT_FALSE(drawn(0xFFFE));
+}
+
 TEST(FontPreset, SaysWhatIsWrongAndOnWhichLine) {
   const std::vector<std::pair<std::string_view, std::string_view>> wrong = {
       {"", "no sizes are given"},

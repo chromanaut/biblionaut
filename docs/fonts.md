@@ -46,8 +46,8 @@ em. `characters U+0020-U+007E U+00A0 ...` chooses the characters that are
 drawn; without it they are Latin with its extensions, the phonetic
 alphabet, the marks set over letters, Greek, Cyrillic, punctuation,
 currency and letterlike symbols, number forms, arrows, mathematical
-operators and the Latin ligatures. A character the font has no glyph for is
-left out and counted. Anything from a `#` to the end of a line is passed
+operators, the Latin ligatures and the replacement character, U+FFFD. A
+character the font has no glyph for is left out and counted. Anything from a `#` to the end of a line is passed
 over.
 
 ```
@@ -184,10 +184,10 @@ besides, as the fallback face, for what they lack. As built, with the
 
 | Preset | Monospace face | Faces | Image |
 |---|---|---|---|
-| `noto` | Courier Prime | 50 | 9.64 MB |
-| `noto` | Noto Sans Mono | 50 | 11.47 MB |
-| `plex` | Courier Prime | 55 | 5.55 MB |
-| `plex` | IBM Plex Mono | 55 | 6.04 MB |
+| `noto` | Courier Prime | 50 | 9.65 MB |
+| `noto` | Noto Sans Mono | 50 | 11.48 MB |
+| `plex` | Courier Prime | 55 | 5.56 MB |
+| `plex` | IBM Plex Mono | 55 | 6.05 MB |
 | `source` | Courier Prime | 55 | 6.03 MB |
 | `source` | Source Code Pro | 55 | 6.67 MB |
 
@@ -234,7 +234,9 @@ sets text in such faces. Each of the paragraph setter's styles is given a
 face. A character is drawn with its style's face if that has a glyph for
 it, with the fallback face if that has, and otherwise with its style's
 face's glyph 0; a soft hyphen and a zero width space are not drawn and take
-no room; a byte that is not UTF-8 is drawn as U+FFFD. A piece of a word is
+no room; a byte that is not UTF-8 is drawn as U+FFFD, which is found as
+any other character is (of the presets' typefaces Noto and IBM Plex have a
+glyph for it, and Source and Courier Prime have not). A piece of a word is
 as wide as its glyphs' advances added up, so what is drawn from the same
 glyphs lines up with what was measured. The hyphen shown at a line's end is
 the style's U+2010, or its hyphen-minus. Reading UTF-8 a character at a

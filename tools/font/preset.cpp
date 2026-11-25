@@ -83,6 +83,7 @@ const std::vector<CodePoints>& DefaultCharacters() {
       {0x2190, 0x21FF},  // Arrows
       {0x2200, 0x22FF},  // Mathematical operators
       {0xFB00, 0xFB06},  // Latin ligatures
+      {0xFFFD, 0xFFFD},  // The replacement character, drawn for a byte that is not UTF-8
   };
   return kDefault;
 }

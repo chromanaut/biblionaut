@@ -4,8 +4,9 @@
 The unit tests say what the renderer should make of files written for them.
 Here drawings are made up at random: groups inside groups, every kind of
 shape, transforms, paint said as attributes, as `style` and by the rules of
-a style sheet, things hidden, an `svg` inside another that cuts off what is
-in it, things defined in `defs` and drawn by `use`, shapes filled with
+a style sheet, which is inside `defs` in some, things hidden, an `svg`
+inside another that cuts off what is in it, things defined in `defs` and
+drawn by `use`, shapes filled with
 linear gradients, shapes stroked, and a few things bn-svg does not draw. Each is written
 out as a file in one of the many ways the same drawing can be written, and
 bn-svg draws it.
@@ -308,7 +309,7 @@ def inverted(matrix: tuple) -> tuple | None:
     return (d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det)
 
 
-def a_drawing(rng: random.Random) -> dict:
+def a_drawing(rng: random.Random, sheet_inside: bool = False) -> dict:
     """A whole drawing: its own size or view box, and what is in it."""
     drawing: dict = {"name": "svg", "paint": {}, "children": [], "root": True}
     across, down = float(rng.randrange(30, 80)), float(rng.randrange(20, 60))
@@ -366,7 +367,15 @@ def a_drawing(rng: random.Random) -> dict:
             rules.insert(rng.randrange(len(rules) + 1), ("element", rng.choice(["rect", "circle", "polygon"]),
                                                          {"fill": a_gray(rng)}))
         drawing["sheet"] = rules
-        drawing["children"].insert(0, {"name": "style", "paint": {}, "rules": rules})
+        sheet = {"name": "style", "paint": {}, "rules": rules}
+        holding = next((child for child in drawing["children"] if child["name"] == "defs"), None)
+        if sheet_inside and holding is not None:
+            # Inside the first `defs`, before what that holds: its text is kept with the rest, and it is a
+            # sheet all the same.
+            holding["children"].insert(0, sheet)
+            drawing["sheet_inside"] = True
+        else:
+            drawing["children"].insert(0, sheet)
     for _ in range(rng.randrange(2, 5)):
         kind = rng.random()
         if definitions and kind < 0.3:
@@ -892,12 +901,13 @@ def draw(tool: str, work: Path, file: str | bytes, *options: str):
     return result, summary, left_out, pixels
 
 
-def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> tuple:
+def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int, sheet_inside: bool = False) -> tuple:
     """Checks one drawing. Returns how many of its pixels were compared, how many were left out, the worst, and
     how much of what the test is for the drawing had: uses, pixels with something cut off, pixels with something
     showing beyond the edges of an `svg` that lets it, `svg` elements that are turned, shapes styled by a sheet,
-    pixels of gradients and pixels of strokes."""
-    drawing = a_drawing(rng)
+    pixels of gradients, pixels of strokes, and shapes styled by a sheet that is inside `defs`. With
+    `sheet_inside`, a drawing that has a sheet and a `defs` has the one inside the other."""
+    drawing = a_drawing(rng, sheet_inside)
     file = ("<?xml version='1.0' encoding='UTF-8'?>\n" if number_of % 2 else "") + written(rng, drawing)
     width, height = rng.randrange(30, 49), rng.randrange(24, 37)
     # Curves are cut finely, so that what is compared is where things are put and how they are painted.
@@ -910,7 +920,7 @@ def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> 
 
     picture = picture_of(drawing, width, height)
     if picture.doubtful:
-        return 0, 0, 0.0, (0, 0, 0, 0, 0, 0, 0)
+        return 0, 0, 0.0, (0, 0, 0, 0, 0, 0, 0, 0)
     expect(left_out == picture.left_out, f"{file}\nbn-svg says it left out {sorted(left_out)}; it was given {sorted(picture.left_out)}")
     expect(int(summary.group(8)) == picture.shapes, f"{file}\nbn-svg filled {int(summary.group(8))} shapes of {picture.shapes}")
     expect(int(summary.group(9)) == picture.strokes, f"{file}\nbn-svg stroked {int(summary.group(9))} shapes of {picture.strokes}")
@@ -928,7 +938,7 @@ def check_drawing(tool: str, work: Path, rng: random.Random, number_of: int) -> 
             total += apart
     expect(total / max(compared, 1) <= 0.004, f"{file}\n{total / max(compared, 1):.4f} of the way from black to white out on average")
     return compared, unsure, worst, (picture.uses, picture.cut, picture.uncut, picture.turned, picture.styled, picture.graded,
-                                     picture.stroked)
+                                     picture.stroked, picture.styled if drawing.get("sheet_inside") else 0)
 
 
 def check_the_tool(tool: str, work: Path) -> None:
@@ -1018,23 +1028,27 @@ def main() -> int:
         check_the_tool(tool, work)
         rng = random.Random(20261116)
         drawings, compared, unsure, worst = 0, 0, 0, 0.0
-        uses, cut, uncut, turned, styled, graded, stroked = 0, 0, 0, 0, 0, 0, 0
-        for number_of in range(40):
-            one, left, apart, had = check_drawing(tool, work, rng, number_of)
+        uses, cut, uncut, turned, styled, graded, stroked, from_inside = 0, 0, 0, 0, 0, 0, 0, 0
+        # Forty drawings, and twenty more in which a sheet is inside `defs` wherever there are both.
+        inside_rng = random.Random(20261125)
+        for number_of in range(60):
+            one, left, apart, had = (check_drawing(tool, work, rng, number_of) if number_of < 40 else
+                                     check_drawing(tool, work, inside_rng, number_of, sheet_inside=True))
             drawings, compared, unsure, worst = drawings + (1 if one else 0), compared + one, unsure + left, max(worst, apart)
             uses, cut, uncut, turned = uses + had[0], cut + had[1], uncut + had[2], turned + had[3]
-            styled, graded, stroked = styled + had[4], graded + had[5], stroked + had[6]
+            styled, graded, stroked, from_inside = styled + had[4], graded + had[5], stroked + had[6], from_inside + had[7]
         expect(unsure * 5 < compared, f"{unsure} pixels of {compared + unsure} could not be compared: the test is at fault")
         expect(drawings >= 30 and uses >= 30 and cut >= 300 and uncut >= 100 and turned >= 2 and styled >= 30
-               and graded >= 1000 and stroked >= 300,
+               and graded >= 1000 and stroked >= 300 and from_inside >= 10,
                f"{drawings} drawings with {uses} uses, {cut} pixels cut off, {uncut} showing beyond an svg's edges, "
-               f"{turned} svg elements turned, {styled} shapes styled by a sheet, {graded} pixels of gradients and "
-               f"{stroked} of strokes: too few for the test to mean much")
+               f"{turned} svg elements turned, {styled} shapes styled by a sheet, {from_inside} of them by one inside "
+               f"defs, {graded} pixels of gradients and {stroked} of strokes: too few for the test to mean much")
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"{drawings} drawings, {compared} pixels, {uses} uses, {cut} pixels with something cut off, {styled} shapes "
-          f"styled by a sheet, {graded} pixels of gradients, {stroked} of strokes: what bn-svg draws "
+          f"styled by a sheet, {from_inside} of them by one inside defs, {graded} pixels of gradients, {stroked} of "
+          f"strokes: what bn-svg draws "
           f"agrees with the picture each drawing should make to within {worst:.3f} of the way from black to white, and is "
           f"the same in any strips and pieces")
     return 0

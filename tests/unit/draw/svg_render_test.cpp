@@ -1776,6 +1776,72 @@ TEST(SvgRender, ASheetIsKeptInTheMemoryForDefinitionsAndWhatDoesNotFitIsSaid) {
   EXPECT_EQ(tooLong.report.leftOut, Bits({SvgLeftOut::kStyleSheet}));
 }
 
+TEST(SvgRender, ASheetInDefsTakesItsMemoryInTheFilesOrderWhateverThePieces) {
+  // A sheet inside `defs` is kept as text with the rest of what `defs`
+  // holds, and each of its rules is a record in the same memory. A rule is
+  // recorded when the text as far as its end has been kept, and the rest
+  // of the text after it: not when the piece of text the rule ended in has
+  // all been kept, which would be sooner or later as the file was cut up.
+  // The rule's end is written four ways: as it is, after a semicolon,
+  // inside marked text, and as a character by its number.
+  struct Written {
+    std::string_view asFarAsTheRulesEnd;
+    std::string_view rest;
+  };
+  const std::vector<Written> cases = {
+      {.asFarAsTheRulesEnd = "<style>.a{fill:#808080}",
+       .rest = "/* A good deal more, which sets nothing at all. */</style></defs>"},
+      {.asFarAsTheRulesEnd = "<style>.a{fill:#808080;}",
+       .rest = "/* A good deal more, which sets nothing at all. */</style></defs>"},
+      {.asFarAsTheRulesEnd = "<style><![CDATA[.a{fill:#808080}",
+       .rest = "/* A good deal more, which sets nothing at all. */]]></style></defs>"},
+      {.asFarAsTheRulesEnd = "<style>.a{fill:#808080&#125;",
+       .rest = "/* A good deal more, which sets nothing at all. */</style></defs>"},
+  };
+  // A record's eight bytes, and what the rule says: a selector, and one
+  // thing set.
+  const std::size_t record = SvgRenderer::kBytesPerDefinition + 1 + 2 + 1 + 1 + 2 + 7;
+  for (const Written& written : cases) {
+    const std::string body = "<defs>" + std::string(written.asFarAsTheRulesEnd) + std::string(written.rest) +
+                             "<rect width='2' height='2' class='a'/>";
+    const std::string file = Svg(40, 20, body);
+    const std::size_t asFar = written.asFarAsTheRulesEnd.size();
+    const Drawing roomy = Draw(file, 40, 20);
+    ASSERT_EQ(roomy.report.rules, 1u) << body;
+    ASSERT_EQ(roomy.report.kept, asFar + written.rest.size()) << body;
+    ASSERT_EQ(roomy.At(0, 0), 0x80) << body;
+    for (const std::size_t piece :
+         {SIZE_MAX, std::size_t{1}, std::size_t{2}, std::size_t{3}, std::size_t{7}, std::size_t{16}, std::size_t{64}}) {
+      // Room for the text as far as the rule's end, for the rule, and for
+      // ten bytes of what follows: the rule is kept, and those ten bytes.
+      const Drawing some = Draw(file, 40, 20, 0, piece, asFar + record + 10);
+      EXPECT_EQ(some.report.rules, 1u) << body << " in pieces of " << piece;
+      EXPECT_EQ(some.report.kept, asFar + 10) << body << " in pieces of " << piece;
+      EXPECT_EQ(some.report.leftOut, Bits({SvgLeftOut::kNoRoom})) << body << " in pieces of " << piece;
+      EXPECT_EQ(some.At(0, 0), 0x80) << body << " in pieces of " << piece;
+      // A byte too little for the rule: it is not kept, and nor is
+      // anything after it, though the text before it was.
+      const Drawing none = Draw(file, 40, 20, 0, piece, asFar + record - 1);
+      EXPECT_EQ(none.report.rules, 0u) << body << " in pieces of " << piece;
+      EXPECT_EQ(none.report.kept, asFar) << body << " in pieces of " << piece;
+      EXPECT_EQ(none.report.leftOut, Bits({SvgLeftOut::kNoRoom})) << body << " in pieces of " << piece;
+      EXPECT_EQ(none.At(0, 0), kBlack) << body << " in pieces of " << piece;
+    }
+  }
+  // What is kept of a sheet's text is the file as it is written, a
+  // character written by its name as the letters of that: something with a
+  // sheet inside it is read again from what was kept, and drawn.
+  const std::string_view held =
+      "<g id='g'><style>.b{fill:#404040}/* &lt; */</style><rect width='2' height='2'/></g></defs>";
+  const std::string used = Svg(40, 20, "<defs>" + std::string(held) + "<use href='#g' x='4'/>");
+  for (const std::size_t piece : {SIZE_MAX, std::size_t{1}, std::size_t{3}, std::size_t{7}}) {
+    const Drawing drawing = Draw(used, 40, 20, 0, piece);
+    EXPECT_EQ(drawing.status, SvgStatus::kOk) << piece;
+    EXPECT_EQ(drawing.report.kept, held.size()) << piece;
+    EXPECT_TRUE(drawing.IsBox(4, 0, 6, 2, kBlack)) << piece;
+  }
+}
+
 TEST(SvgRender, ACallStylesOneElementAtTheMost) {
   // Styling an element goes through every rule, so each element that is
   // styled is enough for a call.

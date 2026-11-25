@@ -3,11 +3,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <memory>
 #include <thread>
-#include <vector>
 
 #include "core/heap.h"
 #include "desktop/panel_window.h"
@@ -49,7 +46,9 @@ void PrintUsage(const char* program) {
                "round them twice by itself.\n"
                "Set BN_TEXT to a fonts image (made by bn-font) instead to have the text of\n"
                "that folder's layout/paragraphs.txt set in its faces a page at a time:\n"
-               "Right and Left turn the page, Confirm changes the size and Back the face.\n",
+               "Right and Left turn the page, Confirm changes the size and Back the face;\n"
+               "and BN_TEXT_TOUR as well to have it go through two pages in each face at\n"
+               "each size by itself.\n",
                program);
 }
 
@@ -65,6 +64,7 @@ bn::reader::Services ForRun(const bn::reader::Services& services, bn::core::Inpu
                               .display = services.display,
                               .input = input,
                               .storage = services.storage,
+                              .fonts = services.fonts,
                               .power = services.power,
                               .startCause = startCause};
 }
@@ -78,9 +78,10 @@ struct Checks {
   bool layout = false;
   bool drawings = false;
   bool drawingTour = false;
-  // A fonts image to show text in, if BN_TEXT named one: its bytes.
-  std::vector<std::uint8_t> text;
-  bool textAsked = false;
+  // Text shown in the faces of the fonts image BN_TEXT names, and whether
+  // the viewer goes through it by itself.
+  bool text = false;
+  bool textTour = false;
 };
 
 // How long the application runs: until the window is closed, or until a
@@ -116,8 +117,8 @@ Ended Run(const bn::reader::Services& services, const Checks& checks, bn::hw::Pa
   if (checks.drawings) {
     app.ViewDrawings(bn::reader::DrawingViewer::kFolder, checks.drawingTour);
   }
-  if (checks.textAsked) {
-    app.ViewText(checks.text);
+  if (checks.text) {
+    app.ViewText(checks.textTour);
   }
   app.Start();
   while (!limit.Over()) {
@@ -185,28 +186,24 @@ int main(int argc, char** argv) {
   bn::core::SetHeapFailureHandler(OnHeapFailure);
 
   // NOLINTBEGIN(concurrency-mt-unsafe): read once, before any other thread exists.
-  Checks checks{.planes = std::getenv("BN_PLANE_CHECK") != nullptr,
-                .storage = std::getenv("BN_STORAGE_CHECK") != nullptr,
-                .books = std::getenv("BN_BOOK_CHECK") != nullptr,
-                .booksBrief = std::getenv("BN_BOOK_CHECK_BRIEF") != nullptr,
-                .layout = std::getenv("BN_LAYOUT_CHECK") != nullptr,
-                .drawings = std::getenv("BN_DRAWINGS") != nullptr,
-                .drawingTour = std::getenv("BN_DRAWING_TOUR") != nullptr,
-                .text = {},
-                .textAsked = false};
+  const Checks checks{.planes = std::getenv("BN_PLANE_CHECK") != nullptr,
+                      .storage = std::getenv("BN_STORAGE_CHECK") != nullptr,
+                      .books = std::getenv("BN_BOOK_CHECK") != nullptr,
+                      .booksBrief = std::getenv("BN_BOOK_CHECK_BRIEF") != nullptr,
+                      .layout = std::getenv("BN_LAYOUT_CHECK") != nullptr,
+                      .drawings = std::getenv("BN_DRAWINGS") != nullptr,
+                      .drawingTour = std::getenv("BN_DRAWING_TOUR") != nullptr,
+                      .text = std::getenv("BN_TEXT") != nullptr,
+                      .textTour = std::getenv("BN_TEXT_TOUR") != nullptr};
   const char* textImage = std::getenv("BN_TEXT");
   // NOLINTEND(concurrency-mt-unsafe)
-  if (textImage != nullptr) {
-    std::ifstream file(textImage, std::ios::binary);
-    if (!file) {
-      std::fprintf(stderr, "BN_TEXT: cannot read %s\n", textImage);
-      return 2;
-    }
-    checks.text.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    checks.textAsked = true;
+  // The hardware layer reads the image, as it has a device's partition.
+  if (checks.text && bn::hw::SystemFonts().Size() == 0) {
+    std::fprintf(stderr, "BN_TEXT: cannot read %s, or there is nothing in it\n", textImage);
+    return 2;
   }
   if (static_cast<int>(checks.storage) + static_cast<int>(checks.books) + static_cast<int>(checks.layout) +
-          static_cast<int>(checks.drawings) + static_cast<int>(checks.textAsked) >
+          static_cast<int>(checks.drawings) + static_cast<int>(checks.text) >
       1) {
     std::fprintf(stderr,
                  "BN_STORAGE_CHECK, BN_BOOK_CHECK, BN_LAYOUT_CHECK, BN_DRAWINGS and BN_TEXT would get in each other's "

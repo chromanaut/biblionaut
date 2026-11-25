@@ -56,6 +56,7 @@ Services DefaultServices() noexcept {
                   .display = hw::SystemDisplay(),
                   .input = hw::SystemInput(),
                   .storage = hw::SystemStorage(),
+                  .fonts = hw::SystemFonts(),
                   .power = hw::SystemPower(),
                   .startCause = hw::WhyStarted()};
 }
@@ -110,9 +111,13 @@ void App::ViewDrawings(std::string_view folder, bool tour) noexcept {
   }
 }
 
-void App::ViewText(std::span<const std::uint8_t> fonts) noexcept {
+void App::ViewText(bool tour) noexcept {
   if (screen_ == nullptr) {
-    textViewer_ = new (std::nothrow) TextViewer(services_.display, services_.clock, services_.storage, stream_, fonts);
+    textViewer_ =
+        new (std::nothrow) TextViewer(services_.display, services_.clock, services_.storage, stream_, services_.fonts);
+    if (textViewer_ != nullptr && tour) {
+      textViewer_->Tour();
+    }
     screen_ = textViewer_;
   }
 }

@@ -30,8 +30,8 @@ void TextViewer::LineKeeper::OnLine(const layout::TextLine& line) noexcept {
 }
 
 TextViewer::TextViewer(core::Display& display, core::Clock& clock, core::Storage& storage, core::TraceStream& stream,
-                       std::span<const std::uint8_t> fonts)
-    : display_(display), clock_(clock), storage_(storage), stream_(stream), fontBytes_(fonts) {}
+                       core::ByteMap& fonts)
+    : display_(display), clock_(clock), storage_(storage), stream_(stream), fontMap_(fonts) {}
 
 TextViewer::~TextViewer() = default;
 
@@ -39,7 +39,7 @@ void TextViewer::Start() noexcept {
   if (state_ != State::kNotStarted) {
     return;
   }
-  const draw::FontStatus status = fonts_.Open(fontBytes_);
+  const draw::FontStatus status = fonts_.Open(fontMap_);
   if (status != draw::FontStatus::kOk) {
     LogLine line;
     line.Text("text: the fonts image is no good (").Text(draw::FontStatusName(status)).Text(").");
@@ -61,7 +61,9 @@ void TextViewer::Start() noexcept {
     Fail();
     return;
   }
-  sizeIndex_ = sizes_.size() / 2;
+  // The middle size, which is the one text is first read in; a tour goes
+  // from the smallest.
+  sizeIndex_ = tour_ ? 0 : sizes_.size() / 2;
   if (!fonts_.Find(draw::FaceRole::kSerif, 0, sizes_[sizeIndex_]).Valid()) {
     role_ = draw::FaceRole::kSans;
   }
@@ -116,13 +118,63 @@ void TextViewer::Start() noexcept {
 
 void TextViewer::UseFaces() noexcept {
   const std::uint16_t size = sizes_[sizeIndex_];
-  measure_.SetFace(kRegular, fonts_.Nearest(role_, 0, size));
-  measure_.SetFace(kItalicStyle, fonts_.Nearest(role_, draw::kItalic, size));
-  measure_.SetFallback(fonts_.Find(draw::FaceRole::kFallback, 0, size));
-  const draw::Face face = measure_.FaceOf(kRegular);
-  lineHeight_ = std::max<std::uint16_t>(face.LineHeight(), 1);
-  ascent_ = static_cast<std::uint16_t>(std::max<std::int16_t>(face.Ascent(), 0));
+  // The glyphs of the page before are of the faces given up here.
+  placedCount_ = 0;
+  fonts_.ReleaseFaces();
+  draw::Face regular = fonts_.Nearest(role_, 0, size);
+  draw::Face italic = fonts_.Nearest(role_, draw::kItalic, size);
+  draw::Face fallback = fonts_.Find(draw::FaceRole::kFallback, 0, size);
+  std::size_t refused = 0;
+  for (draw::Face* face : {&regular, &italic, &fallback}) {
+    if (face->Valid() && !fonts_.Hold(*face)) {
+      ++refused;
+    }
+  }
+  measure_.SetFace(kRegular, regular);
+  measure_.SetFace(kItalicStyle, italic);
+  measure_.SetFallback(fallback);
+  lineHeight_ = std::max<std::uint16_t>(regular.LineHeight(), 1);
+  ascent_ = static_cast<std::uint16_t>(std::max<std::int16_t>(regular.Ascent(), 0));
   paragraphSet_ = false;
+
+  LogLine line;
+  line.Text("text: ")
+      .Text(role_ == draw::FaceRole::kSerif ? "serif " : "sans ")
+      .Number(size)
+      .Text(" px: ")
+      .Count(fonts_.Held(), " face", " faces")
+      .Text(" held, ")
+      .Number(fonts_.HeldBytes() / 1024)
+      .Text(" KB of the image; ")
+      .Number(fontMap_.MappedBytes() / 1024)
+      .Text(" KB mapped");
+  if (refused > 0) {
+    line.Text("; no room for ").Count(refused, " face", " faces");
+  }
+  stream_.SendText(line.View());
+}
+
+void TextViewer::TourOn() noexcept {
+  ++tourPages_;
+  if (tourPages_ < kTourPages && !atEnd_) {
+    asked_ = Asked::kNext;
+    return;
+  }
+  tourPages_ = 0;
+  const draw::FaceRole other = role_ == draw::FaceRole::kSerif ? draw::FaceRole::kSans : draw::FaceRole::kSerif;
+  if (!tourOtherFace_ && fonts_.Find(other, 0, sizes_[sizeIndex_]).Valid()) {
+    tourOtherFace_ = true;
+    asked_ = Asked::kFace;
+    return;
+  }
+  tourOtherFace_ = false;
+  ++tourSizes_;
+  if (tourSizes_ < sizes_.size()) {
+    asked_ = Asked::kSize;
+    return;
+  }
+  tourDone_ = true;
+  stream_.SendText("text: the tour is done.");
 }
 
 void TextViewer::OnInput(const core::InputEvent& event) noexcept {
@@ -592,7 +644,7 @@ void TextViewer::PlaceGlyph(const draw::Glyph& glyph, std::int32_t penQuarters, 
                                    .y = static_cast<std::int16_t>(top),
                                    .width = glyph.width,
                                    .height = glyph.height,
-                                   .picture = static_cast<std::uint32_t>(glyph.picture.data() - fontBytes_.data())};
+                                   .picture = glyph.pictureAt};
 }
 
 // ---- The panel's rows ----
@@ -640,7 +692,10 @@ std::size_t TextViewer::MakeBand(std::size_t top) noexcept {
     draw::Glyph glyph;
     glyph.width = placed.width;
     glyph.height = placed.height;
-    glyph.picture = fontBytes_.subspan(placed.picture, draw::PictureBytes(placed.width, placed.height));
+    glyph.picture = fonts_.Bytes(placed.picture, draw::PictureBytes(placed.width, placed.height));
+    if (glyph.picture.empty()) {
+      continue;  // Its face is no longer held: nothing of it can be read.
+    }
     for (std::int32_t y = above; y < below; ++y) {
       for (std::int32_t x = left; x < right; ++x) {
         const std::uint32_t ink =
@@ -801,6 +856,9 @@ void TextViewer::Finished(std::uint64_t now) noexcept {
   stream_.SendText(line.View());
   phase_ = Phase::kIdle;
   phaseStartedUs_ = now;
+  if (tour_ && !tourDone_) {
+    TourOn();
+  }
 }
 
 void TextViewer::Fail() noexcept {

@@ -6,6 +6,7 @@
 #include <span>
 #include <string_view>
 
+#include "core/byte_map.h"
 #include "core/byte_sink.h"
 #include "core/clock.h"
 #include "core/crash.h"
@@ -40,6 +41,8 @@ struct Services {
   core::Display& display;
   core::Input& input;
   core::Storage& storage;
+  // The bytes of the fonts image (draw/font.h); none where there is none.
+  core::ByteMap& fonts;
   core::Power& power;
   // Why this run began, to be told at the head of the stream.
   core::StartCause startCause = core::StartCause::kUnknown;
@@ -152,11 +155,11 @@ class App {
   const DrawingViewer* DrawingsViewer() const noexcept { return drawingViewer_; }
 
   // Shows the text of the card's /layout/paragraphs.txt set in the faces of
-  // `fonts`, a fonts image (draw/font.h), a page at a time, in place of the
-  // test pattern (reader/text_viewer.h). `fonts` has to stay where it is
-  // for as long as the application does. Call before Start(). Not together
-  // with the checks or the drawing viewer.
-  void ViewText(std::span<const std::uint8_t> fonts) noexcept;
+  // the fonts image (the services' `fonts`), a page at a time, in place of
+  // the test pattern (reader/text_viewer.h). Call before Start(). Not
+  // together with the checks or the drawing viewer. With `tour`, the viewer
+  // goes through the text by itself (TextViewer::Tour()).
+  void ViewText(bool tour = false) noexcept;
   // The viewer, if ViewText() was called; null otherwise.
   const TextViewer* TextsViewer() const noexcept { return textViewer_; }
 

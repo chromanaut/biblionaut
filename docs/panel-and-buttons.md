@@ -68,8 +68,8 @@ open panel-001.png          # one picture per refresh
 What the desktop simulates of a device is described once, in a profile
 (`hw/desktop/device_profile.h`): the panel's size, how long it takes over
 each kind of refresh and over switching off, which way the panel is
-turned to be read, how many levels the panel shows, and which buttons the device has, on which edges and
-where along them. A button wired to more than one spot, as Up and Down
+turned to be read, how many levels the panel shows, which buttons the device has, on which edges and
+where along them, and how much of a fonts image it can map at once. A button wired to more than one spot, as Up and Down
 are where a device has them on both sides, is listed once for each: it
 is the same button whichever is pressed, and is lit at all of them. The
 simulated panel and the window take everything they need from it. The X4's times are as measured on one, and its

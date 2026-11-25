@@ -3,9 +3,10 @@
 The firmware does not read font files. Every face it draws text in, at
 every size it draws it, is drawn beforehand on the computer that builds,
 and kept in one run of bytes, the fonts image, which the firmware reads
-where it lies: on the device, in the flash partition called `fonts` (see "A
-partition for fonts", below), mapped into the processor's address space; on the
-desktop, in a file read into memory. So far the application uses the image
+where it lies: on the device, in the flash partition called `fonts` (see
+"Fonts on a device", below), mapped into the processor's address space a
+face at a time; on the desktop, in a file read into memory. So far the
+application uses the image
 for one thing, showing a file of text to try faces with ([Trying faces on
 the panel](text-viewer.md)); the rest of this is the image, the program that makes
 it, the reader of it and the measure that sets text by it.
@@ -225,9 +226,33 @@ partition can hold anything.
   the most (`Face::kMostSteps`), whatever the tables hold, and `LastSteps()`
   says how many. A glyph whose picture would run outside its face's
   pictures is not given.
-- **RAM**: none but the two small objects. **Flash**: 1.2 KB for the
-  reader and 1.1 KB for the measure below, as compiled for the device,
-  besides the image itself.
+- **RAM**: none but the objects themselves: under 300 bytes for an image,
+  most of it the list of the faces it holds (below), and 0.6 KB in the
+  device's hardware layer for the list of what it has mapped. **Flash**:
+  2.7 KB for the reader, 1.2 KB for the measure below and 0.7 KB for the
+  partition's mapping, as compiled for the device, besides the image
+  itself.
+
+An image is opened in one of two ways. Given a span of bytes, all of it is
+there to be read, and every face has its glyphs from the first: so the
+tools open one, and the tests. A device has not the address space to map
+the whole of an image ([Fonts on a device](#fonts-on-a-device)), so there
+an image is opened through a `core::ByteMap` (`core/byte_map.h`), which
+gives a stretch of bytes when asked and takes it back, and only the header
+and the table of faces are kept readable, 49 KB of them at the most. A
+face then says its role, style, size and metrics, and is found by them, but
+has no glyphs until it is held (`FontImage::Hold()`): that maps the one
+stretch of the image from the first of the face's three tables to the end
+of the last, which is the face and nothing else in an image `bn-font` made,
+since it writes a face's tables and pictures together. Sixteen faces are
+held at the most, and `ReleaseFaces()` gives them all up: whoever sets a
+page holds the faces the page is set in, and gives them up for the next
+page's. A face there is no room to map is not held, and has no glyphs. A
+glyph says where in the image its picture is, and `FontImage::Bytes()`
+gives the picture again from that while its face is held, which is how a
+page keeps a glyph in four bytes. Nothing chooses a face to give up for
+another when room runs out; that is for whoever comes to set a page in more
+faces than there is room for.
 
 `layout::FaceMeasure` (`layout/face_measure.h`) is the `TextMeasure` that
 sets text in such faces. Each of the paragraph setter's styles is given a
@@ -243,7 +268,12 @@ time, strictly, is `core/utf8.h`, which the hyphenator shares.
 The reader's tests write their images by hand from the description of the
 layout (`tests/support/font_image.h`): what is found and what is not, an
 image cut short at every byte, and one with every byte changed three ways,
-from which nothing may be given that lies outside it. The builder's tests,
+from which nothing may be given that lies outside it. Each of those images
+is opened through a map as well, one that gives every stretch as a copy of
+exactly its size and frees it when it is given up, so that a byte read
+outside a face's own stretch, or after the face was given up, is seen: it
+has to go as the image opened whole goes, and every face, once held, to
+give the same glyphs. The builder's tests,
 and `e2e.FontTool`, try `bn-font` on a real font, Courier Prime, which the
 build downloads for them (`third_party/courier-prime`): the test takes the
 image apart itself, and the font file as far as its tables of characters
@@ -256,24 +286,51 @@ compressing done by Python's zlib. Nothing draws a glyph a second way:
 that a picture is its letter is for whoever looks at it. The reader has a
 fuzz target as well (`font`, see [Fuzzing](fuzzing.md)).
 
-## A partition for fonts
+## Fonts on a device
 
-The firmware's fonts are to live in a partition of the flash of their own,
-read where they lie through the processor's mapping of flash into its
-address space. A firmware built with `-DBN_PARTITION_CHECK=ON` checks that
-on a device. It has a partition table of its own
-(`app/firmware/partitions_fonts.csv`: a 4 MB app partition and a 12 MB
-data partition, `fonts`), which `app/firmware/sdkconfig.partition_check`
-chooses, so it is built in a directory of its own, where its settings are
-kept apart from the normal build's:
+The firmware's fonts live in a partition of the flash of their own, read
+where they lie through the processor's mapping of flash into its address
+space. The firmware's partition table (`app/firmware/partitions.csv`) has
+a 4 MB app partition and, after it, a 12 MB data partition, `fonts`.
+Flashing a firmware writes the table and leaves that partition as it was:
+an image is megabytes, and stays from one firmware to the next. It is
+written by a target of its own, from a file `bn-font` made:
 
 ```
-tools/idf -B app/firmware/build-partition-check -DBN_PARTITION_CHECK=ON build flash
+cmake --build --preset host-release --target fonts
+tools/idf -DBN_FONTS_IMAGE=$PWD/build/host-release/fonts/fonts.bnfn fonts-flash
+```
+
+```
+-- The fonts image: 9649010 bytes of the partition's 12582912.
+...
+Wrote 9649012 bytes (3561560 compressed) at 0x00400000 in 54.8 seconds (1407.7 kbit/s).
+Hash of data verified.
+```
+
+A file that is not a fonts image, or one larger than the partition, is
+refused before anything is written. The hardware layer gives the partition
+to the rest as a `core::ByteMap` (`hw::SystemFonts()`): a stretch of it is
+read by being mapped, and takes every page of 64 KB it touches. So far the
+one firmware that reads it is the text viewer's ([Trying faces on the
+panel](text-viewer.md)), which is where what it costs on an X4 is given.
+The mapping is counted: `font_maps`, `font_maps_refused` and, with the most
+it has been, `font_mapped_kb` go out with the other metrics.
+
+### The partition check
+
+A firmware built with `-DBN_PARTITION_CHECK=ON` checks the partition itself
+on a device: that it is there, how much of it can be mapped, and what
+reading it costs.
+
+```
+tools/idf -DBN_PARTITION_CHECK=ON build flash
 ./build/host-release/tools/trace/bn-trace --seconds 20 | tee partition.log
-tools/idf flash      # back to the normal firmware and ESP-IDF's own table
+tools/idf -DBN_PARTITION_CHECK=OFF build flash      # back to the normal firmware
+tools/idf -DBN_FONTS_IMAGE=... fonts-flash          # and the fonts image again
 ```
 
-Flashing it writes the table and fills `fonts` with 12 MB of a pattern in
+Flashing it fills `fonts` with 12 MB of a pattern, in place of any image, in
 which every four bytes are a number worked out from where they are
 (`app/firmware/partition_pattern.py`). At start, before the application,
 it says how large the flash chip is, what partitions there are, how much
@@ -295,8 +352,8 @@ partition check: a window of 64 KB: mapped in 16 us and unmapped in 4 us, on ave
 partition check: a window of 1024 KB: mapped in 79 us and unmapped in 7 us, on average of 100 (0 failed).
 partition check: read all 12288 KB in 824 ms (14902 KB/s), through windows of 1024 KB.
 partition check: every word is what it should be (3145728 words).
-partition check: scattered over 4096 KB: 20000 reads of 64 bytes in 87542 us (4377 ns a read).
-partition check: within 8 KB: 20000 reads of 64 bytes in 17346 us (867 ns a read).
+partition check: scattered over 4096 KB: 20000 reads of 64 bytes in 87541 us (4377 ns a read).
+partition check: within 8 KB: 20000 reads of 64 bytes in 17349 us (867 ns a read).
 partition check: passed.
 ```
 

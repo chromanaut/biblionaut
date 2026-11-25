@@ -10,6 +10,7 @@ add_library(bn_hw STATIC
   desktop/device_profile.cpp
   desktop/display.cpp
   desktop/folder_storage.cpp
+  desktop/fonts.cpp
   desktop/input.cpp
   desktop/memory_probe.cpp
   desktop/panel_view.cpp

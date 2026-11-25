@@ -107,24 +107,41 @@ option(BN_LAYOUT_CHECK "Time the layout code, and set the text on the SD card, a
 option(BN_DRAWING_VIEWER "Show the SVG, PNG and JPEG files in /drawings on the SD card in place of the test pattern" OFF)
 option(BN_DRAWING_TOUR "With BN_DRAWING_VIEWER: go round the drawings twice by itself" OFF)
 
-# For checking, on a device, a partition table with a data partition for
-# fonts in it, and what reading that partition costs
-# (main/partition_check.h says what is done):
+# A firmware that shows the text of /layout/paragraphs.txt on the SD card,
+# set in the faces of the fonts image in the fonts partition, in place of
+# the test pattern (reader/text_viewer.h says how):
 #
-#   tools/idf -B app/firmware/build-partition-check -DBN_PARTITION_CHECK=ON build flash
+#   tools/idf -DBN_TEXT_VIEWER=ON build flash    (back to normal: -DBN_TEXT_VIEWER=OFF)
 #
-# Such a build has a partition table of its own (partitions_fonts.csv),
-# which sdkconfig.partition_check chooses, and keeps its settings in its
-# own build directory rather than in app/firmware/sdkconfig, so the normal
-# build is left as it was. Flashing it writes the new table, and fills the
-# fonts partition with what the check expects to find there (12 MB, about
-# a minute over USB). To go back, flash a normal build: it writes ESP-IDF's
-# own partition table again.
-option(BN_PARTITION_CHECK "Use a partition table with a fonts partition, and check it at start" OFF)
-if(BN_PARTITION_CHECK)
-  set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
-  set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults;${CMAKE_CURRENT_LIST_DIR}/sdkconfig.partition_check")
-endif()
+# Right and Left turn the page, Confirm changes the size and Back the face.
+# It writes nothing to the card. Not together with BN_STORAGE_CHECK,
+# BN_BOOK_CHECK, BN_LAYOUT_CHECK or BN_DRAWING_VIEWER. With BN_TEXT_TOUR as
+# well, it goes through two pages in each face at each size by itself, for
+# timing them with nobody at the buttons:
+#
+#   tools/idf -DBN_TEXT_VIEWER=ON -DBN_TEXT_TOUR=ON build flash
+option(BN_TEXT_VIEWER "Show the text on the SD card set in the fonts partition's faces, in place of the test pattern" OFF)
+option(BN_TEXT_TOUR "With BN_TEXT_VIEWER: go through the text in each face at each size by itself" OFF)
+
+# The fonts image that `fonts-flash` writes to the fonts partition: a file
+# made by bn-font, as the host build's `fonts` target makes one
+# (docs/fonts.md).
+#
+#   tools/idf -DBN_FONTS_IMAGE=/a/path/fonts.bnfn fonts-flash
+#
+# Flashing a firmware does not write it: an image is megabytes, and stays
+# in the partition from one firmware to the next.
+set(BN_FONTS_IMAGE "" CACHE FILEPATH "The fonts image that the target fonts-flash writes to the fonts partition")
+
+# For checking, on a device, the partition for fonts, and what reading it
+# costs (main/partition_check.h says what is done):
+#
+#   tools/idf -DBN_PARTITION_CHECK=ON build flash    (back to normal: -DBN_PARTITION_CHECK=OFF)
+#
+# Flashing such a build fills the fonts partition with what the check
+# expects to find there (12 MB, about a minute over USB), in place of any
+# fonts image, which has to be flashed again afterwards (fonts-flash).
+option(BN_PARTITION_CHECK "Fill the fonts partition with a pattern when flashing, and check it at start" OFF)
 
 # Build only what main needs (directly or indirectly), not every ESP-IDF
 # component. Keeps WiFi, TLS and the rest out of the build entirely.
@@ -198,12 +215,38 @@ if(BN_PARTITION_CHECK)
   add_custom_command(
     OUTPUT "${bn_fonts_pattern}"
     COMMAND ${bn_python} "${CMAKE_CURRENT_LIST_DIR}/partition_pattern.py" "${bn_fonts_size}" "${bn_fonts_pattern}"
-    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/partition_pattern.py" "${CMAKE_CURRENT_LIST_DIR}/partitions_fonts.csv"
+    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/partition_pattern.py" "${CMAKE_CURRENT_LIST_DIR}/partitions.csv"
     COMMENT "Making the pattern for the fonts partition"
     VERBATIM)
   add_custom_target(bn_fonts_pattern ALL DEPENDS "${bn_fonts_pattern}")
   esptool_py_flash_to_partition(flash fonts "${bn_fonts_pattern}")
   add_dependencies(flash bn_fonts_pattern)
+endif()
+
+# `fonts-flash`: the fonts image, written to the fonts partition and nothing
+# else written. What is flashed is a copy made when the target is built, so
+# that an image too large for the partition is refused here and not found
+# out on the device.
+if(BN_FONTS_IMAGE)
+  if(NOT EXISTS "${BN_FONTS_IMAGE}")
+    message(FATAL_ERROR "BN_FONTS_IMAGE: there is no file ${BN_FONTS_IMAGE}")
+  endif()
+  partition_table_get_partition_info(bn_fonts_partition_size "--partition-name fonts" "size")
+  set(bn_fonts_image "${CMAKE_BINARY_DIR}/fonts.bnfn")
+  add_custom_command(
+    OUTPUT "${bn_fonts_image}"
+    COMMAND ${CMAKE_COMMAND} "-DIMAGE=${BN_FONTS_IMAGE}" "-DOUT=${bn_fonts_image}"
+            "-DPARTITION_BYTES=${bn_fonts_partition_size}" -P "${CMAKE_CURRENT_LIST_DIR}/fonts_image.cmake"
+    DEPENDS "${BN_FONTS_IMAGE}" "${CMAKE_CURRENT_LIST_DIR}/fonts_image.cmake"
+            "${CMAKE_CURRENT_LIST_DIR}/partitions.csv"
+    COMMENT "Taking the fonts image for the fonts partition"
+    VERBATIM)
+  add_custom_target(bn_fonts_image DEPENDS "${bn_fonts_image}")
+  idf_component_get_property(bn_flash_args esptool_py FLASH_ARGS)
+  idf_component_get_property(bn_flash_sub_args esptool_py FLASH_SUB_ARGS)
+  esptool_py_flash_target(fonts-flash "${bn_flash_args}" "${bn_flash_sub_args}" ALWAYS_PLAINTEXT)
+  esptool_py_flash_to_partition(fonts-flash fonts "${bn_fonts_image}")
+  add_dependencies(fonts-flash bn_fonts_image)
 endif()
 
 # Keep a copy of every firmware's ELF file, named by its SHA-256. A crash

@@ -3,6 +3,11 @@ CONFIG_IDF_TARGET="esp32c3"
 # Supported devices have 16 MB of flash.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
+# The partition table: an app partition, and one for the fonts image
+# (partitions.csv).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
 # Console over the chip's built-in USB Serial/JTAG port.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 

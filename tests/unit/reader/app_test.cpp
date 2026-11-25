@@ -40,6 +40,7 @@ struct AppFixture {
   bn::test::FakeDisplay display;  // Absent unless a test says otherwise.
   bn::test::FakeInput input;
   bn::test::FakeStorage storage;  // A card with nothing on it.
+  bn::core::MemoryByteMap fonts;  // No fonts image unless a test gives one.
   bn::test::FakePower power;      // Cannot sleep unless a test says otherwise.
   bn::reader::App app{bn::reader::Services{.clock = clock,
                                            .traceSync = sync,
@@ -49,6 +50,7 @@ struct AppFixture {
                                            .display = display,
                                            .input = input,
                                            .storage = storage,
+                                           .fonts = fonts,
                                            .power = power,
                                            .startCause = bn::core::StartCause::kWatchdog}};
 
@@ -279,13 +281,14 @@ TEST(App, ShowsTextInAFontsImageInPlaceOfTheTestPattern) {
   face.glyphs[' '] = bn::test::Blank(20);
   const std::vector<std::uint8_t> image = bn::test::FontImageBytes({face});
   AppFixture fixture;
+  fixture.fonts = bn::core::MemoryByteMap(image);
   fixture.display.present = true;
   fixture.display.levels = 4;
   fixture.display.Resize({.width = 200, .height = 120});
   const std::string text = "abc de\n\ncab\n";
   fixture.storage.Put("/layout/paragraphs.txt", {text.begin(), text.end()});
   EXPECT_EQ(fixture.app.TextsViewer(), nullptr);
-  fixture.app.ViewText(image);
+  fixture.app.ViewText();
   ASSERT_NE(fixture.app.TextsViewer(), nullptr);
   fixture.app.Start();
   // No pause while the page is set and written; then the panel's refresh,

@@ -1,15 +1,14 @@
 #pragma once
 
-// The partition check: a firmware built with a partition table that has a
-// data partition for fonts in it (partitions_fonts.csv), to find out on a
-// device whether such a table works and what reading fonts out of flash
-// would cost. It is chosen when configuring the build, in a build directory
-// of its own, so that the normal build's settings are left as they are:
+// The partition check: a firmware that finds out on a device whether the
+// data partition for fonts in the partition table (partitions.csv) is
+// there, and what reading fonts out of flash costs. It is chosen when
+// configuring the build:
 //
-//   tools/idf -B app/firmware/build-partition-check -DBN_PARTITION_CHECK=ON build flash
+//   tools/idf -DBN_PARTITION_CHECK=ON build flash
 //
-// Flashing it writes the partition table, and fills the fonts partition with
-// numbers worked out from where each is (partition_pattern.py). At start,
+// Flashing it fills the fonts partition with numbers worked out from where
+// each is (partition_pattern.py), in place of any fonts image. At start,
 // before the application, it says on the console:
 //
 //   - how large the flash chip says it is, and how large the build takes it

@@ -106,6 +106,9 @@
       "configurePreset": "host",
       "output": {
         "outputOnFailure": true
+      },
+      "environment": {
+        "CTEST_PARALLEL_LEVEL": "$penv{CTEST_PARALLEL_LEVEL}"
       }
     },
     {
@@ -113,6 +116,9 @@
       "configurePreset": "host-release",
       "output": {
         "outputOnFailure": true
+      },
+      "environment": {
+        "CTEST_PARALLEL_LEVEL": "$penv{CTEST_PARALLEL_LEVEL}"
       }
     },
     {

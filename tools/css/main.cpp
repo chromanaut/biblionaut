@@ -1,8 +1,9 @@
 // bn-css: reads CSS with the reader the firmware reads it with, and says
 // what it found: for one sheet, every rule; for an EPUB, a line for each
-// of its style sheets and a count of what was passed over; and for a
-// document and the sheets it is given, what the rules come to for each of
-// its elements.
+// of its style sheets and a count of what was passed over; for a document
+// and the sheets it is given, what the rules come to for each of its
+// elements; and for an EPUB's documents, the sheets each asks for, found
+// as the firmware finds them, and what was left out in finding them.
 //
 // What is found is written one thing to a line, in a form made to be
 // compared with what another reader makes of the same sheet:
@@ -34,6 +35,13 @@
 //   P property: value    something that is set for it, the value that wins
 //   F property: value    something that is set for its first letter
 //   >                    the element closes
+//
+// And the sheets a document asks for:
+//
+//   D name               a document of the book
+//   S path               a sheet it is given, in the order their rules
+//                        apply; `S <style>` for its own `<style>` rules
+//   X kind: text         something that was left out in finding them
 
 #include <algorithm>
 #include <array>
@@ -54,8 +62,10 @@
 #include "core/checksum.h"
 #include "core/inflate.h"
 #include "core/storage.h"
+#include "epub/book_files.h"
 #include "epub/css.h"
 #include "epub/css_rules.h"
+#include "epub/document_sheets.h"
 #include "epub/xml.h"
 #include "epub/zip.h"
 #include "support/one_file.h"
@@ -82,6 +92,8 @@ void PrintUsage(const char* program) {
                "       %s style TEXT\n"
                "       %s book FILE [--dropped]\n"
                "       %s cascade [--in BOOK] [--sum] DOCUMENT SHEET...\n"
+               "       %s sheets BOOK [--dropped]\n"
+               "       %s document [--sum] BOOK DOCUMENT\n"
                "\n"
                "Reads CSS the way the firmware does.\n"
                "\n"
@@ -104,17 +116,30 @@ void PrintUsage(const char* program) {
                "           < name   an element opens      >   it closes\n"
                "           P property: value   something set for it, the value that wins\n"
                "           F property: value   something set for its first letter\n"
+               "  sheets   finds, for every document of the EPUB (or other ZIP file) BOOK, those\n"
+               "         whose names end in .xhtml, .html or .htm, the style sheets it asks for:\n"
+               "         those its head links, each after the sheets it imports, and its own\n"
+               "         `<style>` rules. Prints for each:\n"
+               "           D name   the document          S path   a sheet it is given, in order\n"
+               "         with `S <style>` for its own rules; and at the end how many documents\n"
+               "         and sheets there were, what was left out by its kind, and what the table\n"
+               "         of the book's rules takes\n"
+               "  document  finds the sheets of the one DOCUMENT of BOOK in the same way, prints\n"
+               "         them and what was left out, and then goes through the document with them\n"
+               "         and prints what `cascade` prints\n"
                "\n"
                "  --dropped  with book: after that, a line for each different thing that was\n"
                "             passed over: `dropped`, how many times, its kind, and what it was\n"
                "  --in BOOK  with cascade: DOCUMENT and each SHEET are the names of entries in the\n"
                "             EPUB (or other ZIP file) BOOK\n"
-               "  --sum      with cascade: print one line in place of those, with the checksum\n"
-               "             (CRC-32) of them, how many elements and lines there were, and what\n"
-               "             the table and the cascade took\n"
+               "             with sheets: under each document, a line for each thing left out:\n"
+               "               X kind: text\n"
+               "  --sum      with cascade or document: print one line in place of the elements,\n"
+               "             with the checksum (CRC-32) of their lines, how many elements and lines\n"
+               "             there were, and what the table and the cascade took\n"
                "\n"
                "Ends with 0, or 1 if something could not be read.\n",
-               program, program, program, program);
+               program, program, program, program, program, program);
 }
 
 std::string Escaped(std::string_view raw) {
@@ -607,6 +632,212 @@ int Cascade(const std::string& book, bool sum, const std::string& document, cons
   return 0;
 }
 
+// A book, open to have its documents and sheets read: the ZIP file, and
+// its entries as a book's files.
+class OpenBook {
+ public:
+  explicit OpenBook(const std::string& path) : storage_(path) {}
+
+  bool Start() {
+    return storage_.Start() == StorageStatus::kOk &&
+           directory_.Open(storage_, "/zip", bn::core::OpenMode::kRead) == StorageStatus::kOk &&
+           entries_.Open(storage_, "/zip", bn::core::OpenMode::kRead) == StorageStatus::kOk &&
+           archive_.Open(directory_) == ZipStatus::kOk;
+  }
+
+  bn::epub::BookFiles& Files() { return files_; }
+
+  // The names of its documents, in the order the ZIP file has them: false
+  // if its directory cannot be read.
+  bool Documents(std::vector<std::string>& names) {
+    std::vector<char> name(65536);
+    bn::epub::ZipArchive::Cursor cursor;
+    for (;;) {
+      bn::epub::ZipEntry entry;
+      const ZipStatus next = archive_.Next(cursor, entry, name);
+      if (next == ZipStatus::kEnd) {
+        return true;
+      }
+      if (next != ZipStatus::kOk && next != ZipStatus::kUnsupported) {
+        return false;
+      }
+      const std::string entryName(name.data(), std::min<std::size_t>(entry.nameLength, name.size()));
+      std::string lowered = entryName;
+      std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                     [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; });
+      if (lowered.ends_with(".xhtml") || lowered.ends_with(".html") || lowered.ends_with(".htm")) {
+        names.push_back(entryName);
+      }
+    }
+  }
+
+ private:
+  bn::tools::OneFile storage_;
+  std::array<std::uint8_t, 4096> directoryBuffer_{};
+  std::array<std::uint8_t, 4096> entryBuffer_{};
+  bn::core::BlockFile directory_{directoryBuffer_};
+  bn::core::BlockFile entries_{entryBuffer_};
+  bn::epub::ZipArchive archive_;
+  std::vector<std::uint8_t> window_ = std::vector<std::uint8_t>(bn::core::Inflater::kWindowBytes);
+  bn::epub::ZipEntryReader entryReader_{window_};
+  bn::epub::ZipBookFiles files_{archive_, entries_, entryReader_};
+};
+
+// What finding a document's sheets needs besides the book, and who is
+// told of what was left out.
+class Finder final : public bn::epub::SheetsListener {
+ public:
+  explicit Finder(bn::epub::BookFiles& files) : sheets(files, parser, reader, table, names_, style_) {
+    sheets.SetListener(this);
+    sheets.BeginBook();
+  }
+
+  void OnSheetRead(std::string_view /*path*/, std::uint8_t /*sheet*/,
+                   const bn::epub::CssReader& /*reader*/) noexcept override {}
+  void OnLeftOut(bn::epub::SheetLeftOut what, std::string_view text) noexcept override {
+    leftOut.push_back(std::string("X ") + bn::epub::SheetLeftOutName(what) + ": " + Escaped(text));
+  }
+
+  // The lines for the document's sheets, in the order of its list.
+  std::vector<std::string> SheetLines() const {
+    std::vector<std::string> lines;
+    const std::span<const std::uint8_t> list = sheets.Sheets();
+    for (std::size_t i = 0; i < list.size(); ++i) {
+      const bool own = sheets.HasOwnStyle() && i + 1 == list.size();
+      lines.push_back("S " + (own ? std::string("<style>") : Escaped(sheets.PathOf(list[i]))));
+    }
+    return lines;
+  }
+
+  std::uint32_t LeftOutInAll() const {
+    std::uint32_t all = 0;
+    for (std::size_t kind = 0; kind < bn::epub::kSheetLeftOutKinds; ++kind) {
+      all += sheets.LeftOut(static_cast<bn::epub::SheetLeftOut>(kind));
+    }
+    return all;
+  }
+
+ private:
+  std::vector<std::uint8_t> parserMemory_ = std::vector<std::uint8_t>(kParserBytes);
+  std::vector<std::uint8_t> tableMemory_ = std::vector<std::uint8_t>(bn::epub::CssRules::kMaxBytes);
+  std::vector<char> names_ = std::vector<char>(bn::epub::DocumentSheets::kNamesBytes);
+  std::vector<std::uint8_t> style_ = std::vector<std::uint8_t>(bn::epub::DocumentSheets::kStyleBytes);
+
+ public:
+  bn::epub::XmlParser parser{parserMemory_};
+  CssReader reader;
+  bn::epub::CssRules table{tableMemory_};
+  bn::epub::DocumentSheets sheets;
+  // What was left out for the document in hand, a line each.
+  std::vector<std::string> leftOut;
+};
+
+void PrintLines(const std::vector<std::string>& lines) {
+  for (const std::string& line : lines) {
+    std::fwrite(line.data(), 1, line.size(), stdout);
+    std::fputc('\n', stdout);
+  }
+}
+
+int Sheets(const std::string& path, bool printDropped) {
+  OpenBook book(path);
+  std::vector<std::string> documents;
+  if (!book.Start() || !book.Documents(documents)) {
+    std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
+    return 1;
+  }
+  Finder finder(book.Files());
+  std::uint32_t unopened = 0;
+  std::uint64_t given = 0;
+  for (const std::string& document : documents) {
+    finder.leftOut.clear();
+    PrintLines({"D " + Escaped(document)});
+    if (finder.sheets.Find(document) != bn::epub::SheetsStatus::kOk) {
+      ++unopened;
+      continue;
+    }
+    PrintLines(finder.SheetLines());
+    given += finder.sheets.Sheets().size();
+    if (printDropped) {
+      PrintLines(finder.leftOut);
+    }
+  }
+  // Without the document in hand's own rules: what the book's sheets take.
+  finder.sheets.Begin({});
+  std::printf(
+      "sheets_documents=%zu sheets_unopened=%u sheets_given=%llu sheets_read=%zu sheets_names_bytes=%zu "
+      "sheets_left_out=%u\n",
+      documents.size(), static_cast<unsigned>(unopened), static_cast<unsigned long long>(given),
+      finder.sheets.SheetsRead(), finder.sheets.NamesBytes(), static_cast<unsigned>(finder.LeftOutInAll()));
+  // Each kind of thing that was left out, with how many: none, if nothing
+  // was.
+  std::string kinds = "left_out";
+  for (std::size_t kind = 0; kind < bn::epub::kSheetLeftOutKinds; ++kind) {
+    const auto what = static_cast<bn::epub::SheetLeftOut>(kind);
+    if (finder.sheets.LeftOut(what) == 0) {
+      continue;
+    }
+    std::string name = bn::epub::SheetLeftOutName(what);
+    std::replace(name.begin(), name.end(), ' ', '_');
+    kinds += " " + name + "=" + std::to_string(finder.sheets.LeftOut(what));
+  }
+  PrintLines({kinds});
+  std::printf(
+      "css_table_bytes=%zu css_table_names=%zu css_table_nodes=%zu css_table_rules=%u css_table_selectors=%u "
+      "css_table_left_out=%u\n",
+      finder.table.Bytes(), finder.table.Names(), finder.table.Nodes(), static_cast<unsigned>(finder.table.Rules()),
+      static_cast<unsigned>(finder.table.Selectors()),
+      static_cast<unsigned>(finder.table.LeftOutForRoom() + finder.table.LeftOutForNodes()));
+  return 0;
+}
+
+int Document(const std::string& path, bool sum, const std::string& document) {
+  OpenBook book(path);
+  if (!book.Start()) {
+    std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
+    return 1;
+  }
+  Finder finder(book.Files());
+  if (finder.sheets.Find(document) != bn::epub::SheetsStatus::kOk) {
+    std::fprintf(stderr, "error: cannot read %s\n", document.c_str());
+    return 1;
+  }
+  if (!sum) {
+    PrintLines(finder.SheetLines());
+    PrintLines(finder.leftOut);
+  }
+
+  // The document again, from its start, with the sheets it was given.
+  bn::core::ByteSource* source = book.Files().Open(document);
+  if (source == nullptr) {
+    std::fprintf(stderr, "error: cannot read %s\n", document.c_str());
+    return 1;
+  }
+  std::vector<std::uint8_t> cascadeMemory(kCascadeBytes);
+  bn::epub::CssCascade cascade(finder.table, cascadeMemory);
+  cascade.Begin(finder.sheets.Sheets());
+  Lines lines(!sum);
+  Styler styler(cascade, lines);
+  const bn::epub::XmlStatus status = finder.parser.Parse(*source, styler);
+  if (status != bn::epub::XmlStatus::kOk) {
+    std::fprintf(stderr, "error: %s: %s at line %u\n", document.c_str(), bn::epub::XmlStatusName(status),
+                 static_cast<unsigned>(finder.parser.Line()));
+    return 1;
+  }
+  if (sum) {
+    std::printf(
+        "document %08x elements=%u lines=%u sheets=%zu own_style=%u sheets_left_out=%u table_bytes=%zu nodes=%zu "
+        "level_bytes=%zu left_out=%u too_deep=%u too_many_classes=%u most_work=%llu\n",
+        static_cast<unsigned>(lines.Checksum()), static_cast<unsigned>(styler.elements),
+        static_cast<unsigned>(lines.Count()), finder.sheets.Sheets().size(), finder.sheets.HasOwnStyle() ? 1U : 0U,
+        static_cast<unsigned>(finder.LeftOutInAll()), finder.table.Bytes(), finder.table.Nodes(), cascade.LevelBytes(),
+        static_cast<unsigned>(finder.table.LeftOutForRoom() + finder.table.LeftOutForNodes()),
+        static_cast<unsigned>(cascade.TooDeep()), static_cast<unsigned>(cascade.TooManyClasses()),
+        static_cast<unsigned long long>(cascade.MostWork()));
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -636,6 +867,24 @@ int main(int argc, char** argv) {
     }
     if (!names.empty()) {
       return Cascade(book, sum, names.front(), {names.begin() + 1, names.end()});
+    }
+  }
+  if (command == "sheets" && (argc == 3 || (argc == 4 && std::strcmp(argv[3], "--dropped") == 0))) {
+    return Sheets(argv[2], argc == 4);
+  }
+  if (command == "document") {
+    bool sum = false;
+    std::vector<std::string> names;
+    for (int i = 2; i < argc; ++i) {
+      const std::string argument = argv[i];
+      if (argument == "--sum") {
+        sum = true;
+      } else {
+        names.push_back(argument);
+      }
+    }
+    if (names.size() == 2) {
+      return Document(names[0], sum, names[1]);
     }
   }
   PrintUsage(argv[0]);

@@ -28,7 +28,12 @@
   X(3, kSpanPackageResolve, "package_resolve", "documents")                 \
   /* Going through the ZIP file's directory for the files that are       */ \
   /* wanted: the argument is how many files the manifest lists.          */ \
-  X(4, kSpanPackageFindFiles, "package_find_files", "files")
+  X(4, kSpanPackageFindFiles, "package_find_files", "files")                \
+  /* Finding the style sheets a document asks for                        */ \
+  /* (epub/document_sheets.h), from its beginning to its end, whatever   */ \
+  /* else was done between its steps: the argument is how many sheets    */ \
+  /* the document was given.                                             */ \
+  X(5, kSpanDocumentSheets, "document_sheets", "sheets")
 
 namespace bn::epub {
 

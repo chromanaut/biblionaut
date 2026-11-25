@@ -887,6 +887,136 @@ RULES_DOCUMENT = b"""<html|xmlns:epub|http://www.idpf.org/2007/ops|lang|en-GB
 """
 
 
+# ---- document_sheets: byte 0 (how much memory, and how a file is read),
+# ---- byte 1 (which file fails, and where), byte 2 (where the first
+# ---- document is given up), then the book's files, a byte of zero between
+# ---- them: a path, a line end, and what the file holds.
+
+def sheets_page(head: str, body: str = "<p>Text.</p>") -> str:
+    return (f"<?xml version='1.0' encoding='utf-8'?>\n<html xmlns='http://www.w3.org/1999/xhtml'><head>"
+            f"<title>A page</title>{head}</head><body>{body}</body></html>")
+
+
+def sheets_link(href: str, more: str = "") -> str:
+    return f"<link rel='stylesheet' type='text/css' href='{href}' {more}/>"
+
+
+def document_sheets_seeds() -> None:
+    clear("document_sheets")
+    rule = "p { text-indent: 1em; margin: 0 } h1 + p, p.first { text-indent: 0 }\n"
+
+    def seed(name: str, files: dict[str, str], choices: int = 0, failing: int = 7, given_up: int = 0) -> None:
+        book = b"\0".join(path.encode() + b"\n" + contents.encode() for path, contents in files.items())
+        write("document_sheets", name, bytes([choices, failing, given_up]) + book)
+
+    two = {
+        "text/one.xhtml": sheets_page(sheets_link("../css/a.css") + "<style>p { text-indent: 2em }</style>"),
+        "text/two.xhtml": sheets_page(sheets_link("../css/b.css") + sheets_link("../css/a.css")),
+        "css/a.css": "@import 'b.css'; " + rule, "css/b.css": rule,
+    }
+    seed("a-book-of-two-documents", two)
+    seed("a-document-whose-path-is-too-long", {**two, "long/" + "x" * 600 + ".xhtml": two["text/one.xhtml"]})
+    seed("a-book-read-a-byte-at-a-time", two, choices=3 << 6)
+    seed("a-book-read-seven-bytes-at-a-time", two, choices=2 << 6)
+    seed("a-document-given-up-part-way", two, given_up=5)
+    seed("a-document-given-up-in-a-sheet", two, given_up=3, choices=2 << 6)
+    seed("a-sheet-that-fails", two, failing=2 | (3 << 3))
+    seed("a-document-that-fails", two, failing=0 | (20 << 3))
+    seed("little-room-for-names", two, choices=2)
+    seed("no-room-for-names", two, choices=3)
+    seed("little-room-for-a-style", two, choices=2 << 2)
+    seed("no-room-for-a-style", two, choices=3 << 2)
+    seed("a-table-with-room-for-little", two, choices=2 << 4)
+    seed("a-table-with-room-for-next-to-nothing", two, choices=3 << 4)
+    seed("links-that-count-and-links-that-do-not", {
+        "page.xhtml": sheets_page(
+            "<link rel='StyleSheet' href='caps.css'/><link rel='alternate stylesheet' href='n.css'/>"
+            "<link rel='stylesheet\talternate' href='n.css'/><link rel='icon' href='i.css'/><link href='norel.css'/>"
+            "<link rel='stylesheet'/><link rel='stylesheet' type=' TEXT/CSS ' href='typed.css'/>"
+            "<link rel='stylesheet' type='application/vnd.adobe-page-template+xml' href='t.xpgt'/>"
+            "<link rel=' author  stylesheet ' href='words.css'/>"
+            "<x:link xmlns:x='http://www.w3.org/1999/xhtml' rel='stylesheet' href='prefixed.css'/>"),
+        "caps.css": rule, "n.css": rule, "typed.css": rule, "words.css": rule, "prefixed.css": rule,
+    })
+    seed("links-and-styles-for-other-media", {
+        "page.xhtml": sheets_page(
+            sheets_link("kindle.css", "media='amzn-mobi'") + sheets_link("all.css", "media='all'") +
+            sheets_link("others.css", "media='not amzn-mobi'") + sheets_link("newer.css", "media='(min-device-width: 0px)'") +
+            "<style media='print'>p { margin: 0 }</style><style media='screen'>p { margin: 1em }</style>"),
+        "kindle.css": rule, "all.css": rule, "others.css": rule, "newer.css": rule,
+    })
+    seed("links-to-no-file-of-the-book", {
+        "a/page.xhtml": sheets_page(sheets_link("https://example.org/a.css") + sheets_link("gone.css") + sheets_link("") +
+                                    sheets_link("../../up.css") + sheets_link("/top.css#x") + sheets_link("a%20b.css?q")),
+        "up.css": rule, "top.css": rule, "a/a b.css": rule,
+    })
+    seed("more-links-than-are-followed", {
+        "page.xhtml": sheets_page("".join(sheets_link(f"s{i % 6}.css") for i in range(11))),
+        **{f"s{i}.css": rule for i in range(6)},
+    })
+    seed("imports-too-deep-and-round-in-a-ring", {
+        "page.xhtml": sheets_page(sheets_link("s0.css") + sheets_link("ring.css")),
+        "deep.xhtml": sheets_page(sheets_link("s3.css")),
+        **{f"s{i}.css": f"@import 's{i + 1}.css'; " + rule for i in range(5)},
+        "ring.css": "@import 'ring.css'; @import url(s5.css); @import 'print.css' print; @import 'http://x.org/y.css'; " + rule,
+    })
+    seed("a-sheet-named-twice", {
+        "links.xhtml": sheets_page(sheets_link("a.css") + sheets_link("b.css") + sheets_link("a.css")),
+        "imports.xhtml": sheets_page(sheets_link("c.css") + sheets_link("d.css")),
+        "a.css": rule, "b.css": rule, "shared.css": "p { text-indent: 3em }",
+        "c.css": "@import 'shared.css'; p { text-indent: 1em }", "d.css": "@import 'shared.css'; h1 { margin: 0 }",
+    })
+    seed("styles-of-every-kind", {
+        "page.xhtml": sheets_page(
+            "<style>p { text-indent: 1em</style><style>h1 { font-weight: bold }</style>"
+            "<style type='text/x-other'>p { margin: 9em }</style><style></style>"
+            "<style>@import 'a.css'; p { text-indent: 1em }</style><style><b>p { margin: 0 }</b> h2 { margin: 0 }</style>"
+            "<!--[if gte mso 9]><style>p { text-indent: 1em }</style><![endif]-->" + sheets_link("a.css")),
+        "long.xhtml": sheets_page("<style>h1 { margin: 0 }</style><style>p.long { margin: 0 } " + " " * 80 +
+                                  "</style><style>h2 { margin: 0 }</style>"),
+        "a.css": rule,
+    }, choices=1 << 2)
+    seed("a-style-of-another-type-and-no-other", {
+        "page.xhtml": sheets_page("<style type='text/x-other'>p { margin: 9em }</style>"),
+        "typed.xhtml": sheets_page("<style type=' Text/CSS '>p { margin: 9em }</style>"),
+    })
+    # The room is 64 bytes: a style of 63 fits with the byte that ends it, and one of 64 does not.
+    fits = "p { margin: 0 }".ljust(63)
+    seed("a-style-that-just-fits-and-one-a-byte-longer", {
+        "fits.xhtml": sheets_page(f"<style>{fits}</style>"),
+        "long.xhtml": sheets_page(f"<style>{fits} </style>"),
+        "two.xhtml": sheets_page(f"<style>{fits[:31]}</style><style>{fits[:31]}</style>"),
+        "three.xhtml": sheets_page(f"<style>{fits[:31]}</style><style>{fits[:32]}</style><style>p{{}}</style>"),
+    }, choices=1 << 2)
+    seed("styles-that-would-read-otherwise-run-together", {
+        "page.xhtml": sheets_page("<style>p { text-indent: 1em } h1 { margin: 0</style><style>} h2 { margin: 0 } "
+                                  "h3 { margin: 0 }</style><style>h4 { margin: 0 }</style>"),
+        "after.xhtml": sheets_page("<style>h5 { margin: 0 }</style>"),
+    })
+    seed("a-head-cut-short-inside-a-style", {
+        "cut.xhtml": "<html><head><style>p { margin: 0 }</style><style>h1 { margin: 0 } h2 { margin: 0 }",
+        "only.xhtml": "<html><head><style>p { margin: 0 } h1 { margin: 0 }",
+    })
+    seed("more-imports-than-are-remembered", {
+        "page.xhtml": sheets_page(sheets_link("a.css")),
+        "a.css": "".join(f"@import 'i{i % 5}.css';" for i in range(70)) + rule,
+        **{f"i{i}.css": rule for i in range(5)},
+    })
+    seed("an-entity-in-the-head", {
+        "page.xhtml": "<!DOCTYPE html PUBLIC '-//W3C//DTD XHTML 1.1//EN' 'http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd'>"
+                      "<html><head><title>A&nbsp;page</title>" + sheets_link("a.css") +
+                      "<style>p { text-indent:&nbsp;1em } h1 { margin: 0 }</style></head><body/></html>",
+        "a.css": rule,
+    })
+    seed("the-head-and-no-more", {
+        "body.xhtml": sheets_page(sheets_link("a.css"), sheets_link("late.css") + "<style>p { margin: 0 }</style>" + "x" * 3000),
+        "drawing.xhtml": "<svg xmlns='http://www.w3.org/2000/svg'><link rel='stylesheet' href='a.css'/></svg>",
+        "broken.xhtml": "<html><head>" + sheets_link("a.css") + "<meta charset='utf-8'><style>p { margin: 0 }</style></head><body/></html>",
+        "cut.xhtml": "<html><head>" + sheets_link("a.css") + "<style media='print'>p { margin: 0 }",
+        "nothing.xhtml": "", "text.xhtml": "Not XML at all.", "a.css": rule, "late.css": rule,
+    })
+
+
 def css_rules_seeds() -> None:
     clear("css_rules")
 
@@ -1843,6 +1973,7 @@ def main() -> None:
     css_seeds()
     svg_sheet_seeds()
     css_rules_seeds()
+    document_sheets_seeds()
     svg_tags_seeds()
     svg_values_seeds()
     svg_path_seeds()

@@ -77,6 +77,7 @@ TARGETS = {
     "toc": 16384,
     "css": 16384,
     "css_rules": 8192,
+    "document_sheets": 8192,
     "region_heap": 3072,
     "hyphenator": 4096,
     "paragraph": 4096,
@@ -98,6 +99,7 @@ TARGETS = {
 XML_PIECES = ROOT / "tests" / "fuzz" / "xml.dict"
 CSS_PIECES = ROOT / "tests" / "fuzz" / "css.dict"
 CSS_RULES_PIECES = ROOT / "tests" / "fuzz" / "css_rules.dict"
+SHEETS_PIECES = ROOT / "tests" / "fuzz" / "document_sheets.dict"
 SVG_PIECES = ROOT / "tests" / "fuzz" / "svg.dict"
 PNG_PIECES = ROOT / "tests" / "fuzz" / "png.dict"
 JPEG_PIECES = ROOT / "tests" / "fuzz" / "jpeg.dict"
@@ -109,6 +111,7 @@ DICTIONARIES = {
     "toc": XML_PIECES,
     "css": CSS_PIECES,
     "css_rules": CSS_RULES_PIECES,
+    "document_sheets": SHEETS_PIECES,
     "svg_tags": SVG_PIECES,
     "svg_sheet": SVG_PIECES,
     "svg_values": SVG_PIECES,

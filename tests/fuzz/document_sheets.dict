@@ -1,0 +1,48 @@
+# Pieces of what the target for the sheets a document asks for is given:
+# of a book's files, of a head, and of a sheet's imports. Given to the
+# fuzzing engine (tools/fuzz.py), which would be a long time coming to
+# them by changing bytes. One piece a line, in quotes.
+
+# Between the files, and a file's path
+"\x00"
+".xhtml\x0a"
+".css\x0a"
+"a.css"
+"../"
+"css/"
+
+# A head
+"<html>"
+"<head>"
+"</head>"
+"<body>"
+"<link rel='stylesheet' href='"
+"'/>"
+" rel='"
+" href='"
+" type='text/css'"
+" media='"
+"stylesheet"
+"alternate"
+"<style>"
+"</style>"
+"<!--"
+"-->"
+
+# Media
+"screen"
+"print"
+"all"
+"not "
+"(min-width: 1px)"
+
+# A sheet
+"@import '"
+"@import url("
+"';"
+");"
+"p { margin: 0 }"
+"http://x.org/"
+"%2e%2e/"
+"#"
+"?"

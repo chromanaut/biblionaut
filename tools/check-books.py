@@ -11,9 +11,13 @@ compares, book by book:
   - bn-epub info with a reading of the package by ElementTree;
   - bn-epub toc with a reading of each table of contents the book has;
   - bn-css with a second reading of every style sheet, line for line;
-  - bn-css cascade with a second working-out of what the rules come to
+  - bn-css sheets with a second finding of the style sheets each document
+    asks for: those its head links, each after the sheets it imports, and
+    its own `<style>` rules, in their order, and what was left out by its
+    kind;
+  - bn-css document with a second working-out of what the rules come to
     for each element, on the first few documents of the book, each given
-    the style sheets it links and those they import;
+    the sheets the second finding gives it;
   - bn-png book with a second reading of every PNG picture: its header, how
     the reading ended, and the checksum of every row of gray;
   - bn-jpeg book with a second reading of every JPEG picture, both read at
@@ -22,16 +26,19 @@ compares, book by book:
     is worked out in whole numbers and so the same byte for byte.
 
 The readings of the ZIP file, the documents, the package, the style sheets
-and the pictures, and the working-out of the cascade, are the ones the
-end-to-end tests use on the books they make (tests/e2e). The reading of a table of
-contents is written here, since real tables do things the tests' own do
-not; so is which sheets a document links.
+and the pictures, the finding of a document's sheets and the working-out
+of the cascade, are the ones the end-to-end tests use on the books they
+make (tests/e2e). The reading of a table of contents is written here,
+since real tables do things the tests' own do not.
 
 With --css-report it also says what the style sheets of the books lose to
 what the reader of CSS does not read: each kind of thing that was passed
 over, and the properties, pseudo-classes and at-rules passed over most,
-each with how many times and in how many books. And it says what keeping
-a book's rules takes: the size of a table of all of them, book by book.
+each with how many times and in how many books. It says what keeping a
+book's rules takes: the size of a table of all of them, book by book. And
+it says what the documents ask for: how many sheets, how many have rules
+of their own, and each kind of thing that was left out in finding them,
+with how many times and in how many books.
 
 A folder with a file named SHA256SUMS in it is also checked against that
 file: every file it lists has to be there and unchanged, and every EPUB
@@ -60,6 +67,7 @@ import sys
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
+from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote_to_bytes
 
@@ -72,6 +80,7 @@ import css_tool  # noqa: E402
 import epub_tool  # noqa: E402
 import jpeg_tool  # noqa: E402
 import png_tool  # noqa: E402
+import sheets_tool  # noqa: E402
 import xml_tool  # noqa: E402
 import zip_tool  # noqa: E402
 
@@ -85,7 +94,6 @@ MAX_FRAGMENT = 128
 MAX_CASCADE_DOCUMENTS = 6
 MAX_CASCADE_ELEMENTS = 1500
 MAX_CASCADE_LOOKED_AT = 40
-MAX_IMPORT_DEPTH = 4
 
 
 def run(*command: str) -> subprocess.CompletedProcess:
@@ -431,22 +439,13 @@ def check_css(tool: str, path: Path, figures: dict) -> list[str]:
     return problems[:4]
 
 
-def links_of(document: bytes) -> tuple[list[str], int] | None:
-    """The style sheets a document links, as it names them and in its order, and how many elements it has; None if
-    it is not XML. A link counts if it says it is a style sheet and not an alternate one, and does not say it is of
-    some kind other than CSS."""
-    links: list[str] = []
+def elements_of(document: bytes) -> int | None:
+    """How many elements a document has; None if it is not XML."""
     elements = 0
 
     def start(name: str, attributes: dict[str, str]) -> None:
         nonlocal elements
         elements += 1
-        if name.rpartition(":")[2].lower() != "link" or "href" not in attributes:
-            return
-        said = attributes.get("rel", "").lower().split()
-        kind = attributes.get("type", "").strip().lower()
-        if "stylesheet" in said and "alternate" not in said and kind in ("", "text/css"):
-            links.append(attributes["href"])
 
     parser = xml_tool.expat.ParserCreate()
     parser.StartElementHandler = start
@@ -454,61 +453,99 @@ def links_of(document: bytes) -> tuple[list[str], int] | None:
         parser.Parse(document, True)
     except xml_tool.expat.ExpatError:
         return None
-    return links, elements
+    return elements
+
+
+def check_sheets(tool: str, path: Path, figures: dict) -> list[str]:
+    """The sheets each document asks for: what `bn-css sheets` finds, beside the second working-out."""
+    said = sheets_tool.said_by(tool, path)
+    if isinstance(said, str):
+        return [f"bn-css sheets: {said}"]
+    lists, left, took = said
+    problems = []
+    with zipfile.ZipFile(path) as archive:
+        by_name = {zip_tool.name_bytes(info): info for info in archive.infolist()}
+        if len(by_name) != len(archive.infolist()):
+            return []  # Two entries of one name: which the tool finds is not this check's to say.
+        documents = [name for name in by_name if name.lower().endswith((b".xhtml", b".html", b".htm"))]
+        if list(lists) != documents:
+            return [f"bn-css sheets: it went through {len(lists)} documents, and Python finds {len(documents)} by their "
+                    "names, not all the same"]
+        figures["asked documents"] = len(documents)
+        figures["asked sheets"] = took["sheets_given"]
+        figures["sheets read"] = [took["sheets_read"]]
+        figures["sheets names"] = [took["sheets_names_bytes"]]
+        for kind, count in left.items():
+            figures[f"left out\t{kind}"] = count
+            figures[f"books left out\t{kind}"] = 1
+        # Where the tool ran out of room, or a file is damaged, what it gives
+        # is not what the second working-out has: it does not work those out.
+        if any(left[kind] for kind in sheets_tool.NOT_WORKED_OUT):
+            figures["sheets_not_compared"] = 1
+            return []
+        book = sheets_tool.Book(lambda name: name in by_name, lambda name: archive.read(by_name[name]))
+        expected_left: Counter = Counter()
+        most_links = 0
+        for name in documents:
+            listed, document_left, own = book.sheets_of(name)
+            expected_left += document_left
+            most_links = max(most_links, len(listed))
+            if own:
+                figures["own styles"] = figures.get("own styles", 0) + 1
+                figures["own style bytes"] = figures.get("own style bytes", []) + [sum(len(text) + 1 for text in own)]
+            if lists[name] != listed and len(problems) < 4:
+                problems.append(f"bn-css sheets: {name!r} is given {lists[name]}; the second working-out has {listed}")
+        figures["most sheets"] = [most_links]
+        if left != expected_left:
+            problems.append(f"bn-css sheets: left out, by kind: {dict(left)}; the second working-out has "
+                            f"{dict(expected_left)}")
+    return problems[:4]
 
 
 def check_cascade(tool: str, path: Path, figures: dict) -> list[str]:
+    """What the rules come to for the elements of a few documents: `bn-css document`, which finds each one's
+    sheets itself, beside the second working-out of the cascade given the sheets the second finding has."""
     problems = []
     with zipfile.ZipFile(path) as archive:
         by_name = {zip_tool.name_bytes(info): info for info in archive.infolist()}
         if len(by_name) != len(archive.infolist()):
             return []  # Two entries of one name: which the tool finds is not this check's to say.
         documents = [(name, info) for name, info in by_name.items() if name.lower().endswith((b".xhtml", b".html", b".htm"))]
+        book = sheets_tool.Book(lambda name: name in by_name, lambda name: archive.read(by_name[name]))
         left = MAX_CASCADE_ELEMENTS
         done = 0
         for name, info in documents[:MAX_CASCADE_LOOKED_AT]:
             if done == MAX_CASCADE_DOCUMENTS:
                 break
             document = archive.read(info)
-            found = links_of(document)
-            if found is None or found[1] > left:
+            elements = elements_of(document)
+            if elements is None or elements > left:
                 continue
-            hrefs, elements = found
 
-            # The sheets it is given: those it links, each after the sheets it imports.
-            sheets: list[bytes] = []
+            # The sheets it is given, by the second finding: those it links,
+            # each after the sheets it imports, and then its own.
+            listed, _, own = book.sheets_of(name)
+            sheets = [archive.read(by_name[sheet]) for sheet in listed if sheet != sheets_tool.OWN_STYLE] + own
 
-            def give(sheet: bytes | None, depth: int, within: tuple[bytes, ...]) -> None:
-                if sheet is None or sheet not in by_name or sheet in within or depth > MAX_IMPORT_DEPTH:
-                    return
-                for line in css_tool.read_css(archive.read(by_name[sheet])):
-                    if line.startswith(b"I "):
-                        give(resolved(sheet.rpartition(b"/")[0], line[2:].decode("utf-8", "replace")), depth + 1,
-                             within + (sheet,))
-                sheets.append(sheet)
-
-            for href in hrefs:
-                give(resolved(name.rpartition(b"/")[0], href), 0, ())
-            if len(sheets) > 60:
-                continue  # More than a table numbers.
-
-            result = run(tool, "cascade", "--in", str(path), "--sum", name, *sheets)
+            result = run(tool, "document", "--sum", str(path), name)
             said = result.stdout.decode("utf-8", "replace").split()
-            if result.returncode != 0 or len(said) < 4 or said[0] != "cascade":
-                problems.append(f"bn-css cascade: {name!r}: ended with {result.returncode}: {result.stderr[-120:]!r}")
+            if result.returncode != 0 or len(said) < 4 or said[0] != "document":
+                problems.append(f"bn-css document: {name!r}: ended with {result.returncode}: {result.stderr[-120:]!r}")
                 continue
             took = {key: int(value) for key, value in (item.split("=") for item in said[2:])}
             if took["left_out"] or took["too_deep"]:
                 figures["cascade_not_compared"] = figures.get("cascade_not_compared", 0) + 1
                 continue
-            expected, counted = css_cascade_tool.cascade_lines([archive.read(by_name[sheet]) for sheet in sheets], document)
+            expected, counted = css_cascade_tool.cascade_lines(sheets, document)
             mine = (said[1], took["elements"], took["lines"])
             theirs = (f"{css_cascade_tool.checksum(expected):08x}", counted, len(expected))
             if mine != theirs:
-                # Where they part, from the lines themselves.
-                got = run(tool, "cascade", "--in", str(path), name, *sheets).stdout.split(b"\n")[:-1]
+                # Where they part, from the lines themselves: those of the
+                # elements come after the lines for the sheets.
+                got = [line for line in run(tool, "document", str(path), name).stdout.split(b"\n")[:-1]
+                       if line[:2] not in (b"S ", b"X ")]
                 at = next((i for i, (a, b) in enumerate(zip(got, expected)) if a != b), min(len(got), len(expected)))
-                problems.append(f"bn-css cascade: {name!r} with {len(sheets)} sheets: {mine}; the second working-out "
+                problems.append(f"bn-css document: {name!r} with {len(sheets)} sheets: {mine}; the second working-out "
                                 f"has {theirs}; line {at + 1} is {got[at:at + 1]!r} and {expected[at:at + 1]!r}")
                 continue
             done += 1
@@ -622,6 +659,7 @@ def check_book(arguments: tuple[str, str, str, str, str, str, str]) -> tuple[str
         problems += check_package(epub_tool_path, path, figures)
         problems += check_tables(epub_tool_path, path, figures)
         problems += check_css(css_tool_path, path, figures)
+        problems += check_sheets(css_tool_path, path, figures)
         problems += check_cascade(css_tool_path, path, figures)
         problems += check_png(png_tool_path, path, figures)
         problems += check_jpeg(jpeg_tool_path, path, figures)
@@ -666,6 +704,20 @@ def print_css_report(totals: dict, books: int) -> None:
     if totals.get("level bytes"):
         print(f"  bytes kept for each open element, in the documents the cascade was tried on: {spread(totals['level bytes'])}")
         print(f"  the most work for one element: {spread(totals['most work'])}")
+    print(f"\nWhat documents ask for: {totals.get('asked documents', 0)} documents are given "
+          f"{totals.get('asked sheets', 0)} sheets, {totals.get('own styles', 0)} of them with rules of their own:")
+    if totals.get("sheets read"):
+        print(f"  sheets a book's documents ask for between them: {spread(totals['sheets read'])}")
+        print(f"  the most sheets one document is given: {spread(totals['most sheets'])}")
+        print(f"  bytes for the names of a book's sheets: {spread(totals['sheets names'])}")
+    if totals.get("own style bytes"):
+        print(f"  bytes of a document's own `<style>` text, where it has any: {spread(totals['own style bytes'])}")
+    kinds = sorted(((count, key.split("\t")[1]) for key, count in totals.items() if key.startswith("left out\t")),
+                   reverse=True)
+    if not kinds:
+        print("  nothing was left out")
+    for count, kind in kinds:
+        print(f"  left out: {count:6}  in {totals.get('books left out' + chr(9) + kind, 0):4} books  {kind}")
 
 
 def check_sums(sums: Path) -> tuple[int, list[str]]:
@@ -766,7 +818,9 @@ def main() -> int:
     print(f"{len(books)} books: {totals.get('entries', 0)} entries in their ZIP files, {totals.get('documents', 0)} XML "
           f"documents with {totals.get('events', 0)} events, {totals.get('spine', 0)} documents in their spines, "
           f"{totals.get('tables', 0)} readings of tables of contents with {totals.get('toc_entries', 0)} entries, "
-          f"{totals.get('sheets', 0)} style sheets with {totals.get('css_rules', 0)} rules, {totals.get('cascade_set', 0)} "
+          f"{totals.get('sheets', 0)} style sheets with {totals.get('css_rules', 0)} rules, "
+          f"{totals.get('asked sheets', 0)} sheets asked for by {totals.get('asked documents', 0)} documents, "
+          f"{totals.get('cascade_set', 0)} "
           f"properties set for {totals.get('cascade_elements', 0)} elements of {totals.get('cascade_documents', 0)} "
           f"documents, {totals.get('pngs', 0)} PNG pictures of {totals.get('png_pixels', 0)} pixels, "
           f"{totals.get('jpegs', 0)} JPEG pictures of {totals.get('jpeg_pixels', 0)} pixels.")
@@ -783,6 +837,9 @@ def main() -> int:
         print(f"{totals[key]} JPEG pictures end as {key[5:]}, by the tool and by Python alike.")
     if options.css_report:
         print_css_report(totals, len(books))
+    if totals.get("sheets_not_compared"):
+        print(f"{totals['sheets_not_compared']} books were not put through the second finding of their documents' "
+              "sheets: the tool had no room for a sheet, or one was damaged.")
     if totals.get("cascade_not_compared"):
         print(f"{totals['cascade_not_compared']} documents were not put through the second working-out of the cascade: "
               "the tool had left a rule out, or an element was too deep.")

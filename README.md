@@ -1560,8 +1560,8 @@ says what they come to for each element of a document.
   later sheet, then what was written later.
 - **A document is given the sheets it asks for** and no others, in the
   order it asks for them: every rule is marked with its sheet, and a
-  cascade passes over the rules of sheets it was not given. Finding out
-  which sheets a document links is not here yet.
+  cascade passes over the rules of sheets it was not given. Which sheets
+  a document asks for is found by `DocumentSheets` (the next section).
 - **A document's own rules** (its `<style>` elements) are added after the
   book's and taken away again: `Here()` marks where the table stands and
   `BackTo()` forgets everything added since.
@@ -1682,9 +1682,213 @@ working-out, in Python (`tests/e2e/css_cascade_tool.py`), which takes
 its rules from the second reading of CSS, so that nothing of the path
 from a sheet's bytes to an element's style is checked only against
 itself. `tools/check-books.py` runs that comparison on real books: on
-the first few documents of each, with the sheets each one links. The two
-agree on all 1,643,149 properties set for 384,305 elements of 2,909
-documents in the 520 books they were tried on.
+the first few documents of each, with the sheets each one asks for, which
+the tool finds for itself (the next section). The two agree on all
+1,643,899 properties set for 384,305 elements of 2,909 documents in the
+520 books they were tried on.
+
+## What a document asks for
+
+`epub/document_sheets.h` finds the style sheets a document is to be read
+with. A document is given the rules it asks for and no others, in the
+order CSS gives them: `DocumentSheets` reads the document's head, reads
+each sheet the head names into the book's table of rules, once for the
+whole book, and gives the list that `CssCascade::Begin()` takes.
+
+- **The sheets it links**, in the order of the links. A `link` counts if
+  its `rel` has the word `stylesheet` and not the word `alternate`, its
+  `type` is `text/css` or is not given, and it has an `href`. The sheet
+  is the file of the book that the `href` names from the document's
+  folder, whether the book's manifest lists it or not.
+- **The sheets those import**, each before the sheet that imports it, as
+  CSS has them, and theirs before them: four down from a link at the
+  most. An import is found from the folder of the sheet that names it.
+- **Its own `<style>` rules**, after all the linked sheets, as one sheet
+  that stays in the table only until the next document is begun. An
+  element's own `style` attribute comes over all of these, and is the
+  cascade's to read.
+- **A sheet named twice**, by two links or by two sheets that import it,
+  stands in the list once, where it was named last: that is where its
+  rules would count if it were read again.
+- **Only the head is read.** The document is parsed until its `<body>`
+  opens and no further, so a chapter of megabytes costs what its head
+  does. A document whose first element is not `html` has no head, and is
+  given no sheets.
+- **Each sheet is read once for a book.** A book's sheets are known by
+  their paths, and a second document that links one opens nothing but
+  itself. The files are reached through `epub/book_files.h`: a book's
+  files by their paths, one open at a time, which `ZipBookFiles` gives
+  for a ZIP file and a test gives from memory.
+- **It is done in steps.** A step opens one file of the book, or has the
+  XML parser read 1 KB of the document, or the reader of CSS 1 KB of a
+  sheet, or makes one move in working the list out; and never two of
+  those. The tests and the fuzz target hold every step to it.
+
+A link's `media`, and a `<style>`'s, go by the rule for `@media` blocks
+(Style sheets, above): taken for `all`, for `screen`, or for "not" some
+other kind of device, and never with a condition in brackets, so that
+what is made of a book does not depend on the device that made it. So a
+sheet linked for `amzn-mobi` is not read. Neither is one linked for
+`(min-device-width: 0px)`, which one public book, in seven languages, uses
+to say "any newer reader" of a second sheet; its first is read.
+
+**Nothing is left out without being counted.** Each thing that is passed
+over is counted by its kind, and told to whoever is listening with its
+name:
+
+| What is left out | The kind it is counted as |
+|---|---|
+| A link, or a `<style>`, for some other kind of device | `link for another medium`, `style for another medium` |
+| A link or an import of something that is no file of the book (`https://...`), or of a file the book does not have | `link to no file of the book`, `import of no file of the book` |
+| A link after the first 8 of a document | `link after the most followed` |
+| An import more than 4 sheets down from a link | `import too deep` |
+| An import of a sheet that is already on the way to it | `import of a sheet on the way to it` |
+| An import after the first 64 of a book | `import after the most remembered` |
+| A sheet for which there is no room: the book has 64 known already, or the memory for their names is full, or the table has the 64 it holds | `sheet with no room` |
+| A sheet whose file could not be read to its end; what was read of it is kept | `sheet not read to its end` |
+| A `<style>` whose text does not fit in what is left of the memory for it | `style too long` |
+| An `@import` inside a `<style>`, which is not followed | `import in a style` |
+| A head that could not be read through, the document not being XML or its file failing; the sheets named before that are still given. A file that fails just after its head may be counted too: the parser tells of a tag some bytes after reading it, so how the bytes came decides | `head not read through` |
+
+No book of the 548 it has been run on (below) comes near a limit: a
+document is given 7 sheets at the most, a book has 18, imports go one
+down, and the largest `<style>` in a head is 2.0 KB.
+
+**Where this is not what CSS has.** Three things, each chosen:
+
+- A `<style>` that stands before a link is still read after the linked
+  sheets, where CSS would have it before. No document of the 548 books
+  has one.
+- A `<style>` in the body is not seen, since the head is all that is
+  read. One public book, of fixed pages, has 13.
+- `<?xml-stylesheet?>` is not read. Among the 548 it is only in the SVG
+  pages of one book whose spine is SVG.
+
+And one thing that looks like a difference and is not: text inside a
+comment is no `<style>`, to XML, to a browser or to this. Two books made
+from Word have `<!--[if gte mso 9]><style>...` in 123 documents.
+
+**How much memory.** The object is about 2 KB. It takes two pieces from
+its caller: for the paths of the book's sheets (2 KB is advised: the
+longest path in the books is 74 bytes, and a book has 18 sheets at the
+most), and for one document's `<style>` text, each with a byte to end it
+(4 KB is advised). It reads through the XML parser, the reader of CSS and
+the table that its caller has anyway. In the books the names of a book's
+sheets take 562 bytes at the most, and 31 at the median.
+
+`bn-css sheets` runs it over every document of a book, those whose names
+end in `.xhtml`, `.html` or `.htm`, in the order the ZIP file has them:
+
+```
+./build/host/tools/css/bn-css sheets book.epub --dropped
+```
+
+For a book of two documents, the first with this head,
+
+```
+<link rel="stylesheet" href="../css/book.css"/>
+<link rel="stylesheet" href="../css/kindle.css" media="amzn-mobi"/>
+<link rel="stylesheet" href="gone.css"/>
+<style>p.first { text-indent: 0 }</style>
+```
+
+and the second with this,
+
+```
+<link rel="alternate stylesheet" href="../css/night.css"/>
+<link rel="stylesheet" href="../css/poems.css"/>
+```
+
+where `book.css` imports `fonts.css`, and `poems.css` imports
+`book.css`, it prints each document (`D`), the sheets it is given in the
+order their rules apply (`S`), and with `--dropped` what was left out for
+it (`X`); then what it all came to, each kind of thing left out with how
+many, and what the table of the book's rules takes:
+
+```
+D OEBPS/text/one.xhtml
+S OEBPS/css/fonts.css
+S OEBPS/css/book.css
+S <style>
+X link for another medium: ../css/kindle.css
+X link to no file of the book: OEBPS/text/gone.css
+D OEBPS/text/two.xhtml
+S OEBPS/css/fonts.css
+S OEBPS/css/book.css
+S OEBPS/css/poems.css
+sheets_documents=2 sheets_unopened=0 sheets_given=6 sheets_read=3 sheets_names_bytes=75 sheets_left_out=2
+left_out link_for_another_medium=1 link_to_no_file_of_the_book=1
+css_table_bytes=121 css_table_names=4 css_table_nodes=0 css_table_rules=3 css_table_selectors=3 css_table_left_out=0
+```
+
+Three sheets were read for the six that were given. The night sheet is an
+alternate, and was never asked for: it is not among what was left out.
+
+`bn-css document` finds one document's sheets in the same way, and then
+goes through the document with them as `bn-css cascade` does with the
+sheets it is handed:
+
+```
+./build/host/tools/css/bn-css document --sum book.epub OEBPS/text/one.xhtml
+```
+
+```
+document e6ca13ad elements=8 lines=22 sheets=3 own_style=1 sheets_left_out=2 table_bytes=118 nodes=0 level_bytes=0 left_out=0 too_deep=0 too_many_classes=0 most_work=11
+```
+
+**How it is tested.** The unit tests give it books held in memory
+(`tests/support/book_fakes.h`), which count every file opened and every
+byte read: that is how a test knows that a sheet was read once, that a
+body of 200 KB was not read at all, and that no step did more than a step
+may. Beside it goes a plain working-out of the same thing
+(`tests/support/sheets_reference.h`), which reads a whole head into
+lists, calls itself for each import and reads a sheet again every time it
+comes to it; the two have to give every document of 300 books made at
+random the same list, leave the same things out, and find as many rules
+in its own `<style>` elements. `e2e.SheetsTool`
+compares `bn-css sheets` with a third finding, in Python
+(`tests/e2e/sheets_tool.py`), which reads the head with Python's expat
+and a sheet's imports with the second reader of CSS, on books it makes;
+and compares `bn-css document` with the second working-out of the
+cascade given the sheets the Python found, so that the path from a
+document's bytes to an element's style is checked end to end.
+`tools/check-books.py` runs both comparisons on real books (Real books,
+below).
+
+The tests were set against 26 faults put into it on purpose, one at a
+time: in which links and styles count, in the limits, in the order of the
+list, in a ring of imports, in what is kept from one document to the next
+and in what a step may do. The unit tests found every one, and the
+end-to-end test 21: the other five change nothing that the tool prints
+(how often a file is opened, what one step does, a document given up part
+way). The fuzz target's kept inputs missed six at first, which showed
+three things, all mended: a seed that had never read the sheet it was
+written for, a book of eight files having had no way to say that none of
+them fails; and two things the target could hold and did not, that no
+sheet is opened twice for a book, and that a document's own rules are
+those of its `<style>` texts each read to its own end. The kept inputs
+now find all 26.
+
+**On real books.** `tools/check-books.py --css-report` says what the
+documents of a folder of books ask for. Over `corpus/`:
+
+```
+What documents ask for: 859 documents are given 1676 sheets, 0 of them with rules of their own:
+  sheets a book's documents ask for between them: 3 at the median, 4 for nine in ten, 4 at the most
+  the most sheets one document is given: 3 at the median, 4 for nine in ten, 4 at the most
+  bytes for the names of a book's sheets: 38 at the median, 50 for nine in ten, 50 at the most
+  nothing was left out
+```
+
+In 335 books from trade publishers, 20,588 documents are given 28,410
+sheets, and 99 have rules of their own; in 185 public books, 10,660 are
+given 19,623, and 55 have. The tool and the finding in Python give every
+one of those documents the same list. What is left out in all of them is
+of one kind, a link for another medium: 3 in one of the trade books, the
+sheet for `amzn-mobi`, and 145 in eight of the public ones, the second
+sheet behind `(min-device-width: 0px)` and one for `speech`. No link that
+counts is to a file its book does not have, and no head fails to be read
+through.
 
 ## Real books
 
@@ -1712,7 +1916,7 @@ tools/check-books.py --tools build/host ~/books
 ```
 
 ```
-28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 42379 properties set for 15299 elements of 141 documents, 80 PNG pictures of 62626058 pixels, 45 JPEG pictures of 46766091 pixels.
+28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 1676 sheets asked for by 859 documents, 42379 properties set for 15299 elements of 141 documents, 80 PNG pictures of 62626058 pixels, 45 JPEG pictures of 46766091 pixels.
 Memory for the rows of a book's widest PNG picture, in bytes: 9602 at the median, 11202 for nine in ten, 11202 at the most; over the 18 books that have one.
 Memory for the rows of a book's widest JPEG picture read at its whole size (a progressive one at an eighth), in bytes: 22528 at the median, 29952 for nine in ten, 40960 at the most; over the 17 books that have one.
 28 files listed in SHA256SUMS: all there and unchanged.
@@ -1735,11 +1939,19 @@ The tools and Python agree about every book.
   the rules, the declarations and the count of things passed over that a
   second reading of it comes to (Style sheets, above, has what that
   reading is).
+- **What a document asks for**: every document `bn-css sheets` goes
+  through is given the sheets, in the order, that a second finding in
+  Python gives it, and what was left out is the same kind for kind (What
+  a document asks for, above, has what that finding is). A book where
+  the tool says it had no room for a sheet, or could not read one to its
+  end, is passed over and counted: the second finding does not work
+  those out.
 - **What the rules come to**: for the first few documents of a book, up
-  to 1,500 elements between them, what `bn-css cascade` gives each element
-  is what a second working-out gives it, by checksum; each document with
-  the sheets it links and those they import, which Python finds. The
-  second working-out is slow, which is why it is not every document.
+  to 1,500 elements between them, what `bn-css document` gives each
+  element is what a second working-out gives it, by checksum: the tool
+  finding the document's sheets itself, the second working-out given
+  those the second finding has. The second working-out is slow, which is
+  why it is not every document.
 - **The pictures**: every PNG `bn-png book` reads has the header, the
   ending, the rows and the checksum of their gray that a second reading of
   it by Python comes to (Pictures, below, has what that reading is); and
@@ -1793,6 +2005,7 @@ call may.
 | `toc` | `epub::TocReader`, a step at a time, twice, with a handler that may ask for no more | No step reads more than five blocks. Every label is whole characters with its spaces collapsed, within its length; every entry points at a document of the book or at none. A stopped reading says so |
 | `css` | `epub::CssReader`, twice, with the sheet cut up two ways; and the same bytes as a `style` attribute | A step asks its source once, for 1 KB. A rule is told whole and in order. A selector has no more parts or classes than there is room for, asks no more of attributes, and has a rank its parts account for. A number is within its bounds, and not below zero where the property cannot be. The reader's counts are the counts of what it told. Both readings tell the same |
 | `css_rules` | `epub::CssRules` and `epub::CssCascade`: up to four sheets into a table of one of four sizes, a document gone through with a cascade that has one of four amounts of memory, the table taken back to before its last sheet, and the document gone through again | The table stays inside its memory. If it left no rule out, every element and every first letter is given exactly what a plain working-out of the same rules gives it (`tests/support/css_reference.h`). No element takes more work than `MostWorkFor()` says. A table taken back is the size it was and says of the document what a table never told of the last sheet says; and it takes the sheet again to the same end. |
+| `document_sheets` | `epub::DocumentSheets`: a book of up to eight files held in memory, with one of four amounts of memory for the sheets' names, for a document's `<style>` text and for the table, read in pieces of one of four sizes, one file failing part way; the sheets of each document found, the first given up part way and begun again, and the first found again at the end | Every document ends with a list. A step opens one file at the most or reads `kMostBytesPerStep` of the book at the most, and never both. A list has no sheet twice, and every sheet in it is in the table and, but for the document's own, is a file of the book. The table has the sheets that were read and no others. What is said to be left out is what the counts come to. Until something is left out for want of room, the list and the counts are those of a plain working-out (`tests/support/sheets_reference.h`), and where the table kept every rule it was given, the document's own rules are as many as its `<style>` texts come to, each read to its own end. A document found again has the same list, and nothing is opened for it but itself. No file but a document is opened twice for the book, the sheet in hand when a document was given up apart |
 | `region_heap` | `core::RegionHeap`, given a made-up run of requests and of mistakes | Pieces lie inside the block and share no byte. Each holds what was put in it. Nothing outside the block is written. Every mistake is counted and changes nothing. The heap's records agree after every request |
 | `hyphenator` | `layout::Hyphenator`, with a language's table as the input has it, or one made of patterns the input writes out, and the words that follow | No word takes more work than `MostWorkFor()` allows a word of as many characters. A word's places are in order, each at the start of a character, with letters enough directly on each side of it by the target's own reading of the word; a word too long to look at has none. With room for fewer places, the first are given. The same table somewhere else in memory answers the same. With patterns, the places are the ones found by laying every pattern over every place in the word |
 | `paragraph` | `layout::ParagraphSetter`, with a paragraph's text in runs of up to seven styles and line ends asked for, on lines from 1 wide to 30,000, measured four ways | A paragraph is done with in a number of calls that depends only on its length. No call does more than `MostWorkFor()` allows, gives the breaker more than one item, asks the hyphenator about more than one word, or has more than a word's worth of bytes measured. The lines hold all the text once and in order. Each is as wide as its text adds up to and has the places between words it says; one is only too wide for a single character that is. The measure is never given a soft hyphen, nor a piece that begins inside a character. The lines are the same when the text is offered all at once |

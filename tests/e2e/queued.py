@@ -8,7 +8,8 @@ when the test lets them, and what is checked is what it promises:
 
   - a command's output and its exit code are its own;
   - one job at a time, and those that wait go in the order they came;
-  - `--list` says what is running and what waits;
+  - `--list` says what is running and what waits, and `--watch` says it
+    again each time it changes;
   - a job that is killed gives up its turn, and one that is killed while
     it waits holds nobody up;
   - a turn lasts as long as anything the command started;
@@ -18,7 +19,10 @@ when the test lets them, and what is checked is what it promises:
 
 Nothing here goes by how long anything takes. A job waits for a file the
 test writes, and the test waits for what a job or the queue has written,
-for as long as a minute before it gives up.
+for as long as a minute before it gives up. Once it waits a second and a
+half for nothing: for `--watch` to have had the time to say again what
+it has said, which it must not. A machine too slow for that to show a
+fault makes the check pass, not fail.
 
 usage: queued.py QUEUED WORK_DIR
 """
@@ -191,6 +195,51 @@ def takes_turns_in_order(queued: Path, work: Path) -> None:
         bench.finish()
 
 
+def watching_says_each_change(queued: Path, work: Path) -> None:
+    bench = Bench(queued, work, "watch")
+    watched = bench.folder / "watched"
+    with open(watched, "w") as out:
+        watcher = subprocess.Popen(bench.command("--watch"), env=bench.environment, stdout=out, stderr=subprocess.PIPE, text=True)
+    bench.started.append(watcher)
+
+    def pictures() -> list[list[str]]:
+        # Written to a file, each is the time, its lines, and an empty line.
+        return [picture.splitlines()[1:] for picture in watched.read_text().split("\n\n") if picture.strip()]
+
+    def last() -> list[str]:
+        return pictures()[-1] if pictures() else []
+
+    try:
+        wait_for(lambda: len(last()) == 1 and last()[0].startswith("Nothing has been queued in "), "it to say that nothing has been queued")
+        bench.start("A")
+        wait_for(lambda: bench.begun("A"), "the first job to begin")
+        bench.start("B")
+        wait_for(lambda: bench.waiting() == 1, "the second to be waiting")
+        wait_for(lambda: len(last()) == 2 and " A " in last()[0] and " B " in last()[1], "it to show one running and one waiting")
+        rows = last()
+        if len(rows) == 2:
+            here = Path.cwd().name
+            check(rows[0].startswith("heavy  running  ") and f"  {here}  " in rows[0], f"the first as running, and where it was started ({rows[0]!r})")
+            check(rows[1].startswith("       waiting  ") and f"  {here}  " in rows[1], f"the second under it, as waiting ({rows[1]!r})")
+            check(" .../job.py " in rows[0] and str(bench.folder) not in rows[0], f"with a long path cut to its last name ({rows[0]!r})")
+            check(rows[0].split("running", 1)[1].split()[1] in ("s", "min", "h"), f"and for how long ({rows[0]!r})")
+        # It looks twice a second, and nothing has changed.
+        said = len(pictures())
+        time.sleep(1.5)
+        check(len(pictures()) == said, f"with nothing changed it says nothing more ({pictures()[said:]})")
+
+        bench.let_end("A")
+        wait_for(lambda: bench.begun("B"), "the second to begin")
+        wait_for(lambda: len(last()) == 1 and last()[0].startswith("heavy  running  ") and " B " in last()[0], "it to show the second running alone")
+        bench.let_end("B")
+        wait_for(lambda: last() == ["heavy  nothing running"], "it to show nothing running")
+        watcher.send_signal(signal.SIGINT)
+        check(watcher.wait(timeout=60) == 0, "stopped as Ctrl-C stops it, it ends well")
+        check(watcher.stderr.read() == "", "having said nothing else")
+    finally:
+        bench.finish()
+
+
 def a_killed_job_gives_up_its_turn(queued: Path, work: Path) -> None:
     bench = Bench(queued, work, "killed")
     try:
@@ -298,6 +347,7 @@ def main() -> int:
     for test in (
         passes_a_command_through,
         takes_turns_in_order,
+        watching_says_each_change,
         a_killed_job_gives_up_its_turn,
         a_killed_waiter_holds_nobody_up,
         a_turn_lasts_as_long_as_what_the_command_started,

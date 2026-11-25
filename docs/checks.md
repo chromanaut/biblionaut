@@ -81,10 +81,13 @@ command at once. CI is not changed by any of this: each of its jobs has a
 machine to itself, where there is nothing to wait for.
 
 CI gives each host build a job of its own, so that they run at the same
-time, and runs the tests one to a core, as `tools/linux-check.sh` does. A local run does the same with `-j`: on a
-Mac with ten cores, `ctest --preset host -j 8` takes under a minute, and
-the same tests one at a time take four. So that tests can run side by side, each writes only files no other
-test writes, in a directory or under names of its own.
+time, and runs the tests one to a core, as `tools/linux-check.sh` does. A
+local run is much the same: the `host` and `host-release` test presets run
+eight tests at a time, where ctest left to itself runs one (`-j N` on the
+command line for another number). On a Mac with ten cores
+`ctest --preset host` takes about a minute, and the same tests one at a
+time take six. So that tests can run side by side, each writes only files
+no other test writes, in a directory or under names of its own.
 
 Fuzzing itself (`tools/fuzz.py`, [Fuzzing](fuzzing.md)) is not among them: it
 is run on a developer's computer, for minutes or hours, and CI only takes

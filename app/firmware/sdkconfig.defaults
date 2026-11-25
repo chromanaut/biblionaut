@@ -58,7 +58,7 @@ CONFIG_FATFS_LFN_STACK=y
 CONFIG_FATFS_API_ENCODING_UTF_8=y
 #   As many files open at once as the storage layer allows. This also has
 #   FatFS refuse to remove or rename a file that is open.
-CONFIG_FATFS_FS_LOCK=4
+CONFIG_FATFS_FS_LOCK=8
 #   One sector buffer for the card, not one more for each open file: files
 #   are read and written a block at a time, which does not go through it.
 CONFIG_FATFS_PER_FILE_CACHE=n

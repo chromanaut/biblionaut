@@ -21,9 +21,10 @@ namespace bn::hw {
 //
 // It is made to behave as a card does where that is cheap to do, so that
 // what works here works on a device: the same paths are refused, only as
-// many files can be open and directories listed at once, a file that is
-// open cannot be removed or renamed, and a rename will not replace a file. Where it cannot be
-// the same, it is more forgiving: upper and lower case are different names
+// many files can be open and directories listed at once, a file has one
+// writer or any number of readers, a file that is open cannot be removed
+// or renamed, and a rename will not replace a file. Where it cannot be the
+// same, it is more forgiving: upper and lower case are different names
 // here unless the computer's file system says otherwise.
 class FolderStorage final : public core::Storage {
  public:
@@ -71,6 +72,7 @@ class FolderStorage final : public core::Storage {
   // The open file `file` names, or null. The lock must be held.
   OpenFile* Find(core::FileHandle file) noexcept;
   bool IsOpen(std::string_view path) const;
+  bool IsOpenForWriting(std::string_view path) const;
   // How many files are open and directories being listed, together. The
   // lock must be held.
   std::size_t OpenCount() const noexcept;

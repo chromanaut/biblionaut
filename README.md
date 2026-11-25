@@ -660,7 +660,14 @@ Files are reached through three things in `core`:
   read and write at an offset, sync, the handful of calls that work on
   names, and listing a directory. Every call says how it ended
   (`StorageStatus`), and every port accepts the same paths, which are the
-  ones an SD card can hold. `Stat()` and the listing say of a file its size
+  ones an SD card can hold. A file is opened one of three ways: to be read
+  (`kRead`); new and empty, to be written (`kCreate`); or as it is, to be
+  read and written over and added to (`kUpdate`), which is how a file that
+  grows over many sessions is kept without being written out again each
+  time. A file has one writer or any number of readers, never both, on
+  every port: that is what FatFS allows. Eight things can be open at once
+  (`Storage::kMaxOpen`), a directory being listed counting as one, and two
+  of them can be directories. `Stat()` and the listing say of a file its size
   and when it was last written (`FileInfo::modified`: FAT's date and time
   on a card, seconds on the desktop), which is how something made from a
   file, such as a picture in the cache, is known to be out of date.
@@ -694,19 +701,24 @@ the map follows the chain once, so it is paid for when the file is opened
 one sector of the card's table holds, which is 128 clusters (4 MB where a
 cluster is 32 KB): a shorter chain is one read of the table however it is
 followed, and such a file is opened as it always was. A table has room for
-a file in 63 pieces (half a kilobyte for each of the four files that can
-be open); a file in more goes without a map, and is only slower. The
-metrics say how many files were given a map (`sd_maps`), how many were in
-too many pieces (`sd_maps_refused`), the most numbers a file's map needed
-(`sd_map_items`, two for each piece and two more), and the size of the
-card's clusters (`sd_cluster_bytes`).
+a file in 63 pieces, and is half a kilobyte; there are four of them, for
+the eight files that can be open, since a map is for a large file read
+from all over, which is a book, and FatFS cannot make a file longer that
+has one, so a file opened to be written is given none. A file in more
+pieces, and one opened while all four are in use, goes without a map and
+is only slower. The metrics say how many files were given a map
+(`sd_maps`), how many were in too many pieces (`sd_maps_refused`), how
+many found no table free (`sd_maps_none_free`), the most numbers a file's
+map needed (`sd_map_items`, two for each piece and two more), and the size
+of the card's clusters (`sd_cluster_bytes`).
 
 On the desktop the card is a folder (`hw/desktop/folder_storage.h`), the
 one named by the `BN_STORAGE` environment variable; without it there is no
 card. It is made to behave as a card does where that is cheap: the same
-paths are refused, only four files can be open at once (a directory being
-listed counts as one, and only two can be), an open file cannot be removed
-or renamed, and a rename will not replace a file.
+paths are refused, only eight files can be open at once (a directory being
+listed counts as one, and only two can be), a file open to be written
+cannot be opened again nor an open file opened to be written, an open file
+cannot be removed or renamed, and a rename will not replace a file.
 
 The application gets storage ready at start and says whether it is
 (`storage_ok` in the metrics, `reader/storage_start` in the trace). It
@@ -725,8 +737,12 @@ A firmware built with `-DBN_STORAGE_CHECK=ON` puts the card through its
 paces (on the desktop, set `BN_STORAGE_CHECK`): at start, and again at each
 press of the Power button, which also looks for a card again if none was
 found before. It writes a 256 KB file in 4 KB blocks, reads it back
-checking every byte, reads short pieces from all over it, replaces a small
-file twice, and removes what it made (`reader/storage_check.h`). It does a
+checking every byte, and reads short pieces from all over it. It opens the
+file again as it is, finds that it cannot then be opened a second time,
+writes over one block in the middle and adds one at the end, and reads
+those and the blocks either side back. It has eight different files open
+at once and finds that a ninth is refused. It replaces a small file twice,
+and removes what it made (`reader/storage_check.h`). It does a
 little each turn, so the panel and the buttons carry on around it. Each
 read, write and sync of the card is in the trace with the time it took
 (`hw/sd_read`, `hw/sd_write`, `hw/sd_sync`), and the outcome is there and

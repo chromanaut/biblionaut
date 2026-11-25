@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -377,18 +378,89 @@ TEST(BlockFile, DoesNothingWhileClosed) {
 
 TEST(BlockFile, OnlyAFewFilesCanBeOpenAtOnce) {
   FileFixture fixture;
-  std::array<std::array<std::uint8_t, 16>, 5> buffers{};
-  BlockFile a(buffers[0]);
-  BlockFile b(buffers[1]);
-  BlockFile c(buffers[2]);
-  BlockFile d(buffers[3]);
-  BlockFile e(buffers[4]);
-  for (BlockFile* file : {&a, &b, &c, &d}) {
-    ASSERT_EQ(file->Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kOk);
+  ASSERT_EQ(bn::core::Storage::kMaxOpen, 8u);
+  std::array<std::array<std::uint8_t, 16>, bn::core::Storage::kMaxOpen + 1> buffers{};
+  std::vector<std::unique_ptr<BlockFile>> files;
+  files.reserve(buffers.size());
+  for (std::array<std::uint8_t, 16>& buffer : buffers) {
+    files.push_back(std::make_unique<BlockFile>(buffer));
   }
-  EXPECT_EQ(e.Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kTooManyOpen);
-  a.Close();
-  EXPECT_EQ(e.Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kOk);
+  for (std::size_t i = 0; i < bn::core::Storage::kMaxOpen; ++i) {
+    ASSERT_EQ(files[i]->Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kOk) << i;
+  }
+  EXPECT_EQ(files.back()->Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kTooManyOpen);
+  files.front()->Close();
+  EXPECT_EQ(files.back()->Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kOk);
+}
+
+TEST(BlockFile, AFileThatIsThereCanBeOpenedToBeChangedAndKeepsWhatItHolds) {
+  FileFixture fixture;
+  ASSERT_EQ(fixture.file.Open(fixture.storage, "/book", OpenMode::kUpdate), StorageStatus::kOk);
+  EXPECT_EQ(fixture.file.Size(), 10'000u);
+  EXPECT_EQ(fixture.file.Position(), 0u);
+  fixture.ExpectRead(100, 0);
+
+  // Over what is there, and on past its end.
+  ASSERT_TRUE(fixture.file.Seek(4'000));
+  ASSERT_TRUE(fixture.file.Write(Bytes(10, 0xEE)));
+  EXPECT_EQ(fixture.file.Size(), 10'000u);
+  ASSERT_TRUE(fixture.file.Seek(10'000));
+  ASSERT_TRUE(fixture.file.Write(Numbered(500, 10'000)));
+  EXPECT_EQ(fixture.file.Size(), 10'500u);
+
+  Bytes expected = Numbered(10'500);
+  std::fill_n(expected.begin() + 4'000, 10, std::uint8_t{0xEE});
+  EXPECT_EQ(fixture.storage.Contents("/book"), expected);
+  ASSERT_TRUE(fixture.file.Seek(0));
+  Bytes got(10'500);
+  ASSERT_EQ(fixture.file.Read(got), 10'500);
+  EXPECT_EQ(got, expected);
+}
+
+TEST(BlockFile, OpeningAFileToChangeItDoesNotMakeOne) {
+  FileFixture fixture;
+  EXPECT_EQ(fixture.file.Open(fixture.storage, "/none", OpenMode::kUpdate), StorageStatus::kNotFound);
+  EXPECT_FALSE(fixture.file.IsOpen());
+  EXPECT_FALSE(fixture.storage.Has("/none"));
+  EXPECT_EQ(fixture.storage.changes, 0) << "and it is not a moment at which the power can spoil anything";
+}
+
+TEST(BlockFile, WhatIsWrittenToAFileBeingChangedIsOnlySafeOnceSynced) {
+  FileFixture fixture;
+  ASSERT_EQ(fixture.file.Open(fixture.storage, "/book", OpenMode::kUpdate), StorageStatus::kOk);
+  ASSERT_TRUE(fixture.file.Seek(10'000));
+  ASSERT_TRUE(fixture.file.Write(Numbered(100, 10'000)));
+  ASSERT_TRUE(fixture.file.Sync());
+  ASSERT_TRUE(fixture.file.Write(Numbered(100, 10'100)));
+  fixture.storage.PowerOff();
+  fixture.storage.PowerOn();
+  ASSERT_EQ(fixture.storage.Start(), StorageStatus::kOk);
+  EXPECT_EQ(fixture.storage.Contents("/book"), Numbered(10'100)) << "what was there, and what was synced";
+}
+
+TEST(BlockFile, AFileHasOneWriterOrAnyNumberOfReaders) {
+  FileFixture fixture;
+  std::array<std::uint8_t, 16> otherBuffer{};
+  BlockFile other(otherBuffer);
+
+  // Open to be read: it can be read again, and not written.
+  ASSERT_EQ(fixture.file.Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kOk);
+  EXPECT_EQ(other.Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kOk);
+  other.Close();
+  EXPECT_EQ(other.Open(fixture.storage, "/book", OpenMode::kUpdate), StorageStatus::kFailed);
+  EXPECT_EQ(other.Open(fixture.storage, "/book", OpenMode::kCreate), StorageStatus::kFailed);
+  EXPECT_EQ(fixture.storage.Contents("/book"), Numbered(10'000)) << "and it was not emptied";
+  fixture.file.Close();
+
+  // Open to be written, either way: it cannot be opened at all.
+  for (const OpenMode writing : {OpenMode::kUpdate, OpenMode::kCreate}) {
+    ASSERT_EQ(fixture.file.Open(fixture.storage, "/book", writing), StorageStatus::kOk);
+    for (const OpenMode mode : {OpenMode::kRead, OpenMode::kUpdate, OpenMode::kCreate}) {
+      EXPECT_EQ(other.Open(fixture.storage, "/book", mode), StorageStatus::kFailed);
+    }
+    fixture.file.Close();
+  }
+  EXPECT_EQ(other.Open(fixture.storage, "/book", OpenMode::kRead), StorageStatus::kOk) << "once it is closed";
 }
 
 TEST(BlockFile, WorksWithABufferOfAnySizeOrNone) {

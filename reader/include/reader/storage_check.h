@@ -18,9 +18,15 @@ namespace bn::reader {
 //   2. writes a file of 256 KB there, a 4 KB block at a time, and syncs it;
 //   3. reads it back from end to end, checking every byte;
 //   4. reads sixteen short pieces from places all over it, checking those;
-//   5. replaces a small file twice by the safe way (core/file_replacement.h)
+//   5. opens the file again as it is, to change it: finds that it cannot
+//      then be opened a second time, writes over one block in the middle
+//      and adds one at the end, syncs, and reads those two and the blocks
+//      either side back;
+//   6. has as many files open at once as storage allows, each a different
+//      file, and finds that one more is refused;
+//   7. replaces a small file twice by the safe way (core/file_replacement.h)
 //      and checks that it holds the second contents;
-//   6. removes everything it made.
+//   8. removes everything it made.
 //
 // It does one small piece each Tick(), so that the application carries on
 // around it: the panel refreshes and the buttons work while the card is
@@ -54,12 +60,20 @@ class StorageCheck final : public DeviceCheck {
     kReplaceAgain = 9,
     kReadReplaced = 10,
     kCleanUp = 11,
+    // These four come after kReadScattered: they were added later, and a
+    // step keeps its number.
+    kUpdate = 12,
+    kAppend = 13,
+    kReadUpdated = 14,
+    kOpenMany = 15,
   };
 
   static constexpr std::size_t kBlockBytes = 4096;
   static constexpr std::size_t kBlocks = 64;
   static constexpr std::size_t kScatteredReads = 16;
   static constexpr std::size_t kScatteredBytes = 512;
+  // The block that is written over once the file is opened to be changed.
+  static constexpr std::size_t kChangedBlock = 21;
 
   explicit StorageCheck(core::Storage& storage) noexcept;
 
@@ -83,6 +97,11 @@ class StorageCheck final : public DeviceCheck {
   void WriteBlock() noexcept;
   void ReadBlock() noexcept;
   void ReadScattered() noexcept;
+  void Update() noexcept;
+  void Append() noexcept;
+  void ReadUpdated() noexcept;
+  void OpenMany() noexcept;
+  void CloseMany() noexcept;
   void Replace(std::uint8_t fill, std::size_t length) noexcept;
   void ReadReplaced() noexcept;
   void CleanUp() noexcept;
@@ -98,6 +117,8 @@ class StorageCheck final : public DeviceCheck {
   std::uint32_t beganTrace_ = 0;
   Step failedStep_ = Step::kNone;
   core::StorageStatus failedStatus_ = core::StorageStatus::kOk;
+  // The files held open at once in kOpenMany.
+  std::array<core::FileHandle, core::Storage::kMaxOpen> many_{};
 
   // Aligned, and a multiple of four long, so that a device's card driver
   // takes them as they are.

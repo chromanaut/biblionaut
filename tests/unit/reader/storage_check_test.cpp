@@ -39,6 +39,16 @@ struct CheckFixture {
     }
   }
 
+  // Turns until the file has been written, read back from end to end and
+  // read from all over, and is about to be opened to be changed: the
+  // directory and the file made, 64 blocks written, the sync, the file
+  // opened again, 64 blocks read, 16 pieces read.
+  void RunUntilChanging() {
+    for (int turn = 0; turn < 2 + 64 + 1 + 1 + 64 + 16; ++turn) {
+      check.Tick();
+    }
+  }
+
   // What the trace holds under `id`, in order.
   std::vector<std::uint32_t> Recorded(bn::core::SpanId id) {
     std::array<bn::core::TraceRecord, 64> records{};
@@ -82,13 +92,13 @@ TEST(StorageCheck, PassesOnStorageThatWorksAndLeavesNothingBehind) {
 
   // What it did on the way: 64 blocks written, one write of storage each;
   // the file read back in 64 reads, then 16 more all over it.
-  EXPECT_EQ(fixture.storage.writes, 64 + 2) << "and the two small files";
+  EXPECT_EQ(fixture.storage.writes, 64 + 2 + 2) << "a block written over and one added, and the two small files";
   std::size_t wholeBlocks = 0;
   for (const FakeStorage::ReadCall& call : fixture.storage.reads) {
     wholeBlocks += call.size == StorageCheck::kBlockBytes ? 1 : 0;
   }
   EXPECT_GE(wholeBlocks, 64u);
-  EXPECT_GE(fixture.storage.syncs, 3) << "the file, and each replacement";
+  EXPECT_GE(fixture.storage.syncs, 4) << "the file, the file once changed, and each replacement";
 
   EXPECT_EQ(fixture.Recorded(bn::reader::kSpanStorageCheck), (std::vector<std::uint32_t>{1}));
 }
@@ -110,6 +120,61 @@ TEST(StorageCheck, DoesOnePieceEachTurn) {
   const std::size_t readsBefore = fixture.storage.reads.size();
   fixture.check.Tick();
   EXPECT_EQ(fixture.storage.reads.size(), readsBefore + 1) << "a block a turn";
+}
+
+TEST(StorageCheck, ChangesTheFileWhereItIsAndAddsToIt) {
+  CheckFixture fixture;
+  fixture.check.Begin();
+  fixture.RunUntilChanging();
+  ASSERT_EQ(fixture.storage.writes, 64);
+  ASSERT_EQ(fixture.storage.OpenCount(), 0);
+  const FakeStorage::Bytes written = fixture.storage.Contents("/biblionaut-check/data.bin");
+  ASSERT_EQ(written.size(), 64u * 4096u);
+
+  fixture.check.Tick();  // Opened to be changed, and one block written over.
+  EXPECT_EQ(fixture.storage.OpenCount(), 1);
+  EXPECT_EQ(fixture.storage.writes, 65);
+  fixture.check.Tick();  // One block added, and synced.
+  EXPECT_EQ(fixture.storage.writes, 66);
+  EXPECT_EQ(fixture.storage.syncs, 2);
+  EXPECT_EQ(fixture.storage.OpenCount(), 0);
+
+  const FakeStorage::Bytes& changed = fixture.storage.Contents("/biblionaut-check/data.bin");
+  ASSERT_EQ(changed.size(), 65u * 4096u);
+  const std::size_t from = StorageCheck::kChangedBlock * StorageCheck::kBlockBytes;
+  for (std::size_t i = 0; i < written.size(); ++i) {
+    const bool over = i >= from && i < from + StorageCheck::kBlockBytes;
+    ASSERT_EQ(changed[i], over ? static_cast<std::uint8_t>(~written[i]) : written[i]) << "at " << i;
+  }
+
+  // Read back: four blocks, a turn each.
+  const std::size_t readsBefore = fixture.storage.reads.size();
+  for (int block = 0; block < 4; ++block) {
+    fixture.check.Tick();
+  }
+  EXPECT_EQ(fixture.storage.reads.size(), readsBefore + 4);
+  EXPECT_EQ(fixture.storage.OpenCount(), 0);
+  EXPECT_EQ(fixture.check.CurrentState(), State::kRunning);
+}
+
+TEST(StorageCheck, HasAsManyFilesOpenAtOnceAsStorageAllows) {
+  CheckFixture fixture;
+  fixture.check.Begin();
+  fixture.RunUntilChanging();
+  for (int turn = 0; turn < 2 + 4; ++turn) {
+    fixture.check.Tick();  // Changed, added to, read back.
+  }
+  ASSERT_EQ(fixture.storage.OpenCount(), 0);
+  const int most = static_cast<int>(bn::core::Storage::kMaxOpen);
+  for (int open = 1; open < most; ++open) {
+    fixture.check.Tick();
+    EXPECT_EQ(fixture.storage.OpenCount(), open) << "one more a turn";
+  }
+  const int opensBefore = fixture.storage.opens;
+  fixture.check.Tick();  // The last place taken, one more asked for, and all closed.
+  EXPECT_EQ(fixture.storage.opens, opensBefore + 1) << "the one too many was not opened";
+  EXPECT_EQ(fixture.storage.OpenCount(), 0);
+  EXPECT_EQ(fixture.check.CurrentState(), State::kRunning);
 }
 
 TEST(StorageCheck, CanBeRunAgainButNotWhileItIsRunning) {
@@ -137,6 +202,7 @@ TEST(StorageCheck, IsNotPutOffByWhatAnEarlierRunLeftBehind) {
   fixture.storage.Put("/biblionaut-check/data.bin", FakeStorage::Bytes(10, 0x77));
   fixture.storage.Put("/biblionaut-check/settings", FakeStorage::Bytes(10, 0x77));
   fixture.storage.Put("/biblionaut-check/settings.tmp", FakeStorage::Bytes(10, 0x77));
+  fixture.storage.Put("/biblionaut-check/open-3", FakeStorage::Bytes(10, 0x77));
   fixture.check.Begin();
   fixture.RunToTheEnd();
   EXPECT_EQ(fixture.check.CurrentState(), State::kPassed);
@@ -207,6 +273,90 @@ TEST(StorageCheck, FailsWhereStorageFailsAndSaysWhereAndHow) {
     fixture.RunToTheEnd();
     EXPECT_EQ(fixture.check.CurrentState(), State::kFailed);
     EXPECT_EQ(fixture.check.FailedStep(), Step::kReplace);
+  }
+}
+
+TEST(StorageCheck, FailsOnStorageThatDoesNotKeepToTheRulesForOpenFiles) {
+  // A file that is open to be written can be opened again.
+  {
+    CheckFixture fixture;
+    fixture.storage.sharesWriters = true;
+    fixture.check.Begin();
+    fixture.RunToTheEnd();
+    EXPECT_EQ(fixture.check.CurrentState(), State::kFailed);
+    EXPECT_EQ(fixture.check.FailedStep(), Step::kUpdate);
+    EXPECT_EQ(fixture.check.FailedStatus(), StorageStatus::kOk) << "it opened, and should not have";
+    EXPECT_EQ(fixture.storage.OpenCount(), 0);
+    EXPECT_EQ(fixture.storage.entries.size(), 1u) << "it still clears up";
+    EXPECT_EQ(fixture.Recorded(bn::reader::kInstantStorageCheckFailed), (std::vector<std::uint32_t>{1200}));
+  }
+  // One more file can be open than the interface says.
+  {
+    CheckFixture fixture;
+    fixture.storage.moreOpen = 1;
+    fixture.check.Begin();
+    fixture.RunToTheEnd();
+    EXPECT_EQ(fixture.check.CurrentState(), State::kFailed);
+    EXPECT_EQ(fixture.check.FailedStep(), Step::kOpenMany);
+    EXPECT_EQ(fixture.check.FailedStatus(), StorageStatus::kOk);
+    EXPECT_EQ(fixture.storage.OpenCount(), 0);
+    EXPECT_EQ(fixture.storage.entries.size(), 1u);
+  }
+  // Fewer can: something else holds one open.
+  {
+    CheckFixture fixture;
+    fixture.storage.Put("/other", FakeStorage::Bytes(1, 0x77));
+    bn::core::FileHandle held = bn::core::kNoFile;
+    ASSERT_EQ(fixture.storage.Open("/other", bn::core::OpenMode::kRead, held), StorageStatus::kOk);
+    fixture.check.Begin();
+    fixture.RunToTheEnd();
+    EXPECT_EQ(fixture.check.CurrentState(), State::kFailed);
+    EXPECT_EQ(fixture.check.FailedStep(), Step::kOpenMany);
+    EXPECT_EQ(fixture.check.FailedStatus(), StorageStatus::kTooManyOpen);
+    EXPECT_EQ(fixture.storage.OpenCount(), 1) << "only what was held";
+    EXPECT_EQ(fixture.storage.entries.size(), 2u);
+  }
+}
+
+TEST(StorageCheck, FailsIfChangingTheFileDidNotLeaveWhatItShould) {
+  // The file is gone when it comes to be changed.
+  {
+    CheckFixture fixture;
+    fixture.check.Begin();
+    fixture.RunUntilChanging();
+    fixture.storage.entries.erase("/biblionaut-check/data.bin");
+    fixture.RunToTheEnd();
+    EXPECT_EQ(fixture.check.CurrentState(), State::kFailed);
+    EXPECT_EQ(fixture.check.FailedStep(), Step::kUpdate);
+    EXPECT_EQ(fixture.check.FailedStatus(), StorageStatus::kNotFound);
+  }
+  // The block written over is as it was; a block beside it is not; the
+  // block added is wrong; the file is not the length it should be.
+  for (const int fault : {0, 1, 2, 3}) {
+    CheckFixture fixture;
+    fixture.check.Begin();
+    fixture.RunUntilChanging();
+    fixture.check.Tick();
+    fixture.check.Tick();  // Changed and added to.
+    FakeStorage::Bytes& data = fixture.storage.entries.at("/biblionaut-check/data.bin").data;
+    ASSERT_EQ(data.size(), 65u * 4096u);
+    const std::size_t from = StorageCheck::kChangedBlock * StorageCheck::kBlockBytes;
+    if (fault == 0) {
+      for (std::size_t i = from; i < from + StorageCheck::kBlockBytes; ++i) {
+        data[i] = static_cast<std::uint8_t>(~data[i]);
+      }
+    } else if (fault == 1) {
+      data[from + StorageCheck::kBlockBytes] ^= 0x01U;
+    } else if (fault == 2) {
+      data.back() ^= 0x01U;
+    } else {
+      data.resize(data.size() - 1);
+    }
+    fixture.RunToTheEnd();
+    EXPECT_EQ(fixture.check.CurrentState(), State::kFailed) << fault;
+    EXPECT_EQ(fixture.check.FailedStep(), Step::kReadUpdated) << fault;
+    EXPECT_EQ(fixture.check.FailedStatus(), StorageStatus::kOk) << fault;
+    EXPECT_EQ(fixture.storage.entries.size(), 1u) << fault;
   }
 }
 

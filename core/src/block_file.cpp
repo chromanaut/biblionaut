@@ -138,7 +138,7 @@ bool BlockFile::ReadAt(std::uint32_t offset, std::span<std::uint8_t> dst) noexce
 }
 
 bool BlockFile::Write(std::span<const std::uint8_t> src) noexcept {
-  if (!IsOpen() || mode_ != OpenMode::kCreate) {
+  if (!IsOpen() || mode_ == OpenMode::kRead) {
     return Fail(StorageStatus::kFailed);
   }
   if (src.empty()) {

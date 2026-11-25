@@ -1461,9 +1461,9 @@ TEST(BookCheck, SaysWhenAFolderCannotBeListed) {
   CheckFixture fixture;
   fixture.storage.Put("/books/Series/1.epub", Book().file);
   fixture.storage.Put("/other", BytesOf("x"));
-  // Something else has three files open: with /books being listed, there
-  // is no room left to list the folder in it.
-  std::array<bn::core::FileHandle, 3> held{};
+  // Something else has all the files open that can be, but one: with
+  // /books being listed, there is no room left to list the folder in it.
+  std::array<bn::core::FileHandle, bn::core::Storage::kMaxOpen - 1> held{};
   for (bn::core::FileHandle& file : held) {
     ASSERT_EQ(fixture.storage.Open("/other", bn::core::OpenMode::kRead, file), StorageStatus::kOk);
   }
@@ -1474,7 +1474,7 @@ TEST(BookCheck, SaysWhenAFolderCannotBeListed) {
             std::string::npos)
       << fixture.AllLines();
   EXPECT_EQ(fixture.storage.ListedCount(), 0);
-  EXPECT_EQ(fixture.storage.OpenCount(), 3) << "only what was held is still open";
+  EXPECT_EQ(fixture.storage.OpenCount(), static_cast<int>(held.size())) << "only what was held is still open";
 }
 
 TEST(BookCheck, FailsWhenThereIsNoBookAnywhere) {

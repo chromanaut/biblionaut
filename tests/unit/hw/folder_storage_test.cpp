@@ -141,6 +141,63 @@ TEST(FolderStorage, CreatesWritesReadsAndSizesAFile) {
   fixture.storage->Close(emptied);
 }
 
+TEST(FolderStorage, OpensAFileThatIsThereToChangeItAndKeepsWhatItHolds) {
+  FolderFixture fixture;
+  fixture.Put("a.bin", "Jello world");
+  const FileHandle file = fixture.MustOpen("/a.bin", OpenMode::kUpdate);
+  std::uint32_t size = 0;
+  ASSERT_EQ(fixture.storage->Size(file, size), StorageStatus::kOk);
+  EXPECT_EQ(size, 11u);
+
+  // Over what is there, on past its end, and read back through the same handle.
+  ASSERT_EQ(fixture.storage->WriteAt(file, 0, BytesOf("H")), StorageStatus::kOk);
+  ASSERT_EQ(fixture.storage->WriteAt(file, 11, BytesOf(", again")), StorageStatus::kOk);
+  EXPECT_EQ(fixture.storage->WriteAt(file, 19, BytesOf("x")), StorageStatus::kFailed) << "no gaps";
+  ASSERT_EQ(fixture.storage->Sync(file), StorageStatus::kOk);
+  ASSERT_EQ(fixture.storage->Size(file, size), StorageStatus::kOk);
+  EXPECT_EQ(size, 18u);
+  Bytes got(18);
+  std::size_t read = 0;
+  ASSERT_EQ(fixture.storage->ReadAt(file, 0, got, read), StorageStatus::kOk);
+  EXPECT_EQ(got, BytesOf("Hello world, again"));
+  fixture.storage->Close(file);
+  EXPECT_EQ(fixture.OnDisk("a.bin"), "Hello world, again");
+
+  // It does not make a file, and a directory is not one.
+  FileHandle none = kNoFile;
+  EXPECT_EQ(fixture.storage->Open("/b.bin", OpenMode::kUpdate, none), StorageStatus::kNotFound);
+  EXPECT_EQ(none, kNoFile);
+  EXPECT_FALSE(std::filesystem::exists(fixture.folder / "b.bin"));
+  ASSERT_EQ(fixture.storage->MakeDirectory("/d"), StorageStatus::kOk);
+  EXPECT_EQ(fixture.storage->Open("/d", OpenMode::kUpdate, none), StorageStatus::kNotFound);
+}
+
+TEST(FolderStorage, AFileHasOneWriterOrAnyNumberOfReaders) {
+  FolderFixture fixture;
+  fixture.Put("a", "x");
+  FileHandle other = kNoFile;
+
+  // Open to be read: it can be read again, and not written.
+  const FileHandle reader = fixture.MustOpen("/a", OpenMode::kRead);
+  const FileHandle second = fixture.MustOpen("/a", OpenMode::kRead);
+  fixture.storage->Close(second);
+  EXPECT_EQ(fixture.storage->Open("/a", OpenMode::kUpdate, other), StorageStatus::kFailed);
+  EXPECT_EQ(fixture.storage->Open("/a", OpenMode::kCreate, other), StorageStatus::kFailed);
+  EXPECT_EQ(fixture.OnDisk("a"), "x") << "and it was not emptied";
+  fixture.storage->Close(reader);
+
+  // Open to be written, either way: it cannot be opened at all.
+  for (const OpenMode writing : {OpenMode::kUpdate, OpenMode::kCreate}) {
+    const FileHandle writer = fixture.MustOpen("/a", writing);
+    for (const OpenMode mode : {OpenMode::kRead, OpenMode::kUpdate, OpenMode::kCreate}) {
+      EXPECT_EQ(fixture.storage->Open("/a", mode, other), StorageStatus::kFailed);
+      EXPECT_EQ(other, kNoFile);
+    }
+    fixture.storage->Close(writer);
+  }
+  fixture.storage->Close(fixture.MustOpen("/a", OpenMode::kRead));
+}
+
 TEST(FolderStorage, WillNotLeaveGapsOrUseAFileThatIsNotOpen) {
   FolderFixture fixture;
   const FileHandle file = fixture.MustOpen("/a", OpenMode::kCreate);
@@ -346,22 +403,27 @@ TEST(FolderStorage, OnlyAFewDirectoriesCanBeListedAtOnceAndTheyCountAsOpenFiles)
   EXPECT_EQ(fixture.storage->OpenDirectory("/", extra), StorageStatus::kTooManyOpen);
   EXPECT_EQ(extra, kNoDirectory);
 
-  // Two listings leave room for two files, not four.
-  ASSERT_EQ(FolderStorage::kMaxOpen, 4u);
-  const FileHandle first = fixture.MustOpen("/a", OpenMode::kRead);
-  const FileHandle second = fixture.MustOpen("/a", OpenMode::kRead);
-  FileHandle third = kNoFile;
-  EXPECT_EQ(fixture.storage->Open("/a", OpenMode::kRead, third), StorageStatus::kTooManyOpen);
+  // Two listings leave room for six files, not eight.
+  ASSERT_EQ(FolderStorage::kMaxOpen, 8u);
+  ASSERT_EQ(FolderStorage::kMaxListed, 2u);
+  std::array<FileHandle, 6> files{};
+  for (FileHandle& file : files) {
+    file = fixture.MustOpen("/a", OpenMode::kRead);
+  }
+  FileHandle seventh = kNoFile;
+  EXPECT_EQ(fixture.storage->Open("/a", OpenMode::kRead, seventh), StorageStatus::kTooManyOpen);
   fixture.storage->CloseDirectory(listings[0]);
-  EXPECT_EQ(fixture.storage->Open("/a", OpenMode::kRead, third), StorageStatus::kOk);
+  EXPECT_EQ(fixture.storage->Open("/a", OpenMode::kRead, seventh), StorageStatus::kOk);
 
-  // And four things open leave no room for a listing, though a place for one is free.
+  // And eight things open leave no room for a listing, though a place for one is free.
   EXPECT_EQ(fixture.storage->OpenDirectory("/", extra), StorageStatus::kTooManyOpen);
-  fixture.storage->Close(first);
+  fixture.storage->Close(files[0]);
   EXPECT_EQ(fixture.storage->OpenDirectory("/", extra), StorageStatus::kOk);
   EXPECT_EQ(extra, listings[0]) << "the freed place is used again";
-  fixture.storage->Close(second);
-  fixture.storage->Close(third);
+  for (std::size_t i = 1; i < files.size(); ++i) {
+    fixture.storage->Close(files[i]);
+  }
+  fixture.storage->Close(seventh);
 
   // A listing that is under way is not disturbed by another of the same directory.
   fixture.storage->CloseDirectory(extra);

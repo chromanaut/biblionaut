@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
+#include <zlib.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -10,6 +13,8 @@
 #include "draw/font.h"
 #include "font/build.h"
 #include "font/preset.h"
+#include "font/sizes.h"
+#include "font_image.h"
 
 // BN_COURIER_PRIME_DIR is the folder the build downloaded Courier Prime's
 // font files to (third_party/courier-prime): the real font the builder is
@@ -381,6 +386,203 @@ TEST(FontBuild, SaysWhichFileItCannotReadAsAFont) {
   EXPECT_FALSE(second.ok);
   EXPECT_NE(second.error.find("FreeType cannot read it as a font (named on line 2)"), std::string::npos)
       << second.error;
+}
+
+// ---- What an image's pictures would take ----
+
+// A glyph of `ink`, a level a pixel, `width` across.
+struct Drawn {
+  std::vector<std::uint8_t> packed;
+  Glyph glyph;
+};
+Drawn GlyphOf(const std::vector<std::uint8_t>& ink, std::uint8_t width) {
+  Drawn drawn;
+  drawn.packed = bn::test::PackedInk(ink);
+  drawn.glyph.width = width;
+  drawn.glyph.height = static_cast<std::uint8_t>(ink.size() / width);
+  drawn.glyph.picture = drawn.packed;
+  return drawn;
+}
+
+// The levels of the pixels that `runs` stand for, read as font/sizes.h
+// says they are written.
+std::vector<std::uint8_t> RunsUndone(const std::vector<std::uint8_t>& runs) {
+  std::vector<std::uint8_t> ink;
+  for (const std::uint8_t run : runs) {
+    ink.insert(ink.end(), std::size_t{run & 0x3FU} + 1, static_cast<std::uint8_t>(run >> 6U));
+  }
+  return ink;
+}
+
+// What zlib makes of `deflated`, which has nothing round it, into `size`
+// bytes.
+std::vector<std::uint8_t> Inflated(const std::vector<std::uint8_t>& deflated, std::size_t size) {
+  std::vector<std::uint8_t> out(size + 1);
+  z_stream stream{};
+  EXPECT_EQ(inflateInit2(&stream, -15), Z_OK);
+  std::vector<std::uint8_t> in = deflated;
+  stream.next_in = in.data();
+  stream.avail_in = static_cast<uInt>(in.size());
+  stream.next_out = out.data();
+  stream.avail_out = static_cast<uInt>(out.size());
+  EXPECT_EQ(inflate(&stream, Z_FINISH), Z_STREAM_END);
+  out.resize(stream.total_out);
+  inflateEnd(&stream);
+  return out;
+}
+
+TEST(FontSizes, WritesAPictureAsRunsOfPixelsOfOneLevel) {
+  // Eighty pixels of full ink: a run of 64, the longest there is, and one
+  // of 16.
+  const Drawn block = GlyphOf(std::vector<std::uint8_t>(80, 3), 8);
+  EXPECT_EQ(bn::font_tool::RunLength(block.glyph), (std::vector<std::uint8_t>{0xFF, 0xCF}));
+  // Runs go on from one row to the next, and a pixel by itself is a run.
+  const std::vector<std::uint8_t> ink = {0, 0, 0, 1, 1, 0, 3, 3, 3, 3, 3, 2};
+  const Drawn mixed = GlyphOf(ink, 4);
+  EXPECT_EQ(bn::font_tool::RunLength(mixed.glyph), (std::vector<std::uint8_t>{0x02, 0x41, 0x00, 0xC4, 0x80}));
+  // A picture of no pixels is no runs.
+  EXPECT_TRUE(bn::font_tool::RunLength(Glyph{}).empty());
+
+  // Whatever the picture, its runs are its pixels: some made up, of every
+  // shape, with runs of every length among them.
+  std::uint32_t state = 12345;
+  for (int trial = 0; trial < 300; ++trial) {
+    const auto next = [&] {
+      state = (state * 1664525U) + 1013904223U;
+      return state >> 16U;
+    };
+    const auto width = static_cast<std::uint8_t>(1 + (next() % 40));
+    const std::size_t height = 1 + (next() % 40);
+    std::vector<std::uint8_t> made;
+    while (made.size() < width * height) {
+      made.insert(made.end(), 1 + (next() % (trial % 2 == 0 ? 3 : 200)), static_cast<std::uint8_t>(next() % 4));
+    }
+    made.resize(width * height);
+    const Drawn drawn = GlyphOf(made, width);
+    const std::vector<std::uint8_t> runs = bn::font_tool::RunLength(drawn.glyph);
+    ASSERT_EQ(RunsUndone(runs), made) << trial;
+    // And no two runs next to each other could have been one.
+    for (std::size_t i = 1; i < runs.size(); ++i) {
+      ASSERT_TRUE((runs[i] >> 6U) != (runs[i - 1] >> 6U) || (runs[i - 1] & 0x3FU) == 63) << trial;
+    }
+  }
+}
+
+TEST(FontSizes, CompressesBytesSoThatZlibGivesThemBack) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(5000);
+  for (int i = 0; i < 5000; ++i) {
+    bytes.push_back(static_cast<std::uint8_t>((i % 7) * (i % 13)));
+  }
+  const std::vector<std::uint8_t> deflated = bn::font_tool::Deflated(bytes);
+  EXPECT_LT(deflated.size(), bytes.size() / 4);
+  EXPECT_EQ(Inflated(deflated, bytes.size()), bytes);
+  // A byte, and none.
+  EXPECT_EQ(Inflated(bn::font_tool::Deflated(std::vector<std::uint8_t>{0x5A}), 1), (std::vector<std::uint8_t>{0x5A}));
+  EXPECT_TRUE(Inflated(bn::font_tool::Deflated({}), 0).empty());
+}
+
+TEST(FontSizes, AddsUpWhatEachWayOfKeepingThePicturesTakes) {
+  // Two sizes. At 20, a face of 300 glyphs, each twelve by twelve and all
+  // alike but for a pixel, and one of two glyphs; at 30, one of 40 glyphs.
+  bn::test::ImageFace many = bn::test::EmptyFace(0, 0, 20);
+  for (std::uint32_t i = 0; i < 300; ++i) {
+    bn::test::ImageGlyph glyph = bn::test::Block(40, 12, 12, 3);
+    glyph.ink[i % 144] = 1;
+    many.glyphs[0x100 + i] = glyph;
+  }
+  bn::test::ImageFace few = bn::test::EmptyFace(1, 0, 20);
+  few.glyphs['a'] = bn::test::Block(40, 9, 9, 2);
+  few.glyphs[' '] = bn::test::Blank(20);
+  bn::test::ImageFace large = bn::test::EmptyFace(0, 0, 30);
+  for (std::uint32_t i = 0; i < 40; ++i) {
+    large.glyphs['A' + i] =
+        bn::test::Block(60, static_cast<std::uint8_t>(10 + (i % 5)), 15, static_cast<std::uint8_t>(1 + (i % 3)));
+  }
+  const std::vector<std::uint8_t> image = bn::test::FontImageBytes({large, many, few});
+  const bn::font_tool::ImageSizes sizes = bn::font_tool::MeasureImage(image);
+  ASSERT_TRUE(sizes.ok) << sizes.error;
+  EXPECT_EQ(sizes.imageBytes, image.size());
+
+  // The faces of each size together, in order of size; glyph 0 of each
+  // face, eight by twelve, is counted with the rest.
+  ASSERT_EQ(sizes.sizes.size(), 2U);
+  EXPECT_EQ(sizes.sizes[0].size, 20);
+  EXPECT_EQ(sizes.sizes[0].faces, 2U);
+  EXPECT_EQ(sizes.sizes[0].glyphs, 301U + 3U);
+  EXPECT_EQ(sizes.sizes[0].pictures.asTheyAre, (300U * 36U) + 24U + 21U + 24U);
+  EXPECT_EQ(sizes.sizes[1].size, 30);
+  EXPECT_EQ(sizes.sizes[1].faces, 1U);
+  EXPECT_EQ(sizes.sizes[1].glyphs, 41U);
+  EXPECT_EQ(sizes.all.faces, 3U);
+  EXPECT_EQ(sizes.all.glyphs, 345U);
+  EXPECT_EQ(sizes.all.pictures.asTheyAre, sizes.sizes[0].pictures.asTheyAre + sizes.sizes[1].pictures.asTheyAre);
+  EXPECT_EQ(sizes.tableBytes, image.size() - sizes.all.pictures.asTheyAre);
+
+  // Each way is what its own function makes of each glyph, added up.
+  bn::draw::FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), bn::draw::FontStatus::kOk);
+  std::size_t runs = 0;
+  std::size_t deflated = 0;
+  std::size_t best = 0;
+  for (std::size_t face = 0; face < fonts.Faces(); ++face) {
+    for (std::uint32_t index = 0; index < fonts.FaceAt(face).Glyphs(); ++index) {
+      Glyph glyph;
+      ASSERT_TRUE(fonts.FaceAt(face).GlyphAt(index, glyph));
+      const std::size_t asRuns = bn::font_tool::RunLength(glyph).size();
+      const std::size_t byDeflate = glyph.picture.empty() ? 0 : bn::font_tool::Deflated(glyph.picture).size();
+      runs += asRuns;
+      deflated += byDeflate;
+      best += std::min({glyph.picture.size(), asRuns, byDeflate});
+    }
+  }
+  const bn::font_tool::PictureSizes& all = sizes.all.pictures;
+  EXPECT_EQ(all.runLength, runs);
+  EXPECT_EQ(all.deflate, deflated);
+  EXPECT_EQ(all.best, best);
+  EXPECT_EQ(all.bestAsTheyAre + all.bestRunLength + all.bestDeflate, 345U);
+  // Blocks of one level are a few runs each: the best way for them.
+  EXPECT_GT(all.bestRunLength, 300U);
+  EXPECT_LT(all.runLength, all.asTheyAre / 4);
+  EXPECT_LE(all.best, all.runLength);
+
+  // Glyphs alike compress far better together than apart, and the more
+  // together the better.
+  const bn::font_tool::PictureSizes& alike = sizes.sizes[0].pictures;
+  EXPECT_LT(alike.groupsOf16, alike.deflate / 2);
+  EXPECT_LT(alike.groupsOf64, alike.groupsOf16);
+  EXPECT_LT(alike.groupsOf256, alike.groupsOf64);
+  EXPECT_LT(alike.wholeFaces, alike.groupsOf256);
+  // A face of fewer glyphs than a group is one group, whatever the group.
+  const bn::font_tool::PictureSizes& larger = sizes.sizes[1].pictures;
+  EXPECT_EQ(larger.groupsOf64, larger.wholeFaces);
+  EXPECT_EQ(larger.groupsOf256, larger.wholeFaces);
+  EXPECT_GT(larger.groupsOf16, larger.wholeFaces);
+
+  // What is not an image is not measured.
+  const bn::font_tool::ImageSizes none = bn::font_tool::MeasureImage(std::span(image).first(image.size() - 1));
+  EXPECT_FALSE(none.ok);
+  EXPECT_EQ(none.error, "bad image");
+}
+
+TEST(FontSizes, MeasuresTheImageOfARealFont) {
+  const Built built = BuildImage(CourierPreset("sizes 30 18\ncharacters U+0020-U+007E\n"));
+  ASSERT_TRUE(built.ok) << built.error;
+  const bn::font_tool::ImageSizes sizes = bn::font_tool::MeasureImage(built.image);
+  ASSERT_TRUE(sizes.ok) << sizes.error;
+  ASSERT_EQ(sizes.sizes.size(), 2U);
+  EXPECT_EQ(sizes.sizes[0].size, 18);
+  EXPECT_EQ(sizes.sizes[1].size, 30);
+  // What the builder said went into each face.
+  EXPECT_EQ(sizes.sizes[0].pictures.asTheyAre, built.faces[0].pictureBytes + built.faces[2].pictureBytes);
+  EXPECT_EQ(sizes.sizes[1].pictures.asTheyAre, built.faces[1].pictureBytes + built.faces[3].pictureBytes);
+  EXPECT_EQ(sizes.all.glyphs, 4U * 96U);
+  // Letters drawn in grays compress, and better together.
+  const bn::font_tool::PictureSizes& all = sizes.all.pictures;
+  EXPECT_LT(all.best, all.asTheyAre);
+  EXPECT_LT(all.groupsOf16, all.best);
+  EXPECT_LT(all.wholeFaces, all.groupsOf16);
+  EXPECT_GT(all.wholeFaces, all.asTheyAre / 10);
 }
 
 }  // namespace

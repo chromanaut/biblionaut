@@ -113,7 +113,7 @@ Each layer of the book pipeline also has a host tool that runs the same code on 
 
 ### Fonts
 
-The firmware reads no font files. `bn-font` (`tools/font`) draws the faces a preset names, at the sizes it gives, with FreeType on the computer that builds, and writes the fonts image; `draw/font.h` reads an image where it lies and describes its layout; `layout/face_measure.h` is the `TextMeasure` that sets text in an image's faces; `reader/text_viewer.h` shows text set in them, in the panel's grays, and keeps a list of a page's glyphs, not a picture of the page. FreeType is only ever linked into `bn-font`. No font is in the repository: the tests of `bn-font` use Courier Prime, which the build fetches (`third_party/courier-prime`), and a preset naming fonts from someone's own computer stays out of it, as those fonts do.
+The firmware reads no font files. `bn-font` (`tools/font`) draws the faces a preset names, at the sizes it gives, with FreeType on the computer that builds, and writes the fonts image (`bn-font sizes` says what an image's pictures would take compressed in each of several ways, and changes nothing); `draw/font.h` reads an image where it lies and describes its layout; `layout/face_measure.h` is the `TextMeasure` that sets text in an image's faces; `reader/text_viewer.h` shows text set in them, in the panel's grays, and keeps a list of a page's glyphs, not a picture of the page. FreeType is only ever linked into `bn-font`. No font is in the repository: the tests of `bn-font` use Courier Prime, which the build fetches (`third_party/courier-prime`), and a preset naming fonts from someone's own computer stays out of it, as those fonts do.
 
 ## Conventions
 

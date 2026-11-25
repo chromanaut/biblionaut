@@ -138,6 +138,7 @@ void DocumentSheets::BeginBook() noexcept {
   ownStyleKept_ = false;
   ownStyleBegun_ = false;
   styleReading_ = false;
+  given_ = nullptr;
 }
 
 void DocumentSheets::Begin(std::string_view path) noexcept {
@@ -165,6 +166,7 @@ void DocumentSheets::Begin(std::string_view path) noexcept {
   styleDepth_ = 0;
   styleAt_ = 0;
   rootSeen_ = false;
+  given_ = nullptr;
   began_ = BN_TRACE_NOW();
   if (path.empty() || path.size() > document_.size()) {
     documentLength_ = 0;
@@ -178,13 +180,22 @@ void DocumentSheets::Begin(std::string_view path) noexcept {
   phase_ = Phase::kOpening;
 }
 
+void DocumentSheets::Begin(std::string_view path, core::ByteSource& source) noexcept {
+  Begin(path);
+  if (phase_ == Phase::kOpening) {
+    given_ = &source;
+  }
+}
+
 bool DocumentSheets::Step() noexcept {
   switch (phase_) {
     case Phase::kIdle:
     case Phase::kDone:
       return false;
     case Phase::kOpening: {
-      core::ByteSource* const source = files_.Open({document_.data(), documentLength_});
+      // The document as its caller opened it, or opened now by its path.
+      core::ByteSource* const source = given_ != nullptr ? given_ : files_.Open({document_.data(), documentLength_});
+      given_ = nullptr;
       if (source == nullptr) {
         status_ = SheetsStatus::kNoDocument;
         phase_ = Phase::kDone;
@@ -218,6 +229,13 @@ bool DocumentSheets::Step() noexcept {
 
 SheetsStatus DocumentSheets::Find(std::string_view path) noexcept {
   Begin(path);
+  while (Step()) {
+  }
+  return status_;
+}
+
+SheetsStatus DocumentSheets::Find(std::string_view path, core::ByteSource& source) noexcept {
+  Begin(path, source);
   while (Step()) {
   }
   return status_;

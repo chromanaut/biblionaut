@@ -91,6 +91,10 @@
 //   - Text inside a comment is not a `<style>`, whatever it looks like:
 //     `<!--[if gte mso 9]><style>...` is a comment, to XML and to this.
 //
+// The document is opened by its path, through the book's files; or its
+// caller opens it and hands it over (Begin() with a source), and then
+// only the sheets are opened by their paths, each once for the book.
+//
 // It is done a step at a time (Step()). One step opens one file of the
 // book, or has the XML parser read one piece of the document
 // (XmlParser::kChunkBytes), or has the reader of CSS read one piece of a
@@ -209,12 +213,23 @@ class DocumentSheets final : private XmlHandler, private CssHandler {
   // is opened for it, and it ends as kNoDocument.
   void Begin(std::string_view path) noexcept;
 
+  // The same for a document its caller has opened already: `source` gives
+  // the document from its first byte, and `path` says only where its links
+  // are from. Nothing is opened for the document, so it does not have to
+  // be found in the book by its name, which whoever has the book's package
+  // need not do: the package has where each document is. `source` is read
+  // only as far as the head goes, and never after the first step that
+  // opens a sheet, so it may be the one reader the book's files are opened
+  // with; it must stay good until then, or until the next Begin().
+  void Begin(std::string_view path, core::ByteSource& source) noexcept;
+
   // Does the next step. Returns true if there is more to do, false once
   // the document has its list or could not be opened: Status() says which.
   [[nodiscard]] bool Step() noexcept;
 
   // Begin(), and Step() until there is no more.
   SheetsStatus Find(std::string_view path) noexcept;
+  SheetsStatus Find(std::string_view path, core::ByteSource& source) noexcept;
 
   SheetsStatus Status() const noexcept { return status_; }
   // The document has its list.
@@ -330,6 +345,9 @@ class DocumentSheets final : private XmlHandler, private CssHandler {
   // The document in hand: its folder, what its head named, and its list.
   std::array<char, kMaxBookPath> document_{};
   std::size_t documentLength_ = 0;
+  // The document as its caller opened it, until its reading is begun; null
+  // if it is this object's to open.
+  core::ByteSource* given_ = nullptr;
   std::array<char, kMaxBookPath> path_{};  // A reference being worked out.
   bool rootSeen_ = false;
   std::array<std::uint8_t, kMaxLinks> links_{};

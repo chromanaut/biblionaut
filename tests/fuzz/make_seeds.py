@@ -1105,6 +1105,12 @@ def document_sheets_seeds() -> None:
         "cut.xhtml": "<html><head><style>p { margin: 0 }</style><style>h1 { margin: 0 } h2 { margin: 0 }",
         "only.xhtml": "<html><head><style>p { margin: 0 } h1 { margin: 0 }",
     })
+    # The target first asks for a document of this name, expecting none.
+    seed("a-file-with-the-name-of-the-document-that-is-not-there", {
+        "no such document": sheets_page(sheets_link("a.css") + sheets_link("gone.css")),
+        "page.xhtml": sheets_page(sheets_link("a.css")),
+        "a.css": rule,
+    })
     seed("more-imports-than-are-remembered", {
         "page.xhtml": sheets_page(sheets_link("a.css")),
         "a.css": "".join(f"@import 'i{i % 5}.css';" for i in range(70)) + rule,

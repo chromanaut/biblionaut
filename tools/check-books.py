@@ -15,6 +15,12 @@ compares, book by book:
     asks for: those its head links, each after the sheets it imports, and
     its own `<style>` rules, in their order, and what was left out by its
     kind;
+  - bn-css sheets --spine with the same finding for the documents of the
+    book's spine, in reading order, as a reader goes through a book: by
+    the checksum of what every document is given, which is worked out
+    here from the second finding; and that the tool finds the same
+    whether it opens each document from where the package says it is or
+    finds it by its name;
   - bn-css document with a second working-out of what the rules come to
     for each element, on the first few documents of the book, each given
     the sheets the second finding gives it;
@@ -48,7 +54,9 @@ each with how many times and in how many books. It says what keeping a
 book's rules takes: the size of a table of all of them, book by book. And
 it says what the documents ask for: how many sheets, how many have rules
 of their own, and each kind of thing that was left out in finding them,
-with how many times and in how many books.
+with how many times and in how many books; and how many reads of the file
+finding the sheets of a spine's documents takes, with each document
+opened from its place and with each found by its name.
 
 With --document-report it says more of the documents of the spines: how
 large they are, how many paragraphs and ids each has, how long the names
@@ -532,7 +540,63 @@ def check_sheets(tool: str, path: Path, figures: dict) -> list[str]:
         if left != expected_left:
             problems.append(f"bn-css sheets: left out, by kind: {dict(left)}; the second working-out has "
                             f"{dict(expected_left)}")
+        problems += check_spine_sheets(tool, path, archive, by_name, figures)
     return problems[:4]
+
+
+def check_spine_sheets(tool: str, path: Path, archive: zipfile.ZipFile, by_name: dict, figures: dict) -> list[str]:
+    """The sheets of the documents of the spine, in reading order: `bn-css sheets --spine`, which opens each
+    document from where the package says it is, as a reader goes through a book, beside the second working-out,
+    by the checksum of what every document is given. And what finding them costs in reads of the file: that way,
+    and with each document found in the ZIP file by its name."""
+    if "spine" not in figures:
+        return []  # A package that could not be read: check_package has said so.
+    lines = epub_tool.reference(path)
+    spine = [line.split(" ", 2)[2] for line in lines[9:9 + int(lines[8].split()[1])]]
+    entries: dict[str, zipfile.ZipInfo] = {}
+    for info in archive.infolist():
+        entries.setdefault(epub_tool.entry_name(info), info)
+    said = sheets_tool.said_by(tool, path, "--spine")
+    if isinstance(said, str):
+        return [f"bn-css sheets --spine: {said}"]
+    _, left, took = said
+    figures["spine asked documents"] = took["sheets_documents"]
+    figures["spine reads by place"] = took["sheets_reads"]
+    figures["most spine reads by place"] = [took["sheets_reads"]]
+    problems = []
+    by_their_names = sheets_tool.said_by(tool, path, "--spine", "--by-name")
+    if isinstance(by_their_names, str):
+        problems.append(f"bn-css sheets --spine --by-name: {by_their_names}")
+    else:
+        figures["spine reads by name"] = by_their_names[2]["sheets_reads"]
+        figures["most spine reads by name"] = [by_their_names[2]["sheets_reads"]]
+        if by_their_names[2]["sheets_checksum"] != took["sheets_checksum"]:
+            problems.append("bn-css sheets --spine: the documents found by their names are given other sheets than "
+                            "the same documents opened from their places")
+    # What the second working-out does not work out, as for the documents by
+    # their names; and a document the tool could not open is not one it can
+    # be asked about.
+    if any(left[kind] for kind in sheets_tool.NOT_WORKED_OUT) or took["sheets_unopened"]:
+        figures["spine_not_compared"] = 1
+        return problems
+    book = sheets_tool.Book(lambda name: name in by_name, lambda name: archive.read(by_name[name]))
+    found = []
+    absent = 0
+    for name in spine:
+        if name not in entries:
+            absent += 1
+            continue
+        key = zip_tool.name_bytes(entries[name])
+        listed, document_left, _ = book.sheets_of(key)
+        found.append((key, listed, document_left))
+    if (took["sheets_documents"], took["sheets_absent"]) != (len(found), absent):
+        problems.append(f"bn-css sheets --spine: it went through {took['sheets_documents']} documents and found "
+                        f"{took['sheets_absent']} not there; Python has {len(found)} and {absent}")
+    elif took["sheets_checksum"] != sheets_tool.digest_of(found):
+        problems.append(f"bn-css sheets --spine: what the spine's documents are given has the checksum "
+                        f"{took['sheets_checksum']:08x}; the second working-out comes to "
+                        f"{sheets_tool.digest_of(found):08x}")
+    return problems
 
 
 def check_cascade(tool: str, path: Path, figures: dict) -> list[str]:
@@ -850,6 +914,16 @@ def print_css_report(totals: dict, books: int) -> None:
         print("  nothing was left out")
     for count, kind in kinds:
         print(f"  left out: {count:6}  in {totals.get('books left out' + chr(9) + kind, 0):4} books  {kind}")
+    if totals.get("most spine reads by place"):
+        print(f"\nThrough the spines, in reading order: {totals.get('spine asked documents', 0)} documents. Reads of "
+              "the file to find their sheets:")
+        print(f"  each document opened from where the package says it is: {totals.get('spine reads by place', 0)} "
+              f"in all; for a book, {spread(totals['most spine reads by place'])}")
+        if totals.get("most spine reads by name"):
+            print(f"  each document found in the ZIP file by its name: {totals.get('spine reads by name', 0)} in "
+                  f"all; for a book, {spread(totals['most spine reads by name'])}")
+        if totals.get("spine_not_compared"):
+            print(f"  books whose spine was not set beside the second working-out: {totals['spine_not_compared']}")
 
 
 def print_document_report(totals: dict) -> None:

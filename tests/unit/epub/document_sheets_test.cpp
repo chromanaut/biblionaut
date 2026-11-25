@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "book_fakes.h"
+#include "core/byte_source.h"
 #include "epub/css.h"
 #include "epub/css_rules.h"
 #include "epub/xml.h"
@@ -61,6 +62,18 @@ struct Fixture {
   // its own.
   std::vector<std::string> Find(std::string_view document) {
     EXPECT_EQ(sheets.Find(document), SheetsStatus::kOk) << document;
+    return Listed();
+  }
+  // The same for a document handed over open: by the book's own one
+  // source for whatever is open, as a book in a ZIP file has one reader
+  // of entries.
+  std::vector<std::string> FindGiven(std::string_view document) {
+    bn::core::ByteSource* const source = book.Open(document);
+    EXPECT_NE(source, nullptr) << document;
+    if (source == nullptr) {
+      return {};
+    }
+    EXPECT_EQ(sheets.Find(document, *source), SheetsStatus::kOk) << document;
     return Listed();
   }
   std::vector<std::string> Listed() const {
@@ -487,6 +500,96 @@ TEST(DocumentSheets, AFileThatFailsIsCountedUnlessTheBodyHadBeenToldOf) {
   EXPECT_EQ(later.LeftOutInAll(), 0U);
 }
 
+TEST(DocumentSheets, TakesADocumentItsCallerHasOpenedAndOpensOnlyItsSheets) {
+  Fixture f;
+  const std::string page = Page(LinkTo("../css/a.css") + "<style>p { text-indent: 1em }</style>");
+  f.book.Put("text/page.xhtml", page);
+  f.book.Put("css/a.css", "@import 'b.css'; p { margin-left: 0 }");
+  f.book.Put("css/b.css", "h1 { margin-left: 0 }");
+  // The document is whatever its caller opened: the name says only where
+  // its links are from, and is not looked for in the book.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): characters as the bytes they are.
+  bn::core::MemoryByteSource source({reinterpret_cast<const std::uint8_t*>(page.data()), page.size()});
+  EXPECT_EQ(f.sheets.Find("text/not-in-the-book.xhtml", source), SheetsStatus::kOk);
+  EXPECT_TRUE(f.sheets.Finished());
+  EXPECT_EQ(f.Listed(), (Paths{"css/b.css", "css/a.css", "<style>"}));
+  EXPECT_EQ(f.book.opened, (Paths{"css/a.css", "css/b.css"}));
+  EXPECT_EQ(f.LeftOutInAll(), 0U);
+
+  // The same list as when it is opened by its path.
+  Fixture byPath;
+  byPath.book = f.book;
+  EXPECT_EQ(byPath.Find("text/page.xhtml"), f.Listed());
+  EXPECT_EQ(byPath.rules.Rules(), f.rules.Rules());
+}
+
+TEST(DocumentSheets, ADocumentGivenMayComeFromTheReaderItsSheetsAreOpenedWith) {
+  // The book has one source for whatever is open, as a ZIP file's book has
+  // one reader of entries: the document comes from it, and opening the
+  // first sheet takes it away. The head has been read by then, and the
+  // long body is never asked for.
+  Fixture f;
+  f.book.Put("page.xhtml", Page(LinkTo("a.css") + LinkTo("b.css"), std::string(100'000, 'x')));
+  f.book.Put("a.css", "p { margin-left: 0 }");
+  f.book.Put("b.css", "h1 { margin-left: 0 }");
+  bn::core::ByteSource* const document = f.book.Open("page.xhtml");
+  ASSERT_NE(document, nullptr);
+  f.sheets.Begin("page.xhtml", *document);
+  // The first step reads nothing and opens nothing: the document is open.
+  EXPECT_TRUE(f.sheets.Step());
+  EXPECT_EQ(f.book.opens, 1U);
+  EXPECT_EQ(f.book.bytesRead, 0U);
+  while (f.sheets.Step()) {
+  }
+  EXPECT_EQ(f.Listed(), (Paths{"a.css", "b.css"}));
+  EXPECT_EQ(f.book.opened, (Paths{"page.xhtml", "a.css", "b.css"}));
+  EXPECT_LT(f.book.bytesRead, 3000U);
+  EXPECT_EQ(f.rules.Rules(), 2U);
+}
+
+TEST(DocumentSheets, ADocumentGivenWithNoPathOrOneTooLongIsNoDocument) {
+  Fixture f;
+  f.book.Put("page.xhtml", Page(LinkTo("a.css")));
+  f.book.Put("a.css", "p { margin-left: 0 }");
+  bn::core::ByteSource* const document = f.book.Open("page.xhtml");
+  ASSERT_NE(document, nullptr);
+  EXPECT_EQ(f.sheets.Find("", *document), SheetsStatus::kNoDocument);
+  EXPECT_EQ(f.sheets.Find(std::string(bn::epub::kMaxBookPath + 1, 'x'), *document), SheetsStatus::kNoDocument);
+  EXPECT_TRUE(f.sheets.Sheets().empty());
+  // Nothing of it was read, and no sheet was looked for.
+  EXPECT_EQ(f.book.bytesRead, 0U);
+  EXPECT_EQ(f.book.opens, 1U);
+  // A path as long as a path may be is one.
+  f.book.Put(std::string(bn::epub::kMaxBookPath - 6, 'x') + "/a.css", "p { margin-left: 0 }");
+  bn::core::ByteSource* const again = f.book.Open("page.xhtml");
+  ASSERT_NE(again, nullptr);
+  EXPECT_EQ(f.sheets.Find(std::string(bn::epub::kMaxBookPath - 6, 'x') + "/p.htm", *again), SheetsStatus::kOk);
+  EXPECT_EQ(f.Listed().size(), 1U);
+}
+
+TEST(DocumentSheets, ADocumentGivenIsForgottenWhenAnotherIsBegun) {
+  Fixture f;
+  const std::string first = Page(LinkTo("a.css"));
+  f.book.Put("b.xhtml", Page(LinkTo("b.css")));
+  f.book.Put("a.css", "p { margin-left: 0 }");
+  f.book.Put("b.css", "h1 { margin-left: 0 }");
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): characters as the bytes they are.
+  bn::core::MemoryByteSource source({reinterpret_cast<const std::uint8_t*>(first.data()), first.size()});
+  // Begun with a source, and then another document begun by its path
+  // before a step was taken: that one is opened, and the source left.
+  f.sheets.Begin("a.xhtml", source);
+  EXPECT_EQ(f.Find("b.xhtml"), (Paths{"b.css"}));
+  EXPECT_EQ(f.book.opened, (Paths{"b.xhtml", "b.css"}));
+  // And a book begun leaves nothing to step.
+  f.sheets.Begin("a.xhtml", source);
+  f.sheets.BeginBook();
+  EXPECT_FALSE(f.sheets.Step());
+  EXPECT_EQ(f.sheets.Status(), SheetsStatus::kNotStarted);
+  // The source is as it was: it can still be given.
+  EXPECT_EQ(f.sheets.Find("a.xhtml", source), SheetsStatus::kOk);
+  EXPECT_EQ(f.Listed(), (Paths{"a.css"}));
+}
+
 TEST(DocumentSheets, SaysWhenTheBookHasNoSuchDocument) {
   Fixture f;
   EXPECT_EQ(f.sheets.Status(), SheetsStatus::kNotStarted);
@@ -843,7 +946,10 @@ TEST(DocumentSheets, AgreesWithThePlainWorkingOutOnBooksMadeAtRandom) {
       }
       const bn::test::SheetsExpected expected = reference.For(name);
       ASSERT_TRUE(expected.document);
-      ASSERT_EQ(f.Find(name), expected.sheets) << "book " << book << ", " << name << ":\n" << f.book.Contents(name);
+      // Every other one is handed over open, which comes to the same.
+      ASSERT_EQ(turn % 2 == 0 ? f.Find(name) : f.FindGiven(name), expected.sheets)
+          << "book " << book << ", " << name << ":\n"
+          << f.book.Contents(name);
       for (std::size_t kind = 0; kind < before.size(); ++kind) {
         ASSERT_EQ(f.sheets.LeftOut(static_cast<SheetLeftOut>(kind)) - before[kind], expected.leftOut[kind])
             << "book " << book << ", " << name << ", " << bn::epub::SheetLeftOutName(static_cast<SheetLeftOut>(kind))

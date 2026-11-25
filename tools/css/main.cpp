@@ -3,7 +3,9 @@
 // of its style sheets and a count of what was passed over; for a document
 // and the sheets it is given, what the rules come to for each of its
 // elements; and for an EPUB's documents, the sheets each asks for, found
-// as the firmware finds them, and what was left out in finding them.
+// as the firmware finds them, and what was left out in finding them: the
+// documents by their names as the ZIP file has them, or those of the
+// book's spine in reading order, as a reader goes through a book.
 //
 // What is found is written one thing to a line, in a form made to be
 // compared with what another reader makes of the same sheet:
@@ -66,6 +68,10 @@
 #include "epub/css.h"
 #include "epub/css_rules.h"
 #include "epub/document_sheets.h"
+#include "epub/package.h"
+#include "epub/sheets_digest.h"
+#include "epub/toc.h"
+#include "epub/toc_digest.h"
 #include "epub/xml.h"
 #include "epub/zip.h"
 #include "support/one_file.h"
@@ -85,6 +91,9 @@ constexpr std::size_t kMostDroppedText = 80;
 // document needs, and the cascade for the elements that are open.
 constexpr std::size_t kParserBytes = 1024UL * 1024UL;
 constexpr std::size_t kCascadeBytes = 4096;
+// What `sheets --spine` gives the reader of a book's package: more than
+// any book needs.
+constexpr std::size_t kPackageBytes = 256UL * 1024UL;
 
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
@@ -92,7 +101,7 @@ void PrintUsage(const char* program) {
                "       %s style TEXT\n"
                "       %s book FILE [--dropped]\n"
                "       %s cascade [--in BOOK] [--sum] DOCUMENT SHEET...\n"
-               "       %s sheets BOOK [--dropped]\n"
+               "       %s sheets BOOK [--spine [--by-name]] [--dropped]\n"
                "       %s document [--sum] BOOK DOCUMENT\n"
                "\n"
                "Reads CSS the way the firmware does.\n"
@@ -122,8 +131,9 @@ void PrintUsage(const char* program) {
                "         `<style>` rules. Prints for each:\n"
                "           D name   the document          S path   a sheet it is given, in order\n"
                "         with `S <style>` for its own rules; and at the end how many documents\n"
-               "         and sheets there were, what was left out by its kind, and what the table\n"
-               "         of the book's rules takes\n"
+               "         and sheets there were, a checksum of all of that, the reads of the file\n"
+               "         it took, what was left out by its kind, and what the table of the\n"
+               "         book's rules takes\n"
                "  document  finds the sheets of the one DOCUMENT of BOOK in the same way, prints\n"
                "         them and what was left out, and then goes through the document with them\n"
                "         and prints what `cascade` prints\n"
@@ -134,6 +144,11 @@ void PrintUsage(const char* program) {
                "             EPUB (or other ZIP file) BOOK\n"
                "             with sheets: under each document, a line for each thing left out:\n"
                "               X kind: text\n"
+               "  --spine    with sheets: the documents are those of the book's spine, in reading\n"
+               "             order, each opened from where the book's package says it is, as a\n"
+               "             reader goes through a book; not every file with a document's name\n"
+               "  --by-name  with --spine: each document is found in the ZIP file by its name\n"
+               "             all the same, to see what that costs in reads beside going to it\n"
                "  --sum      with cascade or document: print one line in place of the elements,\n"
                "             with the checksum (CRC-32) of their lines, how many elements and lines\n"
                "             there were, and what the table and the cascade took\n"
@@ -645,7 +660,14 @@ class OpenBook {
            archive_.Open(directory_) == ZipStatus::kOk;
   }
 
-  bn::epub::BookFiles& Files() { return files_; }
+  bn::epub::ZipBookFiles& Files() { return files_; }
+  // What it is read through, for whoever reads its package.
+  bn::epub::ZipArchive& Archive() { return archive_; }
+  bn::core::BlockFile& Entries() { return entries_; }
+  bn::epub::ZipEntryReader& Reader() { return entryReader_; }
+  // The reads of the file so far, and what they brought.
+  std::uint32_t Reads() const { return storage_.Reads(); }
+  std::uint64_t ReadBytes() const { return storage_.ReadBytes(); }
 
   // The names of its documents, in the order the ZIP file has them: false
   // if its directory cannot be read.
@@ -739,25 +761,100 @@ void PrintLines(const std::vector<std::string>& lines) {
   }
 }
 
-int Sheets(const std::string& path, bool printDropped) {
+// Which documents `sheets` goes through, and how each is come to.
+enum class Through : std::uint8_t {
+  kNames,        // Every file with a document's name, in the ZIP file's order, each found by its name.
+  kSpine,        // The spine in reading order, each opened from where the package says it is.
+  kSpineByName,  // The spine in reading order, each found by its name.
+};
+
+int Sheets(const std::string& path, bool printDropped, Through through) {
   OpenBook book(path);
-  std::vector<std::string> documents;
-  if (!book.Start() || !book.Documents(documents)) {
+  if (!book.Start()) {
     std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
     return 1;
   }
   Finder finder(book.Files());
-  std::uint32_t unopened = 0;
-  std::uint64_t given = 0;
-  for (const std::string& document : documents) {
+
+  // The documents: their names, and for a spine where each one is.
+  std::vector<std::string> documents;
+  std::vector<bn::epub::ZipEntry> places;
+  std::uint32_t absent = 0;
+  if (through == Through::kNames) {
+    if (!book.Documents(documents)) {
+      std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
+      return 1;
+    }
+  } else {
+    std::vector<std::uint8_t> packageMemory(kPackageBytes);
+    bn::epub::Package package(packageMemory);
+    const bn::epub::PackageStatus read = package.Read(book.Archive(), book.Entries(), book.Reader(), finder.parser);
+    if (read != bn::epub::PackageStatus::kOk) {
+      std::fprintf(stderr, "error: %s: %s\n", path.c_str(), bn::epub::PackageStatusName(read));
+      return 1;
+    }
+    for (const bn::epub::SpineItem& item : package.Spine()) {
+      if (item.present) {
+        places.push_back(item.entry);
+      } else {
+        ++absent;  // The package names a document the book has not got.
+      }
+    }
+    // Its table of contents next, as a reader that opens a book reads it,
+    // and as the book check does before it finds any sheets: what the
+    // file's buffers hold when the finding begins is then what they hold
+    // there, and the reads that follow are the same reads.
+    bn::epub::TocReader toc;
+    bn::epub::TocDigest contents;
+    static_cast<void>(toc.Read(package, book.Entries(), book.Reader(), finder.parser, contents));
+  }
+
+  // What follows is the finding itself: its reads are counted by themselves.
+  const std::uint32_t readsBefore = book.Reads();
+  const std::uint64_t readBytesBefore = book.ReadBytes();
+  bn::epub::SheetsDigest digest;
+  // A name longer than a path in a book may be is no document that can be
+  // read: as much of it as there is room for stands for it.
+  std::vector<char> name(bn::epub::kMaxBookPath);
+  const std::size_t count = through == Through::kNames ? documents.size() : places.size();
+  for (std::size_t index = 0; index < count; ++index) {
     finder.leftOut.clear();
+    std::string document;
+    bool opened = true;
+    if (through == Through::kNames) {
+      document = documents[index];
+      static_cast<void>(finder.sheets.Find(document));
+    } else {
+      std::size_t length = 0;
+      if (through == Through::kSpine) {
+        // Opened from its place, as the book check opens it, with its name
+        // read where its reading begins.
+        bn::core::ByteSource* const source = book.Files().OpenAt(places[index], name, length);
+        document = std::string(name.data(), length);
+        opened = source != nullptr;
+        if (opened) {
+          static_cast<void>(finder.sheets.Find(document, *source));
+        }
+      } else {
+        // Its name read from its place, and then the document found by it.
+        const ZipStatus named = bn::epub::ReadZipEntryName(book.Entries(), places[index], name, length);
+        opened = named == ZipStatus::kOk && length <= name.size();
+        document = named == ZipStatus::kOk ? std::string(name.data(), std::min(length, name.size())) : std::string();
+        if (opened) {
+          static_cast<void>(finder.sheets.Find(document));
+        }
+      }
+    }
     PrintLines({"D " + Escaped(document)});
-    if (finder.sheets.Find(document) != bn::epub::SheetsStatus::kOk) {
-      ++unopened;
+    if (!opened) {
+      digest.AddUnopened(document);
+      continue;
+    }
+    digest.Add(document, finder.sheets);
+    if (finder.sheets.Status() != bn::epub::SheetsStatus::kOk) {
       continue;
     }
     PrintLines(finder.SheetLines());
-    given += finder.sheets.Sheets().size();
     if (printDropped) {
       PrintLines(finder.leftOut);
     }
@@ -765,10 +862,14 @@ int Sheets(const std::string& path, bool printDropped) {
   // Without the document in hand's own rules: what the book's sheets take.
   finder.sheets.Begin({});
   std::printf(
-      "sheets_documents=%zu sheets_unopened=%u sheets_given=%llu sheets_read=%zu sheets_names_bytes=%zu "
-      "sheets_left_out=%u\n",
-      documents.size(), static_cast<unsigned>(unopened), static_cast<unsigned long long>(given),
-      finder.sheets.SheetsRead(), finder.sheets.NamesBytes(), static_cast<unsigned>(finder.LeftOutInAll()));
+      "sheets_documents=%u sheets_unopened=%u sheets_given=%llu sheets_read=%zu sheets_names_bytes=%zu "
+      "sheets_left_out=%u sheets_own=%u sheets_absent=%u sheets_checksum=%08x\n",
+      static_cast<unsigned>(digest.Documents()), static_cast<unsigned>(digest.Unopened()),
+      static_cast<unsigned long long>(digest.Given()), finder.sheets.SheetsRead(), finder.sheets.NamesBytes(),
+      static_cast<unsigned>(finder.LeftOutInAll()), static_cast<unsigned>(digest.WithOwnStyle()),
+      static_cast<unsigned>(absent), static_cast<unsigned>(digest.Checksum()));
+  std::printf("sheets_reads=%u sheets_read_bytes=%llu\n", static_cast<unsigned>(book.Reads() - readsBefore),
+              static_cast<unsigned long long>(book.ReadBytes() - readBytesBefore));
   // Each kind of thing that was left out, with how many: none, if nothing
   // was.
   std::string kinds = "left_out";
@@ -777,9 +878,9 @@ int Sheets(const std::string& path, bool printDropped) {
     if (finder.sheets.LeftOut(what) == 0) {
       continue;
     }
-    std::string name = bn::epub::SheetLeftOutName(what);
-    std::replace(name.begin(), name.end(), ' ', '_');
-    kinds += " " + name + "=" + std::to_string(finder.sheets.LeftOut(what));
+    std::string kindName = bn::epub::SheetLeftOutName(what);
+    std::replace(kindName.begin(), kindName.end(), ' ', '_');
+    kinds += " " + kindName + "=" + std::to_string(finder.sheets.LeftOut(what));
   }
   PrintLines({kinds});
   std::printf(
@@ -869,8 +970,26 @@ int main(int argc, char** argv) {
       return Cascade(book, sum, names.front(), {names.begin() + 1, names.end()});
     }
   }
-  if (command == "sheets" && (argc == 3 || (argc == 4 && std::strcmp(argv[3], "--dropped") == 0))) {
-    return Sheets(argv[2], argc == 4);
+  if (command == "sheets" && argc >= 3) {
+    bool dropped = false;
+    bool spine = false;
+    bool byName = false;
+    bool known = true;
+    for (int i = 3; i < argc; ++i) {
+      const std::string argument = argv[i];
+      if (argument == "--dropped") {
+        dropped = true;
+      } else if (argument == "--spine") {
+        spine = true;
+      } else if (argument == "--by-name") {
+        byName = true;
+      } else {
+        known = false;
+      }
+    }
+    if (known && (spine || !byName)) {
+      return Sheets(argv[2], dropped, !spine ? Through::kNames : byName ? Through::kSpineByName : Through::kSpine);
+    }
   }
   if (command == "document") {
     bool sum = false;

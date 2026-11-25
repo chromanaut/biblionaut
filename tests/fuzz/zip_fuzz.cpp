@@ -6,8 +6,10 @@
 //   the rest a ZIP file, or what passes for one
 //
 // The file is opened, its directory is gone through from end to end, and
-// the first few entries are each looked for by name and read to the end.
-// What has to hold, whatever the bytes are:
+// the first few entries are each looked for by name and read to the end,
+// and then opened again as a book's files are (epub/book_files.h): from
+// their places and by their names. What has to hold, whatever the bytes
+// are:
 //
 //   - every call ends, with a status that call can give;
 //   - opening the file costs at most nineteen reads of storage, an entry
@@ -20,10 +22,15 @@
 //   - an entry gives no more bytes than the directory says it holds; one
 //     that is read to its end and called sound gave exactly that many, with
 //     the checksum the directory has for them (as zlib works it out); and
-//     one that failed stays failed.
+//     one that failed stays failed;
+//   - a file opened from its place has the path its own header gives, as
+//     much of it as there is room for, and is opened if and only if that
+//     path could be read whole and the entry can be opened; and whether a
+//     book's file was opened is what its status says.
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -31,6 +38,7 @@
 #include <string_view>
 #include <vector>
 
+#include "epub/book_files.h"
 #include "epub/zip.h"
 #include "fuzz_book.h"
 #include "fuzz_support.h"
@@ -174,6 +182,36 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     (void)bn::fuzz::Touch(std::string_view(local.data(), std::min(length, local.size())));
 
     ReadEntry(book, one.entry, pieceBytes);
+
+    // The same entry as a book's file, opened from its place: with room
+    // for a path of 40 bytes, so that some are too long for it.
+    const ZipStatus alone = book.reader.Open(book.entries, one.entry);
+    bn::epub::ZipBookFiles files(archive, book.entries, book.reader);
+    std::array<char, 40> path{};
+    std::size_t pathLength = SIZE_MAX;
+    const bn::core::ByteSource* const file = files.OpenAt(one.entry, path, pathLength);
+    BN_FUZZ_CHECK(pathLength <= path.size(), "a file's path is said to be longer than the room given for it");
+    if (named == ZipStatus::kOk) {
+      BN_FUZZ_CHECK(pathLength == std::min(length, path.size()) &&
+                        std::string_view(path.data(), pathLength) ==
+                            std::string_view(local.data(), std::min({length, local.size(), path.size()})),
+                    "a file opened from its place has another path than its own header gives");
+    } else {
+      BN_FUZZ_CHECK(pathLength == 0, "a file whose path could not be read has one");
+    }
+    BN_FUZZ_CHECK((file != nullptr) == (named == ZipStatus::kOk && length <= path.size() && alone == ZipStatus::kOk),
+                  "a file was opened from its place that cannot be, or not opened that can");
+    BN_FUZZ_CHECK((file != nullptr) == (files.Status() == ZipStatus::kOk),
+                  "whether a file was opened from its place is not what the status says");
+    BN_FUZZ_CHECK(file == nullptr || (file == &book.reader && book.reader.Remaining() == one.entry.size),
+                  "a file opened from its place is not the entry at its start");
+    // And by its name, which finds an entry of that name: this one or
+    // another.
+    const bn::core::ByteSource* const byName = files.Open(wanted);
+    BN_FUZZ_CHECK((byName != nullptr) == (files.Status() == ZipStatus::kOk),
+                  "whether a file was opened by its name is not what the status says");
+    BN_FUZZ_CHECK(byName != nullptr || files.Status() != ZipStatus::kNotFound || status != ZipStatus::kOk,
+                  "a file whose name was found a moment ago is said not to be there");
   }
   return 0;
 }

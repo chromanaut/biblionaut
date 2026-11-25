@@ -14,6 +14,14 @@ are then applied as well: `bn-css document` against the second
 working-out of the cascade (css_cascade_tool.py), given the sheets found
 here.
 
+The tool's checksum of what the documents were given (epub/sheets_digest.h)
+is worked out here too, from this finding and not from what the tool
+printed. And each book is given a package, with a spine that has its
+documents in another order than the ZIP file has them, leaves some out and
+names one that is not there: `bn-css sheets --spine` has to go through
+those documents in that order, whether it opens each from where the
+package says it is or finds it by its name.
+
 What is not worked out here is what the tool leaves out for want of room
 (a sheet or an import past what it keeps): the books made here stay
 inside that, and tools/check-books.py, which uses this for real books,
@@ -28,10 +36,11 @@ import random
 import subprocess
 import sys
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import unquote_to_bytes
+from urllib.parse import quote, unquote_to_bytes
 from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -260,17 +269,34 @@ class Book:
         return listed, +left, own
 
 
-def said_by(tool: str, book: Path) -> tuple[dict[bytes, list[bytes]], Counter, dict[str, int]] | str:
+def digest_of(found: list[tuple[bytes, list[bytes] | None, Counter]]) -> int:
+    """The checksum epub/sheets_digest.h describes, of documents in their order: each with its list (or None for
+    one that could not be opened) and what was left out for it."""
+    lines = b""
+    for name, listed, left in found:
+        lines += b"D " + name + b"\n"
+        if listed is None:
+            lines += b"N\n"
+            continue
+        for sheet in listed:
+            lines += b"S " + sheet + b"\n"
+        for kind in KINDS:
+            if left[kind]:
+                lines += f"X {kind} {left[kind]}\n".encode()
+    return zlib.crc32(lines)
+
+
+def said_by(tool: str, book: Path, *options: str) -> tuple[dict[bytes, list[bytes]], Counter, dict[str, int]] | str:
     """What `bn-css sheets --dropped` says of a book: each document's list, how many things of each kind were
-    left out, and its other figures; or, as text, why that could not be had."""
-    result = subprocess.run([tool, "sheets", str(book), "--dropped"], capture_output=True, check=False)
+    left out, and its other figures; or, as text, why that could not be had. `options` go to the tool as well."""
+    result = subprocess.run([tool, "sheets", str(book), "--dropped", *options], capture_output=True, check=False)
     lines = result.stdout.split(b"\n")[:-1]
-    if result.returncode != 0 or len(lines) < 3 or not lines[-3].startswith(b"sheets_documents="):
-        return f"ended with {result.returncode} and its last lines are {lines[-3:]!r}: {result.stderr[-120:]!r}"
+    if result.returncode != 0 or len(lines) < 4 or not lines[-4].startswith(b"sheets_documents="):
+        return f"ended with {result.returncode} and its last lines are {lines[-4:]!r}: {result.stderr[-120:]!r}"
     lists: dict[bytes, list[bytes]] = {}
     told: Counter = Counter()
     document = b""
-    for line in lines[:-3]:
+    for line in lines[:-4]:
         mark, _, rest = line.partition(b" ")
         if mark == b"D":
             document = css_cascade_tool.unescaped(rest.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape")
@@ -280,10 +306,12 @@ def said_by(tool: str, book: Path) -> tuple[dict[bytes, list[bytes]], Counter, d
                                    .encode("utf-8", "surrogateescape"))
         elif mark == b"X":
             told[rest.partition(b": ")[0].decode("utf-8", "replace")] += 1
-    figures = {key: int(value) for key, value in (item.split("=") for item in lines[-3].decode().split())}
+    # Its figures: numbers, but for the checksum, which is written in hexadecimal.
+    figures = {key: int(value, 16 if key == "sheets_checksum" else 10)
+               for line in (lines[-4], lines[-3], lines[-1])
+               for key, value in (item.split("=") for item in line.decode().split())}
     kinds = {key.replace("_", " "): int(value)
              for key, value in (item.split("=") for item in lines[-2].decode().split()[1:])}
-    figures.update({key: int(value) for key, value in (item.split("=") for item in lines[-1].decode().split())})
     left = Counter({kind: count for kind, count in kinds.items() if count})
     if left != told:
         return f"its counts are {dict(left)} and its lines of what was left out come to {dict(told)}"
@@ -437,6 +465,51 @@ def documents_of(files: dict[bytes, bytes], path: Path) -> list[bytes]:
     return [name for name in names if name.lower().endswith((b".xhtml", b".html", b".htm"))]
 
 
+def with_a_package(files: dict[bytes, bytes], rng: random.Random) -> tuple[dict[bytes, bytes], list[bytes]]:
+    """The book with a package: its documents in the manifest, and a spine that has most of them, in an order of
+    its own, and one document more that the book has not got. Returns the book and the spine's documents that
+    are in it, in the spine's order."""
+    documents = [name for name in files if name.lower().endswith((b".xhtml", b".html", b".htm"))]
+    rng.shuffle(documents)
+    spine = [name for name in documents if rng.randrange(5)] or documents[:1]
+    manifest = "".join(f'<item id="d{number}" href="{quote(name)}" media-type="application/xhtml+xml"/>'
+                       for number, name in enumerate(documents))
+    manifest += '<item id="gone" href="no-such-chapter.xhtml" media-type="application/xhtml+xml"/>'
+    refs = [f'<itemref idref="d{documents.index(name)}"/>' for name in spine]
+    refs.insert(rng.randrange(len(refs) + 1), '<itemref idref="gone"/>')
+    made = dict(files)
+    made[b"META-INF/container.xml"] = (b'<container><rootfiles><rootfile full-path="content.opf" '
+                                       b'media-type="application/oebps-package+xml"/></rootfiles></container>')
+    made[b"content.opf"] = (f'<package xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest>{manifest}</manifest>'
+                            f'<spine>{"".join(refs)}</spine></package>').encode()
+    return made, spine
+
+
+def check_spine(tool: str, path: Path, files: dict[bytes, bytes], spine: list[bytes], what: str) -> int:
+    """Sets what the tool finds going through a book's spine beside the second working-out, in the spine's order.
+    Returns how many documents that was."""
+    book = Book(lambda name: name in files, lambda name: files[name])
+    found = [(name, *book.sheets_of(name)[:2]) for name in spine]
+    by_place = said_by(tool, path, "--spine")
+    by_name = said_by(tool, path, "--spine", "--by-name")
+    for how, said in (("opened from their places", by_place), ("found by their names", by_name)):
+        expect(not isinstance(said, str), f"{what}: bn-css sheets --spine, its documents {how}, {said}")
+        lists, left, figures = said
+        expect(list(lists) == spine,
+               f"{what}: {how}, the tool went through {list(lists)}, and the spine's documents are {spine}")
+        for name, listed, _ in found:
+            expect(lists[name] == listed,
+                   f"{what}: {how}, {name!r} is given {lists[name]}; the second working-out has {listed}")
+        expect(left == sum((document_left for _, _, document_left in found), Counter()),
+               f"{what}: {how}, left out, by kind: {dict(left)}")
+        expect(figures["sheets_checksum"] == digest_of(found),
+               f"{what}: {how}, the tool's checksum is {figures['sheets_checksum']:08x}; the second working-out's "
+               f"lines come to {digest_of(found):08x}")
+        expect(figures["sheets_documents"] == len(spine) and figures["sheets_absent"] == 1 and
+               figures["sheets_unopened"] == 0, f"{what}: {how}, its figures are {figures}")
+    return len(spine)
+
+
 def check_book(tool: str, path: Path, files: dict[bytes, bytes], what: str) -> tuple[int, int, int]:
     """Sets the tool's finding beside the second working-out for one book. Returns how many documents, sheets given
     and things left out there were."""
@@ -448,11 +521,13 @@ def check_book(tool: str, path: Path, files: dict[bytes, bytes], what: str) -> t
     given = 0
     names = documents_of(files, path)
     expect(list(lists) == names, f"{what}: the tool went through {list(lists)}, and the book's documents are {names}")
+    found = []
     for name in names:
         listed, document_left, own = book.sheets_of(name)
         expect(lists[name] == listed, f"{what}: {name!r} is given {lists[name]}; the second working-out has {listed}")
         expected_left += document_left
         given += len(listed)
+        found.append((name, listed, document_left))
 
         # The rules applied, where the whole document is XML: the same
         # sheets in the same order, by the second working-out of the cascade.
@@ -472,7 +547,12 @@ def check_book(tool: str, path: Path, files: dict[bytes, bytes], what: str) -> t
     expect(left == expected_left, f"{what}: left out, by kind: {dict(left)}; the second working-out has {dict(expected_left)}")
     expect(not any(left[kind] for kind in NOT_WORKED_OUT), f"{what}: the tool ran out of room: {dict(left)}")
     expect(figures["sheets_documents"] == len(names) and figures["sheets_given"] == given and
-           figures["sheets_unopened"] == 0, f"{what}: its figures are {figures}")
+           figures["sheets_unopened"] == 0 and figures["sheets_absent"] == 0 and
+           figures["sheets_own"] == sum(1 for _, listed, _ in found if OWN_STYLE in listed),
+           f"{what}: its figures are {figures}")
+    expect(figures["sheets_checksum"] == digest_of(found),
+           f"{what}: the tool's checksum is {figures['sheets_checksum']:08x}; the second working-out's lines come "
+           f"to {digest_of(found):08x}")
     return len(names), given, sum(left.values())
 
 
@@ -484,7 +564,7 @@ def main() -> int:
     work = Path(sys.argv[2])
     work.mkdir(parents=True, exist_ok=True)
     rng = random.Random(20261124)
-    documents = given = left = books = 0
+    documents = given = left = books = in_spines = 0
     try:
         made = list(written_books().items()) + [(f"book {seed} made at random", random_book(rng)) for seed in range(100)]
         for number, (what, files) in enumerate(made):
@@ -495,8 +575,23 @@ def main() -> int:
             given += counts[1]
             left += counts[2]
             books += 1
+            # The same book with a package, gone through by its spine.
+            with_package, spine = with_a_package(files, rng)
+            write_book(path, with_package, rng)
+            in_spines += check_spine(tool, path, files, spine, what)
             path.unlink()
         expect(given > 150 and left > 100, f"the books were too plain: {given} sheets given and {left} things left out")
+        expect(in_spines > 200, f"the spines were too short: {in_spines} documents in all")
+
+        # A book with no package has no spine to go through.
+        (work / "bare.zip").unlink(missing_ok=True)
+        write_book(work / "bare.zip", {b"a.xhtml": page("")}, rng)
+        bare = subprocess.run([tool, "sheets", str(work / "bare.zip"), "--spine"], capture_output=True, check=False)
+        expect(bare.returncode == 1 and b"no container" in bare.stderr, f"a book with no package: {bare}")
+        (work / "bare.zip").unlink()
+        # And finding by name is only a way of going through a spine.
+        odd = subprocess.run([tool, "sheets", str(work / "bare.zip"), "--by-name"], capture_output=True, check=False)
+        expect(odd.returncode == 2, f"--by-name without --spine: {odd}")
 
         # What is asked of a book that is not one.
         missing = subprocess.run([tool, "sheets", str(work / "none.zip")], capture_output=True, check=False)
@@ -505,7 +600,8 @@ def main() -> int:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"{books} books, {documents} documents: each given the sheets the second working-out gives it, {given} in "
-          f"all, with {left} things left out, kind for kind; and the rules applied come to the same")
+          f"all, with {left} things left out, kind for kind; the rules applied come to the same; and {in_spines} "
+          f"documents of their spines, in reading order, are given the same again")
     return 0
 
 

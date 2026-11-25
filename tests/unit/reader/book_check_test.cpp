@@ -9,10 +9,16 @@
 #include <vector>
 
 #include "core/block_file.h"
+#include "core/checksum.h"
 #include "core/inflate.h"
 #include "core/metrics.h"
+#include "epub/book_files.h"
+#include "epub/css.h"
+#include "epub/css_rules.h"
+#include "epub/document_sheets.h"
 #include "epub/package.h"
 #include "epub/package_digest.h"
+#include "epub/sheets_digest.h"
 #include "epub/toc.h"
 #include "epub/toc_digest.h"
 #include "epub/xml.h"
@@ -776,9 +782,9 @@ TEST(BookCheck, ReadsTheTableOfContentsOfEveryBookAndSaysWhatItFound) {
   // The package's figures are what they were without it, and so are the
   // book's own.
   EXPECT_EQ(totals.packageReads, first.reads + second.reads);
-  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads + totals.placeReads,
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads + totals.stylesReads + totals.placeReads,
             fixture.storage.reads.size() - first.reads - first.tocReads - second.reads - second.tocReads)
-      << "every read the check made is counted to one of the four";
+      << "every read the check made is counted to one of the five";
   EXPECT_EQ(totals.failedEntries, 0u);
 }
 
@@ -852,7 +858,7 @@ TEST(BookCheck, ReadsATableOfContentsAPieceAtATimeAndCountsItsTimeByItself) {
       << line;
   const std::string last = fixture.LineWith("book check: contents: ");
   EXPECT_TRUE(last.ends_with(" bytes; the longest " + std::to_string(totals.tocUs / 1000) + " ms.")) << last;
-  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads + totals.placeReads,
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads + totals.stylesReads + totals.placeReads,
             fixture.storage.reads.size() - opened.reads - opened.tocReads);
 }
 
@@ -959,6 +965,449 @@ TEST(BookCheck, SaysWhenABookHasNoTableOfContentsOrOneItCannotRead) {
   without.check->Begin();
   without.RunToTheEnd();
   EXPECT_EQ(without.AllLines().find("contents"), std::string::npos) << without.AllLines();
+}
+
+// A page with this in its head.
+Bytes Page(const std::string& head) {
+  return BytesOf("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>A page</title>" + head +
+                 "</head><body><p>Text.</p></body></html>");
+}
+
+std::string LinkTo(const std::string& href, const std::string& more = "") {
+  return "<link rel=\"stylesheet\" type=\"text/css\" href=\"" + href + "\" " + more + "/>";
+}
+
+// A book whose documents ask for sheets. Its spine is not in the order of
+// its files: `three`, `one`, a document the book has not got, `two`. All
+// three link `css/book.css`, which imports `css/fonts.css`; `one` has
+// rules of its own as well and a link for another kind of device, and
+// `three` a link to a sheet the book has not got. `more` is put in the
+// head of `two`. Pictures lie between its sheets and its documents, so
+// that going from one to another is a read of storage.
+struct StyledBook {
+  explicit StyledBook(const std::string& more = "") {
+    ZipBuilder builder;
+    builder.Add("mimetype", BytesOf("application/epub+zip"));
+    builder.Add("META-INF/container.xml",
+                BytesOf("<container><rootfiles><rootfile full-path=\"OEBPS/content.opf\" "
+                        "media-type=\"application/oebps-package+xml\"/></rootfiles></container>"),
+                {.deflate = true});
+    const auto item = [](const std::string& id, const std::string& href) {
+      return "<item id=\"" + id + "\" href=\"" + href + "\" media-type=\"application/xhtml+xml\"/>";
+    };
+    builder.Add("OEBPS/content.opf",
+                BytesOf("<package><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">"
+                        "<dc:title>Styled</dc:title></metadata><manifest>" +
+                        item("one", "text/one.xhtml") + item("two", "text/two.xhtml") +
+                        item("three", "text/three.xhtml") + item("gone", "text/gone.xhtml") +
+                        "<item id=\"css\" href=\"css/book.css\" media-type=\"text/css\"/></manifest><spine>"
+                        "<itemref idref=\"three\"/><itemref idref=\"one\"/><itemref idref=\"gone\"/>"
+                        "<itemref idref=\"two\"/></spine></package>"),
+                {.deflate = true});
+    builder.Add("OEBPS/css/book.css", BytesOf("@import 'fonts.css'; p { text-indent: 1em } h1 { margin: 0 }"),
+                {.deflate = true});
+    builder.Add("OEBPS/css/fonts.css", BytesOf("body { font-family: serif }"));
+    builder.Add("OEBPS/css/kindle.css", BytesOf("p { margin: 0 }"));
+    builder.Add("OEBPS/images/first.jpg", Prose(9'000, 5));
+    builder.Add("OEBPS/text/one.xhtml",
+                Page(LinkTo("../css/book.css") + LinkTo("../css/kindle.css", "media=\"amzn-mobi\"") +
+                     "<style>p.first { text-indent: 0 }</style>"),
+                {.deflate = true});
+    builder.Add("OEBPS/images/second.jpg", Prose(9'000, 6));
+    builder.Add("OEBPS/text/two.xhtml", Page(LinkTo("../css/book.css") + more), {.deflate = true});
+    builder.Add("OEBPS/text/three.xhtml", Page(LinkTo("../css/book.css") + LinkTo("gone.css")), {.deflate = true});
+    file = builder.Finish();
+  }
+  // What its documents are given, as the lines the checksum is of
+  // (epub/sheets_digest.h), written out by hand.
+  static std::uint32_t Checksum() {
+    const std::string lines =
+        "D OEBPS/text/three.xhtml\nS OEBPS/css/fonts.css\nS OEBPS/css/book.css\nX link to no file of the book 1\n"
+        "D OEBPS/text/one.xhtml\nS OEBPS/css/fonts.css\nS OEBPS/css/book.css\nS <style>\n"
+        "X link for another medium 1\n"
+        "D OEBPS/text/two.xhtml\nS OEBPS/css/fonts.css\nS OEBPS/css/book.css\n";
+    return bn::core::Crc32(BytesOf(lines));
+  }
+  Bytes file;
+};
+
+// What finding the sheets of every document of the spine of the book at
+// `path` comes to and costs, done straight through as `bn-css sheets
+// --spine` does it: the book open twice, its package read, each document
+// opened from where the package says it is.
+struct Found {
+  std::uint32_t checksum = 0;
+  std::uint32_t documents = 0;
+  std::uint64_t given = 0;
+  std::size_t sheetsRead = 0;
+  std::size_t tableBytes = 0;
+  std::size_t namesBytes = 0;
+  std::size_t reads = 0;
+  std::uint64_t readBytes = 0;
+};
+Found FindSheetsAsAReaderWould(FakeStorage& storage, const std::string& path) {
+  Found found;
+  std::array<std::uint8_t, 4096> directoryBuffer{};
+  std::array<std::uint8_t, 4096> entriesBuffer{};
+  bn::core::BlockFile directory(directoryBuffer);
+  bn::core::BlockFile entries(entriesBuffer);
+  EXPECT_EQ(directory.Open(storage, path, bn::core::OpenMode::kRead), StorageStatus::kOk);
+  EXPECT_EQ(entries.Open(storage, path, bn::core::OpenMode::kRead), StorageStatus::kOk);
+  bn::epub::ZipArchive archive;
+  EXPECT_EQ(archive.Open(directory), bn::epub::ZipStatus::kOk);
+  std::vector<std::uint8_t> window(bn::core::Inflater::kWindowBytes);
+  bn::epub::ZipEntryReader reader(window);
+  std::vector<std::uint8_t> xmlMemory(65'536);
+  bn::epub::XmlParser xml(xmlMemory);
+  std::vector<std::uint8_t> memory(262'144);
+  bn::epub::Package package(memory);
+  EXPECT_EQ(package.Read(archive, entries, reader, xml), bn::epub::PackageStatus::kOk);
+  // The table of contents is read next, as the check reads it, since
+  // where the files' buffers are left decides what the next read is.
+  bn::epub::TocReader toc;
+  bn::epub::TocDigest tocDigest;
+  (void)toc.Read(package, entries, reader, xml, tocDigest);
+
+  const std::size_t before = storage.reads.size();
+  std::vector<std::uint8_t> tableMemory(BookCheck::kTableBytes);
+  bn::epub::CssRules rules(tableMemory);
+  bn::epub::CssReader css;
+  bn::epub::ZipBookFiles files(archive, entries, reader);
+  std::vector<char> names(bn::epub::DocumentSheets::kNamesBytes);
+  std::vector<std::uint8_t> style(bn::epub::DocumentSheets::kStyleBytes);
+  bn::epub::DocumentSheets sheets(files, xml, css, rules, names, style);
+  bn::epub::SheetsDigest digest;
+  sheets.BeginBook();
+  std::array<char, bn::epub::kMaxBookPath> name{};
+  for (const bn::epub::SpineItem& item : package.Spine()) {
+    if (!item.present) {
+      continue;
+    }
+    std::size_t length = 0;
+    EXPECT_EQ(bn::epub::ReadZipEntryName(entries, item.entry, name, length), bn::epub::ZipStatus::kOk);
+    EXPECT_EQ(reader.Open(entries, item.entry), bn::epub::ZipStatus::kOk);
+    (void)sheets.Find(std::string_view(name.data(), length), reader);
+    digest.Add(std::string_view(name.data(), length), sheets);
+  }
+  sheets.Begin({});
+  found.checksum = digest.Checksum();
+  found.documents = digest.Documents();
+  found.given = digest.Given();
+  found.sheetsRead = sheets.SheetsRead();
+  found.tableBytes = rules.Bytes();
+  found.namesBytes = sheets.NamesBytes();
+  found.reads = storage.reads.size() - before;
+  const std::uint64_t size = storage.Contents(path).size();
+  for (std::size_t i = before; i < storage.reads.size(); ++i) {
+    found.readBytes += std::min<std::uint64_t>(storage.reads[i].size, size - storage.reads[i].offset);
+  }
+  return found;
+}
+
+TEST(BookCheck, FindsTheSheetsOfEveryDocumentOfTheSpineAndSaysWhatItFound) {
+  CheckFixture fixture;
+  fixture.storage.Put("/books/styled.epub", StyledBook().file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  ASSERT_TRUE(fixture.check->FindsStyles());
+
+  // In reading order, each given the sheet it links after the sheet that
+  // one imports, and the first of them its own rules last.
+  EXPECT_EQ(fixture.check->StylesChecksum(), StyledBook::Checksum());
+  const std::string first = fixture.LineWith("book 1: styles: 3 documents");
+  EXPECT_EQ(first, "book 1: styles: 3 documents, 7 sheets given, 2 read, 1 with rules of its own; checksum " +
+                       Hex8(StyledBook::Checksum()) + ". Not in the book: 1.")
+      << fixture.AllLines();
+
+  // What the table of the book's rules came to once the last document's
+  // own rules were out of it, and what it all cost, by itself.
+  const BookCheck::Figures totals = fixture.check->Totals();
+  const std::string second = fixture.LineWith("book 1: styles: table ");
+  EXPECT_EQ(second, "book 1: styles: table " + std::to_string(totals.stylesTableBytes) + " bytes, 3 rules, names " +
+                        std::to_string(totals.stylesNamesBytes) + " bytes; " + std::to_string(totals.stylesUs / 1000) +
+                        " ms: card " + std::to_string(totals.stylesStorageUs / 1000) + " ms for " +
+                        std::to_string(totals.stylesReads) + " reads of " + std::to_string(totals.stylesReadBytes) +
+                        " bytes.")
+      << fixture.AllLines();
+
+  // What was left out, a line for each kind.
+  EXPECT_FALSE(fixture.LineWith("book 1: styles: left out 1: link for another medium.").empty()) << fixture.AllLines();
+  EXPECT_FALSE(fixture.LineWith("book 1: styles: left out 1: link to no file of the book.").empty());
+  EXPECT_EQ(totals.stylesLeftOut[static_cast<std::size_t>(bn::epub::SheetLeftOut::kLinkMedia)], 1U);
+  EXPECT_EQ(totals.stylesLeftOut[static_cast<std::size_t>(bn::epub::SheetLeftOut::kLinkNotInBook)], 1U);
+
+  // The same as finding them straight through, as the tool on the desktop
+  // does: the same lists, the same memory, read for read.
+  const Found found = FindSheetsAsAReaderWould(fixture.storage, "/books/styled.epub");
+  EXPECT_EQ(fixture.check->StylesChecksum(), found.checksum);
+  EXPECT_EQ(totals.stylesDocuments, found.documents);
+  EXPECT_EQ(totals.stylesGiven, found.given);
+  EXPECT_EQ(totals.stylesRead, found.sheetsRead);
+  EXPECT_EQ(totals.stylesTableBytes, found.tableBytes);
+  EXPECT_EQ(totals.stylesNamesBytes, found.namesBytes);
+  EXPECT_EQ(totals.stylesReads, found.reads);
+  EXPECT_EQ(totals.stylesReadBytes, found.readBytes);
+  EXPECT_GT(totals.stylesReads, 0U);
+  EXPECT_EQ(totals.stylesAbsent, 1U);
+  EXPECT_EQ(totals.stylesUnopened, 0U);
+  EXPECT_EQ(totals.stylesOwn, 1U);
+  EXPECT_EQ(totals.stylesRules, 3U);
+  EXPECT_EQ(totals.stylesRulesLeftOut, 0U);
+
+  // And for all the books together.
+  EXPECT_EQ(fixture.LineWith("book check: styles: 3 documents"),
+            "book check: styles: 3 documents of 1 book, 7 sheets given, 2 read, 1 with rules of its own. "
+            "Not in the book: 1.")
+      << fixture.AllLines();
+  const std::string cost = fixture.LineWith("book check: styles: " + std::to_string(totals.stylesUs / 1000) + " ms: ");
+  EXPECT_TRUE(cost.ends_with(" bytes; the longest " + std::to_string(totals.stylesLongestUs / 1000) +
+                             " ms; the most a table took " + std::to_string(totals.stylesTableBytes) +
+                             " bytes, names " + std::to_string(totals.stylesNamesBytes) + "."))
+      << fixture.AllLines();
+  EXPECT_FALSE(fixture.LineWith("book check: styles: left out 1: link for another medium.").empty());
+  EXPECT_FALSE(fixture.LineWith("book check: styles: left out 1: link to no file of the book.").empty());
+}
+
+TEST(BookCheck, CountsWhatFindingSheetsCostsByItselfAndEveryReadToSomething) {
+  CheckFixture fixture;
+  fixture.storage.Put("/books/a-styled.epub", StyledBook().file);
+  // A second, read after it, whose documents ask for nothing.
+  fixture.storage.Put("/books/plain.epub", RealBook().file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  const BookCheck::Figures totals = fixture.check->Totals();
+  const std::size_t readsOfTheCheck = fixture.storage.reads.size();
+  // The most a table and the names took are the first book's, though the
+  // second came after it with none.
+  const Found styled = FindSheetsAsAReaderWould(fixture.storage, "/books/a-styled.epub");
+  EXPECT_EQ(totals.stylesTableBytes, styled.tableBytes);
+  EXPECT_EQ(totals.stylesNamesBytes, styled.namesBytes);
+  EXPECT_GT(styled.tableBytes, 2U);
+  EXPECT_EQ(totals.reads + totals.packageReads + totals.tocReads + totals.stylesReads + totals.placeReads,
+            readsOfTheCheck)
+      << "every read the check made is counted to one of the five";
+  EXPECT_EQ(totals.stylesBooks, 2U);
+  EXPECT_EQ(totals.stylesDocuments, 6U);
+  EXPECT_EQ(totals.stylesGiven, 7U);
+  EXPECT_GT(totals.stylesUs, totals.stylesStorageUs);
+  EXPECT_GE(totals.stylesUs, totals.stylesLongestUs);
+  // The plain book's line says so, and has a checksum all the same: its
+  // documents are the lines of it.
+  const std::string plain = fixture.LineWith("book 2: styles: 3 documents, 0 sheets given, 0 read, 0 with rules");
+  EXPECT_FALSE(plain.empty()) << fixture.AllLines();
+  // (An empty table takes two bytes.)
+  EXPECT_FALSE(fixture.LineWith("book 2: styles: table 2 bytes, 0 rules, names 0 bytes; ").empty())
+      << fixture.AllLines();
+  // The reading of the book that follows is what it was: the entries, and
+  // nothing of the sheets.
+  EXPECT_FALSE(fixture.LineWith("book 1: ok. 11 entries").empty()) << fixture.AllLines();
+
+  // The most a table took is in the metrics.
+  std::array<char, 1024> metrics{};
+  bn::core::DefaultMetrics().FormatLine(metrics);
+  EXPECT_NE(std::string(metrics.data()).find("css_table_bytes=" + std::to_string(totals.stylesTableBytes)),
+            std::string::npos)
+      << metrics.data();
+}
+
+TEST(BookCheck, SaysHowManyRulesTheTableHadNoRoomFor) {
+  // A sheet of more rules than the check's table holds: the rest are
+  // counted, for the book and for the run, and the table is full.
+  std::string sheet;
+  for (int rule = 0; rule < 1500; ++rule) {
+    sheet += "p.c" + std::to_string(rule) + " { text-indent: " + std::to_string(rule) + "px }\n";
+  }
+  ZipBuilder builder;
+  builder.Add("mimetype", BytesOf("application/epub+zip"));
+  builder.Add("META-INF/container.xml",
+              BytesOf("<container><rootfiles><rootfile full-path=\"content.opf\" "
+                      "media-type=\"application/oebps-package+xml\"/></rootfiles></container>"));
+  builder.Add("content.opf",
+              BytesOf("<package><manifest><item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                      "</manifest><spine><itemref idref=\"a\"/></spine></package>"));
+  builder.Add("a.xhtml", Page(LinkTo("vast.css")));
+  builder.Add("vast.css", BytesOf(sheet), {.deflate = true});
+  CheckFixture fixture;
+  fixture.storage.Put("/books/a.epub", builder.Finish());
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  const BookCheck::Figures totals = fixture.check->Totals();
+  EXPECT_GT(totals.stylesRulesLeftOut, 100U);
+  EXPECT_EQ(totals.stylesRules + totals.stylesRulesLeftOut, 1500U);
+  EXPECT_LE(totals.stylesTableBytes, BookCheck::kTableBytes);
+  EXPECT_GT(totals.stylesTableBytes, BookCheck::kTableBytes - 200);
+  const std::string room = " Rules with no room: " + std::to_string(totals.stylesRulesLeftOut) + ".";
+  EXPECT_TRUE(fixture.LineWith("book 1: styles: 1 document, 1 sheet given, 1 read, ").ends_with(room))
+      << fixture.AllLines();
+  EXPECT_TRUE(fixture.LineWith("book check: styles: 1 document of 1 book, ").ends_with(room)) << fixture.AllLines();
+  // The table as full as finding the same straight through leaves it.
+  EXPECT_EQ(totals.stylesTableBytes, FindSheetsAsAReaderWould(fixture.storage, "/books/a.epub").tableBytes);
+}
+
+TEST(BookCheck, FindsSheetsAStepAtATime) {
+  CheckFixture fixture;
+  // A sheet of many pieces, and a clock that makes each step take long
+  // enough for a turn to be one step.
+  std::string sheet;
+  for (int rule = 0; rule < 400; ++rule) {
+    sheet += "p.c" + std::to_string(rule) + " { text-indent: " + std::to_string(rule) + "px }\n";
+  }
+  ZipBuilder builder;
+  builder.Add("mimetype", BytesOf("application/epub+zip"));
+  builder.Add("META-INF/container.xml",
+              BytesOf("<container><rootfiles><rootfile full-path=\"content.opf\" "
+                      "media-type=\"application/oebps-package+xml\"/></rootfiles></container>"));
+  builder.Add("content.opf",
+              BytesOf("<package><manifest><item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                      "</manifest><spine><itemref idref=\"a\"/></spine></package>"));
+  builder.Add("a.xhtml", Page(LinkTo("long.css")));
+  builder.Add("long.css", BytesOf(sheet));
+  fixture.storage.Put("/books/a.epub", builder.Finish());
+  fixture.clock.step = 30'000;
+  fixture.check->Begin();
+  const int turns = fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  // The sheet alone is more than a dozen pieces of 1 KB, each a step, and
+  // with this clock each a turn.
+  EXPECT_GT(turns, static_cast<int>(sheet.size() / 1024));
+  EXPECT_FALSE(fixture.LineWith("book 1: styles: 1 document, 1 sheet given, 1 read, 0 with rules").empty())
+      << fixture.AllLines();
+  EXPECT_EQ(fixture.check->Totals().stylesRules, 400U);
+}
+
+TEST(BookCheck, ABriefCheckFindsNoSheets) {
+  CheckFixture fixture;
+  fixture.check = std::make_unique<BookCheck>(fixture.storage, fixture.clock, fixture.stream, true);
+  fixture.storage.Put("/books/styled.epub", StyledBook().file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  EXPECT_FALSE(fixture.check->FindsStyles());
+  for (const std::string& line : fixture.Lines()) {
+    EXPECT_EQ(line.find("styles"), std::string::npos) << line;
+  }
+  EXPECT_EQ(fixture.check->Totals().stylesBooks, 0U);
+  EXPECT_EQ(fixture.check->Totals().stylesReads, 0U);
+  EXPECT_EQ(fixture.check->StylesChecksum(), 0U);
+}
+
+TEST(BookCheck, ABookWithNoPackageHasNoSheetsLookedFor) {
+  CheckFixture fixture;
+  fixture.storage.Put("/books/a.epub", Book().file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  for (const std::string& line : fixture.Lines()) {
+    EXPECT_EQ(line.find("styles"), std::string::npos) << line;
+  }
+  EXPECT_EQ(fixture.check->Totals().stylesBooks, 0U);
+}
+
+TEST(BookCheck, SaysWhenADocumentOfTheSpineCannotBeOpenedOrIsNotOne) {
+  CheckFixture fixture;
+  // `two` has a head that is not XML, and is read as far as that.
+  fixture.storage.Put("/books/styled.epub", StyledBook("<meta charset=\"utf-8\">").file);
+  // And a book whose second chapter is marked as encrypted, which nothing
+  // here can open.
+  ZipBuilder builder;
+  builder.Add("mimetype", BytesOf("application/epub+zip"));
+  builder.Add("META-INF/container.xml",
+              BytesOf("<container><rootfiles><rootfile full-path=\"content.opf\" "
+                      "media-type=\"application/oebps-package+xml\"/></rootfiles></container>"));
+  builder.Add("content.opf",
+              BytesOf("<package><manifest><item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                      "<item id=\"b\" href=\"b.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                      "</manifest><spine><itemref idref=\"b\"/><itemref idref=\"a\"/></spine></package>"));
+  builder.Add("a.xhtml", Page(LinkTo("a.css")), {.flags = 1});
+  builder.Add("b.xhtml", Page(LinkTo("a.css")));
+  builder.Add("a.css", BytesOf("p { margin: 0 }"));
+  fixture.storage.Put("/books/odd.epub", builder.Finish());
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+
+  // The book that cannot all be read fails, as it did; its sheets are
+  // still found for the document that can be opened.
+  EXPECT_EQ(fixture.check->CurrentState(), State::kFailed) << fixture.AllLines();
+  EXPECT_FALSE(
+      fixture.LineWith("book 1: styles: 2 documents, 1 sheet given, 1 read, 0 with rules of their own; checksum ")
+          .empty())
+      << fixture.AllLines();
+  EXPECT_TRUE(fixture.LineWith("book 1: styles: 2 documents").ends_with(". Not opened: 1.")) << fixture.AllLines();
+  // (It comes after a document whose sheets were found, which it is not
+  // to be given.)
+  const std::string lines = "D b.xhtml\nS a.css\nD a.xhtml\nN\n";
+  EXPECT_NE(fixture.LineWith("book 1: styles: 2 documents").find(Hex8(bn::core::Crc32(BytesOf(lines)))),
+            std::string::npos)
+      << fixture.AllLines();
+  // And the head that could not be read through is counted for its book.
+  EXPECT_FALSE(fixture.LineWith("book 2: styles: left out 1: head not read through.").empty()) << fixture.AllLines();
+  EXPECT_FALSE(fixture
+                   .LineWith("book check: styles: 5 documents of 2 books, 8 sheets given, 3 read, 1 with rules "
+                             "of its own. Not opened: 1. Not in the book: 1.")
+                   .empty())
+      << fixture.AllLines();
+}
+
+TEST(BookCheck, ADocumentWhoseNameIsTooLongToBeAPathIsCountedAndNotOpened) {
+  // The name in an entry's own header is the one that is read, and a file
+  // can be made whose header gives another length than its directory does:
+  // here 600 bytes, which is more than a path in a book may be.
+  CheckFixture fixture;
+  ZipBuilder builder;
+  builder.Add("mimetype", BytesOf("application/epub+zip"));
+  builder.Add("META-INF/container.xml",
+              BytesOf("<container><rootfiles><rootfile full-path=\"content.opf\" "
+                      "media-type=\"application/oebps-package+xml\"/></rootfiles></container>"));
+  builder.Add("content.opf",
+              BytesOf("<package><manifest><item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                      "<item id=\"b\" href=\"b.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                      "</manifest><spine><itemref idref=\"b\"/><itemref idref=\"a\"/></spine></package>"));
+  builder.Add("a.xhtml", Page(LinkTo("a.css")));
+  builder.Add("b.xhtml", Page(LinkTo("a.css")));
+  builder.Add("a.css", BytesOf("p { margin: 0 }"));
+  builder.Add("picture.jpg", Prose(2'000, 9));
+  Bytes file = builder.Finish();
+  const std::size_t header = builder.At(3).header;
+  const std::uint32_t claimed = 600;
+  file.at(header + 26) = static_cast<std::uint8_t>(claimed & 0xFFU);
+  file.at(header + 27) = static_cast<std::uint8_t>(claimed >> 8U);
+  fixture.storage.Put("/books/odd.epub", file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+
+  // What stands for it is as much of the name as a path has room for: the
+  // 512 bytes that follow the header.
+  const std::string first(file.begin() + static_cast<std::ptrdiff_t>(header + 30),
+                          file.begin() + static_cast<std::ptrdiff_t>(header + 30 + 512));
+  const std::string lines = "D b.xhtml\nS a.css\nD " + first + "\nN\n";
+  EXPECT_EQ(fixture.check->StylesChecksum(), bn::core::Crc32(BytesOf(lines))) << fixture.AllLines();
+  EXPECT_TRUE(fixture.LineWith("book 1: styles: 2 documents, 1 sheet given, 1 read, ").ends_with(". Not opened: 1."))
+      << fixture.AllLines();
+}
+
+TEST(BookCheck, SaysWhatABooksSheetsTakeWithoutTheLastDocumentsOwnRules) {
+  // The last document of the spine has rules of its own, which are in the
+  // table while its sheets are found and out of it when the book's table
+  // is measured: three rules and not four, as for the book without them.
+  CheckFixture fixture;
+  fixture.storage.Put("/books/styled.epub", StyledBook("<style>h2 { margin: 0 } h3 { margin: 0 }</style>").file);
+  CheckFixture without;
+  without.storage.Put("/books/styled.epub", StyledBook().file);
+  fixture.check->Begin();
+  fixture.RunToTheEnd();
+  without.check->Begin();
+  without.RunToTheEnd();
+  ASSERT_EQ(fixture.check->CurrentState(), State::kPassed) << fixture.AllLines();
+  EXPECT_FALSE(
+      fixture.LineWith("book 1: styles: 3 documents, 8 sheets given, 2 read, 2 with rules of their own").empty())
+      << fixture.AllLines();
+  EXPECT_EQ(fixture.check->Totals().stylesRules, 3U);
+  EXPECT_EQ(fixture.check->Totals().stylesTableBytes, without.check->Totals().stylesTableBytes);
+  EXPECT_EQ(fixture.check->Totals().stylesTableBytes,
+            FindSheetsAsAReaderWould(fixture.storage, "/books/styled.epub").tableBytes);
 }
 
 TEST(BookCheck, SaysWhatIsAmissWithAPackageItReads) {

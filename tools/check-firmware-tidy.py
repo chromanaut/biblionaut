@@ -198,6 +198,11 @@ def main() -> int:
     parser.add_argument("build", nargs="?", type=Path, default=DEFAULT_BUILD, help="the firmware build directory")
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1, help="files to check at once")
     options = parser.parse_args()
+    # One heavy check at a time on a machine: this waits for its turn
+    # (tools/queued says how), and starts again from the top when it has it.
+    if "heavy" not in os.environ.get("BN_QUEUE_HELD", "").split(":"):
+        here = Path(__file__).resolve()
+        os.execv(sys.executable, [sys.executable, str(here.parent / "queued"), sys.executable, str(here), *sys.argv[1:]])
 
     build = options.build.resolve()
     database = build / "compile_commands.json"

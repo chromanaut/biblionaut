@@ -39,13 +39,15 @@ The other checks. CI runs all of them (`.github/workflows/ci.yml`), and all of t
 |---|---|
 | Formatting | `tools/check-format.sh` (`--fix` rewrites) |
 | Constructs the portable parts may not use | `tools/check-banned.py` |
-| clang-tidy on the host build | `cmake --preset tidy && cmake --build --preset tidy` |
+| clang-tidy on the host build | `tools/check-tidy.sh` |
 | Firmware build | `tools/idf build` |
 | Nothing in the portable parts can throw | `tools/check-firmware-symbols.sh` (after a firmware build) |
 | clang-tidy on what the firmware compiles | `tools/check-firmware-tidy.py` (after a firmware build) |
 | The tests again, optimised and without sanitizers | `cmake --build --preset host-release && ctest --preset host-release` |
 | The desktop application with its window (CI: macOS only) | `cmake --preset window && cmake --build --preset window && ctest --preset window` |
 | CI's Linux jobs: GCC 14, with sanitizers and without | `tools/linux-check.sh` (needs Docker running; arguments go to `ctest`) |
+
+The heavy checks take turns. `tools/linux-check.sh`, `tools/check-tidy.sh`, `tools/check-firmware-tidy.py` and `tools/fuzz.py` each take every processor for minutes, so each waits until no other of them is running on the machine, whichever checkout it was started from (`tools/queued`; `tools/queued --list` says what is running and what is waiting). A wait can be far longer than the check itself, so start them in the background; and do not go round the queue by typing the `cmake` or `docker` command a script would have run. Anything else as heavy can be given a turn in the same queue: `tools/queued COMMAND`. A run on a device, flashing and capturing as one command, can take turns in the same way, in a queue of the device's own: `tools/queued --name x4 sh -c '...'`.
 
 CI does not build a firmware with one of the device checks switched on (below). Build and test that here when a change touches it.
 

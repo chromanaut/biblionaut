@@ -255,6 +255,14 @@ if(Python3_Interpreter_FOUND)
       -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/symbolize.cmake)
 
+  # tools/queued, which has the heavy checks take turns: jobs that end
+  # when the test lets them, to see that they go one at a time and in the
+  # order they came, and what becomes of the queue when one is killed.
+  add_test(
+    NAME e2e.Queued
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/queued.py
+      ${PROJECT_SOURCE_DIR}/tools/queued ${CMAKE_CURRENT_BINARY_DIR}/queued)
+
   # bn-zip, and through it the ZIP reader, against ZIP files made by
   # something else: Python's zipfile module, and the zip command where
   # there is one.

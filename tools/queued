@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Runs a command when its turn comes.
+
+Some of the checks here take every processor for minutes: CI's Linux jobs
+in Docker, the fuzz targets, clang-tidy. Two of them started at once, from
+two checkouts of the repository, each take twice as long, and five make the
+machine useless for anything else. This makes them take turns:
+
+    tools/queued COMMAND [ARGUMENT...]
+
+waits until no other command started this way is running, then runs
+COMMAND. Those that wait are served in the order they came. The heavy
+checks call it for themselves (tools/linux-check.sh, tools/fuzz.py,
+tools/check-tidy.sh, tools/check-firmware-tidy.py), so there is usually
+nothing to type; and a command started by one that is having its turn
+does not wait for a turn of its own.
+
+    tools/queued --name NAME COMMAND...   a queue of its own: what is in
+                                          one does not wait for another.
+                                          Without it the name is "heavy".
+    tools/queued --list                   what is running and what waits
+
+A device with one cable is such a thing too. A run on it, flashing and
+capturing together as one command, can take its turn in a queue named
+for the device:
+
+    tools/queued --name x4 sh -c 'tools/idf flash && bn-trace --seconds 60 > run.log'
+
+How it works. A turn is a lock on a file, taken with flock(2), in a
+folder every checkout on the machine shares: ~/.cache/biblionaut/queue,
+or $XDG_CACHE_HOME/biblionaut/queue, or $BN_QUEUE_DIR. The command is not
+run as a child: this program becomes it, so the lock is the command's
+own, it ends when the command and whatever it started have ended, however
+they end, and nothing is left to clear up after one that was killed.
+Whoever waits keeps a file of its own in a folder beside the lock, named
+for when it came and locked in the same way, so that the others can tell
+both the order and whether its owner is still there.
+
+With BN_QUEUE_OFF set to anything, or if the folder cannot be used, the
+command is run at once.
+"""
+
+from __future__ import annotations
+
+import datetime
+import errno
+import fcntl
+import os
+import shlex
+import sys
+import time
+from pathlib import Path
+
+HELD = "BN_QUEUE_HELD"  # The queues a command's ancestors are having their turn in.
+POLL_SECONDS = 0.5
+
+
+def queue_folder() -> Path:
+    named = os.environ.get("BN_QUEUE_DIR")
+    if named:
+        return Path(named)
+    cache = os.environ.get("XDG_CACHE_HOME")
+    return (Path(cache) if cache else Path.home() / ".cache") / "biblionaut" / "queue"
+
+
+def try_lock(descriptor: int) -> bool:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError as error:
+        if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            return False
+        raise
+
+
+def describe(command: list[str]) -> str:
+    """One line saying what a command is, where, and since when."""
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    where = os.getcwd()
+    home = str(Path.home())
+    if where == home or where.startswith(home + os.sep):
+        where = "~" + where[len(home) :]
+    return f"{shlex.join(command)}, in {where}, since {now}, process {os.getpid()}"
+
+
+def read_line(path: Path) -> str:
+    try:
+        return path.read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def waiting(folder: Path, name: str) -> list[Path]:
+    """The files of those waiting in a queue whose owners are still there,
+    in the order they came. A file whose owner has gone is removed."""
+    alive = []
+    try:
+        tickets = sorted(path for path in (folder / f"{name}.waiting").iterdir() if not path.name.startswith("."))
+    except OSError:
+        return alive
+    for ticket in tickets:
+        try:
+            descriptor = os.open(ticket, os.O_RDWR)
+        except OSError:
+            continue  # Its owner's turn came, between the listing and now.
+        try:
+            if try_lock(descriptor):
+                # Nobody holds it: whoever made it was killed while waiting.
+                try:
+                    ticket.unlink()
+                except OSError:
+                    pass
+            else:
+                alive.append(ticket)
+        finally:
+            os.close(descriptor)
+    return alive
+
+
+def duration(seconds: float) -> str:
+    whole = int(seconds)
+    if whole < 60:
+        return f"{whole} s"
+    return f"{whole // 60} min {whole % 60} s"
+
+
+def take_turn(folder: Path, name: str, command: list[str]) -> int:
+    """Waits for a turn in the queue `name` and returns the descriptor of
+    its lock, which is the turn: whoever holds it open has it."""
+    line = describe(command)
+    folder.mkdir(parents=True, exist_ok=True)
+    lock = os.open(folder / f"{name}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+
+    # A place in the queue. The file is locked before it has the name the
+    # others look for, so that none of them can find it unlocked and take
+    # its owner for gone.
+    tickets = folder / f"{name}.waiting"
+    tickets.mkdir(exist_ok=True)
+    unnamed = tickets / f".new-{os.getpid()}"
+    ticket_descriptor = os.open(unnamed, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+    fcntl.flock(ticket_descriptor, fcntl.LOCK_EX)
+    os.write(ticket_descriptor, (line + "\n").encode())
+    ticket = tickets / f"{time.time_ns():020d}-{os.getpid()}"
+    unnamed.rename(ticket)
+
+    began = time.monotonic()
+    said = None
+    try:
+        while True:
+            ahead = [other for other in waiting(folder, name) if other.name < ticket.name]
+            free = try_lock(lock)
+            if free and not ahead:
+                break
+            if free:
+                # Free, but it is another's turn: let go, for that one to take.
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                running = ""
+            else:
+                running = " Running now: " + (read_line(folder / f"{name}.lock") or "something that has not said what it is") + "."
+            others = f" {len(ahead)} waiting before this." if ahead else ""
+            saying = f"queued: waiting for a turn ({name}).{running}{others}"
+            if saying != said:
+                print(saying, file=sys.stderr, flush=True)
+                said = saying
+            time.sleep(POLL_SECONDS)
+    finally:
+        try:
+            ticket.unlink()
+        except OSError:
+            pass
+        os.close(ticket_descriptor)
+
+    # What is running, for the others to say: with the time its turn began,
+    # where the line in the queue had the time it came.
+    os.ftruncate(lock, 0)
+    os.pwrite(lock, (describe(command) + "\n").encode(), 0)
+    if said is not None:
+        print(f"queued: its turn came after {duration(time.monotonic() - began)}.", file=sys.stderr, flush=True)
+    return lock
+
+
+def show(folder: Path) -> int:
+    names = set()
+    try:
+        for path in folder.iterdir():
+            if path.name.endswith(".lock"):
+                names.add(path.name[: -len(".lock")])
+            elif path.name.endswith(".waiting"):
+                names.add(path.name[: -len(".waiting")])
+    except OSError:
+        pass
+    if not names:
+        print(f"Nothing has been queued in {folder}.")
+        return 0
+    for name in sorted(names):
+        try:
+            descriptor = os.open(folder / f"{name}.lock", os.O_RDWR)
+        except OSError:
+            descriptor = -1
+        free = descriptor < 0 or try_lock(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)  # And with it the lock, if it was taken to look.
+        if free:
+            print(f"{name}: nothing running.")
+        else:
+            running = read_line(folder / f"{name}.lock")
+            print(f"{name}: running: {running or 'something that has not said what it is'}.")
+            owner = running.rsplit("process ", 1)[-1] if "process " in running else ""
+            if owner.isdigit() and not process_exists(int(owner)):
+                print(f"{name}:   that process has ended, and something it started still has the turn.")
+        for ticket in waiting(folder, name):
+            print(f"{name}: waiting: {read_line(ticket)}.")
+    return 0
+
+
+def process_exists(process: int) -> bool:
+    try:
+        os.kill(process, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def become(command: list[str]) -> int:
+    try:
+        os.execvp(command[0], command)
+    except OSError as error:
+        print(f"queued: {command[0]}: {error.strerror}", file=sys.stderr)
+        return 127 if error.errno == errno.ENOENT else 126
+
+
+def main(arguments: list[str]) -> int:
+    name = "heavy"
+    while arguments and arguments[0].startswith("-"):
+        option = arguments.pop(0)
+        if option == "--":
+            break
+        if option in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        if option == "--list":
+            return show(queue_folder())
+        if option == "--name" and arguments:
+            name = arguments.pop(0)
+            if not name or not all(letter.isalnum() or letter in "-_" for letter in name):
+                print("queued: a queue's name is letters, digits, - and _", file=sys.stderr)
+                return 2
+            continue
+        print(f"queued: unknown option {option}; --help says what there is", file=sys.stderr)
+        return 2
+    if not arguments:
+        print("usage: tools/queued [--name NAME] COMMAND [ARGUMENT...]\n       tools/queued --list", file=sys.stderr)
+        return 2
+
+    held = os.environ.get(HELD, "").split(":")
+    if name in held:
+        return become(arguments)
+    # What the command starts is told not to wait for a turn in this queue:
+    # it is having one. That is said even where no turn is taken, so that a
+    # script which calls this for itself can tell that it has been through.
+    os.environ[HELD] = ":".join(part for part in [*held, name] if part)
+    if os.environ.get("BN_QUEUE_OFF"):
+        return become(arguments)
+    try:
+        lock = take_turn(queue_folder(), name, arguments)
+    except OSError as error:
+        print(f"queued: {queue_folder()}: {error.strerror}. Running without waiting for a turn.", file=sys.stderr)
+        return become(arguments)
+    os.set_inheritable(lock, True)  # The command inherits the lock.
+    return become(arguments)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)

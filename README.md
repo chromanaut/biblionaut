@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/png`: `bn-png`, which reads a PNG picture as the firmware does; `tools/jpeg`: `bn-jpeg`, which does the same for a JPEG picture; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does; `tools/font`: `bn-font`, which makes the fonts image the firmware draws text from) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/png`: `bn-png`, which reads a PNG picture as the firmware does; `tools/jpeg`: `bn-jpeg`, which does the same for a JPEG picture; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does; `tools/font`: `bn-font`, which makes the fonts image the firmware draws text from) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check, `queued` to have the heavy checks take turns) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -4069,13 +4069,41 @@ CI runs all of these on every push to `main` and every pull request
 | The desktop application with its window, and its end-to-end test (CI runs it on macOS) | `cmake --preset window && cmake --build --preset window && ctest --preset window` |
 | Formatting | `tools/check-format.sh` (`--fix` to rewrite files) |
 | Constructs the portable parts may not use (`std::string`, `std::vector`, `std::function`, `std::shared_ptr`, iostreams, C stdio streams) | `tools/check-banned.py` |
-| clang-tidy (rules in `.clang-tidy`) on everything the host build compiles | `cmake --preset tidy && cmake --build --preset tidy` |
+| clang-tidy (rules in `.clang-tidy`) on everything the host build compiles | `tools/check-tidy.sh` |
 | clang-tidy on what the firmware build compiles: the device code, and the portable parts as built for the device | `tools/check-firmware-tidy.py` (after a firmware build) |
 | Firmware builds | `tools/idf build` |
 | The portable parts (`core`, `epub`, `draw`, `layout`) call nothing that can throw | `tools/check-firmware-symbols.sh` (after a firmware build) |
 
 The formatting check and both clang-tidy runs need the LLVM major version
 named in `tools/llvm-version` (`brew install llvm@<version>` on macOS).
+
+Four of these take every processor for minutes: the Linux run, the two
+clang-tidy runs, and fuzzing. Two started together, from two checkouts of
+the repository on one machine, each take twice as long, and with several
+people or programs at work on one machine that happens all the time. So
+each of the four waits for its turn before it starts: `tools/queued` runs
+one command at a time on a machine, in the order they came, whichever
+checkout each was started from, and `tools/linux-check.sh`,
+`tools/check-tidy.sh`, `tools/check-firmware-tidy.py` and `tools/fuzz.py`
+go through it. One that has to wait says what it is waiting for, and
+`tools/queued --list` says what is running and what waits:
+
+```
+heavy: running: tools/check-tidy.sh, in ~/biblionaut, since 20:05:18, process 2653.
+heavy: waiting: tools/linux-check.sh, in ~/biblionaut, since 20:05:22, process 2910.
+heavy: waiting: tools/fuzz.py --time 420 inflate zip png, in ~/biblionaut-two, since 20:05:33, process 6030.
+```
+
+A turn is a lock on a file in `~/.cache/biblionaut/queue`, and the command
+that is running holds it itself: `tools/queued` does not start the command
+and wait for it, it becomes it. So a turn ends when the command ends,
+however that is, and with whatever the command started; one that is killed
+leaves nothing to clear up, and one that is killed while it waits holds
+nobody up. `tools/queued COMMAND` gives any other command a turn in the
+same queue, and `--name` another queue, which a run on a device with one
+cable can use (`tools/queued --help`). Setting `BN_QUEUE_OFF` runs a
+command at once. CI is not changed by any of this: each of its jobs has a
+machine to itself, where there is nothing to wait for.
 
 CI gives each host build a job of its own, so that they run at the same
 time, and runs the tests one to a core, as `tools/linux-check.sh` does. A local run does the same with `-j`: on a

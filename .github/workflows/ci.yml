@@ -37,9 +37,7 @@ jobs:
         run: tools/check-banned.py
 
       - name: clang-tidy
-        run: |
-          cmake --preset tidy -DBN_CLANG_TIDY_EXE="$LLVM_BIN/clang-tidy"
-          cmake --build --preset tidy
+        run: tools/check-tidy.sh -DBN_CLANG_TIDY_EXE="$LLVM_BIN/clang-tidy"
 
   # Each build is a job of its own, so that all four run at once.
   host:

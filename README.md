@@ -3555,6 +3555,23 @@ faster than that, and took three and a half times as long to draw a test
 pattern. The `-O2` firmware is 22 KB larger than the first and 74 KB
 larger than the second, of the megabyte it has.
 
+Three more settings there leave some of ESP-IDF's own code in flash that
+it would otherwise copy into RAM, and on this chip RAM that holds code is
+RAM the heap does not have. The driver for the chip's flash is taken from
+the chip's ROM; the ring buffer's functions for interrupt handlers and the
+C library's locks stay in flash. ESP-IDF keeps such code in RAM so that it
+can run while the chip's flash is being written, which this firmware never
+does. On an X4 they leave the heap 13 KB more (298 KB free with the test
+pattern showing, against 285 KB), and the largest block that can be taken
+16 KB larger. Reading the same 34 books took as long with them as without
+(108.5 s and 108.6 s), and so did the card's own check and writing to the
+panel; getting a picture out of the cache and ready to show took 2% longer
+(207 ms against 204 ms). A fourth setting, which moves the heap's own
+functions, would leave 17 KB more again; but ESP-IDF then moves the SPI
+driver's interrupt handler out of RAM with them, and the card's driver
+uses that for every block of data. With it the card read 6% slower and
+the 34 books took 4% longer, so it is left as it was.
+
 ESP-IDF keeps the settings a build was first made with in
 `app/firmware/sdkconfig`, which it writes itself. After a change to
 `sdkconfig.defaults`, delete that file and build again, or the change is
@@ -3595,28 +3612,27 @@ partition check: partition nvs: type 1, subtype 0x02, at 0x009000, 20 KB.
 partition check: partition phy_init: type 1, subtype 0x01, at 0x00e000, 4 KB.
 partition check: partition factory: type 0, subtype 0x00, at 0x010000, 4032 KB.
 partition check: partition fonts: type 1, subtype 0x40, at 0x400000, 12288 KB.
-partition check: pages of address space free for data: 124 (7936 KB).
-E (92) mmap: esp_mmu_map(479): no such vaddr range
-partition check: the whole partition at once, 12288 KB: ESP_ERR_NOT_FOUND.
-E (92) mmap: esp_mmu_map(479): no such vaddr range
-E (92) mmap: esp_mmu_map(479): no such vaddr range
-E (92) mmap: esp_mmu_map(479): no such vaddr range
-E (92) mmap: esp_mmu_map(479): no such vaddr range
-partition check: the most mapped at once: 124 pages (7936 KB).
-partition check: a window of 64 KB: mapped in 26 us and unmapped in 16 us, on average of 100 (0 failed).
-partition check: a window of 1024 KB: mapped in 27 us and unmapped in 17 us, on average of 100 (0 failed).
+partition check: pages of address space free for data: 123 (7872 KB).
+partition check: the whole partition at once, 12288 KB: ESP_ERR_NO_MEM.
+partition check: the most mapped at once: 123 pages (7872 KB).
+partition check: a window of 64 KB: mapped in 16 us and unmapped in 4 us, on average of 100 (0 failed).
+partition check: a window of 1024 KB: mapped in 79 us and unmapped in 7 us, on average of 100 (0 failed).
 partition check: read all 12288 KB in 824 ms (14902 KB/s), through windows of 1024 KB.
 partition check: every word is what it should be (3145728 words).
-partition check: scattered over 4096 KB: 20000 reads of 64 bytes in 87296 us (4364 ns a read).
-partition check: within 8 KB: 20000 reads of 64 bytes in 17226 us (861 ns a read).
+partition check: scattered over 4096 KB: 20000 reads of 64 bytes in 87542 us (4377 ns a read).
+partition check: within 8 KB: 20000 reads of 64 bytes in 17346 us (867 ns a read).
 partition check: passed.
 ```
 
 The processor has 8 MB of address space for flash, in 128 pages of 64 KB,
 shared by the app's code and constant data and whatever else is mapped:
-beside an app of 280 KB, 124 pages were free, so a partition larger than
-that is mapped a part at a time. Mapping a window costs the same for 64 KB
-as for 1 MB.
+beside an app of 280 KB, 123 pages were free, so a partition larger than
+that is mapped a part at a time. Mapping a window of 1 MB takes five times
+as long as one of 64 KB, and is still under a tenth of a millisecond. The
+mapping is done by the chip's ROM, where the firmware takes its driver for
+the flash from (above). Done by ESP-IDF's own driver it left 124 pages
+free and took 26 µs for a window of either size, and reading through it
+was as fast (822 ms for the 12 MB).
 
 ## Crash reports
 

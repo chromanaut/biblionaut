@@ -24,6 +24,33 @@ CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
 CONFIG_COMPILER_CXX_RTTI=n
 
+# Some of ESP-IDF's own code in flash and not in RAM. On this chip code
+# runs from either, and RAM that holds code is RAM the heap does not have.
+# ESP-IDF keeps a good deal of itself in RAM so that it can run while the
+# chip's flash is being written, when nothing can be read from flash. This
+# firmware writes its flash nowhere; and if it did, code left in flash
+# would only wait for the write to end, since ESP-IDF holds off every
+# interrupt whose handler is there. These three give the heap 13 KB more.
+# On an X4, reading 34 books took what it took before (108.5 s against
+# 108.6 s), as did the card's own check and writing to the panel; getting
+# a picture out of the cache and ready to show took 2% longer (207 ms
+# against 204 ms).
+#   The driver for the chip's flash that is in the chip's ROM, in place of
+#   ESP-IDF's. It is used at start, and to map flash into the processor's
+#   address space, which is how fonts are to be read: what is mapped is
+#   read as fast as it was (the README's "A partition for fonts").
+CONFIG_SPI_FLASH_ROM_IMPL=y
+#   The ring buffer's functions for interrupt handlers, which the USB
+#   port's driver calls.
+CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y
+#   The C library's locks.
+CONFIG_LIBC_LOCKS_PLACE_IN_IRAM=n
+# Left as it is: the heap's own functions (CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH).
+# In flash they would give 17 KB more, but ESP-IDF then moves the SPI
+# driver's interrupt handler there too, which the card's driver uses for
+# every block of data: on an X4 the card read 6% slower, and the 34 books
+# took 4% longer.
+
 # The SD card's file system (hw/esp32c3/sd_storage.cpp).
 #   One card. File names as long as a card allows, in UTF-8.
 CONFIG_FATFS_VOLUME_COUNT=1

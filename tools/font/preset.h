@@ -78,8 +78,9 @@ Preset ReadPresets(std::span<const PresetText> presets);
 // The characters drawn when a preset names none: Latin with its
 // extensions, the phonetic alphabet, the marks set over letters, Greek
 // (polytonic too) and Cyrillic, the punctuation, currency, letterlike
-// symbols, number forms, arrows and mathematical operators, and the
-// ligatures of the alphabetic presentation forms.
+// symbols, number forms, arrows and mathematical operators, the ligatures
+// of the alphabetic presentation forms, and the replacement character,
+// U+FFFD, which text is drawn with where its bytes are not UTF-8.
 const std::vector<CodePoints>& DefaultCharacters();
 
 // The names used for a role and a style in a preset, and in what bn-font

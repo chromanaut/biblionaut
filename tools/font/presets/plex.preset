@@ -1,0 +1,15 @@
+# IBM Plex Serif and IBM Plex Sans: the faces text is read in.
+# Put together with ladder.preset and one of the mono-*.preset files; the
+# files are found from the folder the build downloads them to
+# (third_party/fonts).
+serif regular     plex/IBMPlexSerif-Regular.ttf
+serif italic      plex/IBMPlexSerif-Italic.ttf
+serif bold        plex/IBMPlexSerif-Bold.ttf
+serif bold-italic plex/IBMPlexSerif-BoldItalic.ttf
+sans  regular     plex/IBMPlexSans-Regular.ttf
+sans  italic      plex/IBMPlexSans-Italic.ttf
+sans  bold        plex/IBMPlexSans-Bold.ttf
+sans  bold-italic plex/IBMPlexSans-BoldItalic.ttf
+
+# For the characters these lack.
+fallback regular    noto/NotoSans-Regular.ttf

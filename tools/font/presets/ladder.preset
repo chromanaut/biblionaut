@@ -1,0 +1,4 @@
+# The sizes text is drawn at, in pixels to the em: the steps of the size
+# ladder. Every face of an image is drawn at each. The third is the size
+# text is first read in.
+sizes 22 26 30 34 38

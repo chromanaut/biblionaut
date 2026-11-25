@@ -1,0 +1,15 @@
+# Source Serif 4 and Source Sans 3: the faces text is read in.
+# Put together with ladder.preset and one of the mono-*.preset files; the
+# files are found from the folder the build downloads them to
+# (third_party/fonts).
+serif regular     source/SourceSerif4-Regular.ttf
+serif italic      source/SourceSerif4-It.ttf
+serif bold        source/SourceSerif4-Bold.ttf
+serif bold-italic source/SourceSerif4-BoldIt.ttf
+sans  regular     source/SourceSans3-Regular.ttf
+sans  italic      source/SourceSans3-It.ttf
+sans  bold        source/SourceSans3-Bold.ttf
+sans  bold-italic source/SourceSans3-BoldIt.ttf
+
+# For the characters these lack.
+fallback regular    noto/NotoSans-Regular.ttf

@@ -202,6 +202,10 @@ if(BN_FONT_TOOL)
   # What bn-font says pictures compress to is checked against zlib.
   target_link_libraries(tools_tests PRIVATE bn_font_tool ZLIB::ZLIB)
   target_compile_definitions(tools_tests PRIVATE "BN_COURIER_PRIME_DIR=\"${BN_COURIER_PRIME_DIR}\"")
+  # And the repository's own presets are read, each with either monospace
+  # face.
+  target_compile_definitions(tools_tests PRIVATE
+    "BN_FONT_PRESETS_DIR=\"${PROJECT_SOURCE_DIR}/tools/font/presets\"")
 endif()
 
 # The whole diagnostic path on the desktop: application -> capture file ->
@@ -373,7 +377,8 @@ if(Python3_Interpreter_FOUND)
     add_test(
       NAME e2e.FontTool
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/font_tool.py
-        $<TARGET_FILE:bn-font> ${BN_COURIER_PRIME_DIR} ${CMAKE_CURRENT_BINARY_DIR}/font_tool)
+        $<TARGET_FILE:bn-font> ${BN_COURIER_PRIME_DIR} ${CMAKE_CURRENT_BINARY_DIR}/font_tool
+        ${PROJECT_SOURCE_DIR})
     set_tests_properties(e2e.FontTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
     # The text viewer, run by the desktop application with a fonts image

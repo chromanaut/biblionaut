@@ -1,0 +1,12 @@
+# Noto Serif and Noto Sans: the faces text is read in.
+# Put together with ladder.preset and one of the mono-*.preset files; the
+# files are found from the folder the build downloads them to
+# (third_party/fonts).
+serif regular     noto/NotoSerif-Regular.ttf
+serif italic      noto/NotoSerif-Italic.ttf
+serif bold        noto/NotoSerif-Bold.ttf
+serif bold-italic noto/NotoSerif-BoldItalic.ttf
+sans  regular     noto/NotoSans-Regular.ttf
+sans  italic      noto/NotoSans-Italic.ttf
+sans  bold        noto/NotoSans-Bold.ttf
+sans  bold-italic noto/NotoSans-BoldItalic.ttf

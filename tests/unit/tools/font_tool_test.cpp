@@ -4,6 +4,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -140,6 +144,87 @@ TEST(FontPreset, NamesTheRolesAndStylesAsAPresetWritesThem) {
   EXPECT_EQ(bn::font_tool::StyleName(kBold), "bold");
   EXPECT_EQ(bn::font_tool::StyleName(kItalic), "italic");
   EXPECT_EQ(bn::font_tool::StyleName(kBold | kItalic), "bold-italic");
+}
+
+// ---- Presets in parts, and the repository's own ----
+
+std::string FileText(const std::string& path) {
+  std::ifstream file(path, std::ios::binary);
+  EXPECT_TRUE(file.good()) << path;
+  return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+
+TEST(FontPreset, ReadsSeveralPresetsAsOne) {
+  const std::vector<bn::font_tool::PresetText> parts = {
+      {.name = "ladder.preset", .text = "sizes 30 22\n", .folder = "/fonts"},
+      {.name = "faces.preset", .text = "serif regular a/Serif.ttf\nsans regular /abs/Sans.ttf\n", .folder = "/fonts"},
+      {.name = "mono.preset",
+       .text = "# The monospace face.\nmono bold Mono-Bold.ttf\nsizes 26\ncharacters U+0041\n",
+       .folder = "/elsewhere"},
+  };
+  const Preset preset = bn::font_tool::ReadPresets(parts);
+  ASSERT_TRUE(preset.ok) << preset.error;
+  EXPECT_EQ(preset.sizes, (std::vector<std::uint16_t>{22, 26, 30}));
+  ASSERT_EQ(preset.faces.size(), 3U);
+  // Each part's files are found from its own folder.
+  EXPECT_EQ(preset.faces[0].path, "/fonts/a/Serif.ttf");
+  EXPECT_EQ(preset.faces[1].path, "/abs/Sans.ttf");
+  EXPECT_EQ(preset.faces[2].path, "/elsewhere/Mono-Bold.ttf");
+  EXPECT_EQ(preset.faces[2].line, 2U);
+  EXPECT_EQ(preset.characters, (std::vector<CodePoints>{{0x41, 0x41}}));
+
+  // What is wrong is said with the part it is in; and a face may be named
+  // once among them all.
+  std::vector<bn::font_tool::PresetText> wrong = parts;
+  wrong[2].text = "mono bold Mono-Bold.ttf\nmono heavy Mono-Heavy.ttf\n";
+  EXPECT_EQ(bn::font_tool::ReadPresets(wrong).error.rfind("mono.preset: line 2: a style is ", 0), 0U);
+  wrong[2].text = "serif regular Other.ttf\n";
+  EXPECT_EQ(bn::font_tool::ReadPresets(wrong).error, "mono.preset: line 1: serif regular was named already, on line 1");
+  // Parts that say no sizes among them, or no faces, are not a preset.
+  EXPECT_EQ(bn::font_tool::ReadPresets(std::span(parts).subspan(1, 1)).error, "no sizes are given");
+  EXPECT_EQ(bn::font_tool::ReadPresets(std::span(parts).first(1)).error, "no faces are named");
+  EXPECT_EQ(bn::font_tool::ReadPresets({}).error, "no sizes are given");
+}
+
+TEST(FontPreset, TheRepositorysPresetsAreEachAWholePresetWithEitherMonospaceFace) {
+  const std::string folder = BN_FONT_PRESETS_DIR;
+  for (const std::string family : {"noto", "plex", "source"}) {
+    for (const std::string& mono : {std::string("courier-prime"), family}) {
+      std::vector<bn::font_tool::PresetText> parts;
+      for (const std::string& name : {std::string("ladder"), family, "mono-" + mono}) {
+        std::string path = folder;
+        path += '/';
+        path += name;
+        path += ".preset";
+        parts.push_back({.name = name, .text = FileText(path), .folder = "/downloaded"});
+      }
+      const Preset preset = bn::font_tool::ReadPresets(parts);
+      ASSERT_TRUE(preset.ok) << family << " with " << mono << ": " << preset.error;
+      // The five steps of the ladder.
+      EXPECT_EQ(preset.sizes, (std::vector<std::uint16_t>{22, 26, 30, 34, 38}));
+      EXPECT_TRUE(preset.characters.empty());
+      // A serif and a sans in four styles and a monospace face in two; and
+      // a fallback face, but for Noto, which is what the others fall back
+      // to.
+      std::map<FaceRole, std::set<std::uint8_t>> styles;
+      for (const bn::font_tool::FaceFile& face : preset.faces) {
+        styles[face.role].insert(face.style);
+        // Found from the folder the build downloads to, each family in its own.
+        EXPECT_EQ(face.path.rfind("/downloaded/", 0), 0U) << face.path;
+        const std::string in = face.path.substr(12, face.path.find('/', 12) - 12);
+        const std::string wanted = face.role == FaceRole::kMono       ? mono
+                                   : face.role == FaceRole::kFallback ? "noto"
+                                                                      : family;
+        EXPECT_EQ(in, wanted) << face.path;
+        EXPECT_EQ(face.path.substr(face.path.size() - 4), ".ttf") << face.path;
+      }
+      EXPECT_EQ(styles[FaceRole::kSerif], (std::set<std::uint8_t>{0, 1, 2, 3}));
+      EXPECT_EQ(styles[FaceRole::kSans], (std::set<std::uint8_t>{0, 1, 2, 3}));
+      EXPECT_EQ(styles[FaceRole::kMono], (std::set<std::uint8_t>{0, kBold}));
+      EXPECT_EQ(styles.count(FaceRole::kFallback), family == "noto" ? 0U : 1U);
+      EXPECT_EQ(preset.faces.size(), family == "noto" ? 10U : 11U);
+    }
+  }
 }
 
 // ---- The image, from a real font ----

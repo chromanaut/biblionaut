@@ -1,0 +1,15 @@
+# Downloads URL to OUT and checks it against HASH, its SHA-256: one font
+# file of a preset, when a build needs it (CMakeLists.txt beside this).
+if(EXISTS "${OUT}")
+  file(SHA256 "${OUT}" have)
+  if(have STREQUAL HASH)
+    return()
+  endif()
+endif()
+file(DOWNLOAD "${URL}" "${OUT}" EXPECTED_HASH SHA256=${HASH} STATUS status)
+list(GET status 0 code)
+if(NOT code EQUAL 0)
+  list(GET status 1 why)
+  file(REMOVE "${OUT}")
+  message(FATAL_ERROR "Could not download ${URL}: ${why}")
+endif()

@@ -38,7 +38,7 @@ CONFIG_COMPILER_CXX_RTTI=n
 #   The driver for the chip's flash that is in the chip's ROM, in place of
 #   ESP-IDF's. It is used at start, and to map flash into the processor's
 #   address space, which is how fonts are to be read: what is mapped is
-#   read as fast as it was (the README's "A partition for fonts").
+#   read as fast as it was (docs/fonts.md, "A partition for fonts").
 CONFIG_SPI_FLASH_ROM_IMPL=y
 #   The ring buffer's functions for interrupt handlers, which the USB
 #   port's driver calls.

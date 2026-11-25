@@ -15,7 +15,7 @@ a desktop.
 | `layout/` | Book layout: line breaking, hyphenation, pagination, positions. Emits display lists |
 | `reader/` | The reader application. The only part that knows about all the others |
 | `app/` | Entry points: `app/desktop` for the host, and `app/firmware`, the ESP-IDF project that builds the one firmware image for all supported devices |
-| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/png`: `bn-png`, which reads a PNG picture as the firmware does; `tools/jpeg`: `bn-jpeg`, which does the same for a JPEG picture; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check) |
+| `tools/` | Host programs (`tools/trace`: the `bn-trace` stream decoder; `tools/zip`: `bn-zip`, which reads a ZIP file as the firmware does; `tools/xml`: `bn-xml`, which does the same for XML; `tools/css`: `bn-css`, which does the same for a style sheet; `tools/epub`: `bn-epub`, which says what a book says of itself; `tools/svg`: `bn-svg`, which draws an SVG file as the firmware does; `tools/png`: `bn-png`, which reads a PNG picture as the firmware does; `tools/jpeg`: `bn-jpeg`, which does the same for a JPEG picture; `tools/hyphen`: `bn-hyphen`, which makes a language's hyphenation table and breaks words with one; `tools/lines`: `bn-lines`, which sets text in lines as the firmware does; `tools/font`: `bn-font`, which makes the fonts image the firmware draws text from) and developer scripts (`bn-symbolize` for crash reports, `check-books.py` to run those tools over a folder of real books, `layout-text.py` to write books' paragraphs to a file for the layout check) |
 | `third_party/` | How the code that is not ours is fetched and built: for each, a CMake file and its settings. The code itself is downloaded when a build is configured and is not in this repository (`THIRD_PARTY.md` lists it) |
 | `tests/` | Host tests, and the fuzz targets (`tests/fuzz`) |
 | `corpus/` | Real books for the tests to read: 28 EPUB files, in the public domain or openly licensed, which are under their own terms and not this project's licence (`corpus/README.md`) |
@@ -46,13 +46,15 @@ clang-tidy enforces this.
 
 ## Host build
 
-Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Three
+Needs CMake 3.25 or later, Ninja, a C++20 compiler and a C compiler. Five
 things are downloaded when CMake configures, each checked against a hash:
 expat, the XML parser, which is C and is why a C compiler is needed;
 TeX's hyphenation patterns for American English, which the build makes
-into a table (see Where a word may be broken); and GoogleTest. The tests also link zlib, to check the inflater against and to
+into a table (see Where a word may be broken); FreeType, which draws the
+glyphs for `bn-font` (see Fonts); GoogleTest; and, for the tests of
+`bn-font`, the font files of Courier Prime. The tests also link zlib, to check the inflater against and to
 make their ZIP files with: macOS has it, and on Linux it is the `zlib1g-dev`
-package. Eight of the end-to-end
+package. Most of the end-to-end
 tests are run only if Python 3 is found, and one of them makes more of its
 test files if there is a `zip` command. A build with the desktop
 application's window downloads a third thing, SDL (see A window on the
@@ -1773,7 +1775,8 @@ Each reader of a book's own files, from the inflater to the table of
 contents, has a fuzz target in `tests/fuzz`, and so have the heap the XML
 parser's memory comes from, the hyphenator and the paragraph setter, which
 are given a book's words, each reader of a drawing, the readers of PNG
-and JPEG pictures and the scaler: one function that
+and JPEG pictures and the scaler, and the reader of the fonts image, which
+a partition can hold anything in place of: one function that
 is given some bytes, puts them through the reader, and ends the program if
 the reader does anything it should not.
 Going outside its memory, or into undefined behaviour, is seen by the
@@ -1802,6 +1805,7 @@ call may.
 | `jpeg` | `draw::JpegReader`, four ways: for the header alone with no memory, with the reduction, room and pieces the input chooses, with all the room it needs in pieces of 4 KB, and at an eighth | No step takes more from its source than `MostInputPerStep()`, nor gives more than one row. Rows come in order, each as wide as the picture is read, and a picture is whole only with all of them. The reduction taken is the one asked, or an eighth for a progressive picture, and the sides read are the picture's divided by it. It has no room only when it has less than `RowBytesFor()`, and a header it takes is one it can say the room for. The header alone says what the whole reading says of it, and fails as it does. It gives the same rows in any pieces, and ends at an eighth as it ends at the reduction asked |
 | `picture_cache` | `draw::PictureCache`, reading a file the card holds, as the picture it says it is or as another, its checksums mended or not | Reading ends in a status, and no file is left open. Another picture can be kept among the same files, and is read back the same. Rows are given only whole, and only as many as the picture has. A picture read through without complaint is the file's own rows, the picture asked for, with the checksum its header gives; and kept again it reads back the same |
 | `scale` | `draw::Scaler`, from sizes the input gives (sides of nothing and past the largest among them) and its pixels, sometimes all one gray, sometimes with an old row given out of turn | A side of nothing or too long is refused and nothing is given. `Row()` gives no new row and `Step()` one at the most; the new rows come in order, each as wide as the new picture, as many as it is high. A row out of turn stops it. Every new pixel is within a gray of the working-out in real numbers, and a picture of one gray stays that gray |
+| `font` | `draw::FontImage` and `draw::Face`: an image opened twice, its first faces and its last looked into, and each asked for the code points at the edges of its ranges and four the input names | Opening goes the same way twice, and an image that is refused has no faces. A face is found by its own role, style and size. Finding a glyph takes no more steps than halving the face's ranges does. A glyph that is given has a picture of the size its width and height make, wholly inside the image, and is the glyph its number gives. In a face whose ranges are in order and apart, a code point has a glyph exactly when going through the ranges one by one finds it, and the glyph is what the image's bytes say, read the plain way |
 
 The `package` and `toc` targets do not take a ZIP file as their input:
 nearly every change to one would be stopped at an entry's checksum, and
@@ -2335,6 +2339,146 @@ gaps, lines kept together and lines that start a page, cut into blocks of
 1 to 300 lines, and 40 places tried in each. A page is filled up from the
 end of a block of 20,000 lines in the entries an ordinary page gets, and
 blocks whose heights add up to more than 32 bits hold are counted rightly.
+
+## Fonts
+
+The firmware does not read font files. Every face it draws text in, at
+every size it draws it, is drawn beforehand on the computer that builds,
+and kept in one run of bytes, the fonts image, which the firmware reads
+where it lies: on the device, in the flash partition called `fonts` (see A
+partition for fonts), mapped into the processor's address space; on the
+desktop, in a file read into memory. Nothing in the application uses the
+image yet: this is the image, the program that makes it, the reader of it
+and the measure that sets text by it.
+
+A face is one role (serif, sans, monospace, or the fallback for what the
+others lack), one style (regular, italic, bold, bold italic) and one size
+in pixels. It has its metrics, a table from code points to glyphs, a record
+for each glyph and the glyphs' pictures. A glyph's picture is two bits a
+pixel: four levels of ink, from paper to full. Its advance, how far it
+moves the pen, is in quarters of a pixel and is the outline's own, not
+rounded to the pixels its picture was fitted to: so the widths of a line's
+characters add up to what the line is wide at any size. Glyph 0 of a face
+is what is drawn for a character it has no glyph for. `draw/font.h`
+describes the layout byte by byte. There is no kerning yet, and no
+ligatures; bytes are kept for kerning in a face's record and a glyph's.
+
+### Making the image
+
+`bn-font` (`tools/font`) makes the image from font files, drawing each
+glyph with FreeType, which the host build downloads (`third_party/freetype`)
+and which is no part of the firmware. (A build configured with
+`-DBN_FONT_TOOL=OFF` has no `bn-font` and downloads neither FreeType nor
+the font its tests use; the firmware's build of its own host tools is
+one.) Which files, and at which sizes, is said by a preset, a text file:
+
+```
+sizes 26 30 34
+mono regular  CourierPrime-Regular.ttf
+mono bold     CourierPrime-Bold.ttf
+```
+
+A line names a face's role (`serif`, `sans`, `mono`, `fallback`), its style
+(`regular`, `italic`, `bold`, `bold-italic`) and its font file, which is the
+rest of the line and is found from the preset's folder unless it begins
+with `/`. `sizes` are the sizes every face is drawn at, in pixels to the
+em. `characters U+0020-U+007E U+00A0 ...` chooses the characters that are
+drawn; without it they are Latin with its extensions, the phonetic
+alphabet, the marks set over letters, Greek, Cyrillic, punctuation,
+currency and letterlike symbols, number forms, arrows, mathematical
+operators and the Latin ligatures. A character the font has no glyph for is
+left out and counted. Anything from a `#` to the end of a line is passed
+over.
+
+```
+$ bn-font build courier.preset --out courier.bnfn
+mono     regular     26 px:  381 glyphs (2074 lacking), pictures   20833 bytes; ascent 21, descent 9, line 29, x-height 12
+mono     regular     30 px:  381 glyphs (2074 lacking), pictures   27877 bytes; ascent 24, descent 11, line 34, x-height 14
+mono     regular     34 px:  381 glyphs (2074 lacking), pictures   35732 bytes; ascent 27, descent 12, line 38, x-height 16
+mono     bold        26 px:  381 glyphs (2074 lacking), pictures   22159 bytes; ascent 21, descent 9, line 29, x-height 12
+mono     bold        30 px:  381 glyphs (2074 lacking), pictures   29667 bytes; ascent 24, descent 11, line 34, x-height 14
+mono     bold        34 px:  381 glyphs (2074 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16
+faces 6, pictures 173838 bytes, image 204534 bytes
+```
+
+Glyphs are drawn with FreeType's light hinting, which moves an outline up
+and down to the pixels and not across, and its 256 grays are made the four
+levels. A serif or a sans that is given a regular and not all of the other
+three styles is built, with a warning for each: the reader of the image
+gives the nearest style a role has. The fonts a preset names are whoever
+builds's own business: no font is in this repository, and a preset that
+names fonts from the builder's computer need not be either. The pictures
+are not compressed.
+
+`bn-font info` says what an image holds, reading it by the code the
+firmware reads it with; with `--glyphs` and some characters, what each face
+has for them: the glyph's number, its advance in quarters of a pixel, its
+picture's size and where its top left corner lies from the pen on the
+baseline, and its levels of ink added up.
+
+```
+$ bn-font info courier.bnfn --glyphs U+0041 U+0067 U+0020 U+03B1
+image 204534 bytes, faces 6
+mono     regular     26 px:  381 glyphs; ascent 21, descent 9, line 29, x-height 12
+  U+0041: glyph 34, advance 62, 16 by 15 at 0, 15, ink 249
+  U+0067: glyph 72, advance 62, 14 by 17 at 1, 12, ink 288
+  U+0020: glyph 1, advance 62, 0 by 0 at 0, 0, ink 0
+  U+03B1: no glyph
+mono     regular     30 px:  381 glyphs; ascent 24, descent 11, line 34, x-height 14
+  U+0041: glyph 34, advance 72, 18 by 18 at 0, 18, ink 340
+  U+0067: glyph 72, advance 72, 17 by 20 at 1, 14, ink 385
+```
+
+(and so on for the other four faces).
+
+### Reading the image
+
+`draw::FontImage` (`draw/font.h`) opens an image and gives its faces: by
+number, by role, style and size, or the nearest style a role has at a size
+(bold italic gives way to bold, then to italic, and any of them to
+regular). A `draw::Face` gives a glyph for a code point, with its picture
+as a span of the image's own bytes; nothing is copied, and nothing is
+allocated.
+
+The image is not trusted, though the firmware's own build made it: a
+partition can hold anything.
+
+- **Opening** looks at the header and at each face's record, 1,024 faces at
+  the most, and refuses an image in which any face's tables run outside
+  it. It reads only as many bytes as the image says it is long, so a
+  partition larger than its image is no trouble.
+- **Finding a glyph** halves the face's ranges of code points: 33 steps at
+  the most (`Face::kMostSteps`), whatever the tables hold, and `LastSteps()`
+  says how many. A glyph whose picture would run outside its face's
+  pictures is not given.
+- **RAM**: none but the two small objects. **Flash**: 1.2 KB for the
+  reader and 1.1 KB for the measure below, as compiled for the device,
+  besides the image itself.
+
+`layout::FaceMeasure` (`layout/face_measure.h`) is the `TextMeasure` that
+sets text in such faces. Each of the paragraph setter's styles is given a
+face. A character is drawn with its style's face if that has a glyph for
+it, with the fallback face if that has, and otherwise with its style's
+face's glyph 0; a soft hyphen and a zero width space are not drawn and take
+no room; a byte that is not UTF-8 is drawn as U+FFFD. A piece of a word is
+as wide as its glyphs' advances added up, so what is drawn from the same
+glyphs lines up with what was measured. The hyphen shown at a line's end is
+the style's U+2010, or its hyphen-minus. Reading UTF-8 a character at a
+time, strictly, is `core/utf8.h`, which the hyphenator shares.
+
+The reader's tests write their images by hand from the description of the
+layout (`tests/support/font_image.h`): what is found and what is not, an
+image cut short at every byte, and one with every byte changed three ways,
+from which nothing may be given that lies outside it. The builder's tests,
+and `e2e.FontTool`, try `bn-font` on a real font, Courier Prime, which the
+build downloads for them (`third_party/courier-prime`): the test takes the
+image apart itself, and the font file as far as its tables of characters
+and widths, and holds the image to having a glyph for exactly the
+characters the font has, each moving the pen as far as the font's width
+for it comes to at that size; and `bn-font info --glyphs` to saying of
+every glyph what the image's bytes say. Nothing draws a glyph a second way:
+that a picture is its letter is for whoever looks at it. The reader has a
+fuzz target as well (`font`, see Fuzzing).
 
 ## Drawings
 

@@ -81,6 +81,7 @@ bn_add_unit_test(core_tests
     unit/core/trace_level1_test.cpp
     unit/core/trace_stream_test.cpp
     unit/core/trace_test.cpp
+    unit/core/utf8_test.cpp
   LIBS bn_core)
 
 # The inflater is checked against zlib.
@@ -93,6 +94,7 @@ bn_add_unit_test(draw_tests
     unit/draw/fill_test.cpp
     unit/draw/fixed_test.cpp
     unit/draw/flatten_test.cpp
+    unit/draw/font_test.cpp
     unit/draw/jpeg_test.cpp
     unit/draw/picture_cache_test.cpp
     unit/draw/png_test.cpp
@@ -132,10 +134,12 @@ target_link_libraries(epub_tests PRIVATE ZLIB::ZLIB)
 # every place in a word. The page chooser is given runs of lines the tests
 # make up, and checked against adding their heights up over the whole run.
 # The table for American English that the build makes is checked against
-# the file it was made from, and against words whose breaks TeX gives.
+# the file it was made from, and against words whose breaks TeX gives. The
+# measure in the faces of a fonts image is given images the tests write.
 bn_add_unit_test(layout_tests
   SOURCES
     unit/layout/american_english_test.cpp
+    unit/layout/face_measure_test.cpp
     unit/layout/hyphenator_test.cpp
     unit/layout/line_breaker_test.cpp
     unit/layout/line_digest_test.cpp
@@ -185,6 +189,15 @@ bn_add_unit_test(tools_tests
     unit/tools/hyphen_tool_test.cpp
     unit/tools/trace_tool_test.cpp
   LIBS bn_hyphen_tool bn_trace_tool)
+# The font builder, in a build that has it (BN_FONT_TOOL), is tried on a
+# real font: Courier Prime, which the build downloads for the tests and
+# nothing else.
+if(BN_FONT_TOOL)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/courier-prime ${CMAKE_BINARY_DIR}/third_party/courier-prime)
+  target_sources(tools_tests PRIVATE unit/tools/font_tool_test.cpp)
+  target_link_libraries(tools_tests PRIVATE bn_font_tool)
+  target_compile_definitions(tools_tests PRIVATE "BN_COURIER_PRIME_DIR=\"${BN_COURIER_PRIME_DIR}\"")
+endif()
 
 # The whole diagnostic path on the desktop: application -> capture file ->
 # bn-trace -> timeline.
@@ -329,6 +342,17 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/hyphen_tool.py
       $<TARGET_FILE:bn-hyphen> ${CMAKE_CURRENT_BINARY_DIR}/hyphen_tool)
   set_tests_properties(e2e.HyphenTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-font, and through it the font builder and the reader of the fonts
+  # image, against a second reading of the image it makes of a real font,
+  # and of that font's own tables of characters and widths.
+  if(BN_FONT_TOOL)
+    add_test(
+      NAME e2e.FontTool
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/font_tool.py
+        $<TARGET_FILE:bn-font> ${BN_COURIER_PRIME_DIR} ${CMAKE_CURRENT_BINARY_DIR}/font_tool)
+    set_tests_properties(e2e.FontTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+  endif()
 
   # bn-lines, and through it the paragraph setter, against a second reading
   # of the same paragraphs: each taken apart all at once, and the cheapest

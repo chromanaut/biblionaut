@@ -12,6 +12,7 @@ option(BN_WERROR "Treat warnings as errors" ON)
 option(BN_CLANG_TIDY "Run clang-tidy on Biblionaut's own sources as they compile" OFF)
 option(BN_FUZZ "Build the fuzz targets with a fuzzing engine, to look for new inputs (tools/fuzz.py)" OFF)
 option(BN_DESKTOP_WINDOW "Give the desktop application a window (--window), made with SDL, which is fetched and built" OFF)
+option(BN_FONT_TOOL "Build bn-font, which makes the fonts image; FreeType is fetched and built for it" ON)
 
 set(CMAKE_CXX_EXTENSIONS OFF)  # -std=c++20, not gnu++20
 

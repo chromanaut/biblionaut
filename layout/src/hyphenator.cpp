@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "core/utf8.h"
+
 namespace bn::layout {
 
 namespace {
@@ -20,8 +22,6 @@ constexpr std::uint32_t kValueMask = 0x7FFF;
 constexpr std::uint8_t kWordEnd = 0;      // the mark at each end of a word;
 constexpr std::uint8_t kNoLetter = 0xFF;  // not a letter in this language.
 
-constexpr std::uint32_t kLargestCodePoint = 0x10FFFF;
-
 // Numbers in the table, low byte first. Whoever calls has seen that the
 // bytes are there.
 std::uint32_t Read16(std::span<const std::uint8_t> bytes, std::size_t at) noexcept {
@@ -29,54 +29,6 @@ std::uint32_t Read16(std::span<const std::uint8_t> bytes, std::size_t at) noexce
 }
 std::uint32_t Read24(std::span<const std::uint8_t> bytes, std::size_t at) noexcept {
   return Read16(bytes, at) | (std::uint32_t{bytes[at + 2]} << 16U);
-}
-
-// One character of a word.
-struct Character {
-  std::uint32_t codePoint = 0;
-  std::size_t bytes = 1;
-  bool good = false;  // It is a character. If not, it is one byte that is none.
-};
-
-// The character that begins at `text[at]`, read strictly: nothing written
-// the long way round, no half of a pair, nothing past the last code point.
-Character CharacterAt(std::string_view text, std::size_t at) noexcept {
-  const auto lead = static_cast<std::uint8_t>(text[at]);
-  if (lead < 0x80) {
-    return {.codePoint = lead, .bytes = 1, .good = true};
-  }
-  std::size_t length = 0;
-  std::uint32_t value = 0;
-  std::uint32_t least = 0;
-  if (lead >= 0xC2 && lead <= 0xDF) {
-    length = 2;
-    value = lead & 0x1FU;
-    least = 0x80;
-  } else if (lead >= 0xE0 && lead <= 0xEF) {
-    length = 3;
-    value = lead & 0x0FU;
-    least = 0x800;
-  } else if (lead >= 0xF0 && lead <= 0xF4) {
-    length = 4;
-    value = lead & 0x07U;
-    least = 0x10000;
-  } else {
-    return {};
-  }
-  if (text.size() - at < length) {
-    return {};
-  }
-  for (std::size_t i = 1; i < length; ++i) {
-    const auto next = static_cast<std::uint8_t>(text[at + i]);
-    if ((next & 0xC0U) != 0x80U) {
-      return {};
-    }
-    value = (value << 6U) | (next & 0x3FU);
-  }
-  if (value < least || value > kLargestCodePoint || (value >= 0xD800 && value <= 0xDFFF)) {
-    return {};
-  }
-  return {.codePoint = value, .bytes = length, .good = true};
 }
 
 }  // namespace
@@ -129,7 +81,8 @@ HyphenStatus Hyphenator::Open(std::span<const std::uint8_t> table) noexcept {
   for (std::size_t i = 0; i < listed; ++i) {
     const std::uint32_t codePoint = Read24(list, i * kListedBytes);
     const std::uint8_t letter = list[(i * kListedBytes) + 3];
-    if (codePoint > kLargestCodePoint || (i != 0 && codePoint <= before) || letter == kWordEnd || letter == kNoLetter) {
+    if (codePoint > core::kLargestCodePoint || (i != 0 && codePoint <= before) || letter == kWordEnd ||
+        letter == kNoLetter) {
       return status_;
     }
     before = codePoint;
@@ -188,7 +141,7 @@ std::size_t Hyphenator::Find(std::string_view word, std::span<std::uint8_t> plac
     if (letters == kMaxLetters) {
       return 0;  // Too long a word to look at.
     }
-    const Character one = CharacterAt(word, at);
+    const core::Character one = core::CharacterAt(word, at);
     symbols_[letters] = one.good ? LetterOf(one.codePoint) : kNoLetter;
     offsets_[letters] = static_cast<std::uint8_t>(at);
     ++letters;

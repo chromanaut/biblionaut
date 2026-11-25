@@ -1739,7 +1739,100 @@ def picture_cache_seeds() -> None:
     write("picture_cache", "not-a-picture", bytes([0b00001]) + b"<svg/>" * 20)
 
 
+# ---- font: byte 0 (whether the image's length is mended), four code points
+# to ask for, then a fonts image ----
+
+
+def font_image(faces: list[dict]) -> bytes:
+    """A fonts image (draw/font.h) written the plain way. A face is its
+    role, style and size, and `glyphs`: code point to (advance, width,
+    height, left, top), each drawn as a block of ink."""
+    out = bytearray(16 + 48 * len(faces))
+    out[0:5] = b"BNFN\x01"
+    struct.pack_into("<H", out, 6, len(faces))
+    for number, face in enumerate(faces):
+        drawn = [(40, 6, 9, 0, 9)] + [face["glyphs"][code] for code in sorted(face["glyphs"])]
+        ranges: list[list[int]] = []
+        for glyph, code in enumerate(sorted(face["glyphs"]), start=1):
+            if ranges and ranges[-1][0] + ranges[-1][1] == code:
+                ranges[-1][1] += 1
+            else:
+                ranges.append([code, 1, glyph])
+        ranges_at = len(out)
+        for first, count, glyph in ranges:
+            out += struct.pack("<III", first, count, glyph)
+        glyphs_at = len(out)
+        pictures = bytearray()
+        for index, (advance, width, height, left, top) in enumerate(drawn):
+            out += struct.pack("<HBBbbHI", advance, width, height, left, top, 0, len(pictures))
+            pixels = [(x + y + index) % 4 for y in range(height) for x in range(width)]
+            packed = bytearray((len(pixels) * 2 + 7) // 8)
+            for at, ink in enumerate(pixels):
+                packed[at // 4] |= ink << (6 - (at % 4) * 2)
+            pictures += packed
+        pictures_at = len(out)
+        out += pictures
+        struct.pack_into("<BBHhhHHIIIIII", out, 16 + 48 * number, face["role"], face["style"], face["size"],
+                         face["size"] - 4, 5, face["size"] + 4, face["size"] // 2, len(ranges), ranges_at,
+                         len(drawn), glyphs_at, pictures_at, len(pictures))
+    struct.pack_into("<I", out, 8, len(out))
+    return bytes(out)
+
+
+def font_seeds() -> None:
+    clear("font")
+
+    def seed(name: str, image: bytes, mended: bool = False, asked: tuple[int, ...] = (0x61, 0x20, 0xE9, 0x2010)) -> None:
+        write("font", name, bytes([int(mended)]) + struct.pack("<4H", *asked) + image)
+
+    letters = {code: (36 + code % 5, 7, 9, 0, 9) for code in range(0x61, 0x67)}
+    letters[0x20] = (20, 0, 0, 0, 0)
+    letters[0xE9] = (38, 7, 12, -1, 12)
+    one = [{"role": 0, "style": 0, "size": 20, "glyphs": letters}]
+    seed("one-face", font_image(one))
+    seed("four-styles-and-a-fallback", font_image(
+        [{"role": 0, "style": style, "size": 20, "glyphs": letters} for style in range(4)]
+        + [{"role": 3, "style": 0, "size": 20, "glyphs": {0x3B1: (40, 8, 9, 0, 9), 0x2010: (24, 5, 2, 1, 5)}}]))
+    seed("two-sizes", font_image([{"role": 1, "style": 1, "size": size, "glyphs": letters} for size in (16, 30)]))
+    apart = {code: (30 + code % 7, 3, 4, 0, 4) for code in range(0x100, 0x1C0, 3)}
+    seed("many-ranges", font_image([{"role": 2, "style": 0, "size": 12, "glyphs": apart}]), asked=(0x100, 0x101, 0x1BD, 0xFF))
+    seed("no-glyphs-but-the-first", font_image([{"role": 0, "style": 0, "size": 20, "glyphs": {}}]))
+    seed("no-faces", font_image([]))
+
+    whole = font_image(one)
+    seed("with-more-after-it", whole + bytes(range(64)))
+    seed("cut-short", whole[:-9])
+    seed("cut-short-and-mended", whole[:-9], mended=True)
+    seed("cut-in-its-faces", whole[:40], mended=True)
+    # A glyph's picture begun too late to fit, and one too large to.
+    spoiled = bytearray(whole)
+    glyphs_at = struct.unpack_from("<I", whole, 16 + 24)[0]
+    struct.pack_into("<I", spoiled, glyphs_at + 12 * 3 + 8, 0xFFFFFFF0)
+    spoiled[glyphs_at + 12 * 4 + 2] = 255
+    spoiled[glyphs_at + 12 * 4 + 3] = 255
+    seed("pictures-outside-their-face", bytes(spoiled))
+    # A range that points past the glyphs, and ranges out of order.
+    spoiled = bytearray(whole)
+    ranges_at = struct.unpack_from("<I", whole, 16 + 16)[0]
+    struct.pack_into("<I", spoiled, ranges_at + 12 + 8, 0xFFFFFFFE)
+    seed("a-range-past-the-glyphs", bytes(spoiled))
+    spoiled = bytearray(whole)
+    spoiled[ranges_at:ranges_at + 12], spoiled[ranges_at + 12:ranges_at + 24] = (
+        whole[ranges_at + 12:ranges_at + 24], whole[ranges_at:ranges_at + 12])
+    seed("ranges-out-of-order", bytes(spoiled))
+    spoiled = bytearray(whole)
+    struct.pack_into("<I", spoiled, 16 + 12, 0x7FFFFFFF)
+    seed("more-ranges-than-fit", bytes(spoiled))
+    spoiled = bytearray(whole)
+    struct.pack_into("<H", spoiled, 6, 1025)
+    seed("more-faces-than-may-be", bytes(spoiled))
+    seed("another-version", whole[:4] + b"\x02" + whole[5:])
+    seed("not-an-image", b"<svg/>" * 20)
+    seed("nothing", b"")
+
+
 def main() -> None:
+    font_seeds()
     inflate_seeds()
     zip_seeds()
     xml_seeds()

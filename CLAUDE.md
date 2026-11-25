@@ -10,7 +10,7 @@ Biblionaut is EPUB reader firmware for the Xteink X4 (ESP32-C3, no PSRAM, 800x48
 
 ## Commands
 
-Host build (needs CMake 3.25+, Ninja, a C++20 compiler; expat, TeX's American English hyphenation patterns and GoogleTest are downloaded at configure time):
+Host build (needs CMake 3.25+, Ninja, a C++20 compiler; expat, TeX's American English hyphenation patterns, FreeType, GoogleTest and, for the tests of `bn-font`, the font files of Courier Prime are downloaded at configure time):
 
 ```
 cmake --preset host                # once, and after changes to CMake files
@@ -49,7 +49,7 @@ The other checks. CI runs all of them (`.github/workflows/ci.yml`), and all of t
 
 CI does not build a firmware with one of the device checks switched on (below). Build and test that here when a change touches it.
 
-Nor does CI fuzz: it only takes the fuzz targets through their kept inputs. `tools/fuzz.py` builds the targets with LLVM's fuzzing engine and runs each for a minute (`--time SECONDS` for longer; name targets to run only those), in two builds: with AddressSanitizer, and without it, where the heap inside a block is laid out as the firmware has it. Run it for a few minutes after a change to anything that reads a book's bytes (`core/inflate`, `core/region_heap`, the readers in `epub/` and the table of rules, `layout/hyphenator` and `layout/paragraph_setter`, and the readers of SVG, PNG and JPEG, the scaler and the picture cache in `draw/`), and say what it found. What it builds up and finds stays in `.fuzz/`, which git ignores.
+Nor does CI fuzz: it only takes the fuzz targets through their kept inputs. `tools/fuzz.py` builds the targets with LLVM's fuzzing engine and runs each for a minute (`--time SECONDS` for longer; name targets to run only those), in two builds: with AddressSanitizer, and without it, where the heap inside a block is laid out as the firmware has it. Run it for a few minutes after a change to anything that reads a book's bytes (`core/inflate`, `core/region_heap`, the readers in `epub/` and the table of rules, `layout/hyphenator` and `layout/paragraph_setter`, and the readers of SVG, PNG and JPEG, the scaler and the picture cache in `draw/`) or to the reader of the fonts image (`draw/font`), and say what it found. What it builds up and finds stays in `.fuzz/`, which git ignores.
 
 The format check and clang-tidy need the LLVM major version in `tools/llvm-version`. The Linux check catches what a macOS build does not, such as a header that libc++ pulls in by itself and libstdc++ does not, or code that only GCC parses differently. If Docker is not running, say that the check was not run.
 
@@ -108,6 +108,10 @@ The application is a single loop calling `App::Tick()`. Work that takes long is 
 A firmware can be built to check one thing on real hardware: `-DBN_BOOK_CHECK=ON` (with `-DBN_BOOK_CHECK_BRIEF=ON` it opens each book and reads none through), `-DBN_STORAGE_CHECK=ON`, `-DBN_LAYOUT_CHECK=ON` (these three are `reader::DeviceCheck`s, no two can be combined, and none is in a normal firmware) or `-DBN_PLANE_CHECK=ON`. `-DBN_PARTITION_CHECK=ON` is built in a directory of its own (`tools/idf -B app/firmware/build-partition-check -DBN_PARTITION_CHECK=ON build`): it brings a partition table with a fonts partition (`app/firmware/partitions_fonts.csv`) and its own settings, and checks that partition at start; it has no desktop twin. Nor has `-DBN_WINDOW_CHECK=ON`, which checks at start that the panel takes windows narrower than whole rows (`Display::WriteWindow()`), and times them, nor `-DBN_GRAY_CHECK=ON`, which shows at start a picture in the panel's four levels through the gray pass (`Display::StartGrayRefresh()`), in stages held long enough for someone to look at the panel, and times it. The desktop application runs the same checks when the environment variable of the same name is set, with `BN_STORAGE` naming a folder that stands for the card and `BN_SERIAL_OUT` a file to capture the stream in. A firmware built with `-DBN_DRAWING_VIEWER=ON`, or the desktop with `BN_DRAWINGS` set, shows the SVG, PNG and JPEG files in the card's `drawings` folder in place of the test pattern (`reader/drawing_viewer.h`, a `reader::Screen`), and takes none of the checks with it; with `-DBN_DRAWING_TOUR=ON` (`BN_DRAWING_TOUR`) as well it goes round them twice by itself, the second time from the cache of what it has shown, so a device run can be timed with nobody at the buttons.
 
 Each layer of the book pipeline also has a host tool that runs the same code on one file: `bn-zip`, `bn-xml`, `bn-epub`, `bn-css`. The book check reports counts, reads of storage and checksums in the same terms those tools print, so that what a device found can be set beside what the desktop finds for the same book. The layout check does the same with `bn-lines --figures`, over a file of paragraphs that `tools/layout-text.py` makes from books. When a check gains a figure, the matching tool should print it too.
+
+### Fonts
+
+The firmware reads no font files. `bn-font` (`tools/font`) draws the faces a preset names, at the sizes it gives, with FreeType on the computer that builds, and writes the fonts image; `draw/font.h` reads an image where it lies and describes its layout; `layout/face_measure.h` is the `TextMeasure` that sets text in an image's faces. FreeType is only ever linked into `bn-font`. No font is in the repository: the tests of `bn-font` use Courier Prime, which the build fetches (`third_party/courier-prime`), and a preset naming fonts from someone's own computer stays out of it, as those fonts do.
 
 ## Conventions
 

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "core/byte_sink.h"
@@ -26,6 +27,7 @@ class BookCheck;
 class DrawingViewer;
 class LayoutCheck;
 class Screen;
+class TextViewer;
 
 // Everything the application needs from the device, as interfaces. Tests
 // pass fakes; the real set comes from DefaultServices().
@@ -149,6 +151,15 @@ class App {
   // The viewer, if ViewDrawings() was called; null otherwise.
   const DrawingViewer* DrawingsViewer() const noexcept { return drawingViewer_; }
 
+  // Shows the text of the card's /layout/paragraphs.txt set in the faces of
+  // `fonts`, a fonts image (draw/font.h), a page at a time, in place of the
+  // test pattern (reader/text_viewer.h). `fonts` has to stay where it is
+  // for as long as the application does. Call before Start(). Not together
+  // with the checks or the drawing viewer.
+  void ViewText(std::span<const std::uint8_t> fonts) noexcept;
+  // The viewer, if ViewText() was called; null otherwise.
+  const TextViewer* TextsViewer() const noexcept { return textViewer_; }
+
  private:
   void SampleMemory() noexcept;
   void SendCrashReport() noexcept;
@@ -175,6 +186,7 @@ class App {
   // In place of the test pattern, if asked for: the drawing viewer, kept
   // twice for the same reason as the checks, and 94 KB of its own memory.
   DrawingViewer* drawingViewer_ = nullptr;
+  TextViewer* textViewer_ = nullptr;
   Screen* screen_ = nullptr;
   bool storageReady_ = false;
   std::uint64_t startedAtUs_ = 0;

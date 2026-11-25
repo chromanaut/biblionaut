@@ -8,6 +8,7 @@
 #include "reader/book_check.h"
 #include "reader/drawing_viewer.h"
 #include "reader/layout_check.h"
+#include "reader/text_viewer.h"
 #include "reader/trace_ids.h"
 
 namespace bn::reader {
@@ -106,6 +107,13 @@ void App::ViewDrawings(std::string_view folder, bool tour) noexcept {
       drawingViewer_->Tour();
     }
     screen_ = drawingViewer_;
+  }
+}
+
+void App::ViewText(std::span<const std::uint8_t> fonts) noexcept {
+  if (screen_ == nullptr) {
+    textViewer_ = new (std::nothrow) TextViewer(services_.display, services_.clock, services_.storage, stream_, fonts);
+    screen_ = textViewer_;
   }
 }
 

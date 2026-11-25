@@ -174,6 +174,7 @@ bn_add_unit_test(reader_tests
     unit/reader/layout_check_test.cpp
     unit/reader/pattern_viewer_test.cpp
     unit/reader/storage_check_test.cpp
+    unit/reader/text_viewer_test.cpp
   LIBS bn_reader)
 # The pattern viewer's tests compare what reaches the panel with the picture
 # from draw, which the reader links but does not pass on. The book check's
@@ -364,6 +365,17 @@ if(Python3_Interpreter_FOUND)
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/font_tool.py
         $<TARGET_FILE:bn-font> ${BN_COURIER_PRIME_DIR} ${CMAKE_CURRENT_BINARY_DIR}/font_tool)
     set_tests_properties(e2e.FontTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+    # The text viewer, run by the desktop application with a fonts image
+    # bn-font makes of that font, against what must be so of its pages
+    # however their lines fall: the ink on the panel is the ink bn-font
+    # gives for each of the text's letters.
+    add_test(
+      NAME e2e.TextViewer
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/text_viewer.py
+        $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-font> $<TARGET_FILE:bn-trace> ${BN_COURIER_PRIME_DIR}
+        ${CMAKE_CURRENT_BINARY_DIR}/text_viewer)
+    set_tests_properties(e2e.TextViewer PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
   endif()
 
   # bn-lines, and through it the paragraph setter, against a second reading

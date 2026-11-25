@@ -107,8 +107,8 @@
       "output": {
         "outputOnFailure": true
       },
-      "execution": {
-        "jobs": 8
+      "environment": {
+        "CTEST_PARALLEL_LEVEL": "$penv{CTEST_PARALLEL_LEVEL}"
       }
     },
     {
@@ -117,8 +117,8 @@
       "output": {
         "outputOnFailure": true
       },
-      "execution": {
-        "jobs": 8
+      "environment": {
+        "CTEST_PARALLEL_LEVEL": "$penv{CTEST_PARALLEL_LEVEL}"
       }
     },
     {

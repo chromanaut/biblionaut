@@ -183,7 +183,12 @@ struct SvgSize {
 // decides. So the memory for it is the caller's (KeepDefinitionsIn()):
 // what `defs` holds, the rules of the style sheet, and the gradients.
 // What `defs` holds is copied there as it goes by, as it is written, with
-// a note of where each element that has an `id` begins. A `use` then
+// a note of where each element that has an `id` begins. The memory is
+// taken in the order the file has things in, whatever pieces the file
+// comes in: a rule of a sheet that is inside `defs` is recorded once the
+// text as far as the rule's end has been kept, and the rest of the text
+// is kept after it. So what fits is the same however the file is cut up.
+// A `use` then
 // reads its element again from that copy, as if it stood where the `use`
 // does: moved by the transform of the `use` and then by its `x` and `y`,
 // and painted as the `use` is where it says nothing of its own. A
@@ -556,8 +561,11 @@ class SvgRenderer {
   void EndReuse() noexcept;
 
   // A style sheet: its text, a piece at a time, and what it comes to for
-  // the element whose tag is ending.
-  void ReadSheet(std::string_view piece) noexcept;
+  // the element whose tag is ending. With `keep`, the piece is also kept
+  // among what `defs` holds, each part of it as it is read. Whether a
+  // token is text to be kept so: a sheet's, in `defs`, as the file has it.
+  bool IsSheetTextToKeep(const SvgTagToken& token) const noexcept;
+  void ReadSheet(std::string_view piece, bool keep) noexcept;
   void EndRule() noexcept;
   void Style() noexcept;
   // A gradient, and each of its stops, as their tags end; and what one

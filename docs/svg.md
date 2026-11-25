@@ -341,7 +341,12 @@ strip only what it defines for later use.
   until then, and that is the one thing here whose size the file decides,
   so the memory for it is the caller's (`KeepDefinitionsIn()`). What
   `defs` holds is copied there as it goes by, just as it is written, with
-  eight bytes more for each element that has an `id`. A `use` reads its
+  eight bytes more for each element that has an `id`. The memory is taken
+  in the order the file has things in, so what fits in it does not depend
+  on the pieces the file is read in: a rule of a style sheet that is
+  inside `defs`, which is kept in the same memory, is kept once the
+  sheet's text as far as the rule's end has been copied, and the rest of
+  the text is copied after it. A `use` reads its
   element again from the copy, with a reader of tags of its own, as if it
   stood where the `use` does. 2,277 files in the public books define
   something. The largest keeps 18,430 bytes; 24 KB is room for all of
@@ -594,11 +599,14 @@ tags and the renderer 26,000 files of the bytes that mean something to
 them put together at random, and hold each call to its bound. What is
 used is set beside the same thing written where it is used, which has to
 come out the same byte for byte. The memory for definitions is cut down to
-a byte less than a file needs, and to less, and a file of five kilobytes
+a byte less than a file needs, and to less; with a style sheet inside
+`defs`, to where a rule of it just fits and to a byte less, in pieces of
+seven sizes, which have to keep the same; and a file of five kilobytes
 that asks for tens of megabytes to be read again is stopped at the limit.
 An end-to-end test (`tests/e2e/svg_draw.py`) makes drawings up at random,
 with groups inside groups, every shape, transforms, paint as attributes,
-as `style` and by the rules of a style sheet, things hidden, things
+as `style` and by the rules of a style sheet, which in some is inside
+`defs`, things hidden, things
 defined and used, `svg` elements that cut off what is in them, linear
 gradients of every kind, and strokes of many widths with round corners
 and ends, and writes each out as a file in one of the many ways it can be

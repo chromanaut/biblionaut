@@ -383,8 +383,17 @@ std::size_t SvgRenderer::Step(std::string_view bytes) noexcept {
     // nothing in `defs` is drawn as it is read, so no value there is taken
     // less than whole. Where the tags go wrong, what came before the
     // fault is kept and no more, whatever else the call was given.
+    //
+    // A piece of a style sheet's text is the one thing not kept here but
+    // as it is read (ReadSheet()): a piece is as long as the bytes to hand
+    // made it, and a rule that ends in the middle of one takes memory too.
     if (keeping_) {
-      Keep({bytes.data() + taken, failed ? std::min<std::size_t>(tags_.ErrorOffset() - before, used) : used});
+      std::string_view passing(bytes.data() + taken,
+                               failed ? std::min<std::size_t>(tags_.ErrorOffset() - before, used) : used);
+      if (IsSheetTextToKeep(token)) {
+        passing.remove_suffix(token.text.size());
+      }
+      Keep(passing);
     }
     const bool enough = Handle(tags_, token, used);
     taken += used;
@@ -407,7 +416,7 @@ bool SvgRenderer::Handle(SvgTagReader& reader, const SvgTagToken& token, std::si
       break;
     case Kind::kText:
       if (inSheet_) {
-        ReadSheet(token.text);
+        ReadSheet(token.text, IsSheetTextToKeep(token));
       }
       break;
     case Kind::kOpen:
@@ -559,10 +568,25 @@ std::uint32_t SvgRenderer::FindGradient(std::string_view name) const noexcept {
 
 // ---- A style sheet ----
 
-void SvgRenderer::ReadSheet(std::string_view piece) noexcept {
+bool SvgRenderer::IsSheetTextToKeep(const SvgTagToken& token) const noexcept {
+  return keeping_ && inSheet_ && token.kind == Kind::kText && token.ofInput;
+}
+
+void SvgRenderer::ReadSheet(std::string_view piece, bool keep) noexcept {
   for (;;) {
     SvgSheetToken token;
-    piece.remove_prefix(sheet_.Next(piece, token));
+    const std::size_t took = sheet_.Next(piece, token);
+    if (keep) {
+      // Kept as far as it has been read, before what it says is acted on.
+      // So a rule is recorded when the text up to its end has been kept
+      // and no more of it, in whatever pieces the text came: the memory is
+      // taken in the order the file has things in, and what fits does not
+      // depend on the pieces.
+      std::string_view read = piece;
+      read.remove_suffix(piece.size() - took);
+      Keep(read);
+    }
+    piece.remove_prefix(took);
     switch (token.kind) {
       case SvgSheetToken::Kind::kNone:
         return;

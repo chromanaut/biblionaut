@@ -1,6 +1,7 @@
 #include "core/inflate.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace bn::core {
 
@@ -38,6 +39,57 @@ constexpr std::uint32_t Reversed(std::uint32_t value, unsigned count) noexcept {
     result = (result << 1U) | ((value >> i) & 1U);
   }
   return result;
+}
+
+// A copy this long or longer is handed to the C library, which copies a
+// word at a time. Most repeats in text are shorter, and for those the call
+// costs more than the copying.
+constexpr std::size_t kLongCopy = 16;
+
+// Copies `count` bytes, which is at least one, from `from` to `to`, the
+// lowest first. The two may lie over each other: with `to` the higher, the
+// bytes at `from` are repeated over and over, which is what a repeat that
+// reaches into its own output asks for.
+void CopyForward(std::uint8_t* to, const std::uint8_t* from, std::size_t count) noexcept {
+  const std::uint8_t* const end = to + count;
+  do {
+    *to++ = *from++;
+  } while (to != end);
+}
+
+// Writes at `at` in the window the `count` bytes that lie `distance` bytes
+// before it, going back round the window's end if they begin there. What
+// is written stays within the window: `count` is at least one, `at + count`
+// is no more than the window's size, and `distance` is from 1 to its size.
+void Repeat(std::uint8_t* window, std::size_t at, std::size_t distance, std::size_t count) noexcept {
+  if (distance > at) {
+    // It begins before the window's start, which is to say near its end:
+    // `distance - at` bytes lie there. They are above where they are going,
+    // so copying the lowest first takes each before anything is written
+    // over it, as memmove does.
+    const std::size_t first = std::min(count, distance - at);
+    const std::uint8_t* const from = window + (at + Inflater::kWindowBytes - distance);
+    if (first >= kLongCopy) {
+      std::memmove(window + at, from, first);
+    } else {
+      CopyForward(window + at, from, first);
+    }
+    at += first;
+    count -= first;
+  }
+  if (count == 0) {
+    return;
+  }
+  // The rest lie below where they are going, `distance` bytes back.
+  std::uint8_t* const to = window + at;
+  if (count >= kLongCopy && distance >= count) {
+    std::memcpy(to, to - distance, count);
+  } else if (count >= kLongCopy && distance == 1) {
+    std::memset(to, *(to - 1), count);  // One byte, over and over.
+  } else {
+    // Short, or lying over what it is producing: the lowest byte first.
+    CopyForward(to, to - distance, count);
+  }
 }
 
 }  // namespace
@@ -229,22 +281,13 @@ Inflater::Built Inflater::Build(Code& code, std::span<const std::uint8_t> length
   return left > 0 ? Built::kIncomplete : Built::kComplete;
 }
 
+// A bit at a time, keeping count of where the patterns of each length
+// begin. This is how the code-length code is read, which has no table; and
+// it is what Decompress() falls back on for a pattern too long for its
+// code's table, or one the code does not have. The short patterns of the
+// other two codes never come here: Decompress() looks those up itself.
 int Inflater::Decode(const Code& code) noexcept {
   Fill();
-  if (!code.fast.empty()) {
-    const std::uint16_t entry = code.fast[bitBuffer_ & ((1U << code.fastBits) - 1U)];
-    if (entry != 0) {
-      const unsigned length = entry >> 9U;
-      if (length > bitCount_) {
-        Fail(Status::kTruncated);
-        return -1;
-      }
-      Drop(length);
-      return static_cast<int>(static_cast<unsigned>(entry) & 0x1FFU);
-    }
-  }
-  // A longer pattern, or one this code does not have: a bit at a time,
-  // keeping count of where the patterns of each length begin.
   int pattern = 0;
   int first = 0;
   int index = 0;
@@ -457,23 +500,32 @@ bool Inflater::ReadCodes() noexcept {
 std::size_t Inflater::CopyStored(std::span<std::uint8_t> dst) noexcept {
   std::size_t done = 0;
   const std::size_t mask = kWindowBytes - 1;
-  while (storedLeft_ > 0 && done < dst.size()) {
-    std::uint8_t byte = 0;
-    if (bitCount_ >= 8) {
-      // Whole bytes that had already been taken into the bit buffer.
-      byte = static_cast<std::uint8_t>(bitBuffer_);
-      Drop(8);
-    } else {
-      if (inputPosition_ == inputEnd_ && !Refill()) {
-        Fail(Status::kTruncated);
-        break;
-      }
-      byte = input_[inputPosition_++];
-    }
+  // Whole bytes that had already been taken into the bit buffer, in
+  // reading the block's length: two, or none.
+  while (storedLeft_ > 0 && done < dst.size() && bitCount_ >= 8) {
+    const auto byte = static_cast<std::uint8_t>(bitBuffer_);
+    Drop(8);
     window_[windowPosition_] = byte;
     windowPosition_ = (windowPosition_ + 1) & mask;
     dst[done++] = byte;
     --storedLeft_;
+  }
+  // The rest are in the input as they are to come out: as many at a time
+  // as lie together there, and fit in the window before its end.
+  while (storedLeft_ > 0 && done < dst.size()) {
+    if (inputPosition_ == inputEnd_ && !Refill()) {
+      Fail(Status::kTruncated);
+      break;
+    }
+    const std::size_t wanted = std::min<std::size_t>(storedLeft_, dst.size() - done);
+    const std::size_t count = std::min(std::min(wanted, inputEnd_ - inputPosition_), kWindowBytes - windowPosition_);
+    const std::uint8_t* const from = input_.data() + inputPosition_;
+    std::memcpy(window_.data() + windowPosition_, from, count);
+    std::memcpy(dst.data() + done, from, count);
+    inputPosition_ += count;
+    windowPosition_ = (windowPosition_ + count) & mask;
+    done += count;
+    storedLeft_ -= static_cast<std::uint32_t>(count);
   }
   history_ = static_cast<std::uint32_t>(std::min<std::size_t>(history_ + done, kWindowBytes));
   bytesOut_ += static_cast<std::uint32_t>(done);
@@ -484,34 +536,95 @@ std::size_t Inflater::CopyStored(std::span<std::uint8_t> dst) noexcept {
   return done;
 }
 
+// This is where the time goes: once round the loop for every literal and
+// every repeat of a compressed block.
+//
+// What it produces is written into the window, where it has to be in any
+// case for later repeats to find, and copied from there to `dst` in one
+// piece at the end. So that the piece is one, a call stops at the window's
+// end, and Read() calls again for the rest.
+//
+// The state of the input and of a repeat is kept in local variables while
+// the loop runs, and put back in the object at the end and around anything
+// that reads it there. Left in the object it would be loaded and stored
+// again for every symbol: every byte of output is written through a
+// pointer to bytes, and the compiler has to take such a write for one that
+// might change any member. For the same reason the loop is written out in
+// one piece, with what Fill(), Decode() and Bits() do repeated in it:
+// handed to a function, the variables would have to be in memory for it to
+// reach them.
 std::size_t Inflater::Decompress(std::span<std::uint8_t> dst) noexcept {
-  std::size_t done = 0;
+  constexpr std::uint32_t kLiteralFastMask = (1U << kLiteralFastBits) - 1U;
+  constexpr std::uint32_t kDistanceFastMask = (1U << kDistanceFastBits) - 1U;
+  std::uint8_t* const window = window_.data();
+  const std::size_t start = windowPosition_;
+  const std::size_t limit = start + std::min(dst.size(), kWindowBytes - start);
+  const std::size_t history = history_;
+  const std::uint16_t* const literalFast = literalFast_.data();
+  const std::uint16_t* const distanceFast = distanceFast_.data();
+  const std::uint8_t* const input = input_.data();
+  std::size_t at = start;
+  std::uint32_t bits = bitBuffer_;
+  unsigned count = bitCount_;
+  const std::uint8_t* in = input + inputPosition_;
+  const std::uint8_t* inEnd = input + inputEnd_;
+  std::uint32_t matchLeft = matchLeft_;
+  std::uint32_t matchDistance = matchDistance_;
   bool ended = false;
-  const std::size_t mask = kWindowBytes - 1;
-  const auto emit = [&](std::uint8_t byte) noexcept {
-    window_[windowPosition_] = byte;
-    windowPosition_ = (windowPosition_ + 1) & mask;
-    dst[done++] = byte;
-  };
 
-  while (done < dst.size()) {
+  while (at < limit) {
     // A repeat of earlier output, perhaps left unfinished by the last call.
-    // It may reach into what it is itself producing, so it goes a byte at
-    // a time.
-    if (matchLeft_ > 0) {
-      while (matchLeft_ > 0 && done < dst.size()) {
-        emit(window_[(windowPosition_ - matchDistance_) & mask]);
-        --matchLeft_;
-      }
+    if (matchLeft > 0) {
+      const std::size_t now = std::min<std::size_t>(matchLeft, limit - at);
+      Repeat(window, at, matchDistance, now);
+      at += now;
+      matchLeft -= static_cast<std::uint32_t>(now);
       continue;
     }
 
-    const int symbol = Decode(literal_);
-    if (symbol < 0) {
-      break;
+    // A literal, the end of the block, or the length of a repeat. The
+    // buffer is topped up first, as Fill() does it.
+    while (count <= 24) {
+      if (in == inEnd) {
+        if (!Refill()) {
+          break;
+        }
+        in = input;
+        inEnd = input + inputEnd_;
+      }
+      bits |= static_cast<std::uint32_t>(*in) << count;
+      ++in;
+      count += 8;
+    }
+    std::uint32_t symbol = literalFast[bits & kLiteralFastMask];
+    if (symbol != 0) {
+      const unsigned length = symbol >> 9U;
+      if (length > count) {
+        Fail(Status::kTruncated);
+        break;
+      }
+      bits >>= length;
+      count -= length;
+      symbol &= 0x1FFU;
+    } else {
+      // A pattern too long for the table, or one the code does not have:
+      // Decode() goes through it a bit at a time.
+      bitBuffer_ = bits;
+      bitCount_ = count;
+      inputPosition_ = static_cast<std::size_t>(in - input);
+      const int found = Decode(literal_);
+      bits = bitBuffer_;
+      count = bitCount_;
+      in = input + inputPosition_;
+      inEnd = input + inputEnd_;
+      if (found < 0) {
+        break;
+      }
+      symbol = static_cast<std::uint32_t>(found);
     }
     if (symbol < kEndOfBlock) {
-      emit(static_cast<std::uint8_t>(symbol));
+      window[at] = static_cast<std::uint8_t>(symbol);
+      ++at;
       continue;
     }
     if (symbol == kEndOfBlock) {
@@ -520,38 +633,108 @@ std::size_t Inflater::Decompress(std::span<std::uint8_t> dst) noexcept {
     }
 
     // A length, then how far back to copy it from.
-    const auto lengthIndex = static_cast<std::size_t>(symbol - (kEndOfBlock + 1));
+    const std::size_t lengthIndex = symbol - (kEndOfBlock + 1);
     if (lengthIndex >= kLengthBase.size()) {
       Fail(Status::kBadData);
       break;
     }
-    std::uint32_t extra = 0;
-    if (!Bits(kLengthExtraBits[lengthIndex], extra)) {
+    // The length's extra bits, five at the most. The buffer was filled
+    // for the symbol, which took at most 15 bits of it: if it is short of
+    // these, the input has ended, and filling it again would bring nothing.
+    unsigned wanted = kLengthExtraBits[lengthIndex];
+    if (count < wanted) {
+      Fail(Status::kTruncated);
       break;
     }
-    const std::uint32_t length = kLengthBase[lengthIndex] + extra;
-    const int distanceSymbol = Decode(distance_);
-    if (distanceSymbol < 0) {
-      break;
+    const std::uint32_t length = kLengthBase[lengthIndex] + (bits & ((1U << wanted) - 1U));
+    bits >>= wanted;
+    count -= wanted;
+
+    // The distance's symbol, found as the first was.
+    while (count <= 24) {
+      if (in == inEnd) {
+        if (!Refill()) {
+          break;
+        }
+        in = input;
+        inEnd = input + inputEnd_;
+      }
+      bits |= static_cast<std::uint32_t>(*in) << count;
+      ++in;
+      count += 8;
     }
-    if (static_cast<std::size_t>(distanceSymbol) >= kDistanceBase.size()) {
+    symbol = distanceFast[bits & kDistanceFastMask];
+    if (symbol != 0) {
+      const unsigned patternBits = symbol >> 9U;
+      if (patternBits > count) {
+        Fail(Status::kTruncated);
+        break;
+      }
+      bits >>= patternBits;
+      count -= patternBits;
+      symbol &= 0x1FFU;
+    } else {
+      bitBuffer_ = bits;
+      bitCount_ = count;
+      inputPosition_ = static_cast<std::size_t>(in - input);
+      const int found = Decode(distance_);
+      bits = bitBuffer_;
+      count = bitCount_;
+      in = input + inputPosition_;
+      inEnd = input + inputEnd_;
+      if (found < 0) {
+        break;
+      }
+      symbol = static_cast<std::uint32_t>(found);
+    }
+    if (symbol >= kDistanceBase.size()) {
       Fail(Status::kBadData);
       break;
     }
-    if (!Bits(kDistanceExtraBits[static_cast<std::size_t>(distanceSymbol)], extra)) {
-      break;
+    // Its extra bits, up to 13: more than the buffer may have left, so it
+    // is filled again if it is short, as Bits() does it.
+    wanted = kDistanceExtraBits[symbol];
+    if (count < wanted) {
+      while (count <= 24) {
+        if (in == inEnd) {
+          if (!Refill()) {
+            break;
+          }
+          in = input;
+          inEnd = input + inputEnd_;
+        }
+        bits |= static_cast<std::uint32_t>(*in) << count;
+        ++in;
+        count += 8;
+      }
+      if (count < wanted) {
+        Fail(Status::kTruncated);
+        break;
+      }
     }
-    const std::uint32_t distance = kDistanceBase[static_cast<std::size_t>(distanceSymbol)] + extra;
+    const std::uint32_t distance = kDistanceBase[symbol] + (bits & ((1U << wanted) - 1U));
+    bits >>= wanted;
+    count -= wanted;
     // Further back than anything yet produced.
-    const std::uint32_t available = static_cast<std::uint32_t>(std::min<std::size_t>(history_ + done, kWindowBytes));
-    if (distance > available) {
+    if (distance > std::min(history + (at - start), kWindowBytes)) {
       Fail(Status::kBadData);
       break;
     }
-    matchLeft_ = length;
-    matchDistance_ = distance;
+    matchLeft = length;
+    matchDistance = distance;
   }
-  history_ = static_cast<std::uint32_t>(std::min<std::size_t>(history_ + done, kWindowBytes));
+
+  bitBuffer_ = bits;
+  bitCount_ = count;
+  inputPosition_ = static_cast<std::size_t>(in - input);
+  matchLeft_ = matchLeft;
+  matchDistance_ = matchDistance;
+  const std::size_t done = at - start;
+  if (done > 0) {
+    std::memcpy(dst.data(), window + start, done);
+  }
+  windowPosition_ = at & (kWindowBytes - 1);
+  history_ = static_cast<std::uint32_t>(std::min(history + done, kWindowBytes));
   bytesOut_ += static_cast<std::uint32_t>(done);
   blockProduced_ = blockProduced_ || done > 0;
   if (ended) {

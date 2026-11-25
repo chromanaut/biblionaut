@@ -294,6 +294,261 @@ TEST(Inflater, ReachesBackAsFarAsTheWindowAndNoFurther) {
   EXPECT_TRUE(tooFar.out == plain(32767));
 }
 
+// A repeat of `length` bytes from `distance` back, in the fixed code: the
+// length's symbol and its extra bits, then the distance's. The tables are
+// those of RFC 1951, section 3.2.5.
+void FixedRepeat(StreamWriter& writer, unsigned length, unsigned distance) {
+  static constexpr std::array<unsigned, 29> kLengths = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                                        31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+  static constexpr std::array<unsigned, 29> kLengthBits = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                                           2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+  static constexpr std::array<unsigned, 30> kDistances = {
+      1,   2,   3,   4,   5,   7,    9,    13,   17,   25,   33,   49,   65,    97,    129,
+      193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+  static constexpr std::array<unsigned, 30> kDistanceBits = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                                                             6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+  // The last symbol that begins at or below what is wanted.
+  std::size_t lengthSymbol = kLengths.size() - 1;
+  while (kLengths[lengthSymbol] > length) {
+    --lengthSymbol;
+  }
+  std::size_t distanceSymbol = kDistances.size() - 1;
+  while (kDistances[distanceSymbol] > distance) {
+    --distanceSymbol;
+  }
+  writer.Fixed(257 + static_cast<unsigned>(lengthSymbol))
+      .Bits(length - kLengths[lengthSymbol], kLengthBits[lengthSymbol]);
+  writer.FixedDistance(static_cast<unsigned>(distanceSymbol))
+      .Bits(distance - kDistances[distanceSymbol], kDistanceBits[distanceSymbol]);
+}
+
+TEST(Inflater, CopiesRepeatsOfEveryShapeAcrossTheWindowsEnd) {
+  // A repeat is copied within the window, which is a ring. Where it is
+  // copied from may run off the window's end and come round to its start;
+  // and so may where it goes, at which point one stretch of copying stops
+  // and the next carries on. Here are repeats short and long, from one
+  // byte back to as far back as there is, among them every kind that lies
+  // over what it is itself producing, and each is placed twice: with one
+  // byte of it before the window's end, and with all but one.
+  Bytes expected;
+  StreamWriter writer;
+  writer.BlockHeader(true, 1);
+  const auto repeat = [&](unsigned length, unsigned distance) {
+    FixedRepeat(writer, length, distance);
+    for (unsigned i = 0; i < length; ++i) {
+      expected.push_back(expected[expected.size() - distance]);
+    }
+  };
+  // Repeats from far back, and a literal or two, until the output is
+  // `target` bytes long: far fewer bits than as many literals.
+  const auto advanceTo = [&](std::size_t target) {
+    while (expected.size() < target) {
+      const std::size_t left = target - expected.size();
+      if (left < 3) {
+        const auto byte = static_cast<std::uint8_t>(expected.size() * 7);
+        writer.Fixed(byte);
+        expected.push_back(byte);
+      } else {
+        // Not so many as to leave one or two over at every turn.
+        repeat(static_cast<unsigned>(left <= 258 ? left : std::min<std::size_t>(left - 3, 258)), 30011);
+      }
+    }
+  };
+
+  // First more than a window's worth that does not repeat, to copy from.
+  // NOLINTNEXTLINE(bugprone-random-generator-seed): the same input every run, so that a failure can be found again.
+  std::mt19937 random(1951);
+  for (int i = 0; i < 33000; ++i) {
+    const auto byte = static_cast<std::uint8_t>(random());
+    writer.Fixed(byte);
+    expected.push_back(byte);
+  }
+  for (const unsigned distance : {1U, 2U, 5U, 16U, 17U, 259U, 32767U, 32768U}) {
+    for (const unsigned length : {3U, 15U, 16U, 17U, 258U}) {
+      for (const unsigned before : {1U, length - 1}) {
+        // The next end of the window that is far enough off to get to.
+        const std::size_t end = (((expected.size() + 600) / Inflater::kWindowBytes) + 1) * Inflater::kWindowBytes;
+        advanceTo(end - before);
+        repeat(length, distance);
+      }
+    }
+  }
+  const Bytes stream = writer.Fixed(256).Done();
+
+  // In pieces smaller than the window, larger than it, and larger than all
+  // of it; and with the source giving a few bytes at a time.
+  for (const std::size_t outputPiece :
+       {std::size_t{1000}, std::size_t{4096}, std::size_t{33000}, std::size_t{5000000}}) {
+    const Result result = Inflate(stream, SIZE_MAX, outputPiece);
+    EXPECT_EQ(result.status, Status::kDone) << "asked for " << outputPiece << " at a time";
+    EXPECT_TRUE(result.out == expected) << "asked for " << outputPiece << " at a time";
+  }
+  const Result fed = Inflate(stream, 7, 257);
+  EXPECT_EQ(fed.status, Status::kDone);
+  EXPECT_TRUE(fed.out == expected);
+}
+
+TEST(Inflater, CopiesStoredBlocksInRunsWhereverTheyBeginAndEnd) {
+  // A stored block's bytes are copied as many at a time as lie together
+  // in the input the inflater holds, and fit before the window's end; but
+  // the first two may already be in its buffer of bits, or none, as the
+  // bits before the block fall. So: blocks of many lengths, each after a
+  // different number of literals, more than two windows' worth in all,
+  // read from sources that give their bytes in pieces of several sizes.
+  Bytes expected;
+  StreamWriter writer;
+  // NOLINTNEXTLINE(bugprone-random-generator-seed): the same input every run, so that a failure can be found again.
+  std::mt19937 random(1996);
+  unsigned literals = 0;
+  for (int round = 0; round < 3; ++round) {
+    for (const std::size_t length : {0U, 1U, 2U, 3U, 4U, 5U, 255U, 256U, 257U, 511U, 1000U, 30000U, 65535U}) {
+      writer.BlockHeader(false, 1);
+      for (unsigned i = 0; i < literals; ++i) {
+        const auto byte = static_cast<std::uint8_t>(random());
+        writer.Fixed(byte);
+        expected.push_back(byte);
+      }
+      writer.Fixed(256);
+      literals = (literals + 1) % 11;
+      writer.BlockHeader(false, 0).StoredLength(static_cast<std::uint16_t>(length));
+      for (std::size_t i = 0; i < length; ++i) {
+        const auto byte = static_cast<std::uint8_t>(random());
+        writer.Byte(byte);
+        expected.push_back(byte);
+      }
+    }
+  }
+  const Bytes stream = writer.BlockHeader(true, 1).Fixed(256).Done();
+
+  for (const std::size_t sourcePiece : {SIZE_MAX, std::size_t{1}, std::size_t{7}, std::size_t{255}, std::size_t{257}}) {
+    for (const std::size_t outputPiece : {std::size_t{3}, std::size_t{1000}, std::size_t{4096}, std::size_t{70000}}) {
+      const Result result = Inflate(stream, sourcePiece, outputPiece);
+      EXPECT_EQ(result.status, Status::kDone) << sourcePiece << " in, " << outputPiece << " out";
+      EXPECT_TRUE(result.out == expected) << sourcePiece << " in, " << outputPiece << " out";
+    }
+  }
+}
+
+// The bit patterns of a code, from how long each symbol's is, 0 for a
+// symbol that has none: the rule of RFC 1951, section 3.2.2.
+std::vector<unsigned> PatternsOf(const std::vector<unsigned>& lengths) {
+  std::array<unsigned, 17> counts{};
+  for (const unsigned length : lengths) {
+    ++counts.at(length);
+  }
+  counts[0] = 0;
+  std::array<unsigned, 17> next{};
+  unsigned pattern = 0;
+  for (unsigned bits = 1; bits <= 15; ++bits) {
+    pattern = (pattern + counts.at(bits - 1)) << 1U;
+    next.at(bits) = pattern;
+  }
+  std::vector<unsigned> patterns(lengths.size());
+  for (std::size_t symbol = 0; symbol < lengths.size(); ++symbol) {
+    if (lengths[symbol] != 0) {
+      patterns[symbol] = next.at(lengths[symbol])++;
+    }
+  }
+  return patterns;
+}
+
+// The start of a block that brings the two codes whose lengths these are.
+// Each length is written by a pattern of four bits that is the length
+// itself: the code-length code in which each of the lengths 0 to 15 has
+// four bits, and the three ways of repeating a length have none.
+void OwnCodes(StreamWriter& writer, bool last, const std::vector<unsigned>& literals,
+              const std::vector<unsigned>& distances) {
+  writer.BlockHeader(last, 2);
+  writer.Bits(static_cast<std::uint32_t>(literals.size()) - 257, 5)
+      .Bits(static_cast<std::uint32_t>(distances.size()) - 1, 5);
+  writer.Bits(19 - 4, 4);
+  // In the format's order, the three ways of repeating come first.
+  for (unsigned i = 0; i < 19; ++i) {
+    writer.Bits(i < 3 ? 0 : 4, 3);
+  }
+  for (const unsigned length : literals) {
+    writer.Pattern(length, 4);
+  }
+  for (const unsigned length : distances) {
+    writer.Pattern(length, 4);
+  }
+}
+
+TEST(Inflater, FillsItsBufferAgainForADistanceWrittenTheLongestWay) {
+  // A distance can take 28 bits: a pattern of 15, and 13 more that go
+  // with it. The buffer the bits are read through holds 25 or more when a
+  // symbol is begun, so once the pattern is out of it there may be as few
+  // as 10 left, and it has to be filled again in the middle of the
+  // distance. Here is a block whose own codes give the two furthest
+  // distances patterns of 15 bits, and repeats from that far back, each
+  // begun at a different bit of a byte.
+  std::vector<unsigned> literals(286, 0);
+  literals['a'] = 2;
+  literals['b'] = 2;
+  literals[256] = 2;
+  literals[257] = 3;  // A repeat of 3.
+  literals[285] = 3;  // A repeat of 258.
+  std::vector<unsigned> distances(30, 0);
+  distances[21] = 1;  // From 1,537 to 2,048 back, with nine more bits.
+  for (unsigned symbol = 0; symbol <= 12; ++symbol) {
+    distances[symbol] = symbol + 2;  // Nothing uses these: they use up the patterns of 2 to 14 bits.
+  }
+  distances[28] = 15;  // From 16,385 back, with thirteen more bits,
+  distances[29] = 15;  // and from 24,577.
+  const std::vector<unsigned> literalPatterns = PatternsOf(literals);
+  const std::vector<unsigned> distancePatterns = PatternsOf(distances);
+
+  Bytes expected;
+  StreamWriter writer;
+  OwnCodes(writer, true, literals, distances);
+  const auto literal = [&](unsigned char letter) {
+    writer.Pattern(literalPatterns[letter], literals[letter]);
+    expected.push_back(letter);
+  };
+  const auto copy = [&](unsigned length, unsigned distance) {
+    for (unsigned i = 0; i < length; ++i) {
+      expected.push_back(expected[expected.size() - distance]);
+    }
+  };
+  // Letters in no order, so that a repeat from the wrong place shows; then
+  // enough repeats of them to have something 24,577 bytes back.
+  // NOLINTNEXTLINE(bugprone-random-generator-seed): the same input every run, so that a failure can be found again.
+  std::mt19937 random(1951);
+  for (int i = 0; i < 2000; ++i) {
+    literal((random() & 1U) != 0 ? 'a' : 'b');
+  }
+  for (int i = 0; i < 100; ++i) {
+    writer.Pattern(literalPatterns[285], 3).Pattern(distancePatterns[21], 1).Bits(2000 - 1537, 9);
+    copy(258, 2000);
+  }
+  for (unsigned turn = 0; turn < 24; ++turn) {
+    // Each letter is two bits, and a far repeat 31.
+    for (unsigned i = 0; i < turn % 4; ++i) {
+      literal(i % 2 == 0 ? 'a' : 'b');
+    }
+    const unsigned symbol = 28 + (turn % 2);
+    const unsigned more = turn * 101;
+    writer.Pattern(literalPatterns[257], 3).Pattern(distancePatterns[symbol], 15).Bits(more, 13);
+    copy(3, (symbol == 28 ? 16385 : 24577) + more);
+  }
+  const Bytes stream = writer.Pattern(literalPatterns[256], 2).Done();
+
+  for (const std::size_t sourcePiece : {SIZE_MAX, std::size_t{1}, std::size_t{2}, std::size_t{3}}) {
+    const Result result = Inflate(stream, sourcePiece, 4096);
+    EXPECT_EQ(result.status, Status::kDone) << sourcePiece << " in";
+    EXPECT_TRUE(result.out == expected) << sourcePiece << " in";
+  }
+  const Result small = Inflate(stream, SIZE_MAX, 5);
+  EXPECT_EQ(small.status, Status::kDone);
+  EXPECT_TRUE(small.out == expected);
+
+  // Cut short inside such a distance, it says so, having given what came before.
+  const Result cut = Inflate(Bytes(stream.begin(), stream.end() - 2));
+  EXPECT_EQ(cut.status, Status::kTruncated);
+  EXPECT_LT(cut.out.size(), expected.size());
+  EXPECT_TRUE(std::equal(cut.out.begin(), cut.out.end(), expected.begin()));
+}
+
 TEST(Inflater, ReadsBlocksOneAfterAnother) {
   StreamWriter writer;
   writer.BlockHeader(false, 0).StoredLength(3).Raw("one");

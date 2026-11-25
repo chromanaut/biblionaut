@@ -60,6 +60,51 @@ def clear(target: str) -> None:
             old.unlink()
 
 
+class DeflateWriter:
+    """A DEFLATE stream written a field at a time, for what no compressor
+    can be made to write."""
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.used = 0
+
+    def bit(self, bit: int) -> None:
+        if self.used % 8 == 0:
+            self.data.append(0)
+        self.data[-1] |= bit << (self.used % 8)
+        self.used += 1
+
+    def bits(self, value: int, count: int) -> None:
+        """A field, lowest bit first: how the format packs all but a pattern."""
+        for i in range(count):
+            self.bit((value >> i) & 1)
+
+    def pattern(self, pattern: int, count: int) -> None:
+        """A prefix code's pattern, highest bit first."""
+        for i in reversed(range(count)):
+            self.bit((pattern >> i) & 1)
+
+
+def patterns_of(lengths: list[int]) -> list[int]:
+    """The bit patterns of a code, from how long each symbol's is (0 for a
+    symbol with none): the rule of RFC 1951, section 3.2.2."""
+    counts = [0] * 17
+    for length in lengths:
+        counts[length] += 1
+    counts[0] = 0
+    following = [0] * 17
+    pattern = 0
+    for bits in range(1, 16):
+        pattern = (pattern + counts[bits - 1]) << 1
+        following[bits] = pattern
+    patterns = [0] * len(lengths)
+    for symbol, length in enumerate(lengths):
+        if length:
+            patterns[symbol] = following[length]
+            following[length] += 1
+    return patterns
+
+
 # ---- inflate: byte 0 (how output and input are cut up), then a stream ----
 
 
@@ -100,6 +145,69 @@ def inflate_seeds() -> None:
     # for one byte may take from its source. An inflater that did not
     # refuse them would have to come back for breath among them.
     seed("a-long-run-of-empty-blocks", 0, 6, empty * 1200 + last)
+
+    # A stored block that lies across the end of the 32 KB window. Output
+    # is copied into the window in runs, and a run has to stop where the
+    # window does and go on from its start. It is asked for 257 bytes at a
+    # time: a size the window's is a multiple of, such as 1 KB, would end
+    # every run at the window's end of itself.
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    across = compressor.compress((text * 80)[:32700]) + compressor.flush(zlib.Z_FULL_FLUSH)
+    kept = bytes(chooser.randrange(256) for _ in range(200))
+    across += bytes([0x01]) + struct.pack("<HH", len(kept), len(kept) ^ 0xFFFF) + kept
+    seed("stored-across-the-windows-end", 5, 6, across)
+
+    # Distances written the longest way there is: a pattern of 15 bits and
+    # 13 more that go with it, 28 in all, which is more than the inflater
+    # has in hand once the pattern is read, so that it has to fill its
+    # buffer again in the middle of one. No compressor gives the furthest
+    # distances the longest patterns, so the block's codes are written
+    # here: two letters, the end, repeats of 3 and of 258; and distances
+    # of about 2,000 in one bit, the two furthest in 15, and thirteen more
+    # that nothing uses, to use up the patterns between.
+    literals = [0] * 286
+    for symbol, length in ((ord("a"), 2), (ord("b"), 2), (256, 2), (257, 3), (285, 3)):
+        literals[symbol] = length
+    distances = [0] * 30
+    distances[21] = 1
+    for symbol in range(13):
+        distances[symbol] = symbol + 2
+    distances[28] = distances[29] = 15
+    literal_patterns = patterns_of(literals)
+    distance_patterns = patterns_of(distances)
+    far = DeflateWriter()
+    far.bits(1, 1)  # The last block,
+    far.bits(2, 2)  # with codes of its own:
+    far.bits(len(literals) - 257, 5)
+    far.bits(len(distances) - 1, 5)
+    far.bits(19 - 4, 4)
+    # every length given by four bits that are the length itself, which is
+    # the code-length code where the lengths 0 to 15 have four bits each
+    # and the three ways of repeating, which come first, have none.
+    for i in range(19):
+        far.bits(0 if i < 3 else 4, 3)
+    for length in literals + distances:
+        far.pattern(length, 4)
+    for _ in range(2000):
+        letter = ord("a") + chooser.randrange(2)
+        far.pattern(literal_patterns[letter], 2)
+    for _ in range(100):  # 258 from 2,000 back, until there is something 24,577 back.
+        far.pattern(literal_patterns[285], 3)
+        far.pattern(distance_patterns[21], 1)
+        far.bits(2000 - 1537, 9)
+    for turn in range(24):  # Each begun at a different bit of a byte.
+        for _ in range(turn % 4):
+            far.pattern(literal_patterns[ord("a")], 2)
+        far.pattern(literal_patterns[257], 3)
+        far.pattern(distance_patterns[28 + turn % 2], 15)
+        far.bits(turn * 101, 13)
+    far.pattern(literal_patterns[256], 2)
+    # From a source that gives a byte at a time, so that the inflater's own
+    # store of input runs out wherever it can, the middle of a distance
+    # among the places; and once more with the stream's end missing, which
+    # is the middle of the last of them.
+    seed("distances-written-the-longest-way", 7, 0, bytes(far.data))
+    seed("cut-short-in-a-long-distance", 7, 6, bytes(far.data)[:-2])
 
     # Streams that are wrong in one place, which the inflater has to see.
     # A stored block gives its length twice, the second time with every

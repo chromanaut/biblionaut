@@ -16,7 +16,8 @@
 //     when the stream has ended as it should;
 //   - once the stream has ended or failed, it stays so;
 //   - the two readings give the same bytes and end the same way, however
-//     the stream and the output were cut up;
+//     the stream and the output were cut up (but for how a reading ended
+//     that was left off for having gone on long enough: see kMostOutput);
 //   - what comes out is what zlib makes of the same stream, as far as
 //     both go; a stream is only called whole if zlib calls it whole; and
 //     one that zlib calls whole is either called whole or refused as bad
@@ -42,7 +43,10 @@ using Status = bn::core::Inflater::Status;
 
 // A stream of a few KB can stand for hundreds of times as much. Past this
 // much output a reading is left off: what the engine is after is in the
-// stream, not in how long it can be made to go on.
+// stream, not in how long it can be made to go on. Two readings of one
+// stream are left off a little apart, each at the end of a call, so one
+// may have come to a fault that lies just past this and the other not:
+// how a reading ended is only looked at if it was not left off.
 constexpr std::size_t kMostOutput = 1048576;
 // In the reading by pieces, how many calls are made with the chosen size
 // before the rest are made with a large one. A megabyte a byte at a time
@@ -156,7 +160,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 
   const Reading plain = Inflate(stream, 1024, 256);
   const Reading pieces = Inflate(stream, kOutputPieces[choices & 7U], kSourcePieces[(choices >> 3U) & 7U]);
-  BN_FUZZ_CHECK(pieces.leftOff == plain.leftOff && pieces.status == plain.status,
+  BN_FUZZ_CHECK(pieces.leftOff == plain.leftOff, "a stream was left off read in large pieces and not in small ones");
+  BN_FUZZ_CHECK(plain.leftOff || pieces.status == plain.status,
                 "a stream ended one way read in large pieces and another way read in small ones");
   // Left off, the two have gone past the limit by different amounts.
   const std::size_t both = std::min(plain.out.size(), pieces.out.size());

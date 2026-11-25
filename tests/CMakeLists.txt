@@ -427,4 +427,14 @@ if(Python3_Interpreter_FOUND)
       --css $<TARGET_FILE:bn-css> --png $<TARGET_FILE:bn-png> --jpeg $<TARGET_FILE:bn-jpeg>
       ${PROJECT_SOURCE_DIR}/corpus)
   set_tests_properties(e2e.Corpus PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # What the same script counts in the documents of a spine, their
+  # paragraphs and their ids, which it compares with no tool: against two
+  # books made by the test, counted by hand as they were written.
+  add_test(
+    NAME e2e.DocumentCount
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/document_count.py
+      ${PROJECT_SOURCE_DIR}/tools/check-books.py $<TARGET_FILE:bn-zip> $<TARGET_FILE:bn-xml> $<TARGET_FILE:bn-epub>
+      $<TARGET_FILE:bn-css> $<TARGET_FILE:bn-png> $<TARGET_FILE:bn-jpeg> ${CMAKE_CURRENT_BINARY_DIR}/document_count)
+  set_tests_properties(e2e.DocumentCount PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

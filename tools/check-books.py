@@ -25,6 +25,16 @@ compares, book by book:
     passed over, and the checksum of every row of gray, which at an eighth
     is worked out in whole numbers and so the same byte for byte.
 
+It also counts, and compares with nothing, since no tool reads a
+document's text yet: the paragraphs and the ids of every document of each
+book's spine. A paragraph is where tools/layout-text.py has one, the text
+between the starts and ends of block elements, and its size is that text
+in UTF-8 with white space in a row made one space and a br made a line
+end; what is in head, script, style, svg or math is no part of it. An id
+is the value of any element's id, or of an a's name where it has no id,
+counted once in a document. A line says what the largest paragraph, the
+most paragraphs and the most ids of a document are, book by book.
+
 The readings of the ZIP file, the documents, the package, the style sheets
 and the pictures, the finding of a document's sheets and the working-out
 of the cascade, are the ones the end-to-end tests use on the books they
@@ -40,12 +50,18 @@ it says what the documents ask for: how many sheets, how many have rules
 of their own, and each kind of thing that was left out in finding them,
 with how many times and in how many books.
 
+With --document-report it says more of the documents of the spines: how
+large they are, how many paragraphs and ids each has, how long the names
+of its ids are, how many have a paragraph over each of a few sizes, and
+which documents of which books have the most of each.
+
 A folder with a file named SHA256SUMS in it is also checked against that
 file: every file it lists has to be there and unchanged, and every EPUB
 beside or below it has to be listed.
 
 usage: tools/check-books.py [--tools BUILD] [--zip BN_ZIP] [--xml BN_XML] [--epub BN_EPUB] [--css BN_CSS]
-                            [--png BN_PNG] [--jpeg BN_JPEG] [--css-report] [--jobs N] FOLDER_OR_FILE...
+                            [--png BN_PNG] [--jpeg BN_JPEG] [--css-report] [--document-report] [--jobs N]
+                            FOLDER_OR_FILE...
 
 BUILD is a build folder to take the tools from: build/host-release if it
 has them, or else build/host. Each of the six can be named by itself.
@@ -59,6 +75,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import importlib.util
 import os
 import posixpath
 import re
@@ -68,6 +85,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 import zlib
 from collections import Counter
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote_to_bytes
 
@@ -94,6 +112,21 @@ MAX_FRAGMENT = 128
 MAX_CASCADE_DOCUMENTS = 6
 MAX_CASCADE_ELEMENTS = 1500
 MAX_CASCADE_LOOKED_AT = 40
+# The report names so many documents for each thing it has the most of, and
+# counts the documents with a paragraph over each of these sizes.
+MOST_NAMED = 5
+PARAGRAPH_SIZES = (4096, 8192, 16384, 32768, 65536)
+
+
+def script_beside(name: str):
+    """One of the scripts beside this one, as a module. Their names have a hyphen, which `import` does not take."""
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), Path(__file__).resolve().parent / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+layout_text = script_beside("layout-text")
 
 
 def run(*command: str) -> subprocess.CompletedProcess:
@@ -647,6 +680,104 @@ def check_jpeg(tool: str, path: Path, figures: dict) -> list[str]:
     return problems[:4]
 
 
+class DocumentFigures(HTMLParser):
+    """Counts the paragraphs and the ids of one document.
+
+    A paragraph is where tools/layout-text.py has one: the text between the
+    starts and ends of that script's block elements, with what is inside
+    the elements it leaves out left out here too.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.pieces: list[str] = []
+        self.left_out = 0  # How deep inside elements whose text is left out.
+        self.paragraphs = 0
+        self.largest = 0
+        self.ids: set[str] = set()
+
+    def end_paragraph(self) -> None:
+        text = re.sub(" +", " ", "".join(self.pieces)).strip(" \n")
+        self.pieces = []
+        if text:
+            self.paragraphs += 1
+            self.largest = max(self.largest, len(text.encode("utf-8", "replace")))
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        given = dict(attrs)
+        tag = tag.lower().split(":")[-1]
+        name = given.get("id") or (given.get("name") if tag == "a" else None)
+        if name:
+            self.ids.add(name)
+        if tag in layout_text.LEFT_OUT:
+            self.left_out += 1
+        elif tag in layout_text.BLOCKS:
+            self.end_paragraph()
+        elif tag == "br" and not self.left_out:
+            self.pieces.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower().split(":")[-1]
+        if tag in layout_text.LEFT_OUT:
+            self.left_out = max(0, self.left_out - 1)
+        elif tag in layout_text.BLOCKS:
+            self.end_paragraph()
+
+    def handle_data(self, data: str) -> None:
+        if not self.left_out:
+            self.pieces.append(layout_text.SPACE.sub(" ", data))
+
+    def close(self) -> None:
+        super().close()
+        self.end_paragraph()
+
+
+def count_documents(path: Path, figures: dict) -> None:
+    """What the documents of the book's spine hold: their paragraphs and their ids. Nothing here is compared with
+    a tool, since none reads a document's text yet; it is counted so that the figures are at hand."""
+    try:
+        lines = epub_tool.reference(path)
+    except Exception:  # Whatever a book can do to a parser: check_package has said so.
+        return
+    # The package's reading has a line for each item of the spine after the
+    # line that counts them: whether it is in the run of the book, the kind
+    # its media type makes it, and its name, or ? for a file the book lacks.
+    spine = [line.split(" ", 2) for line in lines[9:9 + int(lines[8].split()[1])]]
+    most: dict[str, tuple[int, str]] = {}
+    read = set()
+    with zipfile.ZipFile(path) as archive:
+        entries: dict[str, zipfile.ZipInfo] = {}
+        for info in archive.infolist():
+            entries.setdefault(epub_tool.entry_name(info), info)
+        for _, kind, name in spine:
+            if name not in entries:
+                figures["spine not there"] = figures.get("spine not there", 0) + 1
+                continue
+            if name in read:
+                continue
+            read.add(name)
+            if kind != "xhtml":
+                figures[f"spine of kind\t{kind}"] = figures.get(f"spine of kind\t{kind}", 0) + 1
+                continue
+            data = archive.read(entries[name])
+            counted = DocumentFigures()
+            try:
+                counted.feed(data.decode("utf-16" if data[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8", "replace"))
+                counted.close()
+            except Exception:  # Python's reader of HTML gives up on a few things a document can hold.
+                figures["documents given up"] = figures.get("documents given up", 0) + 1
+                continue
+            names = [len(given.encode("utf-8", "replace")) for given in counted.ids]
+            for key, value in (("bytes", len(data)), ("paragraphs", counted.paragraphs), ("largest", counted.largest),
+                               ("ids", len(names)), ("id bytes", sum(names)), ("longest id", max(names, default=0))):
+                figures.setdefault(f"document {key}", []).append(value)
+                if key not in most or value > most[key][0]:
+                    most[key] = (value, name)
+    # Of each book, its documents' most of each thing, and which document has it.
+    for key, (value, name) in most.items():
+        figures[f"most {key}"] = [(value, path.name, name)]
+
+
 def check_book(arguments: tuple[str, str, str, str, str, str, str]) -> tuple[str, list[str], dict]:
     zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, png_tool_path, jpeg_tool_path, name = arguments
     path = Path(name)
@@ -663,6 +794,7 @@ def check_book(arguments: tuple[str, str, str, str, str, str, str]) -> tuple[str
         problems += check_cascade(css_tool_path, path, figures)
         problems += check_png(png_tool_path, path, figures)
         problems += check_jpeg(jpeg_tool_path, path, figures)
+        count_documents(path, figures)
     except Exception as error:  # A book that the comparison itself trips over is a finding, not a crash.
         problems.append(f"the comparison failed: {error!r}")
     return name, problems, figures
@@ -720,6 +852,28 @@ def print_css_report(totals: dict, books: int) -> None:
         print(f"  left out: {count:6}  in {totals.get('books left out' + chr(9) + kind, 0):4} books  {kind}")
 
 
+def print_document_report(totals: dict) -> None:
+    """What the documents of the spines hold, from the figures every book gave."""
+    sizes = totals.get("document bytes", [])
+    print(f"\nThe documents of the spines: {len(sizes)} of them, in {len(totals.get('most bytes', []))} books:")
+    if not sizes:
+        return
+    for key, what in (("bytes", "bytes of a document"), ("paragraphs", "paragraphs in a document"),
+                      ("largest", "bytes of a document's largest paragraph"), ("ids", "ids in a document"),
+                      ("id bytes", "bytes of the names of a document's ids"),
+                      ("longest id", "bytes of the longest name of an id in a document")):
+        print(f"  {what}: {spread(totals[f'document {key}'])}")
+    print(f"  documents with a paragraph over {', '.join(str(size // 1024) for size in PARAGRAPH_SIZES[:-1])} and "
+          f"{PARAGRAPH_SIZES[-1] // 1024} KB: " +
+          ", ".join(str(sum(1 for largest in totals["document largest"] if largest > size)) for size in PARAGRAPH_SIZES))
+    # A book is named once for each: by the document of its own that has the most.
+    for key, what in (("largest", "the largest paragraphs, in bytes"), ("paragraphs", "the most paragraphs in one document"),
+                      ("ids", "the most ids in one document"), ("bytes", "the largest documents, in bytes")):
+        print(f"  the books with {what}:")
+        for value, book, name in sorted(totals[f"most {key}"], reverse=True)[:MOST_NAMED]:
+            print(f"    {value:8}  {book}: {name}")
+
+
 def check_sums(sums: Path) -> tuple[int, list[str]]:
     """Checks the folder of a SHA256SUMS file against it. Returns how many files it lists, and what is wrong."""
     problems = []
@@ -770,6 +924,7 @@ def main() -> int:
     parser.add_argument("--png")
     parser.add_argument("--jpeg")
     parser.add_argument("--css-report", action="store_true")
+    parser.add_argument("--document-report", action="store_true")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     parser.add_argument("places", nargs="+")
     options = parser.parse_args()
@@ -835,8 +990,24 @@ def main() -> int:
               "one.")
     for key in sorted(key for key in totals if key.startswith("jpeg ") and key != "jpeg room"):
         print(f"{totals[key]} JPEG pictures end as {key[5:]}, by the tool and by Python alike.")
+    if totals.get("most largest"):
+        print(f"Of the {len(totals['document bytes'])} documents of their spines, a book's largest paragraph, in bytes: "
+              f"{spread([value for value, _, _ in totals['most largest']])}; the most paragraphs in one of its "
+              f"documents: {spread([value for value, _, _ in totals['most paragraphs']])}; the most ids in one: "
+              f"{spread([value for value, _, _ in totals['most ids']])}.")
+    kinds = sorted(key for key in totals if key.startswith("spine of kind\t"))
+    if kinds:
+        print("Items of the spines that are not XHTML by their media type, and were not counted: " +
+              ", ".join(f"{totals[key]} of the kind {key.split(chr(9))[1]}" for key in kinds) + ".")
+    if totals.get("spine not there"):
+        print(f"Items of the spines that are files their books do not have: {totals['spine not there']}.")
+    if totals.get("documents given up"):
+        print(f"{totals['documents given up']} documents of the spines were not counted: Python's reader of HTML gave "
+              "them up.")
     if options.css_report:
         print_css_report(totals, len(books))
+    if options.document_report:
+        print_document_report(totals)
     if totals.get("sheets_not_compared"):
         print(f"{totals['sheets_not_compared']} books were not put through the second finding of their documents' "
               "sheets: the tool had no room for a sheet, or one was damaged.")

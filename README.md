@@ -1922,6 +1922,8 @@ tools/check-books.py --tools build/host ~/books
 28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 1676 sheets asked for by 859 documents, 42379 properties set for 15299 elements of 141 documents, 80 PNG pictures of 62626058 pixels, 45 JPEG pictures of 46766091 pixels.
 Memory for the rows of a book's widest PNG picture, in bytes: 9602 at the median, 11202 for nine in ten, 11202 at the most; over the 18 books that have one.
 Memory for the rows of a book's widest JPEG picture read at its whole size (a progressive one at an eighth), in bytes: 22528 at the median, 29952 for nine in ten, 40960 at the most; over the 17 books that have one.
+Of the 834 documents of their spines, a book's largest paragraph, in bytes: 3824 at the median, 21717 for nine in ten, 141354 at the most; the most paragraphs in one of its documents: 123 at the median, 1050 for nine in ten, 2108 at the most; the most ids in one: 15 at the median, 123 for nine in ten, 501 at the most.
+Items of the spines that are not XHTML by their media type, and were not counted: 6 of the kind svg.
 28 files listed in SHA256SUMS: all there and unchanged.
 The tools and Python agree about every book.
 ```
@@ -1961,6 +1963,80 @@ The tools and Python agree about every book.
   so has every JPEG `bn-jpeg book --reduce 8` reads, at an eighth of its
   size, where the reader's arithmetic and the second reading's are the
   same.
+
+**What it counts and compares with nothing.** No tool reads a document's
+text yet, so there is nothing to set these beside; they are counted so
+that what real books hold is at hand when something is sized for it. Of
+every XHTML document of each book's spine, read once however often the
+spine names it, the script counts the paragraphs and the ids:
+
+- **A paragraph** is where `tools/layout-text.py` has one: the text
+  between the starts and ends of block elements (the script takes that
+  list from there). Its size is that text in UTF-8, with white space in a
+  row made one space and a `br` made a line end. What is in `head`,
+  `script`, `style`, `svg` or `math` is no part of it, and an element
+  with no text, a picture alone, is no paragraph.
+- **An id** is the value of any element's `id`, wherever in the document
+  it is, or of an `a`'s `name` where it has no `id`. One given twice in
+  a document counts once.
+
+The line that begins `Of the` has, book by book, the largest paragraph
+and the most paragraphs and ids in one document. An item of a spine that
+is not XHTML by its media type is not read: the line after it says how
+many there are of each kind (the six in `corpus/` are the pages of the
+book laid out in SVG), and another says how many are files the book does
+not have, where any are. `--document-report` says more: the spread of
+each figure over the documents, how many have a paragraph over each of a
+few sizes, and the five books with the most of each, by the document
+that has it:
+
+```
+tools/check-books.py --document-report corpus
+```
+
+```
+The documents of the spines: 834 of them, in 27 books:
+  bytes of a document: 10769 at the median, 132402 for nine in ten, 2020786 at the most
+  paragraphs in a document: 21 at the median, 109 for nine in ten, 2108 at the most
+  bytes of a document's largest paragraph: 1195 at the median, 2939 for nine in ten, 141354 at the most
+  ids in a document: 1 at the median, 16 for nine in ten, 501 at the most
+  bytes of the names of a document's ids: 10 at the median, 162 for nine in ten, 4508 at the most
+  bytes of the longest name of an id in a document: 10 at the median, 22 for nine in ten, 47 at the most
+  documents with a paragraph over 4, 8, 16, 32 and 64 KB: 46, 29, 18, 5, 3
+  the books with the largest paragraphs, in bytes:
+      141354  pg24264-images-3.epub: OEBPS/2938539401917988555_24264-0-1.txt.xhtml
+       26241  pg14741-images-3.epub: OEBPS/6968912479258425706_14741-h-0.htm.xhtml
+       21717  pg7000-images-3.epub: OEBPS/6692091177720485162_7000-h-2.htm.xhtml
+       21383  pg4300-images-3.epub: OEBPS/1471490836921852263_4300-h-18.htm.xhtml
+       16499  adam-smith_the-wealth-of-nations.epub: epub/text/chapter-5-1.xhtml
+  the books with the most paragraphs in one document:
+        2108  adam-smith_the-wealth-of-nations.epub: epub/text/chapter-1-11.xhtml
+        1438  pg4300-images-3.epub: OEBPS/1471490836921852263_4300-h-15.htm.xhtml
+        1050  pg1012-images-3.epub: OEBPS/7872976103240418525_1012-h-2.htm.xhtml
+         750  pg17489-images-3.epub: OEBPS/8334475935261823288_17489-h-3.htm.xhtml
+         537  william-shakespeare_hamlet.epub: epub/text/act-3.xhtml
+  the books with the most ids in one document:
+         501  adam-smith_the-wealth-of-nations.epub: epub/text/endnotes-1.xhtml
+         142  moby-dick.epub: OPS/toc.xhtml
+         123  pg24264-images-3.epub: OEBPS/2938539401917988555_24264-0-5.txt.xhtml
+          82  pg22367-images-3.epub: OEBPS/380337140494991823_22367-h-0.htm.xhtml
+          67  pg17489-images-3.epub: OEBPS/8334475935261823288_17489-h-0.htm.xhtml
+  the books with the largest documents, in bytes:
+     2020786  linear-algebra.epub: EPUB/xhtml/fcla-xml-2.30li58.xhtml
+      358772  adam-smith_the-wealth-of-nations.epub: epub/text/chapter-1-11.xhtml
+      258985  pg24264-images-3.epub: OEBPS/2938539401917988555_24264-0-7.txt.xhtml
+      255032  pg4300-images-3.epub: OEBPS/1471490836921852263_4300-h-15.htm.xhtml
+      210832  pg26731-images-3.epub: OEBPS/408209634455667199_26731-h-0.htm.xhtml
+```
+
+The reading is Python's `html.parser`, which takes what a document has
+however badly it is formed; one it gives up on is counted and said.
+`e2e.DocumentCount` checks the counting on two books it makes, whose
+paragraphs and ids were counted as they were written: a paragraph inside
+another's block, a line end, text in the head and in a picture, an id
+given twice, a document the spine names twice, a picture in the spine and
+an item that is no file. It was tried against 16 faults put into the
+counting on purpose, and found each one.
 
 Where they differ it prints a line for each difference, starting
 `DIFFERENT`, and ends with 1. It takes the tools from `build/host-release`

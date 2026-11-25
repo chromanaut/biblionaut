@@ -132,6 +132,9 @@ class DrawingViewer final : public Screen {
   // as fast as a kilobyte), and kept for what a drawing defines.
   static constexpr std::size_t kReadBytes = 8192;
   static constexpr std::size_t kDefinitionBytes = 24576;
+  // What the cache gathers a picture's rows in, to read and write the card
+  // this much at a time: whole sectors, begun where a sector begins.
+  static constexpr std::size_t kCacheBufferBytes = 4096;
   // The thinnest a stroke is drawn: a pixel, in 4,096ths. One much thinner
   // would be a light gray, which black and white show as a broken line.
   static constexpr draw::Fixed kThinnestStroke = 4096;
@@ -311,9 +314,9 @@ class DrawingViewer final : public Screen {
   void FlushStrip() noexcept;
   // The strips to the page's end written: false if any was not.
   bool FinishStrips() noexcept;
-  // A row of a picture, kept; and the rows gathered, written to the cache.
-  // As many rows are gathered as cacheRows_ holds: a write to the card
-  // costs a few milliseconds whatever its size.
+  // A row of a picture, kept; and the rows gathered, given to the cache.
+  // As many rows are gathered as cacheRows_ holds, and the cache gathers
+  // what it is given into whole sectors for the card.
   // The row is the dithered grays, each the gray of its level.
   void CachePictureRow(std::span<const std::uint8_t> grays) noexcept;
   void FlushCachedRows() noexcept;
@@ -497,7 +500,8 @@ class DrawingViewer final : public Screen {
   // The cache: what the one in hand is kept as, where it lies on the
   // panel, its file's size and time, and what the cache has done with it.
   draw::PictureCache cache_{storage_, kCacheFolder};
-  std::unique_ptr<std::uint8_t[]> cacheRows_;  // Rows of it: a band of the panel's.
+  std::unique_ptr<std::uint8_t[]> cacheBuffer_;  // What it gathers rows in.
+  std::unique_ptr<std::uint8_t[]> cacheRows_;    // Rows of it: a band of the panel's.
   std::size_t cacheRowsBytes_ = 0;
   draw::PictureKey key_;
   std::size_t cacheX_ = 0;

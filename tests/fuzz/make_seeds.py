@@ -1952,10 +1952,10 @@ def scale_seeds() -> None:
 
 
 def picture_cache_file(width: int, height: int, levels: int, turn: int, rows: bytes) -> bytes:
-    """A file as the cache writes it: the header, then the rows."""
-    header = bytearray(64)
+    """A file as the cache writes it: the header's sector, then the rows."""
+    header = bytearray(512)
     header[0:4] = b"BNPC"
-    struct.pack_into("<HHHHB", header, 4, 2, levels, width, height, turn)
+    struct.pack_into("<HHHHB", header, 4, 3, levels, width, height, turn)
     struct.pack_into("<QIIII", header, 16, 0x0123456789ABCDEF, 4096, 77, zlib.crc32(rows), 5)
     struct.pack_into("<I", header, 40, zlib.crc32(bytes(header[:40])))
     return bytes(header) + rows
@@ -1973,8 +1973,21 @@ def picture_cache_seeds() -> None:
         write("picture_cache", name, bytes([0b00011]) + file)
         write("picture_cache", name + "-unmended", bytes([0b10100]) + file)
     rows = bytes(range(60))
-    write("picture_cache", "cut-short", bytes([0b00111]) + picture_cache_file(20, 10, 2, 0, rows)[:90])
+    write("picture_cache", "cut-short", bytes([0b00111]) + picture_cache_file(20, 10, 2, 0, rows)[:512 + 26])
+    write("picture_cache", "cut-short-in-the-header", bytes([0b00101]) + picture_cache_file(20, 10, 2, 0, rows)[:90])
+    # Rows that fill the cache's memory several times over: 3,000 bytes of
+    # them, gathered a sector at a time and three at a time.
+    rows = bytes(random.randrange(256) for _ in range(50 * 60))
+    file = picture_cache_file(200, 60, 4, 0, rows)
+    write("picture_cache", "many-sectors-one-at-a-time", bytes([0b0001111]) + file)
+    write("picture_cache", "many-sectors-three-at-a-time", bytes([0b1011011]) + file)
     write("picture_cache", "not-a-picture", bytes([0b00001]) + b"<svg/>" * 20)
+    # A file of an odd length, so that the picture the target keeps beside
+    # it has rows of 13 bytes, and of a length that gives it 348 of them:
+    # given a row at a time to a cache with one sector of memory, the rows
+    # come to end one byte short of a sector's end.
+    write("picture_cache", "rows-that-end-a-byte-short-of-a-sector",
+          bytes([0b0000011]) + picture_cache_file(20, 23, 2, 0, bytes((7 * n) % 256 for n in range(69))))
 
 
 # ---- font: byte 0 (whether the image's length is mended), four code points

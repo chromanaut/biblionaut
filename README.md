@@ -270,15 +270,16 @@ drawing): what it draws for each band of the panel ("Keeping a drawing",
 below). Each band is then drawn from what was kept, its own part and no
 more. If the card will not keep it, or it would be more than 4 MB, the
 drawing is read again for each band instead, as it could always be, and a
-line says why. The viewer takes about 105 KB of the heap when it starts:
+line says why. The viewer takes about 109 KB of the heap when it starts:
 26 KB for the filler's cells, which also hold what each band has in hand
 while the file is read, 24 KB for what a drawing defines, 16 KB for the
 links of what is kept, 13 KB for a band of grays, which also gathers what
 is kept into writes of up to 8 KB while the file is read, since the card
 writes a few kilobytes at once faster than a chunk at a time, 8 KB for the renderer, a
 kilobyte for the recorder, 6 KB for what is carried in dithering and a
-band of bits, 8 KB of the file read at a time, and 3 KB for a band of what
-goes to the cache or comes from it, at two bits a pixel.
+band of bits, 8 KB of the file read at a time, 3 KB for a band of what
+goes to the cache or comes from it, at two bits a pixel, and 4 KB for the
+cache to gather such bands into whole sectors of the card.
 
 What is shown is kept as well, in the cache of pictures on the card
 (`/.picture-cache`, "Keeping what is shown", below), the size it is
@@ -367,17 +368,14 @@ That is an illustration from a Project Gutenberg book in `corpus/`, made
 larger to fill the page, on the optimised desktop application, where the
 refresh and the gray pass take as long as on the X4. On the X4,
 an engraving of 600 by 825 pixels in 16 colours from another book in
-`corpus/`, made 480 by 660, takes 1.3 s from the press to its refresh:
-nearly a third keeping it in the cache at two bits a pixel (77 KB, below),
-a quarter dithering, a fifth reading, a seventh scaling, and 60 ms writing
-its 100 strips to both planes. Its grays come 0.4 s after the refresh:
-169 ms reading it back and writing the gray planes, and the gray pass,
-with the switch-off after it, 207 ms. A title page of 2,800 by 880 takes
-1.9 s, two thirds of it reading. A colour photograph of 4 megapixels takes
-14 s, nearly all of it the inflater giving out its 12 MB of rows. (Those
-three times were taken before the inflater was made faster, as told under
-"Decompression" below, which shortens the reading in each. They have not
-been taken again.) From the
+`corpus/`, made 480 by 660, takes 1.1 s from the press to its refresh:
+nearly a third dithering, under a quarter keeping it in the cache at two
+bits a pixel (77 KB, below), a fifth reading, a sixth scaling, and 60 ms
+writing its 100 strips to both planes. Its grays come 0.4 s after the
+refresh: 167 ms reading it back and writing the gray planes, and the gray
+pass, with the switch-off after it, 208 ms. A title page of 2,800 by 880
+takes 1.0 s, under half of it reading. A colour photograph of 4 megapixels
+takes 11.5 s, 9.7 s of it reading its 12 MB of rows. From the
 cache, a picture is at its refresh in 0.1 to 0.3 s. What a picture needs
 is taken from the heap the first time one is shown, and kept: about 73 KB,
 32 KB of it PNG's window, 16 KB the reader's rows, 9 KB the JPEG reader,
@@ -2131,7 +2129,7 @@ call may.
 | `svg` | `draw::SvgRenderer`: a file read with nothing to draw into, drawn whole, and drawn in strips from a file cut up | No call gives an outline more than `kMostCommandsPerStep` commands, gives the filler more than `kMostLinesPerStep` lines, fills more than one shape or stroke, reads more than `kReusedPerStep` bytes of what the file defined, or looks through what it kept more than twice. No more than 32 groups are open, and no more is kept than there is memory for, which is of eight sizes and is filled with something else before each pass. A file that is not a drawing leaves the picture alone. Every strip's reading of the file is the same reading, rules and gradients kept included, and the two pictures are the same, byte for byte; and so is the file kept by a `SpoolWriter` and given back a band at a time, each step of which reads a chunk and fills once at the most |
 | `png` | `draw::PngReader`, four ways: for the header alone with no memory, with the room and the pieces the input chooses, with all the room it needs, and against a plain reading of the same file with zlib (`tests/support/png_reference.h`) | No step takes more from its source than `MostInputPerStep()`, and the header alone takes 33 bytes. Rows come in order, each as wide as the picture, and a picture is whole only with all of them. It has no room only when it has less than `RowBytesFor()`, and a picture is interlaced only if it says so. The header alone says what the whole reading says of it. With the room it needs it gives the same rows in any pieces. The rows are the plain reading's, and it ends where and as that does, but for data the inflater refuses as bad that zlib takes |
 | `jpeg` | `draw::JpegReader`, four ways: for the header alone with no memory, with the reduction, room and pieces the input chooses, with all the room it needs in pieces of 4 KB, and at an eighth | No step takes more from its source than `MostInputPerStep()`, nor gives more than one row. Rows come in order, each as wide as the picture is read, and a picture is whole only with all of them. The reduction taken is the one asked, or an eighth for a progressive picture, and the sides read are the picture's divided by it. It has no room only when it has less than `RowBytesFor()`, and a header it takes is one it can say the room for. The header alone says what the whole reading says of it, and fails as it does. It gives the same rows in any pieces, and ends at an eighth as it ends at the reduction asked |
-| `picture_cache` | `draw::PictureCache`, reading a file the card holds, as the picture it says it is or as another, its checksums mended or not | Reading ends in a status, and no file is left open. Another picture can be kept among the same files, and is read back the same. Rows are given only whole, and only as many as the picture has. A picture read through without complaint is the file's own rows, the picture asked for, with the checksum its header gives; and kept again it reads back the same |
+| `picture_cache` | `draw::PictureCache`, reading a file the card holds, as the picture it says it is or as another, its checksums mended or not | Reading ends in a status, and no file is left open. Another picture can be kept among the same files, of more rows than the cache has memory for as often as not, and is read back the same; keeping it and reading it back, storage is written and read from where a sector begins and in whole sectors but for the last of the rows, what the header leaves of its sector is nothing, and given up part way it is not found whole. The memory the cache gathers in is one sector to eight, some of them with part of one over. Rows are given only whole, and only as many as the picture has. A picture read through without complaint is the file's own rows, the picture asked for, with the checksum its header gives; and kept again it reads back the same |
 | `scale` | `draw::Scaler`, from sizes the input gives (sides of nothing and past the largest among them) and its pixels, sometimes all one gray, sometimes with an old row given out of turn | A side of nothing or too long is refused and nothing is given. `Row()` gives no new row and `Step()` one at the most; the new rows come in order, each as wide as the new picture, as many as it is high. A row out of turn stops it. Every new pixel is within a gray of the working-out in real numbers, and a picture of one gray stays that gray |
 | `font` | `draw::FontImage` and `draw::Face`: an image opened twice, its first faces and its last looked into, and each asked for the code points at the edges of its ranges and four the input names | Opening goes the same way twice, and an image that is refused has no faces. A face is found by its own role, style and size. Finding a glyph takes no more steps than halving the face's ranges does. A glyph that is given has a picture of the size its width and height make, wholly inside the image, and is the glyph its number gives. In a face whose ranges are in order and apart, a code point has a glyph exactly when going through the ranges one by one finds it, and the glyph is what the image's bytes say, read the plain way |
 
@@ -3772,13 +3770,25 @@ was shown. A picture read and scaled is kept the same way.
   that holds nothing whole, else of the picture kept longest ago. Looking
   for a picture, or for a place to keep one, stops at the first of its
   places that has no file, since nothing is kept past one.
-- **Each file**: a header of 64 bytes, which says what the picture is and
-  when it was kept, and carries a checksum of itself and one of the rows;
-  then the rows. The
+- **Each file**: a header, which says what the picture is and when it
+  was kept, and carries a checksum of itself and one of the rows; then
+  the rows. The header is a sector of the card, 512 bytes, of which it
+  uses 44. The
   rows are written first and the header last, so a file left half written
   by a press, or by the power going, has no header. Files are not synced:
   what the card had not written when the power went shows in the rows'
   checksum, which is checked as the last row is read.
+- **Whole sectors**: a card is read and written in sectors, and a write
+  that begins or ends part way through one costs it a read of that sector
+  and a write of all of it. So the rows are gathered, in memory the
+  caller gives (`GatherIn()`; the viewer gives 4 KB), and go to the card
+  as many whole sectors at a time as that holds, each write begun where a
+  sector begins; only the last write of a picture's rows ends part way
+  through one. They are read back the same way. The X4's driver then
+  moves every sector straight between the card and that memory. Given a
+  band of rows at a time, it had to go by way of a block of its own from
+  the heap, of up to 3 KB, for 84 of the reads and 28 of the writes that
+  showing the card's 29 pictures took.
 - **Bad input**: whatever a file holds, reading it ends in a status:
   `kMissing`, `kOther` (another picture, or this one before its file
   changed), `kDamaged`, `kStoreFailed`; and no row is given that is not
@@ -3810,11 +3820,16 @@ second time:
 Looking at a file costs about 3.4 ms on the X4's card, so looking at all 8
 places, as when the picture is not there and they are all full, costs
 about 27 ms. On the X4, going round the card set a second time, each of
-the 18 came from the cache, in 68 to 171 ms from the press to the
-refresh, which takes about 1.7 s after it: 6 to 43 KB, read in 14 to
-68 ms. The largest engraving, 18.0 s and a full refresh of 3.7 s the
-first time, came back in 1.8 s; the colour photograph, 13.6 s and 1.9 s
-the first time, in 1.9 s. Keeping each took 81 to 281 ms.
+the 29 came from the cache, in 75 to 325 ms from the press to the
+refresh, which takes about 1.6 s after it: 11 to 91 KB, read in 21 to
+127 ms. The largest engraving, 17.9 s and a full refresh of 3.6 s the
+first time, came back in 1.7 s; the colour photograph, 11.5 s and 1.6 s
+the first time, in 1.9 s. Keeping each took 114 to 289 ms: 268 KB a
+second over the 29, and 705 KB a second reading them back. Written and
+read a band of rows at a time, wherever in a sector a band began and
+ended, the same 29 were kept at 206 KB a second and read back at 619.
+The card has its own pauses, which neither way is spared: one write of
+4 KB in a later round took 160 ms, and a picture of 42 KB 1.2 s to keep.
 
 The unit tests keep pictures in every number of bits and read them back in
 pieces, look for them with each part of the key changed, fill more files

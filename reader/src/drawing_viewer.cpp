@@ -171,11 +171,14 @@ void DrawingViewer::Start() noexcept {
   // across the page, in those levels.
   cacheRowsBytes_ = (((widest * draw::PictureCache::BitsFor(static_cast<std::uint32_t>(levels_))) + 7) / 8) * kBandRows;
   cacheRows_.reset(new (std::nothrow) std::uint8_t[cacheRowsBytes_]);
-  if (!renderer_ || !gray_ || !cells_ || !errors_ || !bits_ || !definitions_ || !chunk_ || !cacheRows_) {
+  cacheBuffer_.reset(new (std::nothrow) std::uint8_t[kCacheBufferBytes]);
+  if (!renderer_ || !gray_ || !cells_ || !errors_ || !bits_ || !definitions_ || !chunk_ || !cacheRows_ ||
+      !cacheBuffer_) {
     stream_.SendText("drawings: no memory to draw them in");
     Fail();
     return;
   }
+  cache_.GatherIn({cacheBuffer_.get(), kCacheBufferBytes});
   renderer_->KeepDefinitionsIn({definitions_.get(), kDefinitionBytes});
   renderer_->SetThinnestStroke(kThinnestStroke);
   spool_.reset(new (std::nothrow) draw::SpoolWriter());

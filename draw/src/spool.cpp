@@ -219,8 +219,10 @@ void SpoolWriter::Line(Place from, Place to) noexcept {
   if (!recording_ || from.y == to.y) {
     return;
   }
-  const std::int64_t low = std::min(from.y, to.y);
-  const std::int64_t high = std::max(from.y, to.y);
+  // Which bands it crosses. Worked out in 32 bits, which hold a place and
+  // a band's height: the device divides those far more quickly than 64.
+  const std::int32_t low = std::min(from.y, to.y);
+  const std::int32_t high = std::max(from.y, to.y);
   if (high <= 0) {
     return;
   }

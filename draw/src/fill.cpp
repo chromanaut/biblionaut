@@ -393,10 +393,17 @@ void Filler::FillWithin(FillRule rule, std::uint8_t gray, const GrayRamp* ramp, 
     const std::int64_t inside = std::min<std::int64_t>(start + kPixel, high) - std::max<std::int64_t>(start, low);
     return static_cast<std::uint32_t>(std::clamp<std::int64_t>(inside, 0, kPixel));
   };
+  // The pixels that lie wholly inside the box across: from the first whose
+  // left edge is not left of the box's, up to the one whose right edge is
+  // past the box's. For those, in a row that is wholly inside it down, the
+  // box changes nothing, and nothing is worked out for it.
+  const std::int64_t wholeFrom = boxed ? ShiftDown(std::int64_t{from->x} + (kPixel - 1), kStepBits) : 0;
+  const std::int64_t wholeTo = boxed ? ShiftDown(std::int64_t{to->x}, kStepBits) : 0;
   for (std::int32_t row = firstRow_; row <= lastRow_; ++row) {
     const auto at = static_cast<std::size_t>(row);
     const std::uint32_t rowShare = boxed ? share(std::int64_t{top_} + (std::int64_t{row} * kPixel), from->y, to->y)
                                          : static_cast<std::uint32_t>(kPixel);
+    const bool wholeRow = rowShare == static_cast<std::uint32_t>(kPixel);
     const std::int32_t first = cells_[extents + (2 * at)];
     const std::int32_t last = cells_[extents + (2 * at) + 1];
     cells_[extents + (2 * at)] = static_cast<std::int16_t>(width_);
@@ -422,7 +429,8 @@ void Filler::FillWithin(FillRule rule, std::uint8_t gray, const GrayRamp* ramp, 
         pixelStrength = outOf256(((std::uint32_t{opacity} * solid) + 127U) / 255U);
       }
       std::uint32_t cover = Covered(static_cast<std::int16_t>(sum), rule) * pixelStrength;
-      if (boxed && cover != 0) {
+      const bool wholePixel = wholeRow && pixel >= wholeFrom && pixel < wholeTo;
+      if (boxed && cover != 0 && !wholePixel) {
         // Only as much of it as is inside the box, across and down.
         const std::uint32_t inside = ((share(std::int64_t{pixel} * kPixel, from->x, to->x) * rowShare) + 128U) >> 8U;
         cover = ((cover * inside) + 128U) >> 8U;

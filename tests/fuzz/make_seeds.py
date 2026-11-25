@@ -2021,6 +2021,163 @@ def picture_cache_seeds() -> None:
           bytes([0b0000011]) + picture_cache_file(20, 23, 2, 0, bytes((7 * n) % 256 for n in range(69))))
 
 
+# ---- bundle: byte 0 (what is mended, and the chapter that is committed
+# afterwards), then a bundle, given as its length and the pieces of it
+# that are not nothing ----
+
+
+def bundle_input(choices: int, file: bytes) -> bytes:
+    """What the target is given for a file: its length in fours of bytes,
+    and then each run of it that is not zeros, as where it goes (in fours),
+    how long it is, and its bytes."""
+    assert len(file) % 4 == 0 and len(file) // 4 < 65536
+    out = bytearray([choices]) + struct.pack("<H", len(file) // 4)
+    at = 0
+    while at < len(file):
+        if not file[at:at + 4].strip(b"\0"):
+            at += 4
+            continue
+        end = at + 4
+        while end < len(file) and end - at < 2000 and file[end:end + 16].strip(b"\0"):
+            end += 4
+        out += struct.pack("<HH", at // 4, end - at) + file[at:end]
+        at = end
+    return bytes(out)
+
+
+def bundle_file(documents: int, pictures: int, strings: bytes, contents: bytes,
+                chapters: list[tuple[int, bytes | None]] = (), first_sequence: int = 2) -> bytes:
+    """A bundle (epub/bundle.h) written the plain way: its header page, its
+    four tables, its two slots and its segments. `chapters` are committed
+    one after another, each a chapter's number and its segment, or None
+    for a chapter that has none."""
+    def file_record(number: int, kind: int) -> bytes:
+        return struct.pack("<IIIIHHHBB", 1000 + number * 37, 300 + number, 900 + number, 0xC0000000 + number,
+                           8 if number % 2 else 0, 0x0800, 20 + number % 30, kind, number % 3)
+
+    tables = [strings, b"".join(file_record(number, 1) for number in range(documents)),
+              b"".join(file_record(number, 4) for number in range(pictures)), contents]
+    body = b"".join(tables)
+    body += bytes(-len(body) % 4096)
+    slot_offset = 4096 + len(body)
+    used = 24 + 88 * documents
+    slot_bytes = used + (-used % 4096)
+    data_begin = slot_offset + 2 * slot_bytes
+
+    header = bytearray(4096)
+    header[0:4] = b"BNBK"
+    struct.pack_into("<HHH", header, 4, 1, 2, 3)
+    struct.pack_into("<IIII", header, 12, 123456, 0x5B7A1234, 0xD1EC7000, 0x9AC4A6E0)
+    struct.pack_into("<HHH", header, 28, documents, pictures, 7)
+    struct.pack_into("<III", header, 36, slot_offset, slot_bytes, data_begin)
+    at = 4096
+    for number, table in enumerate(tables):
+        struct.pack_into("<III", header, 48 + 12 * number, at, len(table), zlib.crc32(table))
+        at += len(table)
+    header[96:101] = b"seeds"
+    struct.pack_into("<I", header, 4092, zlib.crc32(bytes(header[:4092])))
+
+    def slot(sequence: int, data_end: int, records: list[bytes]) -> bytes:
+        out = bytearray(slot_bytes)
+        out[0:4] = b"BNSL"
+        struct.pack_into("<IIIHH", out, 4, sequence, used, data_end, documents, 88)
+        for number, record in enumerate(records):
+            out[20 + 88 * number:108 + 88 * number] = record
+        struct.pack_into("<I", out, used - 4, zlib.crc32(bytes(out[:used - 4])))
+        return bytes(out)
+
+    records = [bytes(88)] * documents
+    slots = [slot(first_sequence, data_begin, records), slot(first_sequence - 1, data_begin, records)]
+    data = bytearray()
+    sequence = first_sequence
+    in_force = 0
+    for number, (chapter, segment) in enumerate(chapters):
+        if segment is None:
+            record = struct.pack("<BBH", 3, 0, 0) + bytes(84)
+        else:
+            directory = min(8, len(segment))
+            record = struct.pack("<BBHIIIIIII", 1 + number % 2, 0, number, data_begin + len(data), len(segment),
+                                 len(segment) - directory, directory, zlib.crc32(segment[len(segment) - directory:]),
+                                 3 + number, 1000 + 10 * number)
+            record += struct.pack("<6I", *(100 * number + kind for kind in range(6))) + bytes(range(number, number + 32))
+            data += segment + bytes(-len(segment) % 512)
+        records[chapter] = record
+        sequence += 1
+        in_force = 1 - in_force
+        slots[in_force] = slot(sequence, data_begin + len(data), records)
+    return bytes(header) + body + slots[0] + slots[1] + bytes(data)
+
+
+def bundle_seeds() -> None:
+    clear("bundle")
+    random.seed(81)
+
+    def some(count: int) -> bytes:
+        return bytes(random.randrange(256) for _ in range(count))
+
+    def changed(file: bytes, at: int, value: bytes) -> bytes:
+        return file[:at] + value + file[at + len(value):]
+
+    def seed(name: str, choices: int, file: bytes) -> None:
+        write("bundle", name, bundle_input(choices, file))
+
+    # Byte 0: 1 mends the header page's checksum and 2 the slots'; 4, 8 and
+    # 12 commit a segment of 1, 512 and 700 bytes, and none commits a
+    # chapter with no segment; the top four bits are the chapter.
+    new = bundle_file(1, 0, b"", b"")
+    seed("a-new-bundle-of-one-document", 12, new)
+    seed("a-bundle-of-no-documents", 4, bundle_file(0, 0, some(40), some(100)))
+    small = bundle_file(5, 3, some(70), some(900), [(2, some(700)), (0, some(512)), (4, None), (2, some(100))])
+    seed("five-documents-and-chapters-committed", 0x38, small)
+    seed("a-chapter-with-no-segment-committed", 0x10, small)
+    seed("a-chapter-committed-again", 0x24, small)
+    # Slots of two pages, with a record across them and chapters either
+    # side of it.
+    larger = bundle_file(60, 2, some(30), some(200), [(46, some(600)), (45, some(1)), (47, some(1100)), (59, None)])
+    seed("slots-of-two-pages", 0xF8, larger)
+    # Tables that begin part way through a page of the file and run on over
+    # the next.
+    seed("tables-over-several-pages", 0x1C, bundle_file(5, 100, some(70), some(3000), [(3, some(200))]))
+
+    # What is not one, or not a whole one.
+    seed("nothing", 0, b"")
+    seed("a-page-of-nothing", 0, bytes(4096))
+    seed("a-header-page-and-no-more", 0, small[:4096])
+    seed("cut-short-in-the-second-slot", 0, small[:14000])
+    seed("another-version", 0x0C, changed(small, 4, b"\x02"))
+    seed("another-version-with-its-checksum-mended", 0x0D, changed(small, 4, b"\x02"))
+    seed("a-header-with-a-byte-changed", 0x0C, changed(small, 21, b"\x55"))
+    seed("that-header-mended", 0x0D, changed(small, 21, b"\x55"))
+    # The slot in force is the first again, after four commits.
+    newer = 8192
+    older = 12288
+    seed("the-newer-slot-spoiled", 0x0C, changed(small, newer + 200, b"\x55"))
+    seed("both-slots-spoiled", 0x0C, changed(changed(small, newer + 200, b"\x55"), older + 200, b"\x55"))
+
+    # Headers and slots that pass their checksums, mended, and say what
+    # none should.
+    seed("more-documents-than-the-spine-has-records", 0x0F, changed(small, 28, b"\x06"))
+    seed("a-table-that-does-not-follow-the-one-before", 0x0F, changed(small, 60, b"\x00\x20"))
+    seed("slots-a-page-further-on", 0x0F, changed(small, 37, b"\x30"))
+    record = newer + 20 + 2 * 88
+    seed("a-chapter-in-a-state-there-is-none-of", 0x0F, changed(small, record, b"\x09"))
+    seed("a-segment-among-the-slots", 0x0F, changed(small, record + 4, struct.pack("<I", 8192)))
+    seed("a-segment-that-runs-out-of-the-file", 0x0F, changed(small, record + 8, struct.pack("<I", 900000)))
+    seed("a-directory-out-of-its-segment", 0x0F, changed(small, record + 16, struct.pack("<I", 4000)))
+    seed("segments-that-end-out-of-the-file", 0x0F, changed(small, newer + 12, struct.pack("<I", 0x7FFFFE00)))
+    seed("a-slot-that-says-it-uses-more", 0x0F, changed(small, newer + 8, struct.pack("<I", 4000)))
+    seed("sixty-five-thousand-documents-in-a-small-file", 0x0F, changed(small, 28, b"\xff\xff"))
+    # A first slot of nothing, and the second with the sequence number a
+    # slot of nothing has: the second is the one in force.
+    two = bundle_file(2, 1, some(8), some(20))
+    seed("a-blank-first-slot-and-the-second-numbered-nothing", 0x0F,
+         changed(changed(two, 8192, bytes(4096)), 12288 + 4, bytes(4)))
+    # The last sequence number there is: nothing more can be committed.
+    seed("the-last-sequence-number", 0x0C,
+         bundle_file(3, 0, some(10), some(10), [(1, some(300))], first_sequence=0xFFFFFFFE))
+    seed("not-a-bundle", 0x0F, b"<html/>" * 700)
+
+
 # ---- font: byte 0 (whether the image's length is mended), four code points
 # to ask for, then a fonts image ----
 
@@ -2135,6 +2292,7 @@ def main() -> None:
     jpeg_seeds()
     scale_seeds()
     picture_cache_seeds()
+    bundle_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

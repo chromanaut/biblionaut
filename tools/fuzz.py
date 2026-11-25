@@ -72,6 +72,7 @@ INPUTS = ROOT / "tests" / "fuzz" / "inputs"
 TARGETS = {
     "inflate": 8192,
     "zip": 16384,
+    "bundle": 8192,
     "xml": 16384,
     "package": 16384,
     "toc": 16384,

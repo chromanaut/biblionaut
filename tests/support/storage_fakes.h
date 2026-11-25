@@ -23,6 +23,17 @@ namespace bn::test {
 // synced is gone, as on a card that had not got round to it. A file never
 // synced is left empty. Names (creating, removing, renaming) take effect at
 // once and survive.
+//
+// A card may do otherwise, and a test can ask for it (`unsynced`): what
+// was written and not synced may all be there, or only what was written
+// over bytes the file already had, the file being no longer than it was,
+// or of that only the last write made, a card being free to keep what it
+// was given in any order until it is told to sync.
+// And the write the power goes at may be cut short (`tornBytes`,
+// `tornSpoilsSectors`): some of its first bytes written, and the rest of
+// every sector of 512 bytes it was writing to left as rubbish, since a
+// card writes whole sectors and one half written holds nothing that can
+// be relied on.
 class FakeStorage final : public core::Storage {
  public:
   using Bytes = std::vector<std::uint8_t>;
@@ -34,6 +45,10 @@ class FakeStorage final : public core::Storage {
     // When it was last written: a count of the writes to every file, so
     // each write is later than the one before.
     std::uint32_t modified = 0;
+    // The last write made to it since it was synced, if there has been one.
+    Bytes lastWrite;
+    std::uint32_t lastWriteAt = 0;
+    bool hasLastWrite = false;
   };
 
   static Entry Directory() {
@@ -56,7 +71,11 @@ class FakeStorage final : public core::Storage {
     for (std::size_t slash = path.find('/', 1); slash != std::string::npos; slash = path.find('/', slash + 1)) {
       entries[path.substr(0, slash)] = Directory();
     }
-    entries[path] = Entry{.data = contents, .durable = contents, .modified = ++writeStamp_};
+    Entry entry;
+    entry.data = contents;
+    entry.durable = contents;
+    entry.modified = ++writeStamp_;
+    entries[path] = std::move(entry);
   }
   bool Has(const std::string& path) const { return entries.contains(path); }
   const Bytes& Contents(const std::string& path) const { return entries.at(path).data; }
@@ -67,8 +86,22 @@ class FakeStorage final : public core::Storage {
     return static_cast<int>(std::count_if(listed_.begin(), listed_.end(), [](const Listing& l) { return l.inUse; }));
   }
 
+  // What a loss of power leaves of what was written to a file since it was
+  // last synced.
+  enum class Unsynced : std::uint8_t {
+    kLost,      // None of it: the file is as it was when last synced.
+    kKept,      // All of it, and the file as long as it had become.
+    kInPlace,   // What was written over bytes the file had when last synced; the file no longer than then.
+    kLastOnly,  // Of that, only what the last write made put there.
+  };
+
+  // What a sector that was being written when the power went is left
+  // holding.
+  static constexpr std::uint8_t kRubbish = 0xDB;
+  static constexpr std::size_t kSectorBytes = 512;
+
   // The power goes: every open file is forgotten, unsynced writes are
-  // lost, and nothing works until PowerOn().
+  // lost or kept as `unsynced` says, and nothing works until PowerOn().
   void PowerOff() {
     powered = false;
     for (OpenFile& file : open_) {
@@ -78,7 +111,19 @@ class FakeStorage final : public core::Storage {
       listing = Listing{};
     }
     for (auto& [path, entry] : entries) {
+      if (unsynced == Unsynced::kKept) {
+        entry.durable = entry.data;
+      } else if (unsynced == Unsynced::kInPlace) {
+        const std::size_t both = std::min(entry.durable.size(), entry.data.size());
+        std::copy(entry.data.begin(), entry.data.begin() + static_cast<std::ptrdiff_t>(both), entry.durable.begin());
+      } else if (unsynced == Unsynced::kLastOnly && entry.hasLastWrite && entry.lastWriteAt < entry.durable.size()) {
+        const std::size_t count = std::min(entry.lastWrite.size(), entry.durable.size() - entry.lastWriteAt);
+        std::copy(entry.lastWrite.begin(), entry.lastWrite.begin() + static_cast<std::ptrdiff_t>(count),
+                  entry.durable.begin() + static_cast<std::ptrdiff_t>(entry.lastWriteAt));
+      }
       entry.data = entry.durable;
+      entry.hasLastWrite = false;
+      entry.lastWrite = Bytes();
     }
   }
   void PowerOn() {
@@ -169,6 +214,9 @@ class FakeStorage final : public core::Storage {
   [[nodiscard]] core::StorageStatus WriteAt(core::FileHandle file, std::uint32_t offset,
                                             std::span<const std::uint8_t> src) noexcept override {
     const OpenFile* found = Find(file);
+    if (found != nullptr && found->writable && powered && changesUntilPowerOff == 0) {
+      Tear(entries.at(found->path).data, offset, src);  // The power goes at this write: what of it is written first.
+    }
     if (found == nullptr || !found->writable || !Change()) {
       return core::StorageStatus::kFailed;
     }
@@ -181,16 +229,12 @@ class FakeStorage final : public core::Storage {
     if (offset > data.size()) {
       return core::StorageStatus::kFailed;  // No gaps.
     }
-    if (data.size() < offset + src.size()) {
-      // Grown into a block of its own, never into the spare room of the
-      // old one: libFuzzer brings a copy of this vector's code built without
-      // AddressSanitizer, and bytes it adds within the spare room are taken
-      // for bytes past the end.
-      Bytes grown(offset + src.size());
-      std::copy(data.begin(), data.end(), grown.begin());
-      data = std::move(grown);
-    }
+    Grow(data, offset + src.size());
     std::memcpy(data.data() + offset, src.data(), src.size());
+    Entry& writtenTo = entries.at(found->path);
+    writtenTo.lastWrite = Bytes(src.begin(), src.end());
+    writtenTo.lastWriteAt = offset;
+    writtenTo.hasLastWrite = true;
     entries.at(found->path).modified = ++writeStamp_;
     return core::StorageStatus::kOk;
   }
@@ -206,6 +250,8 @@ class FakeStorage final : public core::Storage {
     }
     Entry& entry = entries.at(found->path);
     entry.durable = entry.data;
+    entry.hasLastWrite = false;
+    entry.lastWrite = Bytes();
     log.push_back("sync " + found->path);
     return core::StorageStatus::kOk;
   }
@@ -361,6 +407,13 @@ class FakeStorage final : public core::Storage {
   // takes effect. -1: never.
   int changesUntilPowerOff = -1;
   int changes = 0;  // Changes made so far.
+  // What that loss of power leaves of unsynced writes; and, if it comes at
+  // a write, how many of that write's first bytes are written before it,
+  // and whether the rest of every sector the write was to touch is left
+  // holding kRubbish.
+  Unsynced unsynced = Unsynced::kLost;
+  std::size_t tornBytes = 0;
+  bool tornSpoilsSectors = false;
 
   bool failReads = false;
   core::StorageStatus failWrites = core::StorageStatus::kOk;  // What writes report, if not kOk.
@@ -416,6 +469,36 @@ class FakeStorage final : public core::Storage {
       return core::StorageStatus::kFailed;
     }
     return core::StorageStatus::kOk;
+  }
+
+  // Makes a file's bytes at least `size` long. Grown into a block of its
+  // own, never into the spare room of the old one: libFuzzer brings a copy
+  // of this vector's code built without AddressSanitizer, and bytes it
+  // adds within the spare room are taken for bytes past the end.
+  static void Grow(Bytes& data, std::size_t size) {
+    if (data.size() < size) {
+      Bytes grown(size);
+      std::copy(data.begin(), data.end(), grown.begin());
+      data = std::move(grown);
+    }
+  }
+
+  // What a write that the power cuts short does to a file first.
+  void Tear(Bytes& data, std::uint32_t offset, std::span<const std::uint8_t> src) const {
+    if (offset > data.size() || (tornBytes == 0 && !tornSpoilsSectors)) {
+      return;
+    }
+    const std::size_t arrived = std::min(tornBytes, src.size());
+    Grow(data, offset + (tornSpoilsSectors ? src.size() : arrived));
+    if (tornSpoilsSectors) {
+      const std::size_t from = offset - (offset % kSectorBytes);
+      const std::size_t to =
+          std::min(data.size(), ((offset + src.size() + kSectorBytes - 1) / kSectorBytes) * kSectorBytes);
+      std::fill(data.begin() + static_cast<std::ptrdiff_t>(from), data.begin() + static_cast<std::ptrdiff_t>(to),
+                kRubbish);
+    }
+    std::copy(src.begin(), src.begin() + static_cast<std::ptrdiff_t>(arrived),
+              data.begin() + static_cast<std::ptrdiff_t>(offset));
   }
 
   // Counts a change; false if the power went instead.

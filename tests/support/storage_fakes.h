@@ -172,6 +172,7 @@ class FakeStorage final : public core::Storage {
       return core::StorageStatus::kFailed;
     }
     ++writes;
+    written.push_back({.offset = offset, .size = src.size()});
     if (failWrites != core::StorageStatus::kOk) {
       return failWrites;
     }
@@ -376,7 +377,8 @@ class FakeStorage final : public core::Storage {
   int writes = 0;
   int syncs = 0;
   std::vector<ReadCall> reads;
-  std::vector<std::string> log;  // Syncs, removes and renames that were done, in order.
+  std::vector<ReadCall> written;  // Every write asked for: where, and how much.
+  std::vector<std::string> log;   // Syncs, removes and renames that were done, in order.
   std::map<std::string, Entry> entries;
 
  private:

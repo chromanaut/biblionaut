@@ -39,7 +39,7 @@ enum class PictureCacheStatus : std::uint8_t {
   kStoreFailed,  // Storage did not do what it was asked.
   // Asked for what cannot be: a key with no pixels or levels out of range,
   // rows that are not whole or are more than the picture has, rows from no
-  // picture begun, or a folder too long.
+  // picture begun, a folder too long, or a buffer of less than a sector.
   kMisused,
 };
 
@@ -64,6 +64,13 @@ const char* PictureCacheStatusName(PictureCacheStatus status) noexcept;
 // for black, packed into BitsFor() bits, the leftmost pixel in the top
 // bits of the first byte.
 //
+// Storage is read and written in sectors, and a write that begins or ends
+// part way through one costs a read of that sector and a write of all of
+// it. So the header is a sector, the rows are gathered in memory the
+// caller gives and go to storage as many whole sectors at a time as that
+// holds, each begun where a sector begins; only the last write of a
+// picture ends part way through one. They are read back the same way.
+//
 // A picture is written row after row, and the header last, so a file left
 // half written by a press, or by the power going, has no header and is
 // found damaged. The file is not synced: what the card had not written
@@ -79,7 +86,10 @@ class PictureCache {
  public:
   static constexpr std::size_t kSlots = 64;
   static constexpr std::size_t kPlaces = 8;  // The files a picture may be kept in.
-  static constexpr std::size_t kHeaderBytes = 64;
+  // What storage is read and written in.
+  static constexpr std::size_t kSectorBytes = 512;
+  // A sector, of which the first 44 bytes say something.
+  static constexpr std::size_t kHeaderBytes = kSectorBytes;
   // The longest folder it can keep pictures in: given a longer one, it
   // refuses everything.
   static constexpr std::size_t kLongestFolder = 64;
@@ -97,6 +107,14 @@ class PictureCache {
   // Keeps the pictures in `folder` on `storage`, which it makes when it
   // first writes one. `folder` has to outlive the cache.
   PictureCache(core::Storage& storage, std::string_view folder) noexcept;
+  // The memory rows are gathered in on their way to storage and from it:
+  // as many whole sectors of `buffer` as there are are used. Until it is
+  // given one sector at least, the cache refuses everything. A few KB is
+  // the size to give it: a picture is then that few reads and writes.
+  // Storage may want it at an address that is a multiple of four, to take
+  // it as it is. It has to outlive the cache, or the next call of this,
+  // which ends whatever was begun.
+  void GatherIn(std::span<std::uint8_t> buffer) noexcept;
   ~PictureCache() { Close(); }
   PictureCache(const PictureCache&) = delete;
   PictureCache& operator=(const PictureCache&) = delete;
@@ -147,9 +165,15 @@ class PictureCache {
   // Opens `path` and reads its header. The file is left open only when the
   // header is whole.
   Held Look(std::string_view path) noexcept;
+  // Writes what is gathered in the buffer, where it belongs in the file.
+  bool Flush() noexcept;
 
   core::Storage& storage_;
   std::string_view folder_;
+  std::span<std::uint8_t> buffer_;  // As many whole sectors as were given.
+  std::size_t gathered_ = 0;        // Bytes in it: waiting to be written, or read and not yet all given out,
+  std::size_t given_ = 0;           // of which this many have been given out.
+  std::uint32_t position_ = 0;      // Where in the file the next write or read of the buffer goes.
   std::array<char, kLongestFolder + 4> path_{};
   core::FileHandle file_ = core::kNoFile;
   Mode mode_ = Mode::kNone;

@@ -763,10 +763,10 @@ and the device.
 - **Memory**: the caller provides the 32 KB window the format needs. The
   object itself is 2.6 KB on the device. It allocates nothing.
 - **Flash**: 4.7 KB, as compiled for the device.
-- **Speed**: on an X4, over 34 books, it gives out about 2,740 KB a
-  second with the ZIP checksum included (which is a third of that time),
-  taking in about 1,360 KB a second, where the SD card delivers about
-  980. Three things got it there from the 1,550 KB a second it gave out
+- **Speed**: on an X4, over 34 books, it gives out about 2,920 KB a
+  second with the ZIP checksum included (which is a quarter of that
+  time), taking in about 1,450 KB a second, where the SD card delivers
+  about 970. Three things got it there from the 1,550 KB a second it gave out
   at first. The loop that reads a compressed block keeps the state of
   the input in local variables and not in the object, where the compiler
   had to load and store it again for every symbol, since any byte
@@ -777,6 +777,17 @@ and the device.
   change doubles its speed on the text of the books in `corpus/`, and
   multiplies it by more than eleven on the data of their PNG pictures,
   which is mostly long runs.
+- **The checksum** that goes with it, of every byte an entry gives
+  (`core/checksum.h`), is worked out from a table of 256 numbers, a
+  lookup a byte: 1 KB of flash, and 11.7 MB a second by itself on an X4.
+  Two other ways were timed there. A table of 16, looked up twice a byte,
+  is 64 bytes and gave 8.5 MB a second, and the 34 books' entries came
+  out 7% slower with it. Four tables of 256, which take four bytes at
+  once, are 4 KB and gave 22 MB a second by themselves, and with them the
+  34 books took 9% longer to read: all of the loss was in parsing, which
+  goes on between one checksum and the next, and the likeliest reason is
+  that 4 KB of tables push the parser's code out of the small cache the
+  chip reads its flash through. That was not looked into further.
 - **Bad input**: whatever bytes it is given, it either produces the data
   they stand for or stops, saying why (`kBadData`, `kTruncated`,
   `kSourceFailed`). It does not check that the data is the right data: that

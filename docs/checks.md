@@ -20,6 +20,19 @@ CI runs all of these on every push to `main` and every pull request
 The formatting check and both clang-tidy runs need the LLVM major version
 named in `tools/llvm-version` (`brew install llvm@<version>` on macOS).
 
+The Linux run keeps its two builds in Docker volumes, so that only the
+first run builds everything. They are named for the checkout's directory
+(`biblionaut-linux-build` and `biblionaut-linux-build-release` for a
+checkout in `biblionaut`), and a run says which they are; remove them with
+`docker volume rm` when a checkout is done with. Each checkout has its
+own because a build is only good for the tree it was made from: ninja
+builds again what is older than its source, and a file one checkout last
+changed a week ago is older than what was built from another checkout
+yesterday, so given that build nothing would be built and the tests run
+would be the other checkout's. A volume therefore also records which
+checkout it was built from, and is emptied before it is used for any
+other.
+
 Four of these take every processor for minutes: the Linux run, the two
 clang-tidy runs, and fuzzing. Two started together, from two checkouts of
 the repository on one machine, each take twice as long, and with several

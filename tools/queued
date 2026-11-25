@@ -15,6 +15,20 @@ tools/check-tidy.sh, tools/check-firmware-tidy.py), so there is usually
 nothing to type; and a command started by one that is having its turn
 does not wait for a turn of its own.
 
+A command that keeps to a few processors need not have the machine to
+itself, and says how many it uses:
+
+    tools/queued --cores 2 COMMAND...     shares the machine with others
+                                          that say so, as long as what they
+                                          ask for comes to no more than the
+                                          machine has
+
+One that says nothing has the whole machine, and so has one that asks for
+all of it or more. The order is still the order they came: a command waits
+for every one before it to have begun, so one that wants the whole machine
+is not kept waiting by small ones that came after it. The machine is taken
+to have the processors Python counts, or $BN_QUEUE_CORES of them.
+
     tools/queued --name NAME COMMAND...   a queue of its own: what is in
                                           one does not wait for another.
                                           Without it the name is "heavy".
@@ -28,23 +42,38 @@ for the device:
 
     tools/queued --name x4 sh -c 'tools/idf flash && bn-trace --seconds 60 > run.log'
 
-How it works. A turn is a lock on a file, taken with flock(2), in a
-folder every checkout on the machine shares: ~/.cache/biblionaut/queue,
-or $XDG_CACHE_HOME/biblionaut/queue, or $BN_QUEUE_DIR. The command is not
-run as a child: this program becomes it, so the lock is the command's
-own, it ends when the command and whatever it started have ended, however
+How it works. A turn is locks on files, taken with flock(2), in a folder
+every checkout on the machine shares: ~/.cache/biblionaut/queue, or
+$XDG_CACHE_HOME/biblionaut/queue, or $BN_QUEUE_DIR. The command is not
+run as a child: this program becomes it, so the locks are the command's
+own, they end when the command and whatever it started have ended, however
 they end, and nothing is left to clear up after one that was killed.
-Whoever waits keeps a file of its own in a folder beside the lock, named
-for when it came and locked in the same way, so that the others can tell
-both the order and whether its owner is still there.
+
+NAME.lock is the whole machine. A command that wants all of it locks the
+file for itself alone; one that shares locks it along with the others
+that share, and locks for itself as many of the files in NAME.cores, one
+for each processor, as it asked for. So a tools/queued that knows only of
+whole turns, in a checkout not brought up to date, waits for those that
+share and is waited for by them. Whoever waits keeps a file of its own in
+NAME.waiting, named for when it came and locked in the same way, so that
+the others can tell both the order and whether its owner is still there;
+and whoever has a turn keeps one in NAME.running, which says what it is.
+
+Each turn is written down when it ends, a line in the file turns.log of
+that folder: when it began, the queue, how many processors it had, how
+many seconds it waited and how many it ran, where it was started, and the
+command, with a tab between each. The line is written by a process left
+behind for it, which holds none of the locks and waits for them to go.
 
 With BN_QUEUE_OFF set to anything, or if the folder cannot be used, the
 command is run at once.
 
---watch draws each queue again twice a second: what has the turn and for
-how long, and each that waits, with the checkout's folder and the command,
-a long path in it cut to its last name. Written to a file or a pipe and
-not a terminal, it says the same once each time something changes.
+--watch draws each queue again twice a second: what has a turn, with how
+many processors and for how long, and each that waits, with the checkout's
+folder and the command, a long path in it cut to its last name; and under
+them what the turns that began today and are over waited. Written to a
+file or a pipe and not a terminal, it says the same once each time
+something changes.
 """
 
 from __future__ import annotations
@@ -59,10 +88,16 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 HELD = "BN_QUEUE_HELD"  # The queues a command's ancestors are having their turn in.
 POLL_SECONDS = 0.5
 LOOK_AGAIN_SECONDS = 0.05
+LOG = "turns.log"
+# What those that share the machine leave where one that has all of it says
+# what it is: for a tools/queued that knows only of whole turns to show.
+SHARED = "commands that share the machine, which tools/queued --list in a checkout that is up to date names"
+UNSAID = "something that has not said what it is"
 
 
 def queue_folder() -> Path:
@@ -73,9 +108,17 @@ def queue_folder() -> Path:
     return (Path(cache) if cache else Path.home() / ".cache") / "biblionaut" / "queue"
 
 
-def try_lock(descriptor: int) -> bool:
+def machine_cores() -> int:
+    """How many processors there are to share out."""
+    said = os.environ.get("BN_QUEUE_CORES", "")
+    if said.isdigit() and int(said) > 0:
+        return int(said)
+    return os.cpu_count() or 1
+
+
+def try_lock(descriptor: int, shared: bool = False) -> bool:
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(descriptor, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         return True
     except OSError as error:
         if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
@@ -91,10 +134,18 @@ def from_home(where: str) -> str:
     return where
 
 
-def describe(command: list[str]) -> str:
-    """One line saying what a command is, where, and since when."""
+def describe(command: list[str], cores: int | None) -> str:
+    """One line saying what a command is, where, and since when; and how
+    many processors it asked for, if not all."""
     now = datetime.datetime.now().strftime("%H:%M:%S")
-    return f"{shlex.join(command)}, in {from_home(os.getcwd())}, since {now}, process {os.getpid()}"
+    share = "" if cores is None else f", {cores} core{'' if cores == 1 else 's'}"
+    return f"{shlex.join(command)}, in {from_home(os.getcwd())}, since {now}, process {os.getpid()}{share}"
+
+
+def cores_of(line: str) -> int | None:
+    """How many processors a line of describe() asks for: nothing, if all."""
+    said = re.search(r", (\d+) cores?$", line)
+    return int(said.group(1)) if said else None
 
 
 def read_line(path: Path) -> str:
@@ -104,31 +155,57 @@ def read_line(path: Path) -> str:
         return ""
 
 
-def waiting(folder: Path, name: str) -> list[Path]:
-    """The files of those waiting in a queue whose owners are still there,
-    in the order they came. A file whose owner has gone is removed."""
+def owned(folder: Path) -> list[Path]:
+    """The files in a folder whose owners are still there, in the order of
+    their names. Each is locked by its owner for as long as that lasts; one
+    that nobody holds was left by an owner that was killed, and is removed."""
     alive = []
     try:
-        tickets = sorted(path for path in (folder / f"{name}.waiting").iterdir() if not path.name.startswith("."))
+        files = sorted(path for path in folder.iterdir() if not path.name.startswith("."))
     except OSError:
         return alive
-    for ticket in tickets:
+    for file in files:
         try:
-            descriptor = os.open(ticket, os.O_RDWR)
+            descriptor = os.open(file, os.O_RDWR)
         except OSError:
-            continue  # Its owner's turn came, between the listing and now.
+            continue  # It went between the listing and now.
         try:
             if try_lock(descriptor):
-                # Nobody holds it: whoever made it was killed while waiting.
                 try:
-                    ticket.unlink()
+                    file.unlink()
                 except OSError:
                     pass
             else:
-                alive.append(ticket)
+                alive.append(file)
         finally:
             os.close(descriptor)
     return alive
+
+
+def waiting(folder: Path, name: str) -> list[Path]:
+    """The files of those waiting in a queue, in the order they came."""
+    return owned(folder / f"{name}.waiting")
+
+
+def running(folder: Path, name: str) -> list[tuple[str, Path]]:
+    """What has a turn in a queue: for each, what it described itself as,
+    and a file that is as old as its turn."""
+    found = [(read_line(mark), mark) for mark in owned(folder / f"{name}.running")]
+    lock = folder / f"{name}.lock"
+    try:
+        descriptor = os.open(lock, os.O_RDWR)
+    except OSError:
+        return found
+    try:
+        whole = not try_lock(descriptor, shared=True)
+    finally:
+        os.close(descriptor)  # And with it the lock, if it was taken to look.
+    if whole and all(cores_of(line) is not None for line, _ in found):
+        # Something has the whole machine and keeps no file to say so: it
+        # was started by a tools/queued that knows only of whole turns,
+        # which says what it is in the lock itself.
+        found.insert(0, (read_line(lock), lock))
+    return found
 
 
 def duration(seconds: float) -> str:
@@ -140,47 +217,79 @@ def duration(seconds: float) -> str:
     return f"{whole // 3600} h {whole % 3600 // 60} min"
 
 
-def take_turn(folder: Path, name: str, command: list[str]) -> int:
-    """Waits for a turn in the queue `name` and returns the descriptor of
-    its lock, which is the turn: whoever holds it open has it."""
-    line = describe(command)
+def locked_file(folder: Path, line: str) -> tuple[Path, int]:
+    """Makes a file in a folder that says `line`, named for now and locked
+    by this process. It is locked before it has the name the others look
+    for, so that none of them can find it unlocked and take its owner for
+    gone."""
+    folder.mkdir(exist_ok=True)
+    unnamed = folder / f".new-{os.getpid()}"
+    descriptor = os.open(unnamed, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    os.write(descriptor, (line + "\n").encode())
+    named = folder / f"{time.time_ns():020d}-{os.getpid()}"
+    unnamed.rename(named)
+    return named, descriptor
+
+
+def take(folder: Path, name: str, lock: int, cores: int | None) -> list[int] | None:
+    """Takes a turn if there is one to be had now: the whole machine, or
+    `cores` of its processors. Returns the descriptors that hold it beside
+    the lock's own, or nothing if there is none."""
+    if cores is None:
+        return [] if try_lock(lock) else None
+    if not try_lock(lock, shared=True):
+        return None  # Something has the whole machine.
+    slots = folder / f"{name}.cores"
+    slots.mkdir(exist_ok=True)
+    mine: list[int] = []
+    for index in range(machine_cores()):
+        descriptor = os.open(slots / f"{index:03d}", os.O_RDWR | os.O_CREAT, 0o600)
+        if try_lock(descriptor):
+            mine.append(descriptor)
+            if len(mine) == cores:
+                return mine
+        else:
+            os.close(descriptor)
+    for descriptor in mine:
+        os.close(descriptor)
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    return None
+
+
+class Turn(NamedTuple):
+    descriptors: list[int]  # Open, and locked: the turn lasts as long as any process has them.
+    mark: Path  # The file in NAME.running that says what has the turn.
+    began: float
+    waited: float
+    cores: int
+
+
+def take_turn(folder: Path, name: str, command: list[str], cores: int | None) -> Turn:
+    """Waits for a turn in the queue `name`, with the whole machine or
+    `cores` of its processors."""
     folder.mkdir(parents=True, exist_ok=True)
     lock = os.open(folder / f"{name}.lock", os.O_RDWR | os.O_CREAT, 0o600)
-
-    # A place in the queue. The file is locked before it has the name the
-    # others look for, so that none of them can find it unlocked and take
-    # its owner for gone.
-    tickets = folder / f"{name}.waiting"
-    tickets.mkdir(exist_ok=True)
-    unnamed = tickets / f".new-{os.getpid()}"
-    ticket_descriptor = os.open(unnamed, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
-    fcntl.flock(ticket_descriptor, fcntl.LOCK_EX)
-    os.write(ticket_descriptor, (line + "\n").encode())
-    ticket = tickets / f"{time.time_ns():020d}-{os.getpid()}"
-    unnamed.rename(ticket)
+    ticket, ticket_descriptor = locked_file(folder / f"{name}.waiting", describe(command, cores))
 
     began = time.monotonic()
     said = None
     try:
         while True:
             ahead = [other for other in waiting(folder, name) if other.name < ticket.name]
-            free = try_lock(lock)
-            if not free and said is None:
-                # --list and --watch take the lock for a moment to see
-                # whether anything has it. Look once more before saying that
+            mine = None if ahead else take(folder, name, lock, cores)
+            if mine is None and not ahead and said is None:
+                # --list and --watch take locks for a moment to see whether
+                # anything has them. Look once more before saying that
                 # something is running.
                 time.sleep(LOOK_AGAIN_SECONDS)
-                free = try_lock(lock)
-            if free and not ahead:
+                mine = take(folder, name, lock, cores)
+            if mine is not None:
                 break
-            if free:
-                # Free, but it is another's turn: let go, for that one to take.
-                fcntl.flock(lock, fcntl.LOCK_UN)
-                running = ""
-            else:
-                running = " Running now: " + (read_line(folder / f"{name}.lock") or "something that has not said what it is") + "."
+            now = [line or UNSAID for line, _ in running(folder, name)]
+            going = f" Running now: {'; '.join(now)}." if now else ""
             others = f" {len(ahead)} waiting before this." if ahead else ""
-            saying = f"queued: waiting for a turn ({name}).{running}{others}"
+            saying = f"queued: waiting for a turn ({name}).{going}{others}"
             if saying != said:
                 print(saying, file=sys.stderr, flush=True)
                 said = saying
@@ -194,11 +303,54 @@ def take_turn(folder: Path, name: str, command: list[str]) -> int:
 
     # What is running, for the others to say: with the time its turn began,
     # where the line in the queue had the time it came.
+    line = describe(command, cores)
     os.ftruncate(lock, 0)
-    os.pwrite(lock, (describe(command) + "\n").encode(), 0)
+    os.pwrite(lock, ((line if cores is None else SHARED) + "\n").encode(), 0)
+    mark, mark_descriptor = locked_file(folder / f"{name}.running", line)
+    waited = time.monotonic() - began
     if said is not None:
-        print(f"queued: its turn came after {duration(time.monotonic() - began)}.", file=sys.stderr, flush=True)
-    return lock
+        print(f"queued: its turn came after {duration(waited)}.", file=sys.stderr, flush=True)
+    return Turn([lock, *mine, mark_descriptor], mark, time.time(), waited, cores or machine_cores())
+
+
+def leave_a_witness(folder: Path, name: str, command: list[str], turn: Turn) -> None:
+    """Leaves a process behind that writes the turn down when it ends. This
+    program becomes the command, so nothing of it is there at the end; and
+    the end is when the last process to hold the turn's locks has gone,
+    which may be long after the command. The witness holds none of them: it
+    asks for the lock on the turn's own file, which it is given when
+    everything else has let go."""
+    when = datetime.datetime.fromtimestamp(turn.began).strftime("%Y-%m-%d %H:%M:%S")
+    before = f"{when}\t{name}\t{turn.cores}\t{turn.waited:.0f}"
+    after = re.sub(r"\s", " ", from_home(os.getcwd())) + "\t" + re.sub(r"\s", " ", shlex.join(command))
+    try:
+        child = os.fork()
+    except OSError:
+        return
+    if child:
+        os.waitpid(child, 0)
+        return
+    try:
+        # Twice removed, and in a session of its own: nobody's child to
+        # wait for, and not stopped with the command by a key at a terminal.
+        if os.fork():
+            os._exit(0)
+        os.setsid()
+        for descriptor in turn.descriptors:
+            os.close(descriptor)
+        null = os.open(os.devnull, os.O_RDWR)
+        for standard in (0, 1, 2):
+            os.dup2(null, standard)
+        os.closerange(3, 256)
+        mark = os.open(turn.mark, os.O_RDWR)
+        fcntl.flock(mark, fcntl.LOCK_EX)
+        with open(folder / LOG, "a") as log:
+            log.write(f"{before}\t{time.time() - turn.began:.0f}\t{after}\n")
+        turn.mark.unlink()
+    except BaseException:  # noqa: BLE001 - whatever goes wrong here is nobody's to hear of.
+        pass
+    finally:
+        os._exit(0)
 
 
 def queues(folder: Path) -> list[str]:
@@ -215,25 +367,10 @@ def queues(folder: Path) -> list[str]:
     return sorted(names)
 
 
-def running(folder: Path, name: str) -> str | None:
-    """What has the turn in a queue, as it described itself: nothing, if
-    nothing has, and no words if it has not said."""
-    try:
-        descriptor = os.open(folder / f"{name}.lock", os.O_RDWR)
-    except OSError:
-        return None
-    try:
-        if try_lock(descriptor):
-            return None
-    finally:
-        os.close(descriptor)  # And with it the lock, if it was taken to look.
-    return read_line(folder / f"{name}.lock")
-
-
 def owner_has_ended(line: str) -> bool:
     """Whether the process a line names is gone, while its turn goes on."""
-    owner = line.rsplit("process ", 1)[-1] if "process " in line else ""
-    return owner.isdigit() and not process_exists(int(owner))
+    owners = re.findall(r", process (\d+)", line)
+    return bool(owners) and not process_exists(int(owners[-1]))
 
 
 def show(folder: Path) -> int:
@@ -242,11 +379,11 @@ def show(folder: Path) -> int:
         print(f"Nothing has been queued in {folder}.")
         return 0
     for name in names:
-        line = running(folder, name)
-        if line is None:
+        now = running(folder, name)
+        if not now:
             print(f"{name}: nothing running.")
-        else:
-            print(f"{name}: running: {line or 'something that has not said what it is'}.")
+        for line, _ in now:
+            print(f"{name}: running: {line or UNSAID}.")
             if owner_has_ended(line):
                 print(f"{name}:   that process has ended, and something it started still has the turn.")
         for ticket in waiting(folder, name):
@@ -258,19 +395,31 @@ def show(folder: Path) -> int:
 LONG_PATH = re.compile(r"[~/]?(?:[\w.@+-]+/){3,}(?=[\w.@+-])")
 
 
-def taken_apart(line: str) -> tuple[str, str]:
-    """A line of describe() as the command and the last name of where it
-    was started. A line that is not one is all command."""
-    rest, since, _ = line.rpartition(", since ")
+class Row(NamedTuple):
+    queue: str
+    doing: str  # "running", "waiting", or what else there is to say of the queue.
+    since: float | None
+    share: str  # The processors it has or asked for.
+    where: str
+    command: str
+
+
+def row_of(queue: str, doing: str, since: float | None, line: str) -> Row:
+    """A row for a line of describe(): the command, and the last name of
+    where it was started. A line that is not one is all command."""
+    rest, found, _ = line.rpartition(", since ")
     command, within, where = rest.rpartition(", in ")
-    if not since or not within:
-        return line, ""
-    return command, where.rstrip("/").rsplit("/", 1)[-1]
+    if not found or not within:
+        return Row(queue, doing, since, "", "", line)
+    cores = cores_of(line)
+    share = "all cores" if cores is None else f"{cores} core{'' if cores == 1 else 's'}"
+    return Row(queue, doing, since, share, where.rstrip("/").rsplit("/", 1)[-1], command)
 
 
 def began(path: Path) -> float | None:
-    """When a turn began, or a wait: the lock is written as a turn begins,
-    and a waiting file is named for when it came."""
+    """When a turn began, or a wait: a file in NAME.running or NAME.waiting
+    is named for when it was made, and the lock is written as a turn with
+    the whole machine begins."""
     try:
         stamp = path.name.split("-", 1)[0]
         return int(stamp) / 1e9 if stamp.isdigit() else path.stat().st_mtime
@@ -278,45 +427,65 @@ def began(path: Path) -> float | None:
         return None
 
 
-def picture(folder: Path) -> list[tuple[str, str, float | None, str, str]]:
-    """A row for everything in every queue: the queue, what it is doing,
-    since when, where it was started, and the command."""
-    rows: list[tuple[str, str, float | None, str, str]] = []
+def picture(folder: Path) -> list[Row]:
+    """A row for everything in every queue."""
+    rows: list[Row] = []
     for name in queues(folder):
-        line = running(folder, name)
-        if line is None:
-            rows.append((name, "nothing running", None, "", ""))
-        else:
-            command, where = taken_apart(line or "something that has not said what it is")
-            rows.append((name, "running", began(folder / f"{name}.lock"), where, command))
+        now = running(folder, name)
+        if not now:
+            rows.append(Row(name, "nothing running", None, "", "", ""))
+        for line, file in now:
+            rows.append(row_of(name, "running", began(file), line or UNSAID))
             if owner_has_ended(line):
-                rows.append((name, "", None, "", "that process has ended, and something it started still has the turn"))
+                rows.append(Row(name, "", None, "", "", "that process has ended, and something it started still has the turn"))
         for ticket in waiting(folder, name):
-            command, where = taken_apart(read_line(ticket))
-            rows.append((name, "waiting", began(ticket), where, command))
+            rows.append(row_of(name, "waiting", began(ticket), read_line(ticket)))
     return rows
 
 
-def drawn(rows: list[tuple[str, str, float | None, str, str]], now: float, width: int | None) -> list[str]:
+def drawn(rows: list[Row], now: float, width: int | None) -> list[str]:
     """The rows as lines of text in columns, a queue's name on the first of
     its rows only, each line cut to `width` if there is one."""
-    times = [duration(now - since) if since is not None else "" for _, _, since, _, _ in rows]
-    names = max((len(row[0]) for row in rows), default=0)
+    times = [duration(now - row.since) if row.since is not None else "" for row in rows]
+    names = max((len(row.queue) for row in rows), default=0)
+    shares = max((len(row.share) for row in rows), default=0)
     clocks = max((len(text) for text in times), default=0)
-    places = max((len(row[3]) for row in rows), default=0)
+    places = max((len(row.where) for row in rows), default=0)
     lines = []
     before = None
-    for (name, doing, _, where, command), clock in zip(rows, times):
-        shown = name if name != before else ""
-        before = name
-        if doing == "nothing running":
-            line = f"{shown:<{names}}  {doing}"
+    for row, clock in zip(rows, times):
+        shown = row.queue if row.queue != before else ""
+        before = row.queue
+        if row.doing == "nothing running":
+            line = f"{shown:<{names}}  {row.doing}"
         else:
-            line = f"{shown:<{names}}  {doing:<7}  {clock:>{clocks}}  {where:<{places}}  {LONG_PATH.sub('.../', command)}"
+            command = LONG_PATH.sub(".../", row.command)
+            line = f"{shown:<{names}}  {row.doing:<7}  {row.share:<{shares}}  {clock:>{clocks}}  {row.where:<{places}}  {command}"
         line = line.rstrip()
         if width is not None and len(line) > width:
             line = line[: max(width - 3, 0)] + "..."
         lines.append(line)
+    return lines
+
+
+def today(folder: Path) -> list[str]:
+    """What the turns that began today and are over waited, a line for each
+    queue that had any."""
+    day = datetime.date.today().isoformat()
+    waits: dict[str, list[float]] = {}
+    try:
+        with open(folder / LOG, errors="replace") as log:
+            for line in log:
+                fields = line.split("\t")
+                if len(fields) >= 7 and fields[0].startswith(day) and fields[3].isdigit():
+                    waits.setdefault(fields[1], []).append(float(fields[3]))
+    except OSError:
+        return []
+    lines = []
+    for name in sorted(waits):
+        each = waits[name]
+        turns = f"{len(each)} turn{'' if len(each) == 1 else 's'}"
+        lines.append(f"today, {name}: {turns} over, which waited {duration(sum(each) / len(each))} on average and {duration(max(each))} at the most")
     return lines
 
 
@@ -331,19 +500,20 @@ def watch(folder: Path) -> int:
             sys.stdout.write("\x1b[2J")
         while True:
             rows = picture(folder)
+            over = today(folder)
             now = time.time()
             clock = datetime.datetime.now().strftime("%H:%M:%S")
             nothing = [f"Nothing has been queued in {folder}."] if not rows else []
             if terminal:
                 width = shutil.get_terminal_size((100, 24)).columns
                 top = f"{clock}  the queues in {from_home(str(folder))}  (Ctrl-C to stop)"
-                lines = [top[:width], "", *nothing, *drawn(rows, now, width)]
-                sys.stdout.write("\x1b[H" + "".join(line + "\x1b[K\n" for line in lines) + "\x1b[J")
+                lines = [top, "", *nothing, *drawn(rows, now, width), *([""] if over else []), *over]
+                sys.stdout.write("\x1b[H" + "".join(line[:width] + "\x1b[K\n" for line in lines) + "\x1b[J")
                 sys.stdout.flush()
             else:
-                still = [(name, doing, where, command) for name, doing, _, where, command in rows]
+                still = ([row._replace(since=None) for row in rows], over)
                 if still != last:
-                    print("\n".join([clock, *nothing, *drawn(rows, now, None), ""]), flush=True)
+                    print("\n".join([clock, *nothing, *drawn(rows, now, None), *over, ""]), flush=True)
                     last = still
             time.sleep(POLL_SECONDS)
     except KeyboardInterrupt:
@@ -374,6 +544,7 @@ def become(command: list[str]) -> int:
 
 def main(arguments: list[str]) -> int:
     name = "heavy"
+    cores = None
     while arguments and arguments[0].startswith("-"):
         option = arguments.pop(0)
         if option == "--":
@@ -391,11 +562,19 @@ def main(arguments: list[str]) -> int:
                 print("queued: a queue's name is letters, digits, - and _", file=sys.stderr)
                 return 2
             continue
+        if option == "--cores" and arguments:
+            wanted = arguments.pop(0)
+            if not wanted.isdigit() or int(wanted) < 1:
+                print("queued: --cores wants how many processors the command uses, 1 or more", file=sys.stderr)
+                return 2
+            cores = int(wanted)
+            continue
         print(f"queued: unknown option {option}; --help says what there is", file=sys.stderr)
         return 2
     if not arguments:
         print(
-            "usage: tools/queued [--name NAME] COMMAND [ARGUMENT...]\n       tools/queued --list\n       tools/queued --watch",
+            "usage: tools/queued [--name NAME] [--cores N] COMMAND [ARGUMENT...]\n"
+            "       tools/queued --list\n       tools/queued --watch",
             file=sys.stderr,
         )
         return 2
@@ -409,12 +588,17 @@ def main(arguments: list[str]) -> int:
     os.environ[HELD] = ":".join(part for part in [*held, name] if part)
     if os.environ.get("BN_QUEUE_OFF"):
         return become(arguments)
+    if cores is not None and cores >= machine_cores():
+        cores = None  # All of it.
+    folder = queue_folder()
     try:
-        lock = take_turn(queue_folder(), name, arguments)
+        turn = take_turn(folder, name, arguments, cores)
     except OSError as error:
-        print(f"queued: {queue_folder()}: {error.strerror}. Running without waiting for a turn.", file=sys.stderr)
+        print(f"queued: {folder}: {error.strerror}. Running without waiting for a turn.", file=sys.stderr)
         return become(arguments)
-    os.set_inheritable(lock, True)  # The command inherits the lock.
+    leave_a_witness(folder, name, arguments, turn)
+    for descriptor in turn.descriptors:
+        os.set_inheritable(descriptor, True)  # The command inherits the locks.
     return become(arguments)
 
 

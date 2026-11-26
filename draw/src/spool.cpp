@@ -10,18 +10,50 @@ namespace bn::draw {
 
 namespace {
 
-// What a record is, in its first byte. A chunk ends at its end or at a
-// byte of nothing.
+// What a record is, in its first byte.
+//
+// Nearly all of what a drawing keeps is lines that go on from where the
+// band's last ended, and in an engraving most of them are shorter than a
+// pixel. So the commonest have no byte to say what they are: the top bits
+// of a record's first byte say that it is such a line and how long its
+// steps are, and its other bits are the start of them.
+//
+//   0xxxxxxx yyyyyyyy            a line on by (dx, dy): 7 bits and 8
+//   10xxxxxx xxxxxyyy yyyyyyyy   a line on by (dx, dy): 11 bits each
+//   11......                     one of the tags below, and what it says
+//
+// A step is in 256ths of a pixel and has a sign: a quarter of a pixel
+// across and half down in two bytes, four pixels each way in three. A line
+// that begins somewhere else is a move to there, and then a line on. A
+// chunk ends at its end or at kEnd.
+constexpr std::uint8_t kShortLine = 0x00;   // In the top bit.
+constexpr std::uint8_t kMiddleLine = 0x80;  // In the top two.
 enum Tag : std::uint8_t {
-  kEnd = 0,
-  kLine = 1,        // From (x, y) to (x, y), four numbers of four bytes.
-  kLineOn = 2,      // From where the last ended, to there and (dx, dy), two of two bytes.
-  kLineOnFar = 3,   // From where the last ended, to (x, y), two of four bytes.
-  kFill = 4,        // The rule, the gray and the opacity.
-  kFillBox = 5,     // And the box, four numbers of four bytes.
-  kFillRamp = 6,    // The rule, the opacity, a byte of nothing and the ramp.
-  kFillRampBox = 7  // And the box.
+  kEnd = 0xC0,
+  kMoveOn = 0xC1,      // To (dx, dy) from where the last ended: 12 bits each, in three bytes.
+  kMove = 0xC2,        // To (x, y): two numbers of three bytes.
+  kMoveFar = 0xC3,     // To (x, y): two of four bytes.
+  kLineOn = 0xC4,      // A line on by (dx, dy), two of two bytes.
+  kLineOnFar = 0xC5,   // A line on to (x, y), two of four bytes.
+  kFill = 0xC6,        // The rule, the gray and the opacity.
+  kFillBox = 0xC7,     // And the box, four numbers of four bytes.
+  kFillRamp = 0xC8,    // The rule, the opacity, a byte of nothing and the ramp.
+  kFillRampBox = 0xC9  // And the box.
 };
+
+// How far a step of each kind of line, and of each kind of move, can go.
+constexpr std::int64_t kShortAcross = 64;  // -64 to 63,
+constexpr std::int64_t kShortDown = 128;   // and -128 to 127.
+constexpr std::int64_t kMiddleStep = 1024;
+constexpr std::int64_t kMoveOnStep = 2048;
+constexpr std::int64_t kMovePlace = 8388608;  // What three bytes hold.
+
+constexpr bool Within(std::int64_t value, std::int64_t limit) noexcept { return value >= -limit && value < limit; }
+// A number of `bits` bits, as the number with a sign it stands for.
+constexpr std::int32_t Signed(std::uint32_t value, unsigned bits) noexcept {
+  const std::uint32_t top = std::uint32_t{1} << (bits - 1);
+  return static_cast<std::int32_t>(value ^ top) - static_cast<std::int32_t>(top);
+}
 
 // A ramp: three numbers of eight bytes, how many stops, how it spreads,
 // and for each stop its place in four bytes, its gray and how solid.
@@ -32,7 +64,7 @@ static_assert(kMostRecord < SpoolWriter::kChunkBytes);
 // A record, built a number at a time, the low byte first.
 class Built {
  public:
-  explicit Built(Tag tag) noexcept { Byte(tag); }
+  explicit Built(std::uint8_t first) noexcept { Byte(first); }
   void Byte(std::uint8_t value) noexcept { bytes_[size_++] = value; }
   void Number(std::uint64_t value, std::size_t width) noexcept {
     for (std::size_t i = 0; i < width; ++i) {
@@ -109,11 +141,22 @@ class Reading {
   std::size_t at_ = 0;
 };
 
-// How long each record is, by its tag; nothing for one there is not.
-constexpr std::size_t RecordBytes(std::uint8_t tag) noexcept {
-  switch (tag) {
-    case kLine:
-      return 17;
+// How long each record is, by its first byte; nothing for one there is
+// not.
+constexpr std::size_t RecordBytes(std::uint8_t first) noexcept {
+  if ((first & 0x80U) == kShortLine) {
+    return 2;
+  }
+  if ((first & 0xC0U) == kMiddleLine) {
+    return 3;
+  }
+  switch (first) {
+    case kMoveOn:
+      return 4;
+    case kMove:
+      return 7;
+    case kMoveFar:
+      return 9;
     case kLineOn:
       return 5;
     case kLineOnFar:
@@ -228,24 +271,54 @@ void SpoolWriter::Line(Place from, Place to) noexcept {
   }
   const std::size_t first = low <= 0 ? 0 : static_cast<std::size_t>(low / bandHeight_);
   const std::size_t last = std::min(static_cast<std::size_t>((high - 1) / bandHeight_), bands_ - 1);
+  const std::int64_t dx = std::int64_t{to.x} - from.x;
+  const std::int64_t dy = std::int64_t{to.y} - from.y;
   for (std::size_t band = first; band <= last && recording_; ++band) {
     Band& kept = band_[band];
-    const std::int64_t dx = std::int64_t{to.x} - from.x;
-    const std::int64_t dy = std::int64_t{to.y} - from.y;
-    if (kept.hasEnd && kept.end == from && dx >= INT16_MIN && dx <= INT16_MAX && dy >= INT16_MIN && dy <= INT16_MAX) {
+    if (!kept.hasEnd || kept.end != from) {
+      // It begins somewhere else: a move to there, as short as will say it.
+      const std::int64_t mx = std::int64_t{from.x} - kept.end.x;
+      const std::int64_t my = std::int64_t{from.y} - kept.end.y;
+      if (kept.hasEnd && Within(mx, kMoveOnStep) && Within(my, kMoveOnStep)) {
+        Built record(kMoveOn);
+        record.Number((static_cast<std::uint32_t>(mx) & 0xFFFU) | ((static_cast<std::uint32_t>(my) & 0xFFFU) << 12U),
+                      3);
+        Record(band, record.Bytes());
+      } else if (Within(from.x, kMovePlace) && Within(from.y, kMovePlace)) {
+        Built record(kMove);
+        record.Number(static_cast<std::uint32_t>(from.x) & 0xFFFFFFU, 3);
+        record.Number(static_cast<std::uint32_t>(from.y) & 0xFFFFFFU, 3);
+        Record(band, record.Bytes());
+      } else {
+        Built record(kMoveFar);
+        record.Four(from.x);
+        record.Four(from.y);
+        Record(band, record.Bytes());
+      }
+    }
+    if (!recording_) {
+      break;  // The move was not taken.
+    }
+    // And the line on from there, as short as will say it.
+    if (Within(dx, kShortAcross) && Within(dy, kShortDown)) {
+      Built record(static_cast<std::uint8_t>(kShortLine | (static_cast<std::uint32_t>(dx) & 0x7FU)));
+      record.Byte(static_cast<std::uint8_t>(static_cast<std::uint32_t>(dy) & 0xFFU));
+      Record(band, record.Bytes());
+    } else if (Within(dx, kMiddleStep) && Within(dy, kMiddleStep)) {
+      // Eleven bits and eleven, the first of them in the first byte.
+      const std::uint32_t both =
+          ((static_cast<std::uint32_t>(dx) & 0x7FFU) << 11U) | (static_cast<std::uint32_t>(dy) & 0x7FFU);
+      Built record(static_cast<std::uint8_t>(kMiddleLine | (both >> 16U)));
+      record.Byte(static_cast<std::uint8_t>((both >> 8U) & 0xFFU));
+      record.Byte(static_cast<std::uint8_t>(both & 0xFFU));
+      Record(band, record.Bytes());
+    } else if (dx >= INT16_MIN && dx <= INT16_MAX && dy >= INT16_MIN && dy <= INT16_MAX) {
       Built record(kLineOn);
       record.Number(static_cast<std::uint16_t>(static_cast<std::int16_t>(dx)), 2);
       record.Number(static_cast<std::uint16_t>(static_cast<std::int16_t>(dy)), 2);
       Record(band, record.Bytes());
-    } else if (kept.hasEnd && kept.end == from) {
-      Built record(kLineOnFar);
-      record.Four(to.x);
-      record.Four(to.y);
-      Record(band, record.Bytes());
     } else {
-      Built record(kLine);
-      record.Four(from.x);
-      record.Four(from.y);
+      Built record(kLineOnFar);
       record.Four(to.x);
       record.Four(to.y);
       Record(band, record.Bytes());
@@ -381,27 +454,56 @@ bool SpoolWriter::ReplayStep(Filler& filler) noexcept {
       return false;
     }
     at_ += size;
-    if (tag == kLine || tag == kLineOn || tag == kLineOnFar) {
-      Place from = replayEnd_;
-      Place to;
-      if (tag == kLine) {
-        const Point a = reading.Place();
-        from = {.x = a.x, .y = a.y};
-      } else if (!replayHasEnd_) {
+    const bool shortLine = (tag & 0x80U) == kShortLine;
+    const bool middleLine = (tag & 0xC0U) == kMiddleLine;
+    if (tag == kMoveOn || tag == kMove || tag == kMoveFar) {
+      if (tag == kMoveOn) {
+        if (!replayHasEnd_) {
+          Fail(SpoolStatus::kBadRecord);
+          return false;
+        }
+        const auto both = static_cast<std::uint32_t>(reading.Number(3));
+        replayEnd_ = {.x = static_cast<std::int32_t>(std::int64_t{replayEnd_.x} + Signed(both & 0xFFFU, 12)),
+                      .y = static_cast<std::int32_t>(std::int64_t{replayEnd_.y} + Signed(both >> 12U, 12))};
+      } else if (tag == kMove) {
+        const std::int32_t x = Signed(static_cast<std::uint32_t>(reading.Number(3)), 24);
+        replayEnd_ = {.x = x, .y = Signed(static_cast<std::uint32_t>(reading.Number(3)), 24)};
+      } else {
+        const Point there = reading.Place();
+        replayEnd_ = {.x = there.x, .y = there.y};
+      }
+      replayHasEnd_ = true;
+      continue;
+    }
+    if (shortLine || middleLine || tag == kLineOn || tag == kLineOnFar) {
+      if (!replayHasEnd_) {
         Fail(SpoolStatus::kBadRecord);
         return false;
       }
-      if (tag == kLineOn) {
-        const std::int32_t dx = reading.Two();
-        const std::int32_t dy = reading.Two();
+      const Place from = replayEnd_;
+      Place to;
+      if (tag == kLineOnFar) {
+        const Point there = reading.Place();
+        to = {.x = there.x, .y = there.y};
+      } else {
+        std::int32_t dx = 0;
+        std::int32_t dy = 0;
+        if (shortLine) {
+          dx = Signed(tag & 0x7FU, 7);
+          dy = Signed(reading.Byte(), 8);
+        } else if (middleLine) {
+          const std::uint32_t second = reading.Byte();
+          const std::uint32_t both = (std::uint32_t{tag & 0x3FU} << 16U) | (second << 8U) | reading.Byte();
+          dx = Signed(both >> 11U, 11);
+          dy = Signed(both & 0x7FFU, 11);
+        } else {
+          dx = reading.Two();
+          dy = reading.Two();
+        }
         to = {.x = static_cast<std::int32_t>(std::int64_t{from.x} + dx),
               .y = static_cast<std::int32_t>(std::int64_t{from.y} + dy)};
-      } else {
-        const Point b = reading.Place();
-        to = {.x = b.x, .y = b.y};
       }
       filler.AddPlaced(from, to);
-      replayHasEnd_ = true;
       replayEnd_ = to;
       continue;
     }

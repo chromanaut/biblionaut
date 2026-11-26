@@ -5,7 +5,7 @@ the X4, the largest drawing in the public books, 3.5 MB, took 354 s in 30
 bands, about 5 s of reading the card and 5 s of rendering a pass. So a
 drawing can be read once and kept, and each strip drawn from what was
 kept. Kept so, with what is kept written 8 KB at a time and the file
-read 8 KB at a time, it takes 17 s from the press to the refresh.
+read 8 KB at a time, it takes 14 s from the press to the refresh.
 
 The X4's card reads faster the more it is asked for at once, 2 MB read
 straight through: 0.73 MB/s at 512 bytes a read, 0.89 MB/s at a
@@ -36,12 +36,23 @@ is one, and draws into its strip as the lines come. `SpoolWriter`
   caller gives; a full chunk is added to a store, the caller's
   (`SpoolStore`: a file on a card, or memory), and a table of links, two
   bytes for each chunk the store may hold, chains each band's chunks in
-  order. A line that goes on from where the band's last ended takes 5
-  bytes, or 9 if it is long; one that does not, 17; a filling 4 to 94.
+  order.
+- **How long a record is**: nearly all of what a drawing keeps is lines
+  that go on from where the band's last ended, and in an engraving most
+  are shorter than a pixel. So those have no byte to say what they are:
+  the top bits of a record's first byte say that it is such a line and how
+  long its steps are. It takes 2 bytes if it goes less than a quarter of a
+  pixel across and half a pixel down, 3 if less than four pixels each way,
+  and 5 or 9 beyond that. A line that begins somewhere else is a move to
+  there first: 4 bytes if that is within eight pixels of where the last
+  ended, as it is where an outline comes back into a band it left, and 7
+  or 9 if not. A filling is 4 to 94.
 - **What it comes to**: drawn 480 pixels wide in bands of 16 rows, the
-  3.5 MB engraving keeps 315,112 lines in 1.85 MB, the 1.8 MB one 1.1 MB,
-  and the Alice engraving 0.6 MB; the drawings of shapes and strokes keep
-  tens of kilobytes. About 5.9 bytes a line.
+  3.5 MB engraving keeps 315,112 lines in 0.86 MB, the 1.8 MB one 0.52 MB,
+  and the Alice engraving 0.32 MB; the drawings of shapes and strokes keep
+  tens of kilobytes. About 2.8 bytes a line. On the X4, where the page is
+  turned onto the panel, the largest keeps 827 KB, written in 1.0 s and
+  read back in 1.3 s.
 - **What a call costs**: `ReplayStep()` reads one chunk at the most, and
   fills once at the most.
 - **Bad input**: the links given can be too few (`kNoRoom`), the store can

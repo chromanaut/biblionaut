@@ -50,8 +50,11 @@ const char* SpoolStatusName(SpoolStatus status) noexcept;
 // What a band keeps goes into a chunk of kChunkBytes in `buffers`, and
 // each chunk, once full, is added to the store; the band's chunks are
 // chained by `links`, two bytes for each chunk the store may hold. A line
-// that goes on from where the band's last ended takes 5 bytes, or 9 if it
-// is long; one that does not, 17; a filling 4 to 94.
+// that goes on from where the band's last ended takes 2 bytes if it goes
+// less than a quarter of a pixel across and half a pixel down, 3 if less
+// than four pixels each way, and 5 or 9 beyond that; one that does not is
+// a move to where it begins first, of 4 bytes if that is within eight
+// pixels of where the last ended and 7 or 9 if not; a filling is 4 to 94.
 //
 // Used by one task. The object is about a kilobyte; the memory for chunks
 // and links is the caller's. ReplayStep() reads one chunk at the most and

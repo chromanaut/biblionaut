@@ -21,9 +21,12 @@
 
 namespace {
 
+using bn::draw::Canvas;
 using bn::draw::Filler;
+using bn::draw::FillRule;
 using bn::draw::Fixed;
 using bn::draw::kFixedOne;
+using bn::draw::Point;
 using bn::draw::SpoolStatus;
 using bn::draw::SpoolStore;
 using bn::draw::SpoolWriter;
@@ -300,6 +303,154 @@ TEST(Spool, WhatIsReadBackDamagedEndsInAStatus) {
     }
     EXPECT_TRUE(writer.Status() == SpoolStatus::kOk || writer.Status() == SpoolStatus::kBadRecord);
   }
+}
+
+// Where the outlines below begin: 200 pixels across and 8 down, in 256ths
+// of a pixel.
+constexpr std::int64_t kStartX = 51200;
+constexpr std::int64_t kStartY = 2048;
+
+// A place on a canvas, in 256ths of a pixel, which is what a line is kept
+// in.
+constexpr Point At(std::int64_t x, std::int64_t y) {
+  return {.x = static_cast<Fixed>(x * (kFixedOne / 256)), .y = static_cast<Fixed>(y * (kFixedOne / 256))};
+}
+
+// What is drawn on a canvas, kept in one band and given back: how many
+// bytes of the one chunk were used, and whether the picture is the picture
+// the same drawing gives drawn straight into a filler.
+struct Kept {
+  std::size_t bytes = 0;
+  bool same = false;
+};
+template <typename Drawn>
+Kept KeptInOneBand(const Drawn& draw) {
+  const std::size_t width = 400;
+  const std::size_t rows = 16;
+  std::vector<std::int16_t> cells(Filler::CellsFor(width, rows));
+  std::vector<std::uint8_t> direct(width * rows, kWhite);
+  Filler straight;
+  EXPECT_TRUE(straight.Begin(direct, width, 0, cells));
+  draw(straight);
+
+  MemoryStore store;
+  std::vector<std::uint8_t> buffers(SpoolWriter::BufferBytesFor(1));
+  std::vector<std::uint16_t> links(8);
+  SpoolWriter writer;
+  EXPECT_TRUE(writer.Begin(static_cast<std::int32_t>(width), static_cast<std::int32_t>(rows),
+                           static_cast<std::int32_t>(rows), buffers, links, store));
+  draw(writer);
+  EXPECT_EQ(writer.Finish(), SpoolStatus::kOk);
+  EXPECT_EQ(writer.Chunks(), 1u);
+  std::vector<std::uint8_t> given(width * rows, kWhite);
+  std::vector<std::uint8_t> chunk(SpoolWriter::kChunkBytes);
+  Filler filler;
+  EXPECT_TRUE(filler.Begin(given, width, 0, cells));
+  EXPECT_TRUE(writer.BeginBand(0, chunk));
+  while (writer.ReplayStep(filler)) {
+  }
+  EXPECT_EQ(writer.Status(), SpoolStatus::kOk);
+  Kept kept;
+  kept.same = given == direct;
+  // A chunk is filled out to its end with the byte that ends one, and the
+  // last thing kept here is a filling as solid as can be, which ends in
+  // another.
+  kept.bytes = store.bytes.size();
+  while (kept.bytes > 0 && store.bytes[kept.bytes - 1] == 0xC0) {
+    --kept.bytes;
+  }
+  return kept;
+}
+
+TEST(Spool, ALineThatGoesOnTakesAsFewBytesAsItsStepsNeed) {
+  // An outline of lines each of which goes on from the last, and comes back
+  // to where it began: each step in 256ths of a pixel, and the bytes it
+  // should take. Two if it goes less than a quarter of a pixel across and
+  // half a pixel down; three if less than four pixels each way; five if
+  // less than 128; nine beyond.
+  struct Step {
+    std::int64_t dx;
+    std::int64_t dy;
+    std::size_t bytes;
+  };
+  const std::vector<Step> steps = {
+      {.dx = 63, .dy = 127, .bytes = 2},     {.dx = -63, .dy = -127, .bytes = 2},
+      {.dx = -64, .dy = -128, .bytes = 2},   {.dx = 64, .dy = 128, .bytes = 3},
+      {.dx = 64, .dy = 1, .bytes = 3},       {.dx = -64, .dy = -1, .bytes = 2},
+      {.dx = 1, .dy = 128, .bytes = 3},      {.dx = -1, .dy = -128, .bytes = 2},
+      {.dx = 1023, .dy = -1024, .bytes = 3}, {.dx = -1023, .dy = 1024, .bytes = 5},
+      {.dx = 1024, .dy = 1, .bytes = 5},     {.dx = -1024, .dy = -1, .bytes = 3},
+      {.dx = 1, .dy = -1025, .bytes = 5},    {.dx = -1, .dy = 1025, .bytes = 5},
+      {.dx = 32767, .dy = 1, .bytes = 5},    {.dx = -32767, .dy = -1, .bytes = 5},
+      {.dx = 32768, .dy = 1, .bytes = 9},    {.dx = -32768, .dy = -1, .bytes = 5},
+      {.dx = 1, .dy = 40000, .bytes = 9},    {.dx = -1, .dy = -40000, .bytes = 9},
+  };
+  std::size_t expected = 7 + 4;  // The move to where it begins, and its filling.
+  for (const Step& step : steps) {
+    expected += step.bytes;
+  }
+  const Kept kept = KeptInOneBand([&steps](Canvas& canvas) {
+    std::int64_t x = kStartX;
+    std::int64_t y = kStartY;
+    canvas.MoveTo(At(x, y));
+    for (const Step& step : steps) {
+      x += step.dx;
+      y += step.dy;
+      canvas.LineTo(At(x, y));
+    }
+    ASSERT_EQ(x, kStartX);
+    ASSERT_EQ(y, kStartY);
+    canvas.Fill(FillRule::kNonZero, 0x40, 255);
+  });
+  EXPECT_EQ(kept.bytes, expected);
+  EXPECT_TRUE(kept.same);
+}
+
+TEST(Spool, ALineThatBeginsSomewhereElseIsAMoveAsShortAsWillSayIt) {
+  // Outlines of one short line each, which is two bytes, and the line that
+  // closes it, two more: so the band's last line ended where the outline
+  // began. Each begins so far from the one before, in 256ths of a pixel,
+  // and the move to it should take so many bytes: four within eight
+  // pixels each way, seven where three bytes hold the place, and nine
+  // beyond that.
+  struct Hop {
+    std::int64_t dx;
+    std::int64_t dy;
+    std::size_t bytes;
+  };
+  const std::vector<Hop> hops = {
+      {.dx = kStartX, .dy = kStartY, .bytes = 7},  // The first: there is nowhere to be near.
+      {.dx = 2047, .dy = -2048, .bytes = 4},
+      {.dx = -2048, .dy = 2047, .bytes = 4},
+      {.dx = 2048, .dy = 0, .bytes = 7},
+      {.dx = 0, .dy = -2049, .bytes = 7},
+      {.dx = 8388607 - kStartX - 2047, .dy = 2049, .bytes = 7},  // To the last place three bytes hold.
+      {.dx = 1, .dy = 0, .bytes = 4},                            // One past it is near, all the same;
+      {.dx = 4000, .dy = 0, .bytes = 9},                         // further past it, not;
+      {.dx = -4000, .dy = 0, .bytes = 9},                        // nor back to one past it, from there.
+      {.dx = -8388608 - 8388608, .dy = 0, .bytes = 7},           // To the first place three bytes hold.
+      {.dx = -1, .dy = 0, .bytes = 4},
+      {.dx = -4000, .dy = 0, .bytes = 9},
+      {.dx = 4000, .dy = 0, .bytes = 9},  // To one before the first, from afar.
+  };
+  std::size_t expected = 4;  // The one filling.
+  for (const Hop& hop : hops) {
+    expected += hop.bytes + 2 + 2;
+  }
+  const Kept kept = KeptInOneBand([&hops](Canvas& canvas) {
+    std::int64_t x = 0;
+    std::int64_t y = 0;
+    for (const Hop& hop : hops) {
+      x += hop.dx;
+      y += hop.dy;
+      canvas.MoveTo(At(x, y));
+      canvas.LineTo(At(x + 10, y + 20));
+      canvas.Close();
+    }
+    canvas.Fill(FillRule::kNonZero, 0x40, 255);
+  });
+  EXPECT_EQ(kept.bytes, expected);
+  EXPECT_TRUE(kept.same);
 }
 
 TEST(Spool, RefusesWhatItCannotRecord) {

@@ -135,6 +135,8 @@ Reading a book:
 - [The file a book is imported into](docs/bundle.md): the bundle, as a
   container that loses no chapter when the power goes, and as made from
   a book.
+- [A chapter's bytes](docs/segment.md): what a chapter is in a bundle,
+  with what writes one and what reads one.
 - [Reading the books on a card](docs/book-check.md): the book check.
 
 Setting text:

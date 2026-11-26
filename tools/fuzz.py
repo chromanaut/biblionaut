@@ -74,6 +74,7 @@ TARGETS = {
     "zip": 16384,
     "bundle": 8192,
     "book_bundle": 16384,
+    "segment": 32768,
     "xml": 16384,
     "package": 16384,
     "toc": 16384,

@@ -130,6 +130,7 @@ bn_add_unit_test(epub_tests
     unit/epub/document_blocks_test.cpp
     unit/epub/document_sheets_test.cpp
     unit/epub/package_test.cpp
+    unit/epub/segment_test.cpp
     unit/epub/sheets_digest_test.cpp
     unit/epub/style_stack_test.cpp
     unit/epub/toc_test.cpp
@@ -346,6 +347,16 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/bundle_tool.py
       $<TARGET_FILE:bn-bundle> ${CMAKE_CURRENT_BINARY_DIR}/bundle_tool)
   set_tests_properties(e2e.BundleTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-bundle write-chapter, chapter and find, and through them the writer
+  # and the reader of a chapter's segment, each against a writer and a
+  # reader of the test's own: what one writes the other reads, for chapters
+  # the test makes up.
+  add_test(
+    NAME e2e.SegmentTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/segment_tool.py
+      $<TARGET_FILE:bn-bundle> ${CMAKE_CURRENT_BINARY_DIR}/segment_tool)
+  set_tests_properties(e2e.SegmentTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # bn-css sheets and bn-css document, and through them the finding of the
   # sheets a document asks for, against a second working-out in the test

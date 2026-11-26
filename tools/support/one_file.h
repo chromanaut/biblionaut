@@ -132,9 +132,10 @@ class OneFile final : public core::Storage {
   std::uint64_t readBytes_ = 0;
 };
 
-// One file of the computer's that a tool makes: whatever path is asked
-// for, this is the file, made new and empty when it is opened to be made,
-// and then written and read back.
+// One file of the computer's that a tool makes or changes: whatever path
+// is asked for, this is the file, made new and empty when it is opened to
+// be made, and as it is when it is opened to be changed; and then written
+// and read back.
 class OneNewFile final : public core::Storage {
  public:
   explicit OneNewFile(std::string path) : path_(std::move(path)) {}
@@ -150,11 +151,12 @@ class OneNewFile final : public core::Storage {
 
   [[nodiscard]] core::StorageStatus Open(std::string_view /*path*/, core::OpenMode mode,
                                          core::FileHandle& file) noexcept override {
-    if (descriptor_ >= 0 || mode != core::OpenMode::kCreate) {
+    if (descriptor_ >= 0 || mode == core::OpenMode::kRead) {
       return core::StorageStatus::kFailed;
     }
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,hicpp-signed-bitwise): the system's own flags.
-    descriptor_ = ::open(path_.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    // NOLINTNEXTLINE(hicpp-signed-bitwise): the system's own flags.
+    const int flags = mode == core::OpenMode::kCreate ? O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC : O_RDWR | O_CLOEXEC;
+    descriptor_ = ::open(path_.c_str(), flags, 0644);  // NOLINT(cppcoreguidelines-pro-type-vararg)
     if (descriptor_ < 0) {
       return core::StorageStatus::kNotFound;
     }

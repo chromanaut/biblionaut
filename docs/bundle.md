@@ -4,12 +4,13 @@ A book is to be imported once, into a file of its own on the card, and
 read from that file afterwards: a *bundle*. `epub/bundle.h` is the bundle
 as a container: what is written once when it is made, the record it keeps
 of each chapter, and how a chapter is added so that the power going at
-any moment loses no chapter added before. What a chapter's own bytes are
-is not here yet; to the container they are a run of bytes, a *segment*,
-of which a record says where it is. `epub/book_bundle.h` makes a book's
-bundle from its EPUB, with every chapter not imported ([A bundle made
-from a book](#a-bundle-made-from-a-book), below). Nothing imports a
-chapter yet, and nothing reads a bundle to show it.
+any moment loses no chapter added before. To the container a chapter's
+own bytes are a run of bytes, a *segment*, of which a record says where it
+is; what they are is in [A chapter's bytes](segment.md).
+`epub/book_bundle.h` makes a book's bundle from its EPUB, with every
+chapter not imported ([A bundle made from a book](#a-bundle-made-from-a-book),
+below). Nothing imports a chapter from a book yet, and nothing reads a
+bundle to show it.
 
 ```
 0          the header page                4,096 bytes

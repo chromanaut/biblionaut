@@ -1,6 +1,7 @@
 // bn-bundle: makes the bundle of a book, the file the firmware imports a
-// book into, with the code the firmware makes it with; and says what a
-// bundle holds.
+// book into, with the code the firmware makes it with; says what a bundle
+// holds; and prints a chapter of one as text, writes one from that text,
+// and looks for a place in one (chapter.h).
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include "chapter.h"
 #include "core/block_file.h"
 #include "core/inflate.h"
 #include "core/storage.h"
@@ -35,6 +37,7 @@ using bn::epub::BundleStatus;
 using bn::epub::BundleTable;
 using bn::epub::PackageStatus;
 using bn::epub::ZipStatus;
+using bn::tools::Printable;
 
 // More than any book needs for its manifest and its spine; and what the
 // XML parser is given, which is what a device gives it.
@@ -50,6 +53,9 @@ void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s make BOOK BUNDLE [--written SECONDS]\n"
                "       %s info BUNDLE\n"
+               "       %s chapter BUNDLE NUMBER\n"
+               "       %s write-chapter BUNDLE NUMBER TEXT\n"
+               "       %s find BUNDLE NUMBER block|characters|source|id VALUE\n"
                "\n"
                "make reads the EPUB BOOK the way the firmware does and writes its bundle to\n"
                "BUNDLE: the book's strings, its spine, its pictures and its table of contents,\n"
@@ -81,28 +87,32 @@ void PrintUsage(const char* program) {
                "  slot                the number of the slot in force, how long a slot is,\n"
                "                      and where the segments begin and end\n"
                "  chapters            how many are in each state\n"
+               "  chapter N           for each that was imported: its state, its blocks and\n"
+               "                      characters, how many things were left out of it, how\n"
+               "                      long its segment is and where, and its directory's\n"
+               "                      length, place in the segment and checksum\n"
                "  tables              whether each of the four is what its checksum says\n"
+               "\n"
+               "chapter prints the chapter NUMBER of a bundle, from 0, as text: a line for each\n"
+               "block, each thing in a block, and each id, in the document's order, and lines\n"
+               "beginning with # for what the chapter's record and directory say of it.\n"
+               "\n"
+               "write-chapter writes the chapter that the file TEXT describes, in the text that\n"
+               "chapter prints, as the chapter NUMBER of the bundle, and commits it. It prints\n"
+               "how many blocks and characters it wrote, how long the segment and its\n"
+               "directory are, how many things were left out, and how many pictures.\n"
+               "\n"
+               "find looks in a chapter for the block of a number, the block a count of\n"
+               "characters falls in, the last block that began at or before a place in the\n"
+               "source document, or an id, and prints where that is: the block, where it\n"
+               "begins in the segment, the characters before it, where it began in the\n"
+               "source, its kind and its bits for breaking as the index has them, and how far\n"
+               "into the block the place is; \"end\" for the chapter's end, \"none\" for a\n"
+               "place the chapter does not have.\n"
                "\n"
                "In a name, a backslash and any byte below a space are printed as \\xNN. Ends\n"
                "with 0 if what was asked for was done, 1 if not.\n",
-               program, program);
-}
-
-// Text as it is printed: every byte that could confuse a reader of lines
-// written out as its number.
-std::string Printable(std::string_view text) {
-  std::string out;
-  for (const char ch : text) {
-    const auto byte = static_cast<unsigned char>(ch);
-    if (byte < 0x20 || byte == '\\') {
-      std::array<char, 8> escaped{};
-      std::snprintf(escaped.data(), escaped.size(), "\\x%02X", static_cast<unsigned>(byte));
-      out += escaped.data();
-    } else {
-      out += ch;
-    }
-  }
-  return out;
+               program, program, program, program, program);
 }
 
 std::string Said(std::string_view text) { return text.empty() ? std::string("-") : Printable(text); }
@@ -306,6 +316,23 @@ int Info(const std::string& path) {
   }
   std::printf("chapters: %u not imported, %u whole, %u cut short, %u not documents, %u refused\n", states[0], states[1],
               states[2], states[3], states[4]);
+  // And a line for each that has a segment.
+  for (std::size_t i = 0; i < book.documents; ++i) {
+    BundleChapter chapter;
+    if (bundle.ReadChapter(i, chapter) != BundleStatus::kOk) {
+      std::fprintf(stderr, "error: %s: a chapter's record could not be read\n", path.c_str());
+      return 1;
+    }
+    if (chapter.segmentBytes != 0) {
+      std::printf(
+          "chapter %zu: %s, %u blocks, %u characters, %u left out, %u bytes at %u, directory of %u at %u %08x\n", i,
+          chapter.state == bn::epub::ChapterState::kWhole ? "whole" : "cut short",
+          static_cast<unsigned>(chapter.blocks), static_cast<unsigned>(chapter.characters),
+          static_cast<unsigned>(chapter.leftOut), static_cast<unsigned>(chapter.segmentBytes),
+          static_cast<unsigned>(chapter.segmentOffset), static_cast<unsigned>(chapter.directoryBytes),
+          static_cast<unsigned>(chapter.directoryOffset), static_cast<unsigned>(chapter.directoryChecksum));
+    }
+  }
   std::printf("tables:");
   bool whole = true;
   for (const BundleTable table :
@@ -324,6 +351,22 @@ int main(int argc, char** argv) {
   const std::string command = argc > 1 ? argv[1] : "";
   if (command == "info" && argc == 3) {
     return Info(argv[2]);
+  }
+  if ((command == "chapter" && argc == 4) || (command == "write-chapter" && argc == 5) ||
+      (command == "find" && argc == 6)) {
+    char* end = nullptr;
+    const unsigned long long number = std::strtoull(argv[3], &end, 10);
+    if (end == nullptr || *end != '\0' || *argv[3] == '\0' || number > 65535) {
+      PrintUsage(argv[0]);
+      return 2;
+    }
+    if (command == "chapter") {
+      return bn::tools::PrintChapter(argv[2], number);
+    }
+    if (command == "write-chapter") {
+      return bn::tools::WriteChapter(argv[2], number, argv[4]);
+    }
+    return bn::tools::FindInChapter(argv[2], number, argv[4], argv[5]);
   }
   if (command == "make" && (argc == 4 || argc == 6)) {
     std::uint32_t written = 0;

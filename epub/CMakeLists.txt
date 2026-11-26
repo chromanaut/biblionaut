@@ -14,6 +14,9 @@ add_library(bn_epub STATIC
   src/document_sheets.cpp
   src/package.cpp
   src/package_digest.cpp
+  src/segment.cpp
+  src/segment_reader.cpp
+  src/segment_writer.cpp
   src/sheets_digest.cpp
   src/style_stack.cpp
   src/toc.cpp

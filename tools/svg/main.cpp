@@ -466,7 +466,9 @@ int Draw(const Options& options) {
     status = renderer.Finish();
     lines = renderer.Report().lines;
     const bn::draw::SpoolStatus kept = writer.Finish();
-    std::vector<std::uint8_t> chunk(bn::draw::SpoolWriter::kChunkBytes);
+    // Room for sixteen chunks, which is what the viewer gives a band back
+    // through: those of a band that lie together are read together.
+    std::vector<std::uint8_t> chunk(16 * bn::draw::SpoolWriter::kChunkBytes);
     for (std::size_t band = 0; band < bands && kept == bn::draw::SpoolStatus::kOk; ++band) {
       const std::size_t top = band * stripRows;
       const std::size_t rows = std::min(stripRows, height - top);

@@ -53,9 +53,17 @@ const char* SpoolStatusName(SpoolStatus status) noexcept;
 // that goes on from where the band's last ended takes 5 bytes, or 9 if it
 // is long; one that does not, 17; a filling 4 to 94.
 //
+// A drawing is drawn a part at a time, so a band's chunks mostly lie one
+// after another in the store, and reading the store costs by the read more
+// than by the byte. So chunks of a band that lie together are read
+// together, as many as the memory BeginBand() is given holds: the links say
+// which those are before anything is read, and nothing is read that is not
+// the band's.
+//
 // Used by one task. The object is about a kilobyte; the memory for chunks
-// and links is the caller's. ReplayStep() reads one chunk at the most and
-// fills once at the most.
+// and links is the caller's. ReplayStep() reads the store once at the most,
+// for no more than that memory, gives back one chunk at the most, and fills
+// once at the most.
 class SpoolWriter final : public Canvas {
  public:
   static constexpr std::size_t kChunkBytes = 512;
@@ -100,10 +108,12 @@ class SpoolWriter final : public Canvas {
   std::int32_t Top() const noexcept override { return 0; }
   std::int32_t Rows() const noexcept override { return height_; }
 
-  // Begins giving back a band, reading its chunks into `chunk`, which is
-  // kChunkBytes or more. False if the recording is not finished, or did
-  // not go right, or there is no such band.
-  [[nodiscard]] bool BeginBand(std::size_t band, std::span<std::uint8_t> chunk) noexcept;
+  // Begins giving back a band, reading its chunks into `memory`, which is
+  // kChunkBytes or more: as many chunks as it holds whole are read at once,
+  // where the band has that many together in the store. False if the
+  // recording is not finished, or did not go right, or there is no such
+  // band.
+  [[nodiscard]] bool BeginBand(std::size_t band, std::span<std::uint8_t> memory) noexcept;
   // Gives some of the band back to `filler`, set to that band: the rest of
   // a chunk, or as far as a filling and that filling. True while there is
   // more; false when the band is all given back, or reading it back went
@@ -149,8 +159,13 @@ class SpoolWriter final : public Canvas {
   Place start_;
   Place current_;
 
-  // Giving a band back: its chunk in hand, how far into it, the next chunk,
-  // and where the last line given back ended.
+  // Giving a band back: the memory its chunks are read into, how many of
+  // them are in it and which is in hand; that chunk, how far into it, the
+  // next chunk that is not in memory, and where the last line given back
+  // ended.
+  std::span<std::uint8_t> memory_;
+  std::size_t read_ = 0;
+  std::size_t given_ = 0;
   std::span<std::uint8_t> chunk_;
   std::uint16_t next_ = kNone;
   std::size_t at_ = 0;

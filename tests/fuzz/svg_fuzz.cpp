@@ -48,8 +48,10 @@
 //     nothing was left out that the drawing does not say too;
 //   - the two pictures are the same, byte for byte, however the picture
 //     was cut into strips and the file into pieces; and so is the file
-//     drawn once into a SpoolWriter and given back a band at a time, each
-//     step of which reads a chunk and fills once at the most.
+//     drawn once into a SpoolWriter and given back a band at a time,
+//     through memory for one chunk to eight, as byte 0 says how the file
+//     is cut: each step of which reads its store once at the most, whole
+//     chunks and no more than that memory, and fills once at the most.
 
 #include <algorithm>
 #include <array>
@@ -341,16 +343,19 @@ Drawing Draw(std::string_view file, PictureSize page, unsigned turn, std::size_t
   return drawing;
 }
 
-// A recording kept in memory, which counts its reads.
+// A recording kept in memory, which counts its reads and keeps the size
+// of the last.
 class MemorySpool final : public bn::draw::SpoolStore {
  public:
   std::size_t reads = 0;
+  std::size_t lastRead = 0;
   bool Append(std::span<const std::uint8_t> bytes) noexcept override {
     bytes_.insert(bytes_.end(), bytes.begin(), bytes.end());
     return true;
   }
   bool ReadAt(std::uint32_t offset, std::span<std::uint8_t> bytes) noexcept override {
     ++reads;
+    lastRead = bytes.size();
     if (std::size_t{offset} + bytes.size() > bytes_.size()) {
       return false;
     }
@@ -363,10 +368,12 @@ class MemorySpool final : public bn::draw::SpoolStore {
 };
 
 // The file read once into a SpoolWriter, and each band of `stripRows`
-// rows drawn from that: what a band is given back has to be what drawing
-// into it gives, and each step reads one chunk and fills once at the most.
+// rows drawn from that, through memory for `together` chunks: what a band
+// is given back has to be what drawing into it gives, and each step reads
+// the store once at the most, whole chunks and no more than the memory,
+// and fills once at the most.
 std::vector<std::uint8_t> Spooled(std::string_view file, PictureSize page, unsigned turn, std::size_t stripRows,
-                                  Fixed tolerance, std::size_t roomSize, Fixed thinnest) {
+                                  Fixed tolerance, std::size_t roomSize, Fixed thinnest, std::size_t together) {
   const PictureSize size = TurnedSize(turn, page);
   const std::size_t fewest = (size.height + SpoolWriter::kMostBands - 1) / SpoolWriter::kMostBands;
   const std::size_t rows = std::max(stripRows, fewest);
@@ -393,7 +400,7 @@ std::vector<std::uint8_t> Spooled(std::string_view file, PictureSize page, unsig
   }
   static_cast<void>(renderer.Finish());
   BN_FUZZ_CHECK(writer.Finish() == SpoolStatus::kOk, "a recording in memory with links enough did not go right");
-  std::vector<std::uint8_t> chunk(SpoolWriter::kChunkBytes);
+  std::vector<std::uint8_t> chunk(SpoolWriter::kChunkBytes * together);
   for (std::size_t band = 0; band < bands; ++band) {
     const std::size_t top = band * rows;
     const std::size_t here = std::min(rows, size.height - top);
@@ -408,7 +415,10 @@ std::vector<std::uint8_t> Spooled(std::string_view file, PictureSize page, unsig
       const std::uint32_t visited = filler.PixelsVisited();
       more = writer.ReplayStep(filler);
       BN_FUZZ_CHECK(store.reads - reads <= 1 && filler.PixelsVisited() - visited <= size.width * here,
-                    "a step of giving back read more than a chunk or filled more than once");
+                    "a step of giving back read more than once or filled more than once");
+      BN_FUZZ_CHECK(store.reads == reads || (store.lastRead != 0 && store.lastRead <= chunk.size() &&
+                                             store.lastRead % SpoolWriter::kChunkBytes == 0),
+                    "a step of giving back read other than whole chunks, or more than its memory holds");
     }
     BN_FUZZ_CHECK(writer.Status() == SpoolStatus::kOk, "a recording in memory could not be given back");
   }
@@ -453,9 +463,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   }
   BN_FUZZ_CHECK(SameFile(cut.reading, whole.reading), "a file cut up was read differently from the same file whole");
   BN_FUZZ_CHECK(cut.picture == whole.picture, "a file drawn in strips is not the file drawn whole");
-  BN_FUZZ_CHECK(
-      Spooled(file, picture, turn, std::min(stripRows, turnedRows), tolerance, roomSize, thinnest) == whole.picture,
-      "a file kept and given back a band at a time is not the file drawn whole");
+  BN_FUZZ_CHECK(Spooled(file, picture, turn, std::min(stripRows, turnedRows), tolerance, roomSize, thinnest,
+                        1 + (first & 7U)) == whole.picture,
+                "a file kept and given back a band at a time is not the file drawn whole");
 
   // The reading that drew nothing found the same file, and all that it
   // says was left out the drawing says too. (The drawing can say more:

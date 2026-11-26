@@ -42,8 +42,22 @@ is one, and draws into its strip as the lines come. `SpoolWriter`
   3.5 MB engraving keeps 315,112 lines in 1.85 MB, the 1.8 MB one 1.1 MB,
   and the Alice engraving 0.6 MB; the drawings of shapes and strokes keep
   tens of kilobytes. About 5.9 bytes a line.
-- **What a call costs**: `ReplayStep()` reads one chunk at the most, and
-  fills once at the most.
+- **Read back**: a read of the card costs by the read more than by the
+  byte (above), and the links say which chunk of a band comes next before
+  anything is read. So chunks of a band that lie one after another in the
+  store are read at once, as many as the memory `BeginBand()` is given
+  holds, which in the viewer is sixteen; and nothing is read that is not
+  the band's. How much that saves is in how the drawing was drawn. A
+  drawing made a part at a time, kept in bands that lie the way its parts
+  do, has nearly all of a band's chunks together. Turned a quarter onto
+  the X4's panel, a band is a strip down the page and an engraving's
+  strokes cross many of them: of the 3,708 chunks the largest engraving
+  keeps there, a band's next chunk is the very next in the store for one
+  in five, and they are read in 3,011 reads: the card's nine drawings,
+  3.7 MB kept, were read back in 5.6 s where a chunk at a time took 5.8 s.
+- **What a call costs**: `ReplayStep()` reads the store once at the most,
+  whole chunks and no more than the memory it was given; gives back one
+  chunk at the most; and fills once at the most.
 - **Bad input**: the links given can be too few (`kNoRoom`), the store can
   fail (`kStoreFailed`), and what is read back can be damaged
   (`kBadRecord`); each is a status, and a damaged chunk is never read past

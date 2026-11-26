@@ -343,11 +343,14 @@ void SpoolWriter::Flush(std::size_t band) noexcept {
   ++chunks_;
 }
 
-bool SpoolWriter::BeginBand(std::size_t band, std::span<std::uint8_t> chunk) noexcept {
-  if (!finished_ || status_ != SpoolStatus::kOk || band >= bands_ || chunk.size() < kChunkBytes) {
+bool SpoolWriter::BeginBand(std::size_t band, std::span<std::uint8_t> memory) noexcept {
+  if (!finished_ || status_ != SpoolStatus::kOk || band >= bands_ || memory.size() < kChunkBytes) {
     return false;
   }
-  chunk_ = chunk.first(kChunkBytes);
+  memory_ = memory;
+  read_ = 0;
+  given_ = 0;
+  chunk_ = memory_.first(kChunkBytes);
   next_ = band_[band].head;
   at_ = 0;
   loaded_ = false;
@@ -361,14 +364,34 @@ bool SpoolWriter::ReplayStep(Filler& filler) noexcept {
     return false;
   }
   if (!loaded_) {
-    if (next_ == kNone) {
-      return false;
+    if (given_ == read_) {
+      // None in memory that has not been given back: the band's next chunk
+      // is read, and with it those that follow it both in the band and in
+      // the store, as many as the memory holds.
+      if (next_ == kNone) {
+        return false;
+      }
+      if (next_ >= chunks_) {
+        Fail(SpoolStatus::kBadRecord);
+        return false;
+      }
+      const std::size_t most = memory_.size() / kChunkBytes;
+      std::uint16_t last = next_;
+      std::size_t together = 1;
+      while (together < most && links_[last] != kNone && links_[last] == last + 1 && links_[last] < chunks_) {
+        last = links_[last];
+        ++together;
+      }
+      if (!store_->ReadAt(std::uint32_t{next_} * kChunkBytes, memory_.first(together * kChunkBytes))) {
+        Fail(SpoolStatus::kStoreFailed);
+        return false;
+      }
+      next_ = links_[last];
+      read_ = together;
+      given_ = 0;
     }
-    if (next_ >= chunks_ || !store_->ReadAt(std::uint32_t{next_} * kChunkBytes, chunk_)) {
-      Fail(next_ >= chunks_ ? SpoolStatus::kBadRecord : SpoolStatus::kStoreFailed);
-      return false;
-    }
-    next_ = links_[next_];
+    chunk_ = memory_.subspan(given_ * kChunkBytes, kChunkBytes);
+    ++given_;
     at_ = 0;
     loaded_ = true;
   }
@@ -439,7 +462,7 @@ bool SpoolWriter::ReplayStep(Filler& filler) noexcept {
   }
   // The chunk is all given back.
   loaded_ = false;
-  return next_ != kNone;
+  return given_ < read_ || next_ != kNone;
 }
 
 }  // namespace bn::draw

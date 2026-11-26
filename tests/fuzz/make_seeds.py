@@ -2694,6 +2694,152 @@ def book_bundle_seeds() -> None:
     write("book_bundle", "a-zip-file-with-a-name-twice-and-entries-not-to-be-read", bytes([0x01]) + book.finish())
 
 
+# ---- segment: byte 0 (written here or the input's bytes, and what is
+# mended or changed), then things to give the writer, or a segment ----
+
+def segment_seeds() -> None:
+    clear("segment")
+    # The segments that are given as bytes are written by the end-to-end
+    # test's own writer, which is made from the format and shares none of
+    # the code that is fuzzed.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "e2e"))
+    sys.dont_write_bytecode = True
+    import segment_tool
+
+    # Things given to the writer: a byte that says what, in its low four
+    # bits, and what that kind needs.
+    def begin(kind: int = 1, mask: int = 0, step: int = 10) -> bytes:
+        return bytes([(kind - 1) << 4]) + struct.pack("<HB", mask, step)
+
+    def said(data: bytes) -> bytes:
+        return bytes([2, len(data)]) + data
+
+    def made(length: int) -> bytes:
+        return bytes([3]) + struct.pack("<H", length)
+
+    def style(bits: int, family: int, language: int) -> bytes:
+        return bytes([4 | (family << 4)]) + struct.pack("<HB", bits, language)
+
+    def link(kind: int, chapter: int, fragment: bytes) -> bytes:
+        return bytes([5 | (kind << 4)]) + struct.pack("<HB", chapter, len(fragment)) + fragment
+
+    def picture(number: int, bits: int, alt: bytes) -> bytes:
+        return bytes([7 | (bits << 4)]) + struct.pack("<HB", number, len(alt)) + alt
+
+    def anchor(name: bytes) -> bytes:
+        return bytes([8, len(name)]) + name
+
+    def run(count: int) -> bytes:
+        return bytes([11]) + struct.pack("<H", count)
+
+    end_link, end = bytes([6]), bytes([10])
+
+    def written(name: str, things: bytes, languages: int = 0, change: int | None = None) -> None:
+        choices = (languages << 2) | (0 if change is None else 2)
+        write("segment", name, bytes([choices]) + struct.pack("<H", change or 0) + things)
+
+    every = (anchor(b"top") + begin(2, 0x0201, 40) + said(b"A heading") + end
+             + begin(1, 0x7FFF, 0) + said("Text, caf\u00e9 and \u6f22\u5b57. ".encode()) + style(0x02, 2, 1)
+             + link(1, 7, b"note-1") + said(b"a note") + anchor(b"mid") + end_link
+             + picture(9, 1, b"a picture in the line") + style(0, 0, 0) + said(b" and on.") + end
+             + anchor(b"between") + anchor(b"mid")
+             + begin(3, 0x0C00, 5) + said(b"An item of a list") + end
+             + begin(4, 0x6000, 5) + picture(0xFFFF, 0, b"") + picture(3, 0, b"alt") + end
+             + begin(5) + end
+             + begin(6, 0x1000, 9) + link(2, 0, b"") + said(b"a cell") + end
+             + anchor(b"after"))
+    written("every-kind-of-thing", every, languages=1)
+    written("long-text-in-pieces", begin() + made(4088) + made(4088) + said(b"then a few words ") + made(1019)
+            + style(1, 1, 0) + made(1021) + anchor(b"deep") + made(3000) + end + begin() + made(1) + end)
+    written("several-index-pages", run(600) + begin(2, 0x0200, 3) + said(b"after them") + end + run(120))
+    written("ids-enough-for-several-pages", begin() + b"".join(said(b"word ") + anchor(b"%03d" % number + b"n" * 200)
+                                                               for number in range(30)) + end
+            + b"".join(anchor(b"between-%03d" % number + b"m" * 180) for number in range(30)) + begin() + end)
+    written("more-languages-than-are-kept", begin() + b"".join(style(number, number % 8, number) + said(b"x")
+                                                                 for number in range(16)) + end, languages=7)
+    written("pictures-by-their-numbers", begin() + b"".join(picture(number, number % 2, b"p")
+                                                              for number in (900, 3, 512, 3, 0xFFFF, 77, 0, 0xFFFE)) + end)
+    # More pictures than a chapter's directory has room for, which is also
+    # a directory of more than a page.
+    written("more-pictures-than-are-kept", begin() + b"".join(picture(3 * number, 0, b"") for number in range(520)) + end)
+    written("nothing-at-all", b"")
+    written("a-block-of-nothing", begin() + end)
+    written("things-out-of-turn", said(b"no block") + end_link + end + begin() + end_link + link(0, 1, b"a")
+            + link(0, 2, b"b") + begin(2) + said(b"a link left open") + link(0, 3, b"c"))
+    # The same chapter with one byte changed: in a block, in a page, in the
+    # directory.
+    for number, change in enumerate((8 * 5, 8 * 60 + 3, 8 * 150 + 1, 8 * 260, 8 * 330 + 7, 8 * 400, 8 * 480 + 2,
+                                     8 * 580 + 5, 8 * 650)):
+        written(f"one-byte-changed-{number}", every, languages=1, change=change)
+    written("a-byte-of-an-index-page-changed", run(300), change=8 * 6000 + 4)
+
+    # Segments as bytes. Byte 0: 1; 2 takes the directory's checksum and
+    # its counts into the chapter's record; 4 puts right the checksums of
+    # the pages in the directory.
+    def given(name: str, choices: int, segment: bytes, directory: int, block: int = 1, place: int = 5,
+              looked_for: bytes = b"id-0") -> None:
+        write("segment", name, bytes([choices]) + struct.pack("<HHHB", directory, block, place, len(looked_for))
+              + looked_for + segment)
+
+    def changed(segment: bytes, at: int, value: bytes) -> bytes:
+        return segment[:at] + value + segment[at + len(value):]
+
+    small = segment_tool.make_chapter(7, 6, [b"fr"], False)
+    segment, record = segment_tool.write_segment(small, 1)
+    directory = record["directory_bytes"]
+    given("a-chapter-as-it-is-written", 3, segment, directory)
+    given("a-record-that-does-not-agree", 1, segment, directory)
+    given("a-directory-of-another-length", 3, segment, directory + 12)
+    given("text-with-a-byte-changed", 3, changed(segment, 40, b"\x7e"), directory)
+    given("an-item-longer-than-may-be", 3, changed(segment, 2 + segment.index(b"\x01\x00", 4), b"\xff\x7f"), directory)
+    at = record["directory_offset"]
+    given("a-directory-with-a-page-more", 7, changed(segment, at, b"\x02\x00"), directory)
+    given("a-directory-with-pictures-it-has-not", 3, changed(segment, at + 4, b"\x40\x00"), directory)
+    given("blocks-that-end-early", 7, changed(segment, at + 8, struct.pack("<I", record["blocks"] + 1)), directory)
+    given("nothing-but-a-directory", 3, struct.pack("<HHHHIII", 0, 0, 0, 0, 0, 0, 0), 20)
+    given("nothing", 3, b"", 0)
+
+    # A style of a language the chapter does not name: the item is given
+    # before the block's checksum is looked at.
+    styled = {"state": "whole", "reason": 0, "source_bytes": 9, "languages": [b"fr"], "sizes": {},
+              "things": [("block", 1, 0, 0, {}), ("style", 1, 1, 2, False, 1, 900), ("text", b"x"), ("end",)]}
+    segment, record = segment_tool.write_segment(styled, 3)
+    given("a-style-of-a-language-the-chapter-has-not", 3, changed(segment, 13, b"\x09"), record["directory_bytes"])
+
+    # Two index pages and two anchor pages, in few bytes.
+    things: list[tuple] = []
+    for number in range(270):
+        if number % 7 == 0:
+            things.append(("id", b"id-%d" % (number // 7) + b"q" * 120))
+        things.append(("block", 1, 0, number * 10, {}))
+        things.append(("text", b"%d" % number))
+        things.append(("end",))
+    pages = {"state": "whole", "reason": 0, "source_bytes": 3000, "languages": [], "sizes": {}, "things": things}
+    segment, record = segment_tool.write_segment(pages, 2)
+    directory = record["directory_bytes"]
+    at = record["directory_offset"]
+    given("two-index-pages-and-two-anchor-pages", 3, segment, directory, block=260, place=700, looked_for=b"id-38" + b"q" * 120)
+    index_page = struct.unpack_from("<I", segment, at + 20)[0]
+    anchor_page = struct.unpack_from("<I", segment, at + 20 + 24)[0]
+    given("an-index-page-with-a-byte-changed", 3, changed(segment, index_page + 37, b"\x99"), directory, block=2)
+    given("an-index-page-changed-and-its-checksum-put-right", 7, changed(segment, index_page + 32, b"\xff\xff\xff\x7f"),
+          directory, block=2)
+    given("an-anchor-page-with-a-byte-changed", 3, changed(segment, anchor_page + 9, b"Z"), directory)
+    given("an-anchor-page-changed-and-its-checksum-put-right", 7, changed(segment, anchor_page, b"\x00"), directory)
+    given("an-id-in-a-block-there-is-not", 7, changed(segment, anchor_page + 1 + segment[anchor_page],
+                                                      struct.pack("<H", 999)), directory)
+    given("a-page-of-another-length-among-the-blocks", 3, changed(segment, index_page - 2, b"\xf0\x0f"), directory)
+
+    # A block with an item of a kind there is none of: it is passed over.
+    block = struct.pack("<BBH", 1, 0, 0) + struct.pack("<BBH", 9, 5, 3) + b"???" + struct.pack("<BBH", 1, 0, 2) + b"ok"
+    block += struct.pack("<BBHI", 6, 0, 8, 2)
+    block += struct.pack("<I", zlib.crc32(block))
+    index = struct.pack("<IIIBBH", 0, 0, 0, 1, 0, 0)
+    body = block + struct.pack("<BBH", 0xF0, 0, 16) + index
+    directory_bytes = struct.pack("<HHHHIII", 1, 0, 0, 0, 1, 2, 9) + struct.pack("<III", len(block) + 4, 0, zlib.crc32(index))
+    given("an-item-of-a-kind-there-is-none-of", 3, body + directory_bytes, len(directory_bytes), block=0, place=1)
+
+
 # ---- bundle: byte 0 (what is mended, and the chapter that is committed
 # afterwards), then a bundle, given as its length and the pieces of it
 # that are not nothing ----
@@ -3109,6 +3255,7 @@ def main() -> None:
     picture_cache_seeds()
     bundle_seeds()
     book_bundle_seeds()
+    segment_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

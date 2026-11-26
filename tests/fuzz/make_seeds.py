@@ -2584,12 +2584,18 @@ def font_image(faces: list[dict]) -> bytes:
     `kerning`: two code points to the quarters of a pixel the second is set
     further on after the first; each character that is the first of a pair
     is then a class of its own as a first, in the order of the code points,
-    and each that is the second of one likewise as a second."""
+    and each that is the second of one likewise as a second. And it may
+    have `ligatures`, in the order they are tried: the two or three code
+    points whose glyphs each is made of, and the code point whose glyph
+    stands for them, or -1, -2 and so on for the first, the second and so
+    on of its `extras`, which are glyphs no character has, drawn after the
+    rest."""
     out = bytearray(16 + 48 * len(faces))
     out[0:5] = b"BNFN\x01"
     struct.pack_into("<H", out, 6, len(faces))
     for number, face in enumerate(faces):
-        drawn = [(40, 6, 9, 0, 9)] + [face["glyphs"][code] for code in sorted(face["glyphs"])]
+        drawn = ([(40, 6, 9, 0, 9)] + [face["glyphs"][code] for code in sorted(face["glyphs"])] +
+                 list(face.get("extras", [])))
         ranges: list[list[int]] = []
         for glyph, code in enumerate(sorted(face["glyphs"]), start=1):
             if ranges and ranges[-1][0] + ranges[-1][1] == code:
@@ -2602,7 +2608,7 @@ def font_image(faces: list[dict]) -> bytes:
         kerning = face.get("kerning", {})
         firsts = {code: at for at, code in enumerate(sorted({first for first, _ in kerning}), start=1)}
         seconds = {code: at for at, code in enumerate(sorted({second for _, second in kerning}), start=1)}
-        codes = [None] + sorted(face["glyphs"])
+        codes = [None] + sorted(face["glyphs"]) + [None] * len(face.get("extras", []))
         glyphs_at = len(out)
         pictures = bytearray()
         for index, (advance, width, height, left, top) in enumerate(drawn):
@@ -2618,6 +2624,12 @@ def font_image(faces: list[dict]) -> bytes:
         for (first, second), quarters in kerning.items():
             table[(firsts[first] - 1) * len(seconds) + seconds[second] - 1] = quarters & 0xFF
         out += table
+        ligatures_at = len(out)
+        ligatures = face.get("ligatures", [])
+        for made_of, stands in ligatures:
+            numbers = [codes.index(code) for code in made_of] + [0]
+            out += struct.pack("<HHHH", numbers[0], numbers[1], numbers[2],
+                               codes.index(stands) if stands >= 0 else len(face["glyphs"]) - stands)
         pictures_at = len(out)
         out += pictures
         struct.pack_into("<BBHhhHHIIIIII", out, 16 + 48 * number, face["role"], face["style"], face["size"],
@@ -2625,6 +2637,8 @@ def font_image(faces: list[dict]) -> bytes:
                          len(drawn), glyphs_at, pictures_at, len(pictures))
         if table:
             struct.pack_into("<IBB", out, 16 + 48 * number + 36, kerning_at, len(firsts), len(seconds))
+        if ligatures:
+            struct.pack_into("<BBI", out, 16 + 48 * number + 42, len(ligatures), 0, ligatures_at)
     struct.pack_into("<I", out, 8, len(out))
     return bytes(out)
 
@@ -2728,6 +2742,65 @@ def font_seeds() -> None:
     two = bytearray(font_image(kerned + [{"role": 1, "style": 0, "size": 20, "glyphs": letters, "kerning": pairs}]))
     two[16 + 48 + 36:16 + 48 + 40] = two[16 + 36:16 + 40]
     seed("kerning-before-its-face", bytes(two), asked=(0x61, 0x62, 0x64, 0x63))
+    # Ligatures: a face that joins letters, asked for those it joins. One of
+    # three comes before one of the first two of them, as a font has them;
+    # one is drawn with a character's glyph and the others with glyphs no
+    # character has; and the last is made of what an earlier one is, so that
+    # nothing comes to it.
+    joins = [((0x61, 0x62, 0x63), -1), ((0x61, 0x62), -2), ((0x64, 0x64), 0xE9), ((0x63, 0x61, 0x64), -1),
+             ((0x61, 0x62), 0x66)]
+    extras = [(70, 12, 9, 0, 9), (55, 9, 9, 0, 9)]
+    joined = [{"role": 0, "style": 0, "size": 20, "glyphs": letters, "kerning": pairs, "ligatures": joins,
+               "extras": extras}]
+    seed("ligatures", font_image(joined), asked=(0x61, 0x62, 0x63, 0x64))
+    seed("ligatures-through-a-small-map", font_image(joined), asked=(0x61, 0x62, 0x63, 0x64), choices=0x02 | (5 << 2))
+    seed("faces-that-join-and-one-that-does-not", font_image(
+        [{"role": 0, "style": 0, "size": 20, "glyphs": letters, "ligatures": joins, "extras": extras},
+         {"role": 0, "style": 2, "size": 20, "glyphs": letters, "ligatures": [((0x62, 0x61), 0x63)]},
+         {"role": 2, "style": 0, "size": 20, "glyphs": letters}]), asked=(0x61, 0x62, 0x63, 0x64))
+    # One of two before the one of three that begins with them, which is
+    # then never made.
+    seed("a-ligature-of-two-before-one-of-three", font_image(
+        [{"role": 0, "style": 0, "size": 20, "glyphs": letters,
+          "ligatures": [((0x61, 0x62), 0x65), ((0x61, 0x62, 0x63), 0x66)]}]), asked=(0x61, 0x62, 0x63, 0x64))
+    whole = font_image(joined)
+    count, _, ligatures_at = struct.unpack_from("<BBI", whole, 16 + 42)
+    glyph_count = struct.unpack_from("<I", whole, 16 + 20)[0]
+    # A ligature drawn with a glyph the face has not: the one after its
+    # last, and the last number there is. The first is the ligature of
+    # three, so the one of two after it is not come to either.
+    spoiled = bytearray(whole)
+    struct.pack_into("<H", spoiled, ligatures_at + 6, glyph_count)
+    struct.pack_into("<H", spoiled, ligatures_at + 8 * 2 + 6, 0xFFFF)
+    seed("ligatures-of-glyphs-the-face-has-not", bytes(spoiled), asked=(0x61, 0x62, 0x63, 0x64))
+    # One made of a glyph the face has not, and one made of glyph 0, which
+    # is drawn for what a face lacks.
+    spoiled = bytearray(whole)
+    struct.pack_into("<H", spoiled, ligatures_at + 2, glyph_count + 7)
+    struct.pack_into("<H", spoiled, ligatures_at + 8, 0)
+    seed("ligatures-made-of-glyphs-the-face-has-not", bytes(spoiled), asked=(0x61, 0x62, 0x63, 0x7A))
+    # A list that begins too near the end to fit, one whose first ligature
+    # is inside the image and whose last is not, and more than fit.
+    spoiled = bytearray(whole)
+    struct.pack_into("<I", spoiled, 16 + 44, len(whole) - 3)
+    seed("ligatures-outside-the-image", bytes(spoiled))
+    spoiled = bytearray(whole)
+    struct.pack_into("<I", spoiled, 16 + 44, len(whole) - 8 * count + 1)
+    seed("ligatures-that-run-off-the-end", bytes(spoiled), asked=(0x61, 0x62, 0x63, 0x64))
+    spoiled = bytearray(whole)
+    spoiled[16 + 42] = 255
+    seed("more-ligatures-than-fit", bytes(spoiled))
+    # A list that lies after everything else of its face: at the image's end.
+    spoiled = bytearray(whole)
+    struct.pack_into("<I", spoiled, 16 + 44, len(whole))
+    spoiled += whole[ligatures_at:ligatures_at + 8 * count]
+    seed("ligatures-apart-from-its-face", bytes(spoiled), mended=True, asked=(0x61, 0x62, 0x63, 0x64))
+    # And one that lies before everything else of its face: the second of
+    # two faces is given the first's.
+    two = bytearray(font_image(joined + [{"role": 1, "style": 0, "size": 20, "glyphs": letters, "ligatures": joins,
+                                          "extras": extras}]))
+    two[16 + 48 + 44:16 + 48 + 48] = two[16 + 44:16 + 48]
+    seed("ligatures-before-its-face", bytes(two), asked=(0x61, 0x62, 0x63, 0x64))
     whole = font_image(one)
     seed("another-version", whole[:4] + b"\x02" + whole[5:])
     seed("not-an-image", b"<svg/>" * 20)

@@ -3,85 +3,13 @@
 #include <algorithm>
 #include <bit>
 #include <map>
-#include <set>
 #include <utility>
+
+#include "font/opentype.h"
 
 namespace bn::font_tool {
 
 namespace {
-
-// A font numbers its glyphs in 16 bits.
-constexpr std::size_t kGlyphNumbers = 65536;
-
-// A font's table, whose numbers are big-endian. A number that would be read
-// from outside it is nothing, and `damaged` is then set.
-class Table {
- public:
-  Table(std::span<const std::uint8_t> bytes, bool& damaged) : bytes_(bytes), damaged_(&damaged) {}
-
-  std::uint16_t U16(std::size_t at) const {
-    if (at > bytes_.size() || bytes_.size() - at < 2) {
-      *damaged_ = true;
-      return 0;
-    }
-    return static_cast<std::uint16_t>((std::uint32_t{bytes_[at]} << 8U) | bytes_[at + 1]);
-  }
-  std::int16_t S16(std::size_t at) const { return static_cast<std::int16_t>(U16(at)); }
-  std::uint32_t U32(std::size_t at) const { return (std::uint32_t{U16(at)} << 16U) | U16(at + 2); }
-  bool Damaged() const { return *damaged_; }
-  bool Empty() const { return bytes_.empty(); }
-
- private:
-  std::span<const std::uint8_t> bytes_;
-  bool* damaged_;
-};
-
-// A coverage table: for each glyph, its place among the glyphs covered, or
-// -1 for one that is not.
-std::vector<std::int32_t> Coverage(const Table& table, std::size_t at) {
-  std::vector<std::int32_t> places(kGlyphNumbers, -1);
-  const std::uint16_t format = table.U16(at);
-  const std::uint16_t count = table.U16(at + 2);
-  for (std::size_t i = 0; i < count && !table.Damaged(); ++i) {
-    if (format == 1) {
-      places[table.U16(at + 4 + (2 * i))] = static_cast<std::int32_t>(i);
-    } else if (format == 2) {
-      const std::size_t range = at + 4 + (6 * i);
-      const std::uint32_t first = table.U16(range);
-      const std::uint32_t last = table.U16(range + 2);
-      const std::uint32_t place = table.U16(range + 4);
-      for (std::uint32_t glyph = first; glyph <= last; ++glyph) {
-        places[glyph] = static_cast<std::int32_t>(place + (glyph - first));
-      }
-    }
-  }
-  return places;
-}
-
-// A table of classes: the class of each glyph, 0 for one it does not name.
-std::vector<std::uint16_t> Classes(const Table& table, std::size_t at) {
-  std::vector<std::uint16_t> classes(kGlyphNumbers, 0);
-  const std::uint16_t format = table.U16(at);
-  if (format == 1) {
-    const std::uint32_t first = table.U16(at + 2);
-    const std::uint16_t count = table.U16(at + 4);
-    for (std::uint32_t i = 0; i < count && first + i < kGlyphNumbers && !table.Damaged(); ++i) {
-      classes[first + i] = table.U16(at + 6 + (std::size_t{2} * i));
-    }
-  } else if (format == 2) {
-    const std::uint16_t count = table.U16(at + 2);
-    for (std::size_t i = 0; i < count && !table.Damaged(); ++i) {
-      const std::size_t range = at + 4 + (6 * i);
-      const std::uint32_t first = table.U16(range);
-      const std::uint32_t last = table.U16(range + 2);
-      const std::uint16_t value = table.U16(range + 4);
-      for (std::uint32_t glyph = first; glyph <= last; ++glyph) {
-        classes[glyph] = value;
-      }
-    }
-  }
-  return classes;
-}
 
 // How many bytes a value record of `format` takes: two for each thing it
 // has, of the eight there are.
@@ -145,45 +73,6 @@ bool PassedOver(std::uint16_t flag, std::uint16_t glyphClass) {
   return (glyphClass == kBaseGlyph && (flag & kIgnoreBaseGlyphs) != 0) ||
          (glyphClass == kLigature && (flag & kIgnoreLigatures) != 0) ||
          (glyphClass == kMark && (flag & (kIgnoreMarks | kSomeMarks)) != 0);
-}
-
-// The numbers of the lookups of `kern` for the default language of every
-// script, in order.
-std::set<std::uint16_t> KernLookups(const Table& gpos) {
-  constexpr std::uint32_t kKern = 0x6B65726EU;  // "kern"
-  std::set<std::uint16_t> lookups;
-  const std::size_t scripts = gpos.U16(4);
-  const std::size_t features = gpos.U16(6);
-  if (scripts == 0 || features == 0) {
-    return lookups;
-  }
-  const std::uint16_t scriptCount = gpos.U16(scripts);
-  const std::uint16_t featureCount = gpos.U16(features);
-  for (std::size_t s = 0; s < scriptCount && !gpos.Damaged(); ++s) {
-    const std::size_t script = scripts + gpos.U16(scripts + 2 + (6 * s) + 4);
-    const std::uint16_t byDefault = gpos.U16(script);
-    if (byDefault == 0) {
-      continue;
-    }
-    const std::size_t language = script + byDefault;
-    const std::uint16_t count = gpos.U16(language + 4);
-    for (std::size_t f = 0; f < count && !gpos.Damaged(); ++f) {
-      const std::uint16_t index = gpos.U16(language + 6 + (2 * f));
-      if (index >= featureCount) {
-        continue;
-      }
-      const std::size_t record = features + 2 + (std::size_t{6} * index);
-      if (gpos.U32(record) != kKern) {
-        continue;
-      }
-      const std::size_t feature = features + gpos.U16(record + 4);
-      const std::uint16_t lookupCount = gpos.U16(feature + 2);
-      for (std::size_t l = 0; l < lookupCount && !gpos.Damaged(); ++l) {
-        lookups.insert(gpos.U16(feature + 4 + (2 * l)));
-      }
-    }
-  }
-  return lookups;
 }
 
 // Reads lookup `index` into `lookup`. False if it is not one of pair
@@ -256,7 +145,8 @@ FontKerning ReadKerning(std::span<const std::uint8_t> gposBytes, std::span<const
     return kerning;
   }
   std::vector<PairLookup> lookups;
-  for (const std::uint16_t index : KernLookups(gpos)) {
+  constexpr std::uint32_t kKern = 0x6B65726EU;  // "kern"
+  for (const std::uint16_t index : FeatureLookups(gpos, kKern)) {
     PairLookup lookup;
     if (ReadPairLookup(gpos, index, lookup)) {
       lookups.push_back(std::move(lookup));

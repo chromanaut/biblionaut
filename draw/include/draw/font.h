@@ -29,6 +29,15 @@
 // is of class 0 there, and likewise as the second, and the table has
 // nothing for class 0.
 //
+// A face may have ligatures: a glyph it draws in place of two or three of
+// its glyphs that follow one another, as one for an f and an i. It has a
+// list of them, each the glyphs it is made of and the glyph that stands for
+// them, which is a glyph of the face like any other: it may be some
+// character's own, or one that no character has, which has a number after
+// those of the characters' glyphs; and it kerns by its own classes. Which
+// glyphs a face joins is its font's affair, and nothing here knows of any
+// letters.
+//
 // The image is not trusted. Opening it looks at its header and its table of
 // faces, and nothing else; whatever a face's tables hold, finding a glyph
 // looks at no more than kMostSteps of them, reads nothing outside the image,
@@ -40,10 +49,10 @@
 // table of faces are kept readable. A face says its role, style, size and
 // metrics from the first, and has glyphs once it is held
 // (FontImage::Hold()), which makes readable the one stretch of the image
-// that has its tables, kerning among them, and its pictures: `bn-font`
-// writes a face's together,
-// and an image that scatters them asks for more than may be had. So the
-// faces a page is set in are held, and given up for the next page's.
+// that has its tables, kerning and ligatures among them, and its pictures:
+// `bn-font` writes a face's together, and an image that scatters them asks
+// for more than may be had. So the faces a page is set in are held, and
+// given up for the next page's.
 //
 // The layout, whose numbers are little-endian:
 //
@@ -76,7 +85,9 @@
 //                     out,
 //     seconds         and how many as the second: 0 of both for a face
 //                     with no kerning
-//     0         (6)
+//     ligatures       how many ligatures it has,
+//     0
+//     at        (4)   and where the first is
 //   a range, 12 bytes: code points that have glyphs one after another
 //     first     (4)   the first code point
 //     count     (4)   how many
@@ -96,6 +107,14 @@
 //   a signed byte for each class of second glyphs from 1 up: how much
 //   further on the second is set, in quarters of a pixel. Less than nothing
 //   brings the two together.
+//   a ligature, 8 bytes:
+//     first     (2)   the glyphs it is made of, as they follow one another:
+//     second    (2)   the first two,
+//     third     (2)   and the third, or 0 for a ligature of two
+//     glyph     (2)   the glyph that is drawn in their place
+//   where a ligature of three begins as one of two does, whichever comes
+//   first in the list is the one that is made: `bn-font` keeps the order
+//   the font tries its own in.
 //   a picture: its rows from the top, each pixel two bits, the first pixel
 //   in the highest two bits of the first byte, rows following on with no
 //   gap, the last byte filled out with nothing: 0 is paper, 3 full ink.
@@ -201,6 +220,18 @@ class Face {
   std::uint8_t KernFirsts() const noexcept;
   std::uint8_t KernSeconds() const noexcept;
   std::size_t KerningBytes() const noexcept { return std::size_t{KernFirsts()} * KernSeconds(); }
+
+  // The glyph the face draws in place of the first two or three of
+  // `glyphs`, which follow one another in a line, if it has a ligature of
+  // them: into `ligature`, and how many glyphs it stands for. 0, with
+  // `ligature` left as it was, if it has none of them, if there are fewer
+  // than two, if the first two are not both glyphs this face gave, or if
+  // the glyph its list names cannot be had. The first of its ligatures that
+  // fits is the one made. It looks at each of them once at the most: 255,
+  // whatever the image holds.
+  std::size_t Ligature(std::span<const Glyph> glyphs, Glyph& ligature) const noexcept;
+  // How many ligatures it has.
+  std::uint8_t Ligatures() const noexcept;
 
   // How many steps the last Find() took.
   std::uint32_t LastSteps() const noexcept { return steps_; }

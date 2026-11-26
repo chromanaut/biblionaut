@@ -9,10 +9,11 @@ build downloads.
   - `bn-font build` has to make an image of a preset, and say what went
     into each face.
   - The image is taken apart here, from the description of its layout: its
-    header and faces, each face's ranges, glyphs, kerning and pictures, all
-    of which have to lie inside it, in order and apart. Courier Prime has
-    no kerning, and its faces have to have none: what an image makes of a
-    font that kerns is font_kerning.py's.
+    header and faces, each face's ranges, glyphs, kerning, ligatures and
+    pictures, all of which have to lie inside it, in order and apart.
+    Courier Prime has no kerning and makes no ligatures, and its faces have
+    to have none: what an image makes of a font that kerns is
+    font_kerning.py's, and of one that makes ligatures font_ligatures.py's.
   - The font file is taken apart here too, as far as its tables of
     characters (`cmap`) and of widths (`hmtx`): a character has a glyph in
     the image exactly when the font has one for it, and the glyph moves the
@@ -153,9 +154,10 @@ class ImageFace:
         record = 16 + 48 * number
         (self.role, self.style, self.size, self.ascent, self.descent, self.line, self.x_height, range_count,
          ranges_at, self.glyph_count, glyphs_at, pictures_at, picture_bytes, kerning_at, self.kern_firsts,
-         self.kern_seconds) = struct.unpack_from("<BBHhhHHIIIIIIIBB", image, record)
+         self.kern_seconds, ligature_count, kept, ligatures_at) = struct.unpack_from(
+             "<BBHhhHHIIIIIIIBBBBI", image, record)
         what = f"face {number}"
-        expect(image[record + 42:record + 48] == bytes(6), f"{what}: the last six bytes of its record are not nothing")
+        expect(kept == 0, f"{what}: the byte its record keeps is not nothing")
         # Its kerning: a table between its glyphs' records and its pictures,
         # or none at all.
         kerning_bytes = self.kern_firsts * self.kern_seconds
@@ -166,6 +168,19 @@ class ImageFace:
             expect((kerning_at, self.kern_firsts, self.kern_seconds) == (0, 0, 0),
                    f"{what}: it has classes for kerning and no table, or a table of none")
         self.kerning = struct.unpack_from(f"<{kerning_bytes}b", image, kerning_at)
+        # Its ligatures: a list after its kerning and before its pictures, or
+        # none at all. Each is the glyphs it is made of, the third 0 for one
+        # of two, and the glyph that stands for them: glyphs the face has.
+        if ligature_count:
+            expect(max(glyphs_at + 12 * self.glyph_count, kerning_at + kerning_bytes) <= ligatures_at and
+                   ligatures_at + 8 * ligature_count <= pictures_at,
+                   f"{what}: its ligatures are not between its other tables and its pictures")
+        else:
+            expect(ligatures_at == 0, f"{what}: it has a place for ligatures and none")
+        self.ligatures = [struct.unpack_from("<HHHH", image, ligatures_at + 8 * i) for i in range(ligature_count)]
+        for first, second, third, stands in self.ligatures:
+            expect(0 < first < self.glyph_count and 0 < second < self.glyph_count and third < self.glyph_count and
+                   0 < stands < self.glyph_count, f"{what}: a ligature names a glyph the face has not")
         expect(ranges_at + 12 * range_count <= len(image), f"{what}: its ranges run outside the image")
         expect(glyphs_at + 12 * self.glyph_count <= len(image), f"{what}: its glyphs run outside the image")
         expect(pictures_at + picture_bytes <= len(image), f"{what}: its pictures run outside the image")
@@ -207,7 +222,32 @@ class ImageFace:
                 self.by_code[code] = self.glyphs[glyph]
                 glyph += 1
             free = first + count
-        expect(glyph == self.glyph_count, f"{what}: its ranges come to {glyph} glyphs of {self.glyph_count}")
+        # The glyphs after those are no character's: each stands for a
+        # ligature, and is there for nothing else.
+        self.character_glyphs = glyph
+        expect(glyph <= self.glyph_count, f"{what}: its ranges come to {glyph} glyphs of {self.glyph_count}")
+        standing = {stands for _, _, _, stands in self.ligatures}
+        expect(all(extra in standing for extra in range(glyph, self.glyph_count)),
+               f"{what}: it has a glyph that no character has and no ligature is drawn with")
+
+    def joined(self, glyphs: list[dict]) -> list[dict]:
+        """`glyphs`, which follow one another, with each ligature the face has of them put in their place: at each
+        place the first in its list that fits."""
+        out = []
+        at = 0
+        while at < len(glyphs):
+            for first, second, third, stands in self.ligatures:
+                if glyphs[at]["index"] != first or at + 1 >= len(glyphs) or glyphs[at + 1]["index"] != second:
+                    continue
+                if third and (at + 2 >= len(glyphs) or glyphs[at + 2]["index"] != third):
+                    continue
+                out.append(self.glyphs[stands])
+                at += 3 if third else 2
+                break
+            else:
+                out.append(glyphs[at])
+                at += 1
+        return out
 
     def kern(self, first: dict, second: dict) -> int:
         """How much further on `second` is set after `first`, in quarters of a pixel."""
@@ -225,9 +265,9 @@ def read_image(image: bytes) -> list[ImageFace]:
 
 
 BUILD_LINE = re.compile(r"^(\S+) +(\S+) +(\d+) px: +(\d+) glyphs \((\d+) lacking\), pictures +(\d+) bytes; "
-                        r"ascent (-?\d+), descent (-?\d+), line (\d+), x-height (\d+); no kerning$")
+                        r"ascent (-?\d+), descent (-?\d+), line (\d+), x-height (\d+); no kerning; no ligatures$")
 INFO_LINE = re.compile(r"^(\S+) +(\S+) +(\d+) px: +(\d+) glyphs; ascent (-?\d+), descent (-?\d+), line (\d+), "
-                       r"x-height (\d+); kerning 0 by 0$")
+                       r"x-height (\d+); kerning 0 by 0; ligatures 0$")
 GLYPH_LINE = re.compile(r"^  U\+([0-9A-F]{4,6}): (?:no glyph|glyph (\d+), advance (\d+), (\d+) by (\d+) at (-?\d+), "
                         r"(-?\d+), ink (\d+), kerns as 0 and 0)$")
 STYLES = ("regular", "bold", "italic", "bold-italic")
@@ -307,6 +347,8 @@ def main() -> int:
                f"kerning 0 bytes, image {len(image)} bytes", f"build's last line: {said[-1]!r}")
         expect(all(face.kern_firsts == 0 and not face.kerning for face in faces),
                "a face of Courier Prime, which has no kerning, has some in the image")
+        expect(all(not face.ligatures and face.character_glyphs == face.glyph_count for face in faces),
+               "a face of Courier Prime, which makes no ligatures, has some in the image")
 
         # What the reader makes of the same image.
         result = run(tool, "info", str(image_path), "--glyphs", *written.split())

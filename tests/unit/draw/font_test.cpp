@@ -3,9 +3,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "byte_map_fakes.h"
@@ -31,7 +34,9 @@ using bn::test::PutLe32;
 
 // A face with the letters a to e, a space, and é. It kerns three pairs: a
 // b after an a is a pixel nearer, a c after an a half a pixel further, and
-// a b after a d two pixels nearer.
+// a b after a d two pixels nearer. And it has three ligatures, made of
+// glyphs it has for characters: é stands for c, d and e; a for c and d
+// with nothing or anything else after them; and the space for two e's.
 ImageFace SmallFace(std::uint8_t role = 0, std::uint8_t style = 0, std::uint16_t size = 20) {
   ImageFace face = bn::test::EmptyFace(role, style, size);
   face.glyphs[' '] = bn::test::Blank(20);
@@ -42,6 +47,9 @@ ImageFace SmallFace(std::uint8_t role = 0, std::uint8_t style = 0, std::uint16_t
   face.kerning[{'a', 'b'}] = -4;
   face.kerning[{'a', 'c'}] = 2;
   face.kerning[{'d', 'b'}] = -8;
+  face.ligatures = {{.letters = {'c', 'd', 'e'}, .glyph = 0xE9, .extra = -1},
+                    {.letters = {'c', 'd'}, .glyph = 'a', .extra = -1},
+                    {.letters = {'e', 'e'}, .glyph = ' ', .extra = -1}};
   return face;
 }
 
@@ -109,6 +117,22 @@ bool EverythingLiesInside(const FontImage& fonts, std::span<const std::uint8_t> 
       }
     }
     static_cast<void>(kerned);
+    // And its ligatures, of every two and three of the first of them: the
+    // glyph given for one is as much inside the image as any.
+    static_cast<void>(face.Ligatures());
+    const std::size_t some = std::min<std::size_t>(first.size(), 10);
+    for (std::size_t a = 0; a < some; ++a) {
+      for (std::size_t b = 0; b < some; ++b) {
+        for (std::size_t c = 0; c < some; ++c) {
+          const std::array<Glyph, 3> three = {first[a], first[b], first[c]};
+          Glyph ligature;
+          const std::size_t stands = face.Ligature(three, ligature);
+          if (stands > 3 || stands == 1 || (stands != 0 && !inside(ligature))) {
+            return false;
+          }
+        }
+      }
+    }
   }
   return true;
 }
@@ -394,6 +418,174 @@ TEST(Face, KernsNothingByAClassItsTableHasNot) {
   EXPECT_EQ(face.Kern(first, second), -8);
 }
 
+// The glyphs a face has for `text`, a character a byte.
+std::vector<Glyph> GlyphsOf(const Face& face, const std::string& text) {
+  std::vector<Glyph> glyphs;
+  for (const char letter : text) {
+    Glyph glyph;
+    EXPECT_TRUE(face.Find(static_cast<std::uint8_t>(letter), glyph)) << letter;
+    glyphs.push_back(glyph);
+  }
+  return glyphs;
+}
+
+TEST(Face, DrawsOneGlyphInPlaceOfTwoOrThreeThatFollowOneAnother) {
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace()});
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face face = fonts.FaceAt(0);
+  EXPECT_EQ(face.Ligatures(), 3);
+  Glyph accented;
+  Glyph a;
+  Glyph space;
+  ASSERT_TRUE(face.Find(0xE9, accented));
+  ASSERT_TRUE(face.Find('a', a));
+  ASSERT_TRUE(face.Find(' ', space));
+
+  // Three letters, with more after them or none.
+  Glyph ligature;
+  EXPECT_EQ(face.Ligature(GlyphsOf(face, "cde"), ligature), 3U);
+  EXPECT_EQ(ligature.index, accented.index);
+  EXPECT_EQ(ligature.advance, 44);
+  EXPECT_EQ(ligature.picture.data(), accented.picture.data());
+  EXPECT_EQ(face.Ligature(GlyphsOf(face, "cdeab"), ligature), 3U);
+  EXPECT_EQ(ligature.index, accented.index);
+  // Two of them, when the third is another letter or there is none.
+  EXPECT_EQ(face.Ligature(GlyphsOf(face, "cda"), ligature), 2U);
+  EXPECT_EQ(ligature.index, a.index);
+  EXPECT_EQ(face.Ligature(GlyphsOf(face, "cd"), ligature), 2U);
+  EXPECT_EQ(ligature.index, a.index);
+  // A ligature's glyph kerns as that glyph does, and is this face's.
+  EXPECT_EQ(ligature.kernFirst, a.kernFirst);
+  EXPECT_EQ(ligature.face, a.face);
+  EXPECT_EQ(face.Ligature(GlyphsOf(face, "ee"), ligature), 2U);
+  EXPECT_EQ(ligature.index, space.index);
+  EXPECT_TRUE(ligature.picture.empty());
+
+  // What it has none of leaves the glyph as it was: the letters the other
+  // way round, the first two letters of one with something between, one
+  // that begins later, and too few.
+  ligature = a;
+  for (const char* letters : {"dc", "dce", "cad", "ce", "ab", "acd", "ed", "c", ""}) {
+    EXPECT_EQ(face.Ligature(GlyphsOf(face, letters), ligature), 0U) << letters;
+    EXPECT_EQ(ligature.index, a.index) << letters;
+  }
+}
+
+TEST(Face, MakesTheFirstOfItsLigaturesThatFits) {
+  // The same ligatures with the one of two letters before the one of three
+  // that begins as it does: the three are never joined.
+  ImageFace face = SmallFace();
+  std::swap(face.ligatures[0], face.ligatures[1]);
+  const std::vector<std::uint8_t> image = FontImageBytes({face});
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face opened = fonts.FaceAt(0);
+  Glyph a;
+  ASSERT_TRUE(opened.Find('a', a));
+  Glyph ligature;
+  EXPECT_EQ(opened.Ligature(GlyphsOf(opened, "cde"), ligature), 2U);
+  EXPECT_EQ(ligature.index, a.index);
+}
+
+TEST(Face, DrawsALigatureWithAGlyphNoCharacterHas) {
+  // A face with two glyphs after its characters' own, and a ligature for
+  // each: of a and b, and of a, b and c.
+  ImageFace face = SmallFace();
+  face.extras = {Block(70, 15, 10, 2), Block(96, 22, 11, 3)};
+  face.ligatures = {{.letters = {'a', 'b', 'c'}, .glyph = 0, .extra = 1},
+                    {.letters = {'a', 'b'}, .glyph = 0, .extra = 0}};
+  const std::vector<std::uint8_t> image = FontImageBytes({face});
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face opened = fonts.FaceAt(0);
+  // Glyph 0, a space, five letters and é, and the two.
+  EXPECT_EQ(opened.Glyphs(), 10U);
+  EXPECT_EQ(opened.Ligatures(), 2);
+  Glyph ligature;
+  EXPECT_EQ(opened.Ligature(GlyphsOf(opened, "abd"), ligature), 2U);
+  EXPECT_EQ(ligature.index, 8U);
+  EXPECT_EQ(ligature.advance, 70);
+  EXPECT_EQ(ligature.width, 15);
+  EXPECT_EQ(ligature.Ink(14, 9), 2);
+  EXPECT_EQ(opened.Ligature(GlyphsOf(opened, "abc"), ligature), 3U);
+  EXPECT_EQ(ligature.index, 9U);
+  EXPECT_EQ(ligature.advance, 96);
+  EXPECT_EQ(ligature.Ink(21, 10), 3);
+  // No character finds them, and their numbers do.
+  Glyph byNumber;
+  ASSERT_TRUE(opened.GlyphAt(9, byNumber));
+  EXPECT_EQ(byNumber.picture.data(), ligature.picture.data());
+  EXPECT_FALSE(opened.GlyphAt(10, byNumber));
+  // A ligature can be the first letter of another: here it is not.
+  const std::array<Glyph, 2> joined = {ligature, GlyphsOf(opened, "c")[0]};
+  EXPECT_EQ(opened.Ligature(joined, byNumber), 0U);
+}
+
+TEST(Face, MakesNoLigatureOfGlyphsThatAreNotItsOwn) {
+  ImageFace other = SmallFace(1);
+  other.ligatures = {{.letters = {'a', 'b'}, .glyph = 'e', .extra = -1}};
+  ImageFace plain = SmallFace(2);
+  plain.ligatures.clear();
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), other, plain});
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face serif = fonts.FaceAt(0);
+  const Face sans = fonts.FaceAt(1);
+  const Face mono = fonts.FaceAt(2);
+  const std::vector<Glyph> serifs = GlyphsOf(serif, "cde");
+  const std::vector<Glyph> sanses = GlyphsOf(sans, "cde");
+  Glyph ligature;
+  EXPECT_EQ(serif.Ligature(serifs, ligature), 3U);
+  // Another face's glyphs, all of them or either of the first two.
+  EXPECT_EQ(serif.Ligature(sanses, ligature), 0U);
+  EXPECT_EQ(sans.Ligature(serifs, ligature), 0U);
+  EXPECT_EQ(serif.Ligature(std::array<Glyph, 3>{sanses[0], serifs[1], serifs[2]}, ligature), 0U);
+  EXPECT_EQ(serif.Ligature(std::array<Glyph, 3>{serifs[0], sanses[1], serifs[2]}, ligature), 0U);
+  // With a third that is another face's, the first two are joined as two.
+  Glyph a;
+  ASSERT_TRUE(serif.Find('a', a));
+  EXPECT_EQ(serif.Ligature(std::array<Glyph, 3>{serifs[0], serifs[1], sanses[2]}, ligature), 2U);
+  EXPECT_EQ(ligature.index, a.index);
+  // Each face has its own: the sans joins a and b, which the serif does not.
+  EXPECT_EQ(sans.Ligature(GlyphsOf(sans, "ab"), ligature), 2U);
+  EXPECT_EQ(ligature.face, 1);
+  EXPECT_EQ(serif.Ligature(GlyphsOf(serif, "ab"), ligature), 0U);
+  // A face with none, and a face that is not one.
+  EXPECT_EQ(mono.Ligatures(), 0);
+  EXPECT_EQ(mono.Ligature(GlyphsOf(mono, "cde"), ligature), 0U);
+  EXPECT_EQ(Face().Ligature(serifs, ligature), 0U);
+  EXPECT_EQ(Face().Ligatures(), 0);
+}
+
+TEST(Face, MakesNoLigatureWhoseGlyphItCannotGive) {
+  std::vector<ImageFacePlaces> places;
+  const std::vector<std::uint8_t> good = FontImageBytes({SmallFace()}, &places);
+  ASSERT_EQ(places[0].ligatureCount, 3U);
+  // The first ligature, of c, d and e, made to name a glyph past the last,
+  // and the last glyph there could be.
+  for (const std::uint32_t named : {8U, 9U, 0xFFFFU}) {
+    std::vector<std::uint8_t> image = good;
+    PutLe16(image, places[0].ligatures + 6, named);
+    FontImage fonts;
+    ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+    const Face face = fonts.FaceAt(0);
+    Glyph ligature;
+    EXPECT_EQ(face.Ligature(GlyphsOf(face, "cde"), ligature), 0U) << named;
+    // The others are as they were.
+    EXPECT_EQ(face.Ligature(GlyphsOf(face, "ee"), ligature), 2U) << named;
+  }
+  // One made to stand for glyph 0, which every face has, stands for it.
+  std::vector<std::uint8_t> image = good;
+  PutLe16(image, places[0].ligatures + 6, 0);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face face = fonts.FaceAt(0);
+  Glyph ligature;
+  EXPECT_EQ(face.Ligature(GlyphsOf(face, "cde"), ligature), 3U);
+  EXPECT_EQ(ligature.index, 0U);
+}
+
 TEST(Face, DrawsGlyphZeroForWhatItLacks) {
   ImageFace made = SmallFace();
   made.missing = Block(36, 7, 11, 1);
@@ -642,6 +834,9 @@ TEST(FontImage, RefusesAFaceWhoseTablesLieOutsideIt) {
            Spoiling{36, size + 1},     // begun too near the end, or beyond it,
            Spoiling{36, 0xFFFFFFFEU},  //
            Spoiling{40, 0x0000FFFFU},  // or with more classes than the image has bytes.
+           Spoiling{44, size - 23},    // And of the ligatures, which are three of eight bytes.
+           Spoiling{44, size + 1},     //
+           Spoiling{44, 0xFFFFFFF8U},  //
        }) {
     std::vector<std::uint8_t> image = good;
     PutLe32(image, record + spoiling.at, spoiling.value);
@@ -654,6 +849,10 @@ TEST(FontImage, RefusesAFaceWhoseTablesLieOutsideIt) {
   EXPECT_EQ(fonts.Open(image), FontStatus::kBadImage);
   image = good;
   image[record + 1] = 4;
+  EXPECT_EQ(fonts.Open(image), FontStatus::kBadImage);
+  // More ligatures than there is image left for.
+  image = good;
+  image[record + 42] = 255;
   EXPECT_EQ(fonts.Open(image), FontStatus::kBadImage);
   EXPECT_EQ(fonts.Open(good), FontStatus::kOk);
 }
@@ -733,8 +932,8 @@ bool SameGlyph(const Glyph& one, const Glyph& other) {
       if (!other.Valid() || one.Role() != other.Role() || one.Style() != other.Style() || one.Size() != other.Size() ||
           one.Ascent() != other.Ascent() || one.Descent() != other.Descent() ||
           one.LineHeight() != other.LineHeight() || one.XHeight() != other.XHeight() ||
-          one.Glyphs() != other.Glyphs() || one.KernFirsts() != other.KernFirsts() ||
-          one.KernSeconds() != other.KernSeconds()) {
+          one.Glyphs() != other.Glyphs() || one.Ligatures() != other.Ligatures() ||
+          one.KernFirsts() != other.KernFirsts() || one.KernSeconds() != other.KernSeconds()) {
         return ::testing::AssertionFailure() << "face " << i << " has other numbers";
       }
       Glyph glyph;
@@ -777,6 +976,24 @@ bool SameGlyph(const Glyph& one, const Glyph& other) {
               other.Kern(mappedGlyphs[first], mappedGlyphs[second])) {
             return ::testing::AssertionFailure() << "face " << i << " kerns glyph " << wholeGlyphs[second].index
                                                  << " after glyph " << wholeGlyphs[first].index << " otherwise";
+          }
+        }
+      }
+      const std::size_t some = std::min<std::size_t>(wholeGlyphs.size(), 10);
+      for (std::size_t a = 0; a < some; ++a) {
+        for (std::size_t b = 0; b < some; ++b) {
+          for (std::size_t c = 0; c < some; ++c) {
+            const std::array<Glyph, 3> wholeThree = {wholeGlyphs[a], wholeGlyphs[b], wholeGlyphs[c]};
+            const std::array<Glyph, 3> mappedThree = {mappedGlyphs[a], mappedGlyphs[b], mappedGlyphs[c]};
+            Glyph wholeLigature;
+            Glyph mappedLigature;
+            const std::size_t stands = one.Ligature(wholeThree, wholeLigature);
+            if (other.Ligature(mappedThree, mappedLigature) != stands ||
+                (stands != 0 && !SameGlyph(wholeLigature, mappedLigature))) {
+              return ::testing::AssertionFailure()
+                     << "face " << i << " makes another ligature of glyphs " << wholeThree[0].index << ", "
+                     << wholeThree[1].index << " and " << wholeThree[2].index;
+            }
           }
         }
       }
@@ -1157,6 +1374,60 @@ TEST(FontImage, HoldsAFacesKerningWhereverItLies) {
   ASSERT_TRUE(third.Find('a', first));
   ASSERT_TRUE(third.Find('b', second));
   EXPECT_EQ(third.Kern(first, second), -4);
+}
+
+TEST(FontImage, HoldsAFacesLigaturesWhereverTheyLie) {
+  // The first face's list of ligatures is made the third face's, which
+  // lies after the whole of the second face: its stretch runs on to the end
+  // of that list, and its ligatures are read from there.
+  ImageFace last = SmallFace(2);
+  last.ligatures = {{.letters = {'a', 'b'}, .glyph = 'e', .extra = -1},
+                    {.letters = {'b', 'a'}, .glyph = 'd', .extra = -1},
+                    {.letters = {'d', 'd', 'd'}, .glyph = 'c', .extra = -1}};
+  std::vector<ImageFacePlaces> places;
+  std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), SmallFace(1), last}, &places);
+  PutLe32(image, places[0].record + 44, static_cast<std::uint32_t>(places[2].ligatures));
+  EXPECT_TRUE(SameThroughAMap(image));
+
+  const std::size_t head = 16 + (3 * 48);
+  // The last face's three ligatures, of eight bytes each, are the end of it.
+  const std::size_t stretch = places[2].ligatures + 24 - places[0].ranges;
+  bn::test::CopyingByteMap map(image, head + stretch);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+  Face face = fonts.FaceAt(0);
+  ASSERT_TRUE(fonts.Hold(face));
+  EXPECT_EQ(fonts.HeldBytes(), stretch);
+  Glyph ligature;
+  Glyph c;
+  ASSERT_TRUE(face.Find('c', c));
+  const std::vector<Glyph> letters = GlyphsOf(face, "ddd");
+  EXPECT_EQ(face.Ligature(letters, ligature), 3U);
+  EXPECT_EQ(ligature.index, c.index);
+  EXPECT_EQ(face.Ligature(GlyphsOf(face, "cde"), ligature), 0U);
+  // A face that is not held makes none, shown its own glyphs or another's.
+  EXPECT_EQ(fonts.FaceAt(1).Ligature(letters, ligature), 0U);
+  fonts.ReleaseFaces();
+  EXPECT_EQ(fonts.FaceAt(0).Ligature(letters, ligature), 0U);
+
+  // With a byte less of room than that, it is not held at all.
+  bn::test::CopyingByteMap small(image, head + stretch - 1);
+  FontImage cramped;
+  ASSERT_EQ(cramped.Open(small), FontStatus::kOk);
+  Face apart = cramped.FaceAt(0);
+  EXPECT_FALSE(cramped.Hold(apart));
+
+  // A list before everything else of the face's is in its stretch too: the
+  // third face's is made the first's.
+  PutLe32(image, places[2].record + 44, static_cast<std::uint32_t>(places[0].ligatures));
+  EXPECT_TRUE(SameThroughAMap(image));
+  bn::test::CopyingByteMap again(image);
+  FontImage fontsAgain;
+  ASSERT_EQ(fontsAgain.Open(again), FontStatus::kOk);
+  Face third = fontsAgain.FaceAt(2);
+  ASSERT_TRUE(fontsAgain.Hold(third));
+  EXPECT_EQ(fontsAgain.HeldBytes(), places[2].pictures + places[2].pictureBytes - places[0].ligatures);
+  EXPECT_EQ(third.Ligature(GlyphsOf(third, "ee"), ligature), 2U);
 }
 
 TEST(FontImage, OpenedThroughAMapRefusesWhatItRefusesWhole) {

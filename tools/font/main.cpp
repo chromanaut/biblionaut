@@ -2,6 +2,7 @@
 // files a preset names, and says what an image holds, by the code the
 // firmware reads it with.
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -29,6 +30,7 @@ void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s build PRESET... --out IMAGE [--fonts FOLDER]\n"
                "       %s info IMAGE [--glyphs U+XXXX[-U+YYYY]...] [--kerning U+XXXX[-U+YYYY]...]\n"
+               "                 [--ligatures U+XXXX[-U+YYYY]...]\n"
                "       %s sizes IMAGE\n"
                "\n"
                "The fonts image: every face the firmware draws text in, at every size.\n"
@@ -50,7 +52,10 @@ void PrintUsage(const char* program) {
                "         `characters U+0020-U+007E ...` chooses what is drawn; without it,\n"
                "         the set the firmware is built to show. A face is kerned as its font\n"
                "         is: for each face it says how many pairs, and in how many classes\n"
-               "         its glyphs are as the first of two and as the second.\n"
+               "         its glyphs are as the first of two and as the second. A face has\n"
+               "         the ligatures its font makes by itself, of two letters or three;\n"
+               "         those of its glyphs that only stand for one are counted with the\n"
+               "         rest.\n"
                "\n"
                "  info   says what an image holds: its faces, and with --glyphs what each\n"
                "         has for the characters named: the glyph's number, how far it\n"
@@ -58,7 +63,10 @@ void PrintUsage(const char* program) {
                "         where it lies from the pen, its levels of ink added up, and its\n"
                "         classes for kerning. With --kerning, every two of the characters\n"
                "         named that a face kerns, and by how many quarters of a pixel the\n"
-               "         second is set further on: less than nothing is nearer.\n"
+               "         second is set further on: less than nothing is nearer. With\n"
+               "         --ligatures, every two and every three of the characters named\n"
+               "         that a face draws one glyph for, with the glyph's number and how\n"
+               "         far it moves the pen.\n"
                "\n"
                "  sizes  says what an image's pictures would take kept in other ways than\n"
                "         the image keeps them: as runs, compressed a glyph at a time, and\n"
@@ -155,6 +163,17 @@ int RunBuild(const std::vector<std::string>& arguments) {
     if (face.kernAdjustmentsLeftOut > 0) {
       std::printf(", %zu pairs move more than an advance", face.kernAdjustmentsLeftOut);
     }
+    if (face.ligatures > 0) {
+      std::printf("; %zu ligatures", face.ligatures);
+      if (face.ligatureGlyphs > 0) {
+        std::printf(", %zu of their glyphs no character's", face.ligatureGlyphs);
+      }
+    } else {
+      std::printf("; no ligatures");
+    }
+    if (face.ligaturesLeftOut > 0) {
+      std::printf(", %zu left out", face.ligaturesLeftOut);
+    }
     std::printf("\n");
     pictures += face.pictureBytes;
   }
@@ -209,21 +228,57 @@ void PrintKerning(const bn::draw::Face& face, const std::vector<bn::font_tool::C
   }
 }
 
+// Says every two and every three of `characters` that `face` draws one
+// glyph for: the characters, the glyph's number and its advance.
+void PrintLigatures(const bn::draw::Face& face, const std::vector<bn::font_tool::CodePoints>& characters) {
+  std::vector<std::pair<std::uint32_t, bn::draw::Glyph>> glyphs;
+  for (const auto& [first, last] : characters) {
+    for (std::uint32_t codePoint = first; codePoint <= last; ++codePoint) {
+      bn::draw::Glyph glyph;
+      if (face.Find(codePoint, glyph)) {
+        glyphs.emplace_back(codePoint, glyph);
+      }
+    }
+  }
+  for (const auto& [first, firstGlyph] : glyphs) {
+    for (const auto& [second, secondGlyph] : glyphs) {
+      // The two by themselves, and then with each third.
+      bn::draw::Glyph ligature;
+      const std::array<bn::draw::Glyph, 2> two = {firstGlyph, secondGlyph};
+      if (face.Ligature(two, ligature) == 2) {
+        std::printf("  U+%04X U+%04X: glyph %u, advance %u\n", static_cast<unsigned>(first),
+                    static_cast<unsigned>(second), static_cast<unsigned>(ligature.index),
+                    static_cast<unsigned>(ligature.advance));
+      }
+      for (const auto& [third, thirdGlyph] : glyphs) {
+        const std::array<bn::draw::Glyph, 3> three = {firstGlyph, secondGlyph, thirdGlyph};
+        if (face.Ligature(three, ligature) == 3) {
+          std::printf("  U+%04X U+%04X U+%04X: glyph %u, advance %u\n", static_cast<unsigned>(first),
+                      static_cast<unsigned>(second), static_cast<unsigned>(third),
+                      static_cast<unsigned>(ligature.index), static_cast<unsigned>(ligature.advance));
+        }
+      }
+    }
+  }
+}
+
 int RunInfo(const std::vector<std::string>& arguments) {
   if (arguments.empty() || arguments[0].starts_with("--")) {
     return -1;
   }
-  // The characters named after --glyphs, and those after --kerning.
+  // The characters named after --glyphs, those after --kerning, and those
+  // after --ligatures.
   std::vector<bn::font_tool::CodePoints> characters;
   std::vector<bn::font_tool::CodePoints> kerned;
+  std::vector<bn::font_tool::CodePoints> joined;
   std::vector<bn::font_tool::CodePoints>* named = nullptr;
   bool lastWasAnOption = false;
   for (std::size_t i = 1; i < arguments.size(); ++i) {
-    if (arguments[i] == "--glyphs" || arguments[i] == "--kerning") {
+    if (arguments[i] == "--glyphs" || arguments[i] == "--kerning" || arguments[i] == "--ligatures") {
       if (lastWasAnOption) {
         return -1;
       }
-      named = arguments[i] == "--glyphs" ? &characters : &kerned;
+      named = arguments[i] == "--glyphs" ? &characters : arguments[i] == "--kerning" ? &kerned : &joined;
       lastWasAnOption = true;
       continue;
     }
@@ -253,14 +308,17 @@ int RunInfo(const std::vector<std::string>& arguments) {
   std::printf("image %zu bytes, faces %zu\n", bytes.size(), fonts.Faces());
   for (std::size_t i = 0; i < fonts.Faces(); ++i) {
     const bn::draw::Face face = fonts.FaceAt(i);
-    std::printf("%-8s %-11s %2u px: %4u glyphs; ascent %d, descent %d, line %u, x-height %u; kerning %u by %u\n",
-                std::string(RoleName(face.Role())).c_str(), std::string(StyleName(face.Style())).c_str(),
-                static_cast<unsigned>(face.Size()), static_cast<unsigned>(face.Glyphs()),
-                static_cast<int>(face.Ascent()), static_cast<int>(face.Descent()),
-                static_cast<unsigned>(face.LineHeight()), static_cast<unsigned>(face.XHeight()),
-                static_cast<unsigned>(face.KernFirsts()), static_cast<unsigned>(face.KernSeconds()));
+    std::printf(
+        "%-8s %-11s %2u px: %4u glyphs; ascent %d, descent %d, line %u, x-height %u; kerning %u by %u; "
+        "ligatures %u\n",
+        std::string(RoleName(face.Role())).c_str(), std::string(StyleName(face.Style())).c_str(),
+        static_cast<unsigned>(face.Size()), static_cast<unsigned>(face.Glyphs()), static_cast<int>(face.Ascent()),
+        static_cast<int>(face.Descent()), static_cast<unsigned>(face.LineHeight()),
+        static_cast<unsigned>(face.XHeight()), static_cast<unsigned>(face.KernFirsts()),
+        static_cast<unsigned>(face.KernSeconds()), static_cast<unsigned>(face.Ligatures()));
     PrintGlyphs(face, characters);
     PrintKerning(face, kerned);
+    PrintLigatures(face, joined);
   }
   return 0;
 }

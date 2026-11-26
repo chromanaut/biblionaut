@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "core/clock.h"
 #include "core/display.h"
@@ -146,7 +147,10 @@ class PatternViewer {
   bool sleepAsked_ = false;
   std::uint64_t phaseStartedUs_ = 0;
   Request request_;
-  std::array<std::uint8_t, kBandBytes> band_{};
+  // The band the pictures are drawn through and the planes read back
+  // into: kBandBytes from the heap, taken by Start(). A viewer that is
+  // never started, because something else has the panel, holds none.
+  std::unique_ptr<std::uint8_t[]> band_;
 
   // Reading the planes back.
   bool checkingPlanes_ = false;

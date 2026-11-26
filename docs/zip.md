@@ -12,6 +12,12 @@ at the end of the file:
 - `ZipEntry` is what the directory says of one entry: 24 bytes that can be
   kept, in memory or in a file, to read the entry later without finding it
   again.
+- `ZipDirectorySum` works out the checksum of the directory, the bytes as
+  they are in the file, a block of the file a step. The directory has
+  every entry's name, size and checksum in it, so it stands for the whole
+  file: a book's bundle keeps it, to know later whether the EPUB is still
+  the one it was made from ([The file a book is imported
+  into](bundle.md)).
 - `ZipEntryReader` gives an entry's bytes as a `ByteSource`, read from the
   file and inflated as they are asked for. It gives out no more than the
   directory says the entry holds, and at the end checks that the data

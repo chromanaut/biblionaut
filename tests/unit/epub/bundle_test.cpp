@@ -96,6 +96,7 @@ BundleBook BookOf(std::uint16_t documents, std::uint16_t pictures) {
   book.documents = documents;
   book.pictures = pictures;
   book.contents = 11;
+  book.amiss = 2;
   const std::string madeBy = "tests 1.0";
   std::copy(madeBy.begin(), madeBy.end(), book.madeBy.begin());
   return book;
@@ -137,7 +138,7 @@ struct BundleFixture {
     if (file.Open(storage, kPath, OpenMode::kCreate) != StorageStatus::kOk) {
       return BundleStatus::kStoreFailed;
     }
-    BundleStatus status = maker.Begin(file, BookOf(documents, pictures));
+    BundleStatus status = maker.Begin(file);
     const auto good = [&status] { return status == BundleStatus::kOk; };
     status = good() ? maker.BeginTable(BundleTable::kStrings) : status;
     status = good() ? maker.Write(strings) : status;
@@ -151,7 +152,7 @@ struct BundleFixture {
     }
     status = good() ? maker.BeginTable(BundleTable::kContents) : status;
     status = good() ? maker.Write(contents) : status;
-    status = good() ? maker.Finish() : status;
+    status = good() ? maker.Finish(BookOf(documents, pictures)) : status;
     if (good()) {
       while (maker.Step()) {
       }
@@ -244,6 +245,7 @@ TEST(Bundle, IsLaidOutAsTheFormatSays) {
   EXPECT_EQ(U16(bytes, 28), 5u);
   EXPECT_EQ(U16(bytes, 30), 3u);
   EXPECT_EQ(U16(bytes, 32), 11u);
+  EXPECT_EQ(U16(bytes, 34), 2u) << "what was amiss";
   EXPECT_EQ(U32(bytes, 36), 8192u) << "the slots begin on the page after the tables";
   EXPECT_EQ(U32(bytes, 40), 4096u) << "a slot of five records is one page";
   EXPECT_EQ(U32(bytes, 44), 16384u);
@@ -768,7 +770,7 @@ TEST(Bundle, DoesNoMoreThanAPageOfWorkAStep) {
   BundleFixture fixture;
   BundleMaker maker(fixture.page);
   ASSERT_EQ(fixture.file.Open(fixture.storage, kPath, OpenMode::kCreate), StorageStatus::kOk);
-  ASSERT_EQ(maker.Begin(fixture.file, BookOf(2014, 0)), BundleStatus::kOk);
+  ASSERT_EQ(maker.Begin(fixture.file), BundleStatus::kOk);
   ASSERT_EQ(maker.BeginTable(BundleTable::kStrings), BundleStatus::kOk);
   // Ten bytes of strings, so that the spine's table begins part way through a page of the file.
   ASSERT_EQ(maker.Write(Pattern(10, 1)), BundleStatus::kOk);
@@ -778,7 +780,7 @@ TEST(Bundle, DoesNoMoreThanAPageOfWorkAStep) {
   }
   ASSERT_EQ(maker.BeginTable(BundleTable::kPictures), BundleStatus::kOk);
   ASSERT_EQ(maker.BeginTable(BundleTable::kContents), BundleStatus::kOk);
-  ASSERT_EQ(maker.Finish(), BundleStatus::kOk);
+  ASSERT_EQ(maker.Finish(BookOf(2014, 0)), BundleStatus::kOk);
   FakeStorage& storage = fixture.storage;
   const auto stepped = [&storage](const auto& step, const char* what) {
     int steps = 0;
@@ -859,7 +861,7 @@ TEST(Bundle, IsNotToBeAskedAnythingWhileWorkIsUnderWay) {
   Bundle cramped(small);
   EXPECT_EQ(cramped.Open(fixture.file), BundleStatus::kMisused);
   BundleMaker crampedMaker(small);
-  EXPECT_EQ(crampedMaker.Begin(fixture.file, BookOf(1, 0)), BundleStatus::kMisused);
+  EXPECT_EQ(crampedMaker.Begin(fixture.file), BundleStatus::kMisused);
 }
 
 TEST(Bundle, SaysWhichEpubItIsOf) {
@@ -966,9 +968,9 @@ TEST(BundleMaker, TakesItsTablesInOrderAndARecordForEveryFile) {
   ASSERT_EQ(fixture.file.Open(fixture.storage, kPath, OpenMode::kCreate), StorageStatus::kOk);
   BundleMaker maker(fixture.page);
   EXPECT_EQ(maker.BeginTable(BundleTable::kStrings), BundleStatus::kMisused) << "nothing begun";
-  EXPECT_EQ(maker.Finish(), BundleStatus::kMisused);
+  EXPECT_EQ(maker.Finish(BookOf(2, 1)), BundleStatus::kMisused);
   EXPECT_FALSE(maker.Step());
-  ASSERT_EQ(maker.Begin(fixture.file, BookOf(2, 1)), BundleStatus::kOk);
+  ASSERT_EQ(maker.Begin(fixture.file), BundleStatus::kOk);
   EXPECT_EQ(maker.Write(Pattern(4, 1)), BundleStatus::kMisused) << "no table begun";
   EXPECT_EQ(maker.BeginTable(BundleTable::kSpine), BundleStatus::kMisused) << "the strings come first";
   ASSERT_EQ(maker.BeginTable(BundleTable::kStrings), BundleStatus::kOk);
@@ -977,16 +979,17 @@ TEST(BundleMaker, TakesItsTablesInOrderAndARecordForEveryFile) {
   ASSERT_EQ(maker.WriteFile(FileNumber(0, 1)), BundleStatus::kOk);
   ASSERT_EQ(maker.BeginTable(BundleTable::kPictures), BundleStatus::kOk);
   ASSERT_EQ(maker.WriteFile(FileNumber(0, 4)), BundleStatus::kOk);
-  EXPECT_EQ(maker.Finish(), BundleStatus::kMisused) << "the contents not begun";
+  EXPECT_EQ(maker.Finish(BookOf(2, 1)), BundleStatus::kMisused) << "the contents not begun";
   ASSERT_EQ(maker.BeginTable(BundleTable::kContents), BundleStatus::kOk);
-  EXPECT_EQ(maker.Finish(), BundleStatus::kMisused) << "one document's record where the book has two";
+  EXPECT_EQ(maker.Finish(BookOf(2, 1)), BundleStatus::kMisused) << "one document's record where the book has two";
+  EXPECT_EQ(maker.Finish(BookOf(1, 2)), BundleStatus::kMisused) << "and one picture's where it has two";
   EXPECT_FALSE(maker.Step());
 
   // A file that has something in it is not one to make a bundle in.
   fixture.file.Close();
   fixture.storage.Put(kPath, Pattern(10, 1));
   ASSERT_EQ(fixture.file.Open(fixture.storage, kPath, OpenMode::kUpdate), StorageStatus::kOk);
-  EXPECT_EQ(maker.Begin(fixture.file, BookOf(2, 1)), BundleStatus::kMisused);
+  EXPECT_EQ(maker.Begin(fixture.file), BundleStatus::kMisused);
 }
 
 TEST(BundleMaker, LeavesNoBundleUntilItsLastStep) {
@@ -996,7 +999,7 @@ TEST(BundleMaker, LeavesNoBundleUntilItsLastStep) {
     BundleFixture fixture;
     BundleMaker maker(fixture.page);
     ASSERT_EQ(fixture.file.Open(fixture.storage, kPath, OpenMode::kCreate), StorageStatus::kOk);
-    ASSERT_EQ(maker.Begin(fixture.file, BookOf(100, 0)), BundleStatus::kOk);
+    ASSERT_EQ(maker.Begin(fixture.file), BundleStatus::kOk);
     ASSERT_EQ(maker.BeginTable(BundleTable::kStrings), BundleStatus::kOk);
     ASSERT_EQ(maker.BeginTable(BundleTable::kSpine), BundleStatus::kOk);
     for (std::uint32_t n = 0; n < 100; ++n) {
@@ -1004,7 +1007,7 @@ TEST(BundleMaker, LeavesNoBundleUntilItsLastStep) {
     }
     ASSERT_EQ(maker.BeginTable(BundleTable::kPictures), BundleStatus::kOk);
     ASSERT_EQ(maker.BeginTable(BundleTable::kContents), BundleStatus::kOk);
-    ASSERT_EQ(maker.Finish(), BundleStatus::kOk);
+    ASSERT_EQ(maker.Finish(BookOf(100, 0)), BundleStatus::kOk);
     bool more = true;
     for (int step = 0; step < steps && more; ++step) {
       more = maker.Step();

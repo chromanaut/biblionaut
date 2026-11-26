@@ -123,6 +123,9 @@ struct BundleBook {
   std::uint16_t documents = 0;
   std::uint16_t pictures = 0;
   std::uint16_t contents = 0;
+  // What was amiss with the book when the bundle was made: bits that mean
+  // what whoever makes it says they mean.
+  std::uint16_t amiss = 0;
   // What made the bundle: a version, as text, filled out with zeros.
   std::array<char, kBundleMadeByBytes> madeBy{};
 
@@ -198,10 +201,14 @@ struct BundleTotals {
 // Makes a bundle: writes the tables as they are given, then the two slots
 // with every chapter not imported, then the header page, and syncs.
 //
-//   Begin(file, book)
+//   Begin(file)
 //   for each table, in the order of BundleTable:
 //     BeginTable(table), then Write() or WriteFile() as often as wanted
-//   Finish(), then Step() until it says there is no more
+//   Finish(book), then Step() until it says there is no more
+//
+// What the book is, is told at the end and not at the start: some of it,
+// such as how many entries its table of contents has, is only known once
+// the tables have been written.
 //
 // The file is a new, empty one the caller has opened (OpenMode::kCreate),
 // and is used by nothing else until the making is over. Until then, and
@@ -223,7 +230,7 @@ class BundleMaker {
   BundleMaker& operator=(const BundleMaker&) = delete;
   ~BundleMaker() = default;
 
-  [[nodiscard]] BundleStatus Begin(core::BlockFile& file, const BundleBook& book) noexcept;
+  [[nodiscard]] BundleStatus Begin(core::BlockFile& file) noexcept;
 
   // Goes on to `table`, which must be the one after the last begun.
   [[nodiscard]] BundleStatus BeginTable(BundleTable table) noexcept;
@@ -232,10 +239,11 @@ class BundleMaker {
   [[nodiscard]] BundleStatus Write(std::span<const std::uint8_t> bytes) noexcept;
   [[nodiscard]] BundleStatus WriteFile(const BundleFile& file) noexcept;
 
-  // Ends the tables. kMisused, with nothing more done, unless all four
-  // were begun and the spine and the pictures have a record for each
-  // document and picture the book was said to have.
-  [[nodiscard]] BundleStatus Finish() noexcept;
+  // Ends the tables, and says what book the bundle is of. kMisused, with
+  // nothing more done, unless all four tables were begun and the spine and
+  // the pictures have a record for each document and picture the book is
+  // said to have.
+  [[nodiscard]] BundleStatus Finish(const BundleBook& book) noexcept;
   // Does the next piece of what is left. Returns true if there is more to
   // do, false once it is over: Status() says how it ended.
   [[nodiscard]] bool Step() noexcept;

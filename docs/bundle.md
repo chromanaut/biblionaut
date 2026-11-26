@@ -6,8 +6,10 @@ as a container: what is written once when it is made, the record it keeps
 of each chapter, and how a chapter is added so that the power going at
 any moment loses no chapter added before. What a chapter's own bytes are
 is not here yet; to the container they are a run of bytes, a *segment*,
-of which a record says where it is. Nothing makes a bundle from a book
-yet, and nothing reads one to show it.
+of which a record says where it is. `epub/book_bundle.h` makes a book's
+bundle from its EPUB, with every chapter not imported ([A bundle made
+from a book](#a-bundle-made-from-a-book), below). Nothing imports a
+chapter yet, and nothing reads a bundle to show it.
 
 ```
 0          the header page                4,096 bytes
@@ -52,10 +54,12 @@ uses.
   in whole pages, and every segment begins on a sector and is filled out
   to the end of its last one before it is committed.
 - **Made in one go, the header page last.** `BundleMaker` is given the
-  tables in their order, then writes both slots with every chapter not
-  imported, then the header page, and syncs. Until that last page is
-  written the file does not begin as a bundle does, and opening it says
-  so: a bundle whose making was cut short is made again.
+  tables in their order, and then what the book is, which is only all
+  known once the tables are written (how many entries the contents came
+  to, for one). It writes both slots with every chapter not imported,
+  then the header page, and syncs. Until that last page is written the
+  file does not begin as a bundle does, and opening it says so: a bundle
+  whose making was cut short is made again.
 - **A piece at a time.** Opening, committing and checking a table are
   begun, and then `Step()` is called until it says there is no more. A
   step reads one page of the file at the most, writes one at the most and
@@ -113,3 +117,117 @@ file, reads its records, checks its tables, commits a chapter to it and
 opens it again ([Fuzzing](fuzzing.md)); its seeds are bundles written out
 by `tests/fuzz/make_seeds.py`, which shares none of this code, and they
 open as what they were written to be.
+
+## A bundle made from a book
+
+`epub/book_bundle.h` fills a new bundle from an EPUB whose package has
+been read (`BookBundler`): the four tables, and what the header page says
+of the EPUB. It imports no chapter.
+
+- **The strings**: the title, the first author, the language and the
+  identifier, as the package gives them ([What a book says of
+  itself](package.md)), each a length in two bytes and then its bytes.
+- **The spine**: a record for each document, in reading order, with
+  where its file is in the EPUB, its kind, and bits for "in the run of
+  the book" and "the file is in the EPUB".
+- **The pictures**: a record for each of the manifest's files that is a
+  picture (JPEG, PNG, GIF or SVG by its media type), in the manifest's
+  order. A picture is known everywhere else by its place here, which
+  `Package::PictureOf()` works out from a path. The record has where the
+  file is, its kind, a bit for "the file is in the EPUB" and a bit for
+  the cover.
+- **The contents**: the entries of the table of contents the book is
+  read by, one after another: how far in the entry is, the document it
+  points into, the place within the document, and what it is called. A
+  book with no table has none. One whose table cannot be read, or goes
+  wrong part way, or has more than 65,535 entries, has the entries that
+  could be had, and the header page says they are not the whole of the
+  book's (`amiss`): the bundle is made all the same.
+- **Which EPUB it is of**: the EPUB's size, when it was last written, and
+  the checksum of its ZIP directory, the bytes as they are in the file
+  (`ZipDirectorySum`, [ZIP files](zip.md)). The directory has every
+  entry's name, size and checksum, so a file changed in any way has
+  another. `Bundle::IsOf()` sets the three beside a file's.
+
+**The pictures are in the manifest's order, and the EPUB gives its files
+in its own.** Looking each picture up by name would read the EPUB's
+directory through once apiece, and writing each record where it falls
+would be a write of part of a sector apiece. So the directory is gone
+through once for every 170 pictures, a page of their records being put
+together in memory and then written: once for most books, and three
+times for one of 400 pictures.
+
+**A piece at a time**, as everything is: `Begin()`, then `Step()` until
+there is no more. A step reads no more of the EPUB than a step of the
+package reader or of the table of contents reader does (five blocks of
+4 KB), writes two pages of the bundle at the most, and syncs once at the
+most. Its memory is two pages the caller gives, one for the bundle's
+maker and one for the pictures' records and the directory's bytes; the
+object is 1.4 KB besides in a desktop build, most of it the reader of
+the table of contents, and less on the device, where a pointer is half
+the size.
+
+`bn-bundle` runs it on the desktop:
+
+```
+./build/host/tools/bundle/bn-bundle make book.epub book.bundle
+./build/host/tools/bundle/bn-bundle info book.bundle
+```
+
+`make` prints how many of each thing it wrote, and how many times it went
+through the EPUB's directory for the pictures:
+
+```
+documents=3 pictures=3 pictures_present=2 contents=3 passes=1 amiss=0 bytes=16384
+```
+
+`info` prints what a bundle holds: the versions it was made under, the EPUB it is of, the
+strings, a line for each document of the spine and each picture (where
+the file is in the EPUB as three numbers: where its header is, how many
+bytes it holds, and their checksum), each entry of the contents as
+`bn-epub toc` prints one, the slot in force, how many chapters are in
+each state, and whether each table is what its checksum says:
+
+```
+format: 1
+text rules: 0
+importer: 0
+made by: bn-bundle
+epub: 2562 bytes, written 1795000000, directory cca5fb72
+package: 0b438ebd
+amiss: -
+title: A Small Book
+author: A. Writer
+language: en-GB
+identifier: urn:uuid:5f0c9d2e-1b7a-4c3d-9e8f-000000000001
+spine: 3
++ xhtml 1646 37 62e76318
++ xhtml 1731 37 edf29a23
+- xhtml 1890 39 3d327cc0
+pictures: 3
+png 1816 510 b99bdf85
+jpeg 1368 680 73d176af cover
+?
+contents: 3
+0	0	-	One
+1	0	part-2	A part of it
+0	1	-	Two
+slot: sequence 2, 4096 bytes, segments from 16384 to 16384
+chapters: 3 not imported, 0 whole, 0 cut short, 0 not documents, 0 refused
+tables: ok ok ok ok
+```
+
+**Checked.** `tests/unit/epub/book_bundle_test.cpp` makes books in
+memory and reads every table of the bundle back beside them: each record
+of the spine and of the pictures opens the file it is for; 400 pictures
+put into the ZIP file last first come out in the manifest's order, in
+three passes; a table of contents that is missing, is no table, goes
+wrong part way or is too long; storage failing before every step; and
+every step held to what it may read and write. `e2e.BundleTool`
+(`tests/e2e/bundle_tool.py`) reads a bundle's bytes a second way, by the
+places the format gives them, and sets them beside a reading of the book
+by Python's `zipfile` and ElementTree; `bn-bundle info` then has to print
+what that reading comes to, line for line. `tools/check-books.py` makes
+the same comparison on real books ([Real books](real-books.md)). The fuzz
+target `book_bundle` makes a bundle of whatever book it is given
+([Fuzzing](fuzzing.md)).

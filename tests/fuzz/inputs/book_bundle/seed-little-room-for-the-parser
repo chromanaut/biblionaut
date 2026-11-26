@@ -1,0 +1,36 @@
+÷<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uuid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>A Book to Bundle</dc:title><dc:creator>RenÃ©e Writer</dc:creator><dc:language>en-GB</dc:language>
+<dc:identifier id="isbn">9780000000002</dc:identifier><dc:identifier id="uuid">urn:uuid:0aa1</dc:identifier>
+<meta name="cover" content="cover-image"/>
+</metadata>
+<manifest>
+<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+<item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+<item id="plate" href="img/plate.png" media-type="image/png"/>
+<item id="ch2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+<item id="cover-image" href="img/cover.jpg" media-type="image/jpeg"/>
+<item id="ch3" href="ch%203.xhtml" media-type="application/xhtml+xml"/>
+<item id="gone" href="img/gone.jpg" media-type="image/jpeg"/>
+<item id="gif" href="img/a%20b.gif" media-type="image/gif"/>
+<item id="again" href="img/plate.png" media-type="image/png"/>
+<item id="svg" href="img/d.svg" media-type="image/svg+xml"/>
+<item id="lost" href="lost.xhtml" media-type="application/xhtml+xml"/>
+<item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/>
+<item id="css" href="style.css" media-type="text/css"/>
+</manifest>
+<spine toc="ncx">
+<itemref idref="ch1"/><itemref idref="ch2"/><itemref idref="lost"/><itemref idref="ch3"/>
+<itemref idref="svg"/><itemref idref="notes" linear="no"/>
+</spine>
+</package>
+4<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+<navPoint><navLabel><text>One</text></navLabel><content src="ch1.xhtml"/>
+<navPoint><navLabel><text>A  part
+ of it</text></navLabel><content src="ch1.xhtml#part-2"/></navPoint></navPoint>
+<navPoint><navLabel><text>A heading</text></navLabel></navPoint>
+<navPoint><navLabel><text>Two &amp; three</text></navLabel><content src="text/ch2.xhtml#a%20place"/></navPoint>
+<navPoint><navLabel><text>Elsewhere</text></navLabel><content src="https://example.com/"/></navPoint>
+</navMap></ncx>

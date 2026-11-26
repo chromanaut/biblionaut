@@ -145,6 +145,15 @@ class Package final : private XmlHandler {
   std::string_view Title() const noexcept { return title_.View(); }
   std::string_view Author() const noexcept { return author_.View(); }
   std::string_view Language() const noexcept { return language_.View(); }
+  // What the book is known by to the world, such as an ISBN or a UUID: the
+  // identifier the package names as its unique one, if that has anything
+  // in it, and otherwise the first that has; spaces as for the title, and
+  // no more than kMaxIdentifier bytes of it. Empty if the book gives none.
+  // Two books can give the same, and a book need not give one.
+  static constexpr std::size_t kMaxIdentifier = 128;
+  std::string_view Identifier() const noexcept {
+    return uniqueIdentifier_.Empty() ? identifier_.View() : uniqueIdentifier_.View();
+  }
 
   // The path of the package file within the book.
   std::string_view PackagePath() const noexcept { return packagePath_.View(); }
@@ -160,6 +169,26 @@ class Package final : private XmlHandler {
   // followed. If the spine has the file more than once, its first place.
   // kNotInSpine if the spine has it nowhere, or if no book has been read.
   std::size_t SpineIndexOf(std::string_view path) const noexcept;
+
+  // How many of the manifest's files are pictures: JPEG, PNG, GIF or SVG
+  // by what the manifest says of them. A picture is known by its place
+  // among them, in the manifest's order, from 0. Nothing more is kept for
+  // it: the place is counted when it is asked for.
+  std::uint32_t Pictures() const noexcept { return Reading() ? 0 : pictureCount_; }
+
+  // What PictureOf() says of a file.
+  static constexpr std::size_t kNotPicture = static_cast<std::size_t>(-1);
+  struct Picture {
+    std::size_t index = kNotPicture;  // Its place among the pictures, or kNotPicture.
+    MediaType type = MediaType::kOther;
+    bool isCover = false;  // It is the picture Cover() is.
+  };
+  // Which picture the file at `path` is: a path within the book, as
+  // ResolveBookPath() gives one, or the name of an entry of the ZIP file.
+  // Where the manifest has the file more than once, it is the first of
+  // those that is a picture. Not a picture if the manifest does not have
+  // it as one, or if no book has been read.
+  Picture PictureOf(std::string_view path) const noexcept;
 
   // The cover picture; the table of contents as EPUB 3 has it, a document
   // of its own (the "nav"); and as EPUB 2 has it (the "NCX"). Each is null
@@ -215,7 +244,7 @@ class Package final : private XmlHandler {
   // The parts of a package file, and what text in its metadata is being
   // kept.
   enum class Section : std::uint8_t { kOther, kMetadata, kManifest, kSpine };
-  enum class Capture : std::uint8_t { kNone, kTitle, kAuthor, kLanguage };
+  enum class Capture : std::uint8_t { kNone, kTitle, kAuthor, kLanguage, kIdentifier, kUniqueIdentifier };
   // How a look through some of the directory for a name went.
   enum class Looked : std::uint8_t { kFound, kMore, kMissing, kUnreadable };
 
@@ -295,14 +324,15 @@ class Package final : private XmlHandler {
   ZipEntryReader* reader_ = nullptr;
   XmlParser* xml_ = nullptr;
   Stage stage_ = Stage::kIdle;
-  ZipArchive::Cursor cursor_;    // Where in the ZIP file's directory it is,
-  std::uint32_t looked_ = 0;     // and how many entries the search in hand has looked at.
-  bool triedDecoded_ = false;    // The package file has been looked for with the %XX of its name turned into bytes.
-  std::size_t resolved_ = 0;     // Documents of the spine matched to the manifest so far,
-  std::size_t kept_ = 0;         // and how many of them it had.
-  std::uint32_t wanted_ = 0;     // Files still to be found in the directory.
-  std::uint32_t began_ = 0;      // When the reading began, and when the part of it in hand did:
-  std::uint32_t partBegan_ = 0;  // for the trace.
+  ZipArchive::Cursor cursor_;       // Where in the ZIP file's directory it is,
+  std::uint32_t looked_ = 0;        // and how many entries the search in hand has looked at.
+  bool triedDecoded_ = false;       // The package file has been looked for with the %XX of its name turned into bytes.
+  std::size_t resolved_ = 0;        // Documents of the spine matched to the manifest so far,
+  std::size_t kept_ = 0;            // and how many of them it had.
+  std::uint32_t pictureCount_ = 0;  // How many of the manifest's files are pictures.
+  std::uint32_t wanted_ = 0;        // Files still to be found in the directory.
+  std::uint32_t began_ = 0;         // When the reading began, and when the part of it in hand did:
+  std::uint32_t partBegan_ = 0;     // for the trace.
 
   // Where in the file being parsed the parser is. Depths count elements,
   // the root's being 1.
@@ -316,6 +346,12 @@ class Package final : private XmlHandler {
   core::FixedText<256> title_;
   core::FixedText<128> author_;
   core::FixedText<16> language_;
+  // The first identifier that had anything in it, and the one the package
+  // names as its unique one, by the id the package gives for it.
+  core::FixedText<kMaxIdentifier> identifier_;
+  core::FixedText<kMaxIdentifier> uniqueIdentifier_;
+  std::uint64_t uniqueId_ = 0;
+  bool hasUniqueId_ = false;
   core::FixedText<kMaxBookPath> packagePath_;
 
   Found cover_;

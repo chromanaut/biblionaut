@@ -2,6 +2,7 @@
 # device build and run the checks; each program has its own subdirectory.
 #
 # Still to come: importer CLI, perf harness.
+add_subdirectory(bundle)
 add_subdirectory(css)
 add_subdirectory(epub)
 # bn-font brings FreeType with it, which a build that wants neither is

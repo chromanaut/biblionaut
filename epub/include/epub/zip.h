@@ -100,6 +100,10 @@ class ZipArchive {
   void Close() noexcept;
   bool IsOpen() const noexcept { return file_ != nullptr; }
 
+  // Where the directory is in the file, and how long it is.
+  std::uint32_t DirectoryOffset() const noexcept { return directoryOffset_; }
+  std::uint32_t DirectoryBytes() const noexcept { return directoryEnd_ - directoryOffset_; }
+
   // How many entries the file says it has. Directories count, where the
   // file lists them: they are entries with nothing in them whose names end
   // in '/'.
@@ -144,6 +148,40 @@ class ZipArchive {
   // Where the next search starts: the entry after the last one found.
   std::uint32_t searchOffset_ = 0;
   std::uint32_t searchIndex_ = 0;
+};
+
+// The checksum of a ZIP file's directory, the bytes as they are in the
+// file: a CRC-32 (core/checksum.h). The directory has every entry's name,
+// size and checksum in it, so two files whose directories come to the
+// same have, as near as makes no difference, the same things in them.
+//
+// It is worked out a piece at a time: Begin(), then Step() until it says
+// there is no more. A step is one read of storage, of as much of the
+// directory as lies in one block of `page`'s size of the file.
+class ZipDirectorySum {
+ public:
+  // `archive` is a ZIP file that is open, `file` the same file open (it
+  // may be the one the archive reads through, if nothing else is part way
+  // through a call on it), and `page` memory to read into, the caller's:
+  // all three are in use until the summing is over.
+  void Begin(const ZipArchive& archive, core::BlockFile& file, std::span<std::uint8_t> page) noexcept;
+  // Returns true if there is more to do, false once it is over.
+  [[nodiscard]] bool Step() noexcept;
+  // kOk while all is well and at the end if it was; kStorageFailed if storage
+  // failed or the file is shorter than its directory; kNotOpen if nothing
+  // was begun, or it was begun with no archive open or no memory.
+  ZipStatus Status() const noexcept { return status_; }
+  // The checksum, once Step() has said there is no more and all was well.
+  std::uint32_t Checksum() const noexcept { return checksum_; }
+
+ private:
+  core::BlockFile* file_ = nullptr;
+  std::span<std::uint8_t> page_;
+  std::uint32_t at_ = 0;
+  std::uint32_t end_ = 0;
+  std::uint32_t checksum_ = 0;
+  bool running_ = false;
+  ZipStatus status_ = ZipStatus::kNotOpen;
 };
 
 // Reads the name of an entry, as the entry's own header in the file has

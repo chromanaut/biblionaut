@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks what the book tools make of real books against a reading of each by Python.
 
-bn-zip, bn-xml, bn-epub, bn-css, bn-png and bn-jpeg run the firmware's own
+bn-zip, bn-xml, bn-epub, bn-css, bn-png, bn-jpeg and bn-bundle run the firmware's own
 code on one file. This runs them over every EPUB under the folders it is given and
 compares, book by book:
 
@@ -29,7 +29,13 @@ compares, book by book:
   - bn-jpeg book with a second reading of every JPEG picture, both read at
     an eighth of their size: its header, how the reading ended, what was
     passed over, and the checksum of every row of gray, which at an eighth
-    is worked out in whole numbers and so the same byte for byte.
+    is worked out in whole numbers and so the same byte for byte;
+  - bn-bundle make with a second reading of the bundle it makes of the
+    book, by the places the format gives things: what its header page
+    says of the EPUB, its strings, a record for every document of the
+    spine and every picture, and every entry of its contents, each set
+    beside the book as zipfile and ElementTree read it; and bn-bundle
+    info with what that reading comes to.
 
 It also counts, and compares with nothing, since no tool reads a
 document's text yet: the paragraphs and the ids of every document of each
@@ -41,10 +47,10 @@ is the value of any element's id, or of an a's name where it has no id,
 counted once in a document. A line says what the largest paragraph, the
 most paragraphs and the most ids of a document are, book by book.
 
-The readings of the ZIP file, the documents, the package, the style sheets
-and the pictures, the finding of a document's sheets and the working-out
-of the cascade, are the ones the end-to-end tests use on the books they
-make (tests/e2e). The reading of a table of contents is written here,
+The readings of the ZIP file, the documents, the package, the style sheets,
+the pictures and the bundle, the finding of a document's sheets and the
+working-out of the cascade, are the ones the end-to-end tests use on the
+books they make (tests/e2e). The reading of a table of contents is written here,
 since real tables do things the tests' own do not.
 
 With --css-report it also says what the style sheets of the books lose to
@@ -68,11 +74,12 @@ file: every file it lists has to be there and unchanged, and every EPUB
 beside or below it has to be listed.
 
 usage: tools/check-books.py [--tools BUILD] [--zip BN_ZIP] [--xml BN_XML] [--epub BN_EPUB] [--css BN_CSS]
-                            [--png BN_PNG] [--jpeg BN_JPEG] [--css-report] [--document-report] [--jobs N]
+                            [--png BN_PNG] [--jpeg BN_JPEG] [--bundle BN_BUNDLE] [--css-report]
+                            [--document-report] [--jobs N]
                             FOLDER_OR_FILE...
 
 BUILD is a build folder to take the tools from: build/host-release if it
-has them, or else build/host. Each of the six can be named by itself.
+has them, or else build/host. Each of the seven can be named by itself.
 
 It ends with 0 if everything agreed, 1 if anything did not, 2 if it could
 not start.
@@ -89,6 +96,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
@@ -101,7 +109,8 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPOSITORY / "tests" / "e2e"))
 sys.dont_write_bytecode = True  # Or Python leaves compiled copies of the tests' scripts beside them.
 
-import css_cascade_tool  # noqa: E402  (found through the path set just above)
+import bundle_tool  # noqa: E402  (found through the path set just above)
+import css_cascade_tool  # noqa: E402
 import css_tool  # noqa: E402
 import epub_tool  # noqa: E402
 import jpeg_tool  # noqa: E402
@@ -887,8 +896,44 @@ def count_documents(path: Path, figures: dict) -> None:
         figures[f"most {key}"] = [(value, path.name, name)]
 
 
-def check_book(arguments: tuple[str, str, str, str, str, str, str]) -> tuple[str, list[str], dict]:
-    zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, png_tool_path, jpeg_tool_path, name = arguments
+def check_bundle(tool: str, path: Path, figures: dict) -> list[str]:
+    """The book's bundle: what `bn-bundle make` writes, read a second way, beside the book as Python reads it."""
+    # The table of contents the book is read by, as the reading above has
+    # it: none, one that is no table, or its entries.
+    entries: list[tuple] | None = []
+    whole = True
+    try:
+        tables = tables_of_contents(path)
+        read_by = "nav" if "nav" in tables else "ncx" if "ncx" in tables else None
+        if read_by is not None and tables[read_by] is None:
+            whole = False
+        elif read_by is not None:
+            for _, summed in tables[read_by]:
+                depth, document, fragment, label = summed.split(b"\t", 3)
+                entries.append((int(depth), None if document == b"-" else int(document),
+                                b"" if fragment == b"-" else fragment, label))
+    except Exception:  # Whatever a book can do to a parser: check_tables has said so.
+        entries = None
+    with tempfile.TemporaryDirectory(prefix="bn-check-books-") as work:
+        made = Path(work) / "book.bundle"
+        problems = bundle_tool.compare(tool, path, made, entries, whole)
+        if not problems:
+            bundle = bundle_tool.read_bundle(made.read_bytes())
+            figures["bundles"] = 1
+            figures["bundle bytes"] = [made.stat().st_size]
+            figures["bundle pictures"] = [len(bundle["pictures"])]
+            figures["bundle contents"] = [len(bundle["contents"])]
+            figures["bundle records"] = len(bundle["spine"]) + len(bundle["pictures"]) + len(bundle["contents"])
+            if bundle["amiss"] & bundle_tool.CONTENTS_NOT_WHOLE:
+                figures["bundle contents not whole"] = 1
+            if entries is None:
+                figures["bundle contents not compared"] = 1
+    return problems
+
+
+def check_book(arguments: tuple[str, str, str, str, str, str, str, str]) -> tuple[str, list[str], dict]:
+    (zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, png_tool_path, jpeg_tool_path, bundle_tool_path,
+     name) = arguments
     path = Path(name)
     # A number is added up over the books; a list is kept, a book to an item.
     figures: dict = {}
@@ -903,6 +948,7 @@ def check_book(arguments: tuple[str, str, str, str, str, str, str]) -> tuple[str
         problems += check_cascade(css_tool_path, path, figures)
         problems += check_png(png_tool_path, path, figures)
         problems += check_jpeg(jpeg_tool_path, path, figures)
+        problems += check_bundle(bundle_tool_path, path, figures)
         count_documents(path, figures)
     except Exception as error:  # A book that the comparison itself trips over is a finding, not a crash.
         problems.append(f"the comparison failed: {error!r}")
@@ -1058,6 +1104,7 @@ def main() -> int:
     parser.add_argument("--css")
     parser.add_argument("--png")
     parser.add_argument("--jpeg")
+    parser.add_argument("--bundle")
     parser.add_argument("--css-report", action="store_true")
     parser.add_argument("--document-report", action="store_true")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
@@ -1066,9 +1113,10 @@ def main() -> int:
     tools = [find_tool(options.zip, options.tools, "zip", "bn-zip"), find_tool(options.xml, options.tools, "xml", "bn-xml"),
              find_tool(options.epub, options.tools, "epub", "bn-epub"), find_tool(options.css, options.tools, "css", "bn-css"),
              find_tool(options.png, options.tools, "png", "bn-png"),
-             find_tool(options.jpeg, options.tools, "jpeg", "bn-jpeg")]
+             find_tool(options.jpeg, options.tools, "jpeg", "bn-jpeg"),
+             find_tool(options.bundle, options.tools, "bundle", "bn-bundle")]
     if None in tools:
-        print("check-books: bn-zip, bn-xml, bn-epub, bn-css, bn-png and bn-jpeg are not all built: "
+        print("check-books: bn-zip, bn-xml, bn-epub, bn-css, bn-png, bn-jpeg and bn-bundle are not all built: "
               "cmake --build --preset host-release", file=sys.stderr)
         return 2
     places = [Path(place) for place in options.places]
@@ -1113,7 +1161,8 @@ def main() -> int:
           f"{totals.get('cascade_set', 0)} "
           f"properties set for {totals.get('cascade_elements', 0)} elements of {totals.get('cascade_documents', 0)} "
           f"documents, {totals.get('pngs', 0)} PNG pictures of {totals.get('png_pixels', 0)} pixels, "
-          f"{totals.get('jpegs', 0)} JPEG pictures of {totals.get('jpeg_pixels', 0)} pixels.")
+          f"{totals.get('jpegs', 0)} JPEG pictures of {totals.get('jpeg_pixels', 0)} pixels, "
+          f"{totals.get('bundles', 0)} bundles of {totals.get('bundle records', 0)} records.")
     if totals.get("png room"):
         print(f"Memory for the rows of a book's widest PNG picture, in bytes: {spread(totals['png room'])}; over the "
               f"{len(totals['png room'])} books that have one.")
@@ -1125,6 +1174,16 @@ def main() -> int:
               "one.")
     for key in sorted(key for key in totals if key.startswith("jpeg ") and key != "jpeg room"):
         print(f"{totals[key]} JPEG pictures end as {key[5:]}, by the tool and by Python alike.")
+    if totals.get("bundle bytes"):
+        print(f"A book's bundle before any chapter is imported, in bytes: {spread(totals['bundle bytes'])}; its "
+              f"pictures: {spread(totals['bundle pictures'])}; the entries of its contents: "
+              f"{spread(totals['bundle contents'])}.")
+    if totals.get("bundle contents not whole"):
+        print(f"{totals['bundle contents not whole']} bundles say their contents are not the whole of the book's, by "
+              "the tool and by Python alike.")
+    if totals.get("bundle contents not compared"):
+        print(f"{totals['bundle contents not compared']} bundles' contents were not compared: Python could not read "
+              "the book's tables of contents.")
     if totals.get("most largest"):
         print(f"Of the {len(totals['document bytes'])} documents of their spines, a book's largest paragraph, in bytes: "
               f"{spread([value for value, _, _ in totals['most largest']])}; the most paragraphs in one of its "

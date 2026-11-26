@@ -1,0 +1,148 @@
+÷<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uuid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>A Book to Bundle</dc:title><dc:creator>RenÃ©e Writer</dc:creator><dc:language>en-GB</dc:language>
+<dc:identifier id="isbn">9780000000002</dc:identifier><dc:identifier id="uuid">urn:uuid:0aa1</dc:identifier>
+<meta name="cover" content="cover-image"/>
+</metadata>
+<manifest>
+<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+<item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+<item id="plate" href="img/plate.png" media-type="image/png"/>
+<item id="ch2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+<item id="cover-image" href="img/cover.jpg" media-type="image/jpeg"/>
+<item id="ch3" href="ch%203.xhtml" media-type="application/xhtml+xml"/>
+<item id="gone" href="img/gone.jpg" media-type="image/jpeg"/>
+<item id="gif" href="img/a%20b.gif" media-type="image/gif"/>
+<item id="again" href="img/plate.png" media-type="image/png"/>
+<item id="svg" href="img/d.svg" media-type="image/svg+xml"/>
+<item id="lost" href="lost.xhtml" media-type="application/xhtml+xml"/>
+<item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/>
+<item id="css" href="style.css" media-type="text/css"/>
+</manifest>
+<spine toc="ncx">
+<itemref idref="ch1"/><itemref idref="ch2"/><itemref idref="lost"/><itemref idref="ch3"/>
+<itemref idref="svg"/><itemref idref="notes" linear="no"/>
+</spine>
+</package>
+ø7<ncx><navMap><navPoint><navLabel><text>Entry number 0 of a long table</text></navLabel><content src="ch1.xhtml#at-0"/></navPoint>
+<navPoint><navLabel><text>Entry number 1 of a long table</text></navLabel><content src="ch1.xhtml#at-1"/></navPoint>
+<navPoint><navLabel><text>Entry number 2 of a long table</text></navLabel><content src="ch1.xhtml#at-2"/></navPoint>
+<navPoint><navLabel><text>Entry number 3 of a long table</text></navLabel><content src="ch1.xhtml#at-3"/></navPoint>
+<navPoint><navLabel><text>Entry number 4 of a long table</text></navLabel><content src="ch1.xhtml#at-4"/></navPoint>
+<navPoint><navLabel><text>Entry number 5 of a long table</text></navLabel><content src="ch1.xhtml#at-5"/></navPoint>
+<navPoint><navLabel><text>Entry number 6 of a long table</text></navLabel><content src="ch1.xhtml#at-6"/></navPoint>
+<navPoint><navLabel><text>Entry number 7 of a long table</text></navLabel><content src="ch1.xhtml#at-7"/></navPoint>
+<navPoint><navLabel><text>Entry number 8 of a long table</text></navLabel><content src="ch1.xhtml#at-8"/></navPoint>
+<navPoint><navLabel><text>Entry number 9 of a long table</text></navLabel><content src="ch1.xhtml#at-9"/></navPoint>
+<navPoint><navLabel><text>Entry number 10 of a long table</text></navLabel><content src="ch1.xhtml#at-10"/></navPoint>
+<navPoint><navLabel><text>Entry number 11 of a long table</text></navLabel><content src="ch1.xhtml#at-11"/></navPoint>
+<navPoint><navLabel><text>Entry number 12 of a long table</text></navLabel><content src="ch1.xhtml#at-12"/></navPoint>
+<navPoint><navLabel><text>Entry number 13 of a long table</text></navLabel><content src="ch1.xhtml#at-13"/></navPoint>
+<navPoint><navLabel><text>Entry number 14 of a long table</text></navLabel><content src="ch1.xhtml#at-14"/></navPoint>
+<navPoint><navLabel><text>Entry number 15 of a long table</text></navLabel><content src="ch1.xhtml#at-15"/></navPoint>
+<navPoint><navLabel><text>Entry number 16 of a long table</text></navLabel><content src="ch1.xhtml#at-16"/></navPoint>
+<navPoint><navLabel><text>Entry number 17 of a long table</text></navLabel><content src="ch1.xhtml#at-17"/></navPoint>
+<navPoint><navLabel><text>Entry number 18 of a long table</text></navLabel><content src="ch1.xhtml#at-18"/></navPoint>
+<navPoint><navLabel><text>Entry number 19 of a long table</text></navLabel><content src="ch1.xhtml#at-19"/></navPoint>
+<navPoint><navLabel><text>Entry number 20 of a long table</text></navLabel><content src="ch1.xhtml#at-20"/></navPoint>
+<navPoint><navLabel><text>Entry number 21 of a long table</text></navLabel><content src="ch1.xhtml#at-21"/></navPoint>
+<navPoint><navLabel><text>Entry number 22 of a long table</text></navLabel><content src="ch1.xhtml#at-22"/></navPoint>
+<navPoint><navLabel><text>Entry number 23 of a long table</text></navLabel><content src="ch1.xhtml#at-23"/></navPoint>
+<navPoint><navLabel><text>Entry number 24 of a long table</text></navLabel><content src="ch1.xhtml#at-24"/></navPoint>
+<navPoint><navLabel><text>Entry number 25 of a long table</text></navLabel><content src="ch1.xhtml#at-25"/></navPoint>
+<navPoint><navLabel><text>Entry number 26 of a long table</text></navLabel><content src="ch1.xhtml#at-26"/></navPoint>
+<navPoint><navLabel><text>Entry number 27 of a long table</text></navLabel><content src="ch1.xhtml#at-27"/></navPoint>
+<navPoint><navLabel><text>Entry number 28 of a long table</text></navLabel><content src="ch1.xhtml#at-28"/></navPoint>
+<navPoint><navLabel><text>Entry number 29 of a long table</text></navLabel><content src="ch1.xhtml#at-29"/></navPoint>
+<navPoint><navLabel><text>Entry number 30 of a long table</text></navLabel><content src="ch1.xhtml#at-30"/></navPoint>
+<navPoint><navLabel><text>Entry number 31 of a long table</text></navLabel><content src="ch1.xhtml#at-31"/></navPoint>
+<navPoint><navLabel><text>Entry number 32 of a long table</text></navLabel><content src="ch1.xhtml#at-32"/></navPoint>
+<navPoint><navLabel><text>Entry number 33 of a long table</text></navLabel><content src="ch1.xhtml#at-33"/></navPoint>
+<navPoint><navLabel><text>Entry number 34 of a long table</text></navLabel><content src="ch1.xhtml#at-34"/></navPoint>
+<navPoint><navLabel><text>Entry number 35 of a long table</text></navLabel><content src="ch1.xhtml#at-35"/></navPoint>
+<navPoint><navLabel><text>Entry number 36 of a long table</text></navLabel><content src="ch1.xhtml#at-36"/></navPoint>
+<navPoint><navLabel><text>Entry number 37 of a long table</text></navLabel><content src="ch1.xhtml#at-37"/></navPoint>
+<navPoint><navLabel><text>Entry number 38 of a long table</text></navLabel><content src="ch1.xhtml#at-38"/></navPoint>
+<navPoint><navLabel><text>Entry number 39 of a long table</text></navLabel><content src="ch1.xhtml#at-39"/></navPoint>
+<navPoint><navLabel><text>Entry number 40 of a long table</text></navLabel><content src="ch1.xhtml#at-40"/></navPoint>
+<navPoint><navLabel><text>Entry number 41 of a long table</text></navLabel><content src="ch1.xhtml#at-41"/></navPoint>
+<navPoint><navLabel><text>Entry number 42 of a long table</text></navLabel><content src="ch1.xhtml#at-42"/></navPoint>
+<navPoint><navLabel><text>Entry number 43 of a long table</text></navLabel><content src="ch1.xhtml#at-43"/></navPoint>
+<navPoint><navLabel><text>Entry number 44 of a long table</text></navLabel><content src="ch1.xhtml#at-44"/></navPoint>
+<navPoint><navLabel><text>Entry number 45 of a long table</text></navLabel><content src="ch1.xhtml#at-45"/></navPoint>
+<navPoint><navLabel><text>Entry number 46 of a long table</text></navLabel><content src="ch1.xhtml#at-46"/></navPoint>
+<navPoint><navLabel><text>Entry number 47 of a long table</text></navLabel><content src="ch1.xhtml#at-47"/></navPoint>
+<navPoint><navLabel><text>Entry number 48 of a long table</text></navLabel><content src="ch1.xhtml#at-48"/></navPoint>
+<navPoint><navLabel><text>Entry number 49 of a long table</text></navLabel><content src="ch1.xhtml#at-49"/></navPoint>
+<navPoint><navLabel><text>Entry number 50 of a long table</text></navLabel><content src="ch1.xhtml#at-50"/></navPoint>
+<navPoint><navLabel><text>Entry number 51 of a long table</text></navLabel><content src="ch1.xhtml#at-51"/></navPoint>
+<navPoint><navLabel><text>Entry number 52 of a long table</text></navLabel><content src="ch1.xhtml#at-52"/></navPoint>
+<navPoint><navLabel><text>Entry number 53 of a long table</text></navLabel><content src="ch1.xhtml#at-53"/></navPoint>
+<navPoint><navLabel><text>Entry number 54 of a long table</text></navLabel><content src="ch1.xhtml#at-54"/></navPoint>
+<navPoint><navLabel><text>Entry number 55 of a long table</text></navLabel><content src="ch1.xhtml#at-55"/></navPoint>
+<navPoint><navLabel><text>Entry number 56 of a long table</text></navLabel><content src="ch1.xhtml#at-56"/></navPoint>
+<navPoint><navLabel><text>Entry number 57 of a long table</text></navLabel><content src="ch1.xhtml#at-57"/></navPoint>
+<navPoint><navLabel><text>Entry number 58 of a long table</text></navLabel><content src="ch1.xhtml#at-58"/></navPoint>
+<navPoint><navLabel><text>Entry number 59 of a long table</text></navLabel><content src="ch1.xhtml#at-59"/></navPoint>
+<navPoint><navLabel><text>Entry number 60 of a long table</text></navLabel><content src="ch1.xhtml#at-60"/></navPoint>
+<navPoint><navLabel><text>Entry number 61 of a long table</text></navLabel><content src="ch1.xhtml#at-61"/></navPoint>
+<navPoint><navLabel><text>Entry number 62 of a long table</text></navLabel><content src="ch1.xhtml#at-62"/></navPoint>
+<navPoint><navLabel><text>Entry number 63 of a long table</text></navLabel><content src="ch1.xhtml#at-63"/></navPoint>
+<navPoint><navLabel><text>Entry number 64 of a long table</text></navLabel><content src="ch1.xhtml#at-64"/></navPoint>
+<navPoint><navLabel><text>Entry number 65 of a long table</text></navLabel><content src="ch1.xhtml#at-65"/></navPoint>
+<navPoint><navLabel><text>Entry number 66 of a long table</text></navLabel><content src="ch1.xhtml#at-66"/></navPoint>
+<navPoint><navLabel><text>Entry number 67 of a long table</text></navLabel><content src="ch1.xhtml#at-67"/></navPoint>
+<navPoint><navLabel><text>Entry number 68 of a long table</text></navLabel><content src="ch1.xhtml#at-68"/></navPoint>
+<navPoint><navLabel><text>Entry number 69 of a long table</text></navLabel><content src="ch1.xhtml#at-69"/></navPoint>
+<navPoint><navLabel><text>Entry number 70 of a long table</text></navLabel><content src="ch1.xhtml#at-70"/></navPoint>
+<navPoint><navLabel><text>Entry number 71 of a long table</text></navLabel><content src="ch1.xhtml#at-71"/></navPoint>
+<navPoint><navLabel><text>Entry number 72 of a long table</text></navLabel><content src="ch1.xhtml#at-72"/></navPoint>
+<navPoint><navLabel><text>Entry number 73 of a long table</text></navLabel><content src="ch1.xhtml#at-73"/></navPoint>
+<navPoint><navLabel><text>Entry number 74 of a long table</text></navLabel><content src="ch1.xhtml#at-74"/></navPoint>
+<navPoint><navLabel><text>Entry number 75 of a long table</text></navLabel><content src="ch1.xhtml#at-75"/></navPoint>
+<navPoint><navLabel><text>Entry number 76 of a long table</text></navLabel><content src="ch1.xhtml#at-76"/></navPoint>
+<navPoint><navLabel><text>Entry number 77 of a long table</text></navLabel><content src="ch1.xhtml#at-77"/></navPoint>
+<navPoint><navLabel><text>Entry number 78 of a long table</text></navLabel><content src="ch1.xhtml#at-78"/></navPoint>
+<navPoint><navLabel><text>Entry number 79 of a long table</text></navLabel><content src="ch1.xhtml#at-79"/></navPoint>
+<navPoint><navLabel><text>Entry number 80 of a long table</text></navLabel><content src="ch1.xhtml#at-80"/></navPoint>
+<navPoint><navLabel><text>Entry number 81 of a long table</text></navLabel><content src="ch1.xhtml#at-81"/></navPoint>
+<navPoint><navLabel><text>Entry number 82 of a long table</text></navLabel><content src="ch1.xhtml#at-82"/></navPoint>
+<navPoint><navLabel><text>Entry number 83 of a long table</text></navLabel><content src="ch1.xhtml#at-83"/></navPoint>
+<navPoint><navLabel><text>Entry number 84 of a long table</text></navLabel><content src="ch1.xhtml#at-84"/></navPoint>
+<navPoint><navLabel><text>Entry number 85 of a long table</text></navLabel><content src="ch1.xhtml#at-85"/></navPoint>
+<navPoint><navLabel><text>Entry number 86 of a long table</text></navLabel><content src="ch1.xhtml#at-86"/></navPoint>
+<navPoint><navLabel><text>Entry number 87 of a long table</text></navLabel><content src="ch1.xhtml#at-87"/></navPoint>
+<navPoint><navLabel><text>Entry number 88 of a long table</text></navLabel><content src="ch1.xhtml#at-88"/></navPoint>
+<navPoint><navLabel><text>Entry number 89 of a long table</text></navLabel><content src="ch1.xhtml#at-89"/></navPoint>
+<navPoint><navLabel><text>Entry number 90 of a long table</text></navLabel><content src="ch1.xhtml#at-90"/></navPoint>
+<navPoint><navLabel><text>Entry number 91 of a long table</text></navLabel><content src="ch1.xhtml#at-91"/></navPoint>
+<navPoint><navLabel><text>Entry number 92 of a long table</text></navLabel><content src="ch1.xhtml#at-92"/></navPoint>
+<navPoint><navLabel><text>Entry number 93 of a long table</text></navLabel><content src="ch1.xhtml#at-93"/></navPoint>
+<navPoint><navLabel><text>Entry number 94 of a long table</text></navLabel><content src="ch1.xhtml#at-94"/></navPoint>
+<navPoint><navLabel><text>Entry number 95 of a long table</text></navLabel><content src="ch1.xhtml#at-95"/></navPoint>
+<navPoint><navLabel><text>Entry number 96 of a long table</text></navLabel><content src="ch1.xhtml#at-96"/></navPoint>
+<navPoint><navLabel><text>Entry number 97 of a long table</text></navLabel><content src="ch1.xhtml#at-97"/></navPoint>
+<navPoint><navLabel><text>Entry number 98 of a long table</text></navLabel><content src="ch1.xhtml#at-98"/></navPoint>
+<navPoint><navLabel><text>Entry number 99 of a long table</text></navLabel><content src="ch1.xhtml#at-99"/></navPoint>
+<navPoint><navLabel><text>Entry number 100 of a long table</text></navLabel><content src="ch1.xhtml#at-100"/></navPoint>
+<navPoint><navLabel><text>Entry number 101 of a long table</text></navLabel><content src="ch1.xhtml#at-101"/></navPoint>
+<navPoint><navLabel><text>Entry number 102 of a long table</text></navLabel><content src="ch1.xhtml#at-102"/></navPoint>
+<navPoint><navLabel><text>Entry number 103 of a long table</text></navLabel><content src="ch1.xhtml#at-103"/></navPoint>
+<navPoint><navLabel><text>Entry number 104 of a long table</text></navLabel><content src="ch1.xhtml#at-104"/></navPoint>
+<navPoint><navLabel><text>Entry number 105 of a long table</text></navLabel><content src="ch1.xhtml#at-105"/></navPoint>
+<navPoint><navLabel><text>Entry number 106 of a long table</text></navLabel><content src="ch1.xhtml#at-106"/></navPoint>
+<navPoint><navLabel><text>Entry number 107 of a long table</text></navLabel><content src="ch1.xhtml#at-107"/></navPoint>
+<navPoint><navLabel><text>Entry number 108 of a long table</text></navLabel><content src="ch1.xhtml#at-108"/></navPoint>
+<navPoint><navLabel><text>Entry number 109 of a long table</text></navLabel><content src="ch1.xhtml#at-109"/></navPoint>
+<navPoint><navLabel><text>Entry number 110 of a long table</text></navLabel><content src="ch1.xhtml#at-110"/></navPoint>
+<navPoint><navLabel><text>Entry number 111 of a long table</text></navLabel><content src="ch1.xhtml#at-111"/></navPoint>
+<navPoint><navLabel><text>Entry number 112 of a long table</text></navLabel><content src="ch1.xhtml#at-112"/></navPoint>
+<navPoint><navLabel><text>Entry number 113 of a long table</text></navLabel><content src="ch1.xhtml#at-113"/></navPoint>
+<navPoint><navLabel><text>Entry number 114 of a long table</text></navLabel><content src="ch1.xhtml#at-114"/></navPoint>
+<navPoint><navLabel><text>Entry number 115 of a long table</text></navLabel><content src="ch1.xhtml#at-115"/></navPoint>
+<navPoint><navLabel><text>Entry number 116 of a long table</text></navLabel><content src="ch1.xhtml#at-116"/></navPoint>
+<navPoint><navLabel><text>Entry number 117 of a long table</text></navLabel><content src="ch1.xhtml#at-117"/></navPoint>
+<navPoint><navLabel><text>Entry number 118 of a long table</text></navLabel><content src="ch1.xhtml#at-118"/></navPoint>
+<navPoint><navLabel><text>Entry number 119 of a long table</text></navLabel><content src="ch1.xhtml#at-119"/></navPoint>
+</navMap></ncx>

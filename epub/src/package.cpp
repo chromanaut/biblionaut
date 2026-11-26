@@ -125,6 +125,16 @@ void Package::OnStartElement(std::string_view name, const XmlAttributes& attribu
     return;
   }
   ++depth_;
+  if (depth_ == 1) {
+    // The package itself, which says which of its identifiers is the one
+    // the book is known by.
+    std::string_view unique;
+    if (attributes.Find("unique-identifier", unique) && !unique.empty()) {
+      uniqueId_ = NameHash(unique);
+      hasUniqueId_ = true;
+    }
+    return;
+  }
   if (depth_ == 2) {
     // The parts of a package.
     section_ = local == "metadata"   ? Section::kMetadata
@@ -168,6 +178,8 @@ void Package::OnEndElement(std::string_view /*name*/) noexcept {
     title_.RemoveTrailingSpace();
     author_.RemoveTrailingSpace();
     language_.RemoveTrailingSpace();
+    identifier_.RemoveTrailingSpace();
+    uniqueIdentifier_.RemoveTrailingSpace();
     capture_ = Capture::kNone;
   }
   --depth_;
@@ -185,6 +197,12 @@ void Package::OnText(std::string_view text) noexcept {
       break;
     case Capture::kLanguage:
       language_.AppendCollapsed(text);
+      break;
+    case Capture::kIdentifier:
+      identifier_.AppendCollapsed(text);
+      break;
+    case Capture::kUniqueIdentifier:
+      uniqueIdentifier_.AppendCollapsed(text);
       break;
   }
 }
@@ -227,6 +245,16 @@ void Package::StartInMetadata(std::string_view local, const XmlAttributes& attri
     capture_ = Capture::kAuthor;
   } else if (SameButForCase(local, "language") && language_.Empty()) {
     capture_ = Capture::kLanguage;
+  } else if (SameButForCase(local, "identifier")) {
+    // The one the package named, the first time it has anything in it;
+    // and, beside it, the first of any that has.
+    std::string_view id;
+    const bool unique = hasUniqueId_ && attributes.Find("id", id) && NameHash(id) == uniqueId_;
+    if (unique && uniqueIdentifier_.Empty()) {
+      capture_ = Capture::kUniqueIdentifier;
+    } else if (identifier_.Empty()) {
+      capture_ = Capture::kIdentifier;
+    }
   } else if (local == "meta") {
     // EPUB 2's way of naming the cover: <meta name="cover" content="the-id"/>.
     std::string_view metaName;
@@ -314,6 +342,11 @@ void Package::Clear() noexcept {
   title_.Clear();
   author_.Clear();
   language_.Clear();
+  identifier_.Clear();
+  uniqueIdentifier_.Clear();
+  uniqueId_ = 0;
+  hasUniqueId_ = false;
+  pictureCount_ = 0;
   packagePath_.Clear();
   cover_ = {};
   nav_ = {};
@@ -370,6 +403,7 @@ PackageStatus Package::End(PackageStatus status) noexcept {
   if (status != PackageStatus::kOk) {
     // Nothing half found is left to be mistaken for an answer.
     spineCount_ = 0;
+    pictureCount_ = 0;
     cover_ = {};
     nav_ = {};
     ncx_ = {};
@@ -453,6 +487,32 @@ std::size_t Package::SpineIndexOf(std::string_view path) const noexcept {
     }
   }
   return first;
+}
+
+Package::Picture Package::PictureOf(std::string_view path) const noexcept {
+  Picture picture;
+  if (Reading() || status_ != PackageStatus::kOk) {
+    return picture;
+  }
+  const std::uint64_t hash = NameHash(path);
+  const auto low = static_cast<std::uint32_t>(hash);
+  const auto high = static_cast<std::uint16_t>(hash >> 32U);
+  // Its place is how many pictures the manifest has before it.
+  std::size_t before = 0;
+  for (std::uint32_t index = 0; index < itemCount_; ++index) {
+    const Item& item = ItemAt(index);
+    if (!IsPicture(item.type)) {
+      continue;
+    }
+    if (item.pathLow == low && item.pathHigh == high) {
+      picture.index = before;
+      picture.type = item.type;
+      picture.isCover = cover_.item == index;
+      return picture;
+    }
+    ++before;
+  }
+  return picture;
 }
 
 // ---- The reading, a piece at a time ----
@@ -741,10 +801,13 @@ void Package::ResolveRest() noexcept {
       found->type = ItemAt(found->item).type;
     }
   }
-  // How many files the directory is to be gone through for.
+  // How many files the directory is to be gone through for, and how many
+  // of the manifest's are pictures.
   wanted_ = 0;
+  pictureCount_ = 0;
   for (std::uint32_t index = 0; index < itemCount_; ++index) {
     wanted_ += Has(ItemAt(index).flags, kWanted) ? 1 : 0;
+    pictureCount_ += IsPicture(ItemAt(index).type) ? 1 : 0;
   }
   if (spineCount_ == 0) {
     (void)End(PackageStatus::kNotPackage);

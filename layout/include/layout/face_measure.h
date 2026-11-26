@@ -19,20 +19,34 @@
 // take no room.
 //
 // Every glyph is drawn on a whole pixel, and a glyph is always the same
-// number of pixels after the one before it: its advance, which an image has
-// in quarters of a pixel, to the nearest pixel (PenStep()). So the same two
-// letters are the same distance apart wherever they come on a page. Adding
-// the advances up as they are and rounding where the pen has got to would
-// not give that: two letters would be a pixel further apart in one place
-// than in another, by what was left over before them, and that is plain to
-// the eye. There is no kerning yet; when there is, it is added to the
-// advance before the rounding.
+// number of pixels after the one before it, whichever two they are: the
+// first's advance and what their face kerns the two by, both of which an
+// image has in quarters of a pixel, added and then put to the nearest pixel
+// (PenStep()). So the same two letters are the same distance apart wherever
+// they come on a page. Adding the advances up as they are and rounding
+// where the pen has got to would not give that: two letters would be a
+// pixel further apart in one place than in another, by what was left over
+// before them, and that is plain to the eye. Nor would rounding the kerning
+// by itself: half a pixel of it would be a whole one or none.
+//
+// Two glyphs are kerned when one follows the other in a stretch of text
+// that is measured as one, which is as much of a word as is in one style,
+// and one face gave both. So nothing is kerned across a space, across a
+// change of style, or between a letter and a glyph the fallback face lent
+// for a character its neighbour's face lacks. Nor across a soft hyphen or a
+// zero width space, which are not drawn: the setter measures what is before
+// one apart from what is after. Where the hyphenator would let a word be
+// broken makes no difference to it: the last letter before such a place is
+// kerned with the first after it, and is as wide as that whether or not a
+// line ends there.
 //
 // Widths are in quarters of a pixel, as the setter counts, and each is a
 // whole number of pixels: a piece of a word is as wide as its characters'
 // steps added up, and a space and a hyphen are rounded as a letter is. So
 // what is drawn from the pieces' widths lines up exactly with what was
-// measured.
+// measured, by whoever moves the pen by the same steps: after each glyph
+// but the last of a stretch, the step it has before the next (the three
+// argument PenStep()); and after the last, its own.
 //
 // The hyphen shown where a line ends inside a word is the style's U+2010,
 // or its hyphen-minus if it has none.
@@ -68,6 +82,12 @@ class FaceMeasure final : public TextMeasure {
     return static_cast<std::uint16_t>((static_cast<std::uint32_t>(glyph.advance) + (kUnitsToAPixel / 2U)) /
                                       kUnitsToAPixel);
   }
+  // How many pixels the pen moves on after `glyph` when `next` is drawn
+  // straight after it, both in `style`: the glyph's advance and what their
+  // face kerns the two by, added in quarters of a pixel and then put to the
+  // nearest pixel, a half going up, and never less than nothing. Glyphs of
+  // two faces are not kerned, and the step is then the first's own.
+  std::uint16_t PenStep(std::uint16_t style, const draw::Glyph& glyph, const draw::Glyph& next) const noexcept;
 
   void Measure(std::string_view text, std::uint16_t style, std::span<const std::uint8_t> ends,
                std::span<std::uint16_t> widths) noexcept override;

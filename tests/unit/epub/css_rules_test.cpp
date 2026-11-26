@@ -316,6 +316,22 @@ TEST(CssCascade, GivesAListOfFamiliesAsTheKindOfFaceItComesTo) {
             "line-height: normal}\n");
 }
 
+TEST(CssCascade, GivesWhatStandsBeforeAnItemOfAList) {
+  // The last of the properties, by its own name and by the one that says
+  // three things at once; from a rule, and from an element's own `style`.
+  EXPECT_EQ(Styles("ol.toc { list-style-type: none } ul { list-style: square inside } "
+                   "ol { list-style-type: lower-latin; height: 1px } li.x { list-style: inherit }",
+                   "<d><ol class='toc'><li/></ol><ul><li class='x'/></ul>"
+                   "<ol style='list-style: url(dot.png) upper-roman'/><ol style='list-style-type: lower-greek'/></d>"),
+            "d\n"
+            " ol {height: 1px; list-style-type: none}\n"
+            "  li\n"
+            " ul {list-style-type: square}\n"
+            "  li {list-style-type: inherit}\n"
+            " ol {height: 1px; list-style-type: upper-roman}\n"
+            " ol {height: 1px; list-style-type: lower-alpha}\n");
+}
+
 TEST(CssRules, KeepsOfAListOfFamiliesAByteAndNoneOfItsNames) {
   Book shortName;
   (void)shortName.Sheet("p { font-family: x }");

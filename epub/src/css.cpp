@@ -151,6 +151,22 @@ constexpr std::array<Word, 9> kBreaksAround = {{{"auto", CssKeyword::kAuto},
                                                 {"avoid-page", CssKeyword::kAvoid}}};
 constexpr std::array<Word, 3> kBreaksInside = {
     {{"auto", CssKeyword::kAuto}, {"avoid", CssKeyword::kAvoid}, {"avoid-page", CssKeyword::kAvoid}}};
+// What stands before an item of a list. The Latin alphabet goes by two
+// names.
+constexpr std::array<Word, 12> kListStyleTypes = {{{"none", CssKeyword::kNone},
+                                                   {"disc", CssKeyword::kDisc},
+                                                   {"circle", CssKeyword::kCircle},
+                                                   {"square", CssKeyword::kSquare},
+                                                   {"decimal", CssKeyword::kDecimal},
+                                                   {"decimal-leading-zero", CssKeyword::kDecimalLeadingZero},
+                                                   {"lower-alpha", CssKeyword::kLowerAlpha},
+                                                   {"lower-latin", CssKeyword::kLowerAlpha},
+                                                   {"upper-alpha", CssKeyword::kUpperAlpha},
+                                                   {"upper-latin", CssKeyword::kUpperAlpha},
+                                                   {"lower-roman", CssKeyword::kLowerRoman},
+                                                   {"upper-roman", CssKeyword::kUpperRoman}}};
+// Where a marker stands, which `list-style` may say and which is not kept.
+constexpr std::array<std::string_view, 2> kListStylePositions = {"inside", "outside"};
 
 CssValue KeywordValue(CssKeyword keyword) noexcept {
   CssValue value;
@@ -471,8 +487,54 @@ class Declaring {
     return true;
   }
 
+  // `list-style`: what stands before an item, where it stands and a
+  // picture to stand there, in any order. Only the first of those is
+  // kept. A `none` is for the picture if something else is said of what
+  // stands there, and what is left out is a disc, as CSS has it.
+  bool ListStyle(std::string_view text) const noexcept {
+    CssValue type;
+    if (Everywhere(text, type)) {
+      sink_.Declare(CssProperty::kListStyleType, type, important_);
+      return true;
+    }
+    bool typed = false;
+    bool none = false;
+    std::size_t pieces = 0;
+    for (std::string_view piece = NextPiece(text); !piece.empty(); piece = NextPiece(text)) {
+      ++pieces;
+      CssValue value;
+      if (SameButForCase(piece, "none")) {
+        none = true;
+      } else if (FindWord(kListStyleTypes, piece, value)) {
+        if (typed) {
+          return false;  // Two things to stand there.
+        }
+        type = value;
+        typed = true;
+      } else if (std::none_of(kListStylePositions.begin(), kListStylePositions.end(),
+                              [piece](std::string_view position) { return SameButForCase(piece, position); }) &&
+                 !IsUrl(piece)) {
+        return false;
+      }
+    }
+    if (pieces == 0) {
+      return false;
+    }
+    if (!typed) {
+      type = KeywordValue(none ? CssKeyword::kNone : CssKeyword::kDisc);
+    }
+    sink_.Declare(CssProperty::kListStyleType, type, important_);
+    return true;
+  }
+
  private:
   static bool Everywhere(std::string_view text, CssValue& value) noexcept { return FindWord(kEverywhere, text, value); }
+
+  // Whether a piece of a value is `url(...)`, closed.
+  static bool IsUrl(std::string_view piece) noexcept {
+    constexpr std::string_view kOpen = "url(";
+    return piece.size() > kOpen.size() && SameButForCase(First(piece, kOpen.size()), kOpen) && piece.back() == ')';
+  }
 
   const Sink& sink_;
   bool important_;
@@ -570,6 +632,10 @@ void Declare(const Sink& sink, std::string_view text) noexcept {
     understood = declaring.Length(CssProperty::kWidth, notBelowZero, kAutoOnly, value);
   } else if (is("height")) {
     understood = declaring.Length(CssProperty::kHeight, notBelowZero, kAutoOnly, value);
+  } else if (is("list-style-type")) {
+    understood = declaring.Words(CssProperty::kListStyleType, kListStyleTypes, value);
+  } else if (is("list-style")) {
+    understood = declaring.ListStyle(value);
   } else {
     known = false;
   }
@@ -1181,6 +1247,8 @@ const char* CssPropertyName(CssProperty property) noexcept {
       return "width";
     case CssProperty::kHeight:
       return "height";
+    case CssProperty::kListStyleType:
+      return "list-style-type";
   }
   return "unknown";
 }
@@ -1273,6 +1341,24 @@ const char* CssKeywordName(CssKeyword keyword) noexcept {
       return "smaller";
     case CssKeyword::kLarger:
       return "larger";
+    case CssKeyword::kDisc:
+      return "disc";
+    case CssKeyword::kCircle:
+      return "circle";
+    case CssKeyword::kSquare:
+      return "square";
+    case CssKeyword::kDecimal:
+      return "decimal";
+    case CssKeyword::kDecimalLeadingZero:
+      return "decimal-leading-zero";
+    case CssKeyword::kLowerAlpha:
+      return "lower-alpha";
+    case CssKeyword::kUpperAlpha:
+      return "upper-alpha";
+    case CssKeyword::kLowerRoman:
+      return "lower-roman";
+    case CssKeyword::kUpperRoman:
+      return "upper-roman";
   }
   return "unknown";
 }

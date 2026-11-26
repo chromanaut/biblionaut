@@ -488,6 +488,20 @@ TEST(CssReader, ReadsEachPropertyItKnows) {
       {"break-inside: avoid-page", "D break-inside: avoid\n"},
       {"width: 50%", "D width: 50%\n"},
       {"height: auto", "D height: auto\n"},
+      {"list-style-type: none", "D list-style-type: none\n"},
+      {"list-style-type: disc", "D list-style-type: disc\n"},
+      {"list-style-type: circle", "D list-style-type: circle\n"},
+      {"list-style-type: square", "D list-style-type: square\n"},
+      {"list-style-type: decimal", "D list-style-type: decimal\n"},
+      {"list-style-type: decimal-leading-zero", "D list-style-type: decimal-leading-zero\n"},
+      {"list-style-type: lower-alpha", "D list-style-type: lower-alpha\n"},
+      {"list-style-type: upper-alpha", "D list-style-type: upper-alpha\n"},
+      {"list-style-type: lower-roman", "D list-style-type: lower-roman\n"},
+      {"list-style-type: upper-roman", "D list-style-type: upper-roman\n"},
+      // The Latin alphabet by its other name.
+      {"list-style-type: lower-latin", "D list-style-type: lower-alpha\n"},
+      {"list-style-type: Upper-Latin", "D list-style-type: upper-alpha\n"},
+      {"list-style-type: inherit", "D list-style-type: inherit\n"},
       // In capitals, and with space about the colon.
       {"FONT-STYLE :\tITALIC", "D font-style: italic\n"},
       {"Margin-Left:2EM", "D margin-left: 2em\n"},
@@ -519,6 +533,41 @@ TEST(CssReader, TakesMarginAndPaddingApartIntoTheFourSides) {
   EXPECT_EQ(Declared("padding: 1px -2px"), "X value: padding: 1px -2px\n");
   EXPECT_EQ(Declared("padding: auto"), "X value: padding: auto\n");
   EXPECT_EQ(Declared("margin:"), "X value: margin:\n");
+}
+
+TEST(CssReader, TakesOfListStyleWhatStandsBeforeAnItem) {
+  EXPECT_EQ(Declared("list-style: none"), "D list-style-type: none\n");
+  EXPECT_EQ(Declared("list-style: square"), "D list-style-type: square\n");
+  // Where it stands, and a picture to stand there, are passed over, in
+  // any order.
+  EXPECT_EQ(Declared("list-style: lower-roman inside"), "D list-style-type: lower-roman\n");
+  EXPECT_EQ(Declared("list-style: OUTSIDE url(dot.png) Decimal"), "D list-style-type: decimal\n");
+  EXPECT_EQ(Declared("list-style: url(\"a b.png\") circle"), "D list-style-type: circle\n");
+  EXPECT_EQ(Declared("list-style: URL(dot.png) Inside"), "D list-style-type: disc\n");
+  // With something else said of what stands there, a `none` is for the
+  // picture; with nothing else, it is for both.
+  EXPECT_EQ(Declared("list-style: none disc"), "D list-style-type: disc\n");
+  EXPECT_EQ(Declared("list-style: upper-alpha none"), "D list-style-type: upper-alpha\n");
+  EXPECT_EQ(Declared("list-style: none inside"), "D list-style-type: none\n");
+  EXPECT_EQ(Declared("list-style: none none"), "D list-style-type: none\n");
+  // What is left out is a disc, as CSS has it.
+  EXPECT_EQ(Declared("list-style: inside"), "D list-style-type: disc\n");
+  EXPECT_EQ(Declared("list-style: url(dot.png)"), "D list-style-type: disc\n");
+  EXPECT_EQ(Declared("list-style: inherit"), "D list-style-type: inherit\n");
+  EXPECT_EQ(Declared("list-style: initial !important"), "D list-style-type: initial !important\n");
+  // Two things to stand there, or something that is none of the three.
+  EXPECT_EQ(Declared("list-style: disc circle"), "X value: list-style: disc circle\n");
+  EXPECT_EQ(Declared("list-style: disc 2px"), "X value: list-style: disc 2px\n");
+  EXPECT_EQ(Declared("list-style: url(dot.png"), "X value: list-style: url(dot.png\n");
+  EXPECT_EQ(Declared("list-style: url()x"), "X value: list-style: url()x\n");
+  EXPECT_EQ(Declared("list-style: inherit disc"), "X value: list-style: inherit disc\n");
+  EXPECT_EQ(Declared("list-style:"), "X value: list-style:\n");
+  // A kind of marker that is not read, and the properties for the other
+  // two things, are dropped by name.
+  EXPECT_EQ(Declared("list-style-type: lower-greek"), "X value: list-style-type: lower-greek\n");
+  EXPECT_EQ(Declared("list-style-type: disc inside"), "X value: list-style-type: disc inside\n");
+  EXPECT_EQ(Declared("list-style-position: inside"), "X property: list-style-position\n");
+  EXPECT_EQ(Declared("list-style-image: none"), "X property: list-style-image\n");
 }
 
 TEST(CssReader, TakesFontApart) {

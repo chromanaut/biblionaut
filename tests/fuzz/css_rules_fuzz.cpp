@@ -53,7 +53,6 @@
 namespace {
 
 using bn::epub::CssCascade;
-using bn::epub::CssKeyword;
 using bn::epub::CssReader;
 using bn::epub::CssRules;
 using bn::epub::CssStyle;
@@ -140,7 +139,7 @@ void CheckValues(const CssStyle& style) {
     const CssValue& value = style.values[property];
     BN_FUZZ_CHECK(value.kind <= CssValue::Kind::kFamilies, "a kind of value that there is not");
     if (value.kind == CssValue::Kind::kKeyword) {
-      BN_FUZZ_CHECK(value.keyword <= CssKeyword::kLarger, "a keyword there is not");
+      BN_FUZZ_CHECK(static_cast<std::size_t>(value.keyword) < bn::epub::kCssKeywords, "a keyword there is not");
     } else if (value.kind == CssValue::Kind::kLength) {
       BN_FUZZ_CHECK(value.unit <= CssUnit::kPercent, "a unit there is not");
       BN_FUZZ_CHECK(value.number >= -bn::epub::kCssMaxNumber && value.number <= bn::epub::kCssMaxNumber,

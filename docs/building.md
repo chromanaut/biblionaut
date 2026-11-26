@@ -8,8 +8,10 @@ expat, the XML parser, which is C and is why a C compiler is needed;
 TeX's hyphenation patterns for American English, which the build makes
 into a table ([Where a word may be broken](hyphenation.md)); FreeType, which draws the
 glyphs for `bn-font` ([Fonts](fonts.md)); GoogleTest; and, for the tests of
-`bn-font`, the font files of Courier Prime. (The fonts of a fonts image are
-downloaded only when one is built: see [The presets](fonts.md#the-presets).) The tests also link zlib, to check the inflater against and to
+`bn-font`, the font files of Courier Prime. (Two more font files are
+downloaded when a build with tests is built, for the tests of kerning; and
+the fonts of a fonts image only when one is built: see [The
+presets](fonts.md#the-presets).) The tests also link zlib, to check the inflater against and to
 make their ZIP files with, and so does `bn-font`, to say what a fonts image
 would take compressed: macOS has it, and on Linux it is the `zlib1g-dev`
 package. Most of the end-to-end

@@ -19,6 +19,16 @@
 // record for each glyph, and the glyphs' pictures. Glyph 0 of a face is
 // what is drawn for a character it has no glyph for.
 //
+// A face may kern: bring two of its glyphs that follow one another closer
+// together, or set them further apart, than their advances would. Its
+// glyphs are put in classes for that, twice over. Those that kern alike
+// with whatever follows them are one class as the first of two, and those
+// that kern alike after whatever comes before them are one class as the
+// second; and the face has a table with a number for each class of the one
+// kind and each of the other. A glyph that never kerns as the first of two
+// is of class 0 there, and likewise as the second, and the table has
+// nothing for class 0.
+//
 // The image is not trusted. Opening it looks at its header and its table of
 // faces, and nothing else; whatever a face's tables hold, finding a glyph
 // looks at no more than kMostSteps of them, reads nothing outside the image,
@@ -30,7 +40,8 @@
 // table of faces are kept readable. A face says its role, style, size and
 // metrics from the first, and has glyphs once it is held
 // (FontImage::Hold()), which makes readable the one stretch of the image
-// that has its tables and its pictures: `bn-font` writes a face's together,
+// that has its tables, kerning among them, and its pictures: `bn-font`
+// writes a face's together,
 // and an image that scatters them asks for more than may be had. So the
 // faces a page is set in are held, and given up for the next page's.
 //
@@ -59,7 +70,13 @@
 //     at        (4)   and where the first glyph's record is
 //     pictures  (4)   where its pictures begin,
 //     bytes     (4)   and how many bytes they take
-//     0        (12)   kept for kerning
+//     kerning   (4)   where its table of kerning begins,
+//     firsts          how many classes its glyphs are in as the first of
+//                     two that kern, the class of those that do not left
+//                     out,
+//     seconds         and how many as the second: 0 of both for a face
+//                     with no kerning
+//     0         (6)
 //   a range, 12 bytes: code points that have glyphs one after another
 //     first     (4)   the first code point
 //     count     (4)   how many
@@ -71,8 +88,14 @@
 //     height          and height
 //     left            pixels from the pen to the picture's left edge
 //     top             pixels from the baseline up to the picture's top row
-//     0         (2)   kept for kerning
+//     first           its class as the first of two glyphs that kern: 0
+//                     if it never does, and 1 and up otherwise
+//     second          its class as the second of two, likewise
 //     picture   (4)   where its picture begins, from the face's pictures
+//   a table of kerning: for each class of first glyphs from 1 up, in order,
+//   a signed byte for each class of second glyphs from 1 up: how much
+//   further on the second is set, in quarters of a pixel. Less than nothing
+//   brings the two together.
 //   a picture: its rows from the top, each pixel two bits, the first pixel
 //   in the highest two bits of the first byte, rows following on with no
 //   gap, the last byte filled out with nothing: 0 is paper, 3 full ink.
@@ -111,6 +134,12 @@ struct Glyph {
   std::int8_t top = 0;                    // and from the baseline up to its top row.
   std::span<const std::uint8_t> picture;  // Inside the image; empty for a glyph with nothing to draw.
   std::uint32_t pictureAt = 0;            // Where in the image the picture begins, from the image's start.
+  // Its classes for kerning, as the first of two glyphs and as the second:
+  // 0 for one that does not kern. They mean something to its own face only,
+  // which is `face` of the image's faces.
+  std::uint8_t kernFirst = 0;
+  std::uint8_t kernSecond = 0;
+  std::uint16_t face = 0;
 
   // How much ink pixel (x, y) of the picture has: 0 for none, 3 for full.
   // The pixel has to be inside the picture.
@@ -159,6 +188,19 @@ class Face {
   bool GlyphAt(std::uint32_t index, Glyph& glyph) const noexcept;
   // What is drawn for a character the face has no glyph for: glyph 0.
   bool Missing(Glyph& glyph) const noexcept { return GlyphAt(0, glyph); }
+
+  // How much further on `second` is set when it follows `first`, than the
+  // advance of `first` puts it: in quarters of a pixel, and less than
+  // nothing when the two are brought together. Nothing unless both are
+  // glyphs this face gave, and it kerns the two. It reads one byte of the
+  // image.
+  std::int8_t Kern(const Glyph& first, const Glyph& second) const noexcept;
+  // How many classes its glyphs are in for kerning, as the first of two and
+  // as the second, and how many bytes its table is: 0 of each for a face
+  // that does not kern.
+  std::uint8_t KernFirsts() const noexcept;
+  std::uint8_t KernSeconds() const noexcept;
+  std::size_t KerningBytes() const noexcept { return std::size_t{KernFirsts()} * KernSeconds(); }
 
   // How many steps the last Find() took.
   std::uint32_t LastSteps() const noexcept { return steps_; }

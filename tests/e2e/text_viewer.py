@@ -128,7 +128,7 @@ def glyph_ink(bn_font: str, image: Path, characters: str) -> dict[tuple[str, int
         if heading:
             face = faces.setdefault((heading.group(1), int(heading.group(3))), {})
             continue
-        glyph = re.match(r"^  U\+([0-9A-F]+): glyph \d+, advance (\d+), (\d+) by (\d+) at (-?\d+), (-?\d+), ink (\d+)$",
+        glyph = re.match(r"^  U\+([0-9A-F]+): glyph \d+, advance (\d+), (\d+) by (\d+) at (-?\d+), (-?\d+), ink (\d+),",
                          line)
         if glyph and face is not None:
             advance, width, height, left, top, ink = (int(number) for number in glyph.groups()[1:])

@@ -51,7 +51,8 @@ bool RecordsGood(std::span<const std::uint8_t> head, std::size_t faces, std::uin
     if (record[0] > kLastRole || record[1] > kLastStyle ||
         !Inside(Read32(record, 16), Read32(record, 12), kRangeBytes, bytes) ||
         !Inside(Read32(record, 24), Read32(record, 20), kGlyphBytes, bytes) ||
-        !Inside(Read32(record, 28), Read32(record, 32), 1, bytes)) {
+        !Inside(Read32(record, 28), Read32(record, 32), 1, bytes) ||
+        !Inside(Read32(record, 36), std::uint64_t{record[40]} * record[41], 1, bytes)) {
       return false;
     }
   }
@@ -84,6 +85,8 @@ std::int16_t Face::Descent() const noexcept { return Valid() ? static_cast<std::
 std::uint16_t Face::LineHeight() const noexcept { return Valid() ? Read16(record_, 8) : 0; }
 std::uint16_t Face::XHeight() const noexcept { return Valid() ? Read16(record_, 10) : 0; }
 std::uint32_t Face::Glyphs() const noexcept { return Valid() ? Read32(record_, 20) : 0; }
+std::uint8_t Face::KernFirsts() const noexcept { return Valid() ? record_[40] : 0; }
+std::uint8_t Face::KernSeconds() const noexcept { return Valid() ? record_[41] : 0; }
 
 bool Face::Find(std::uint32_t codePoint, Glyph& glyph) const noexcept {
   steps_ = 0;
@@ -137,8 +140,25 @@ bool Face::GlyphAt(std::uint32_t index, Glyph& glyph) const noexcept {
                 .left = static_cast<std::int8_t>(record[4]),
                 .top = static_cast<std::int8_t>(record[5]),
                 .picture = From(at).first(bytes),
-                .pictureAt = at};
+                .pictureAt = at,
+                .kernFirst = record[6],
+                .kernSecond = record[7],
+                .face = static_cast<std::uint16_t>(index_)};
   return true;
+}
+
+std::int8_t Face::Kern(const Glyph& first, const Glyph& second) const noexcept {
+  // A class the table has no row or no place for, which only a glyph's own
+  // record could say, is no kerning.
+  const std::uint8_t firsts = KernFirsts();
+  const std::uint8_t seconds = KernSeconds();
+  if (!held_ || first.face != index_ || second.face != index_ || first.kernFirst == 0 || first.kernFirst > firsts ||
+      second.kernSecond == 0 || second.kernSecond > seconds) {
+    return 0;
+  }
+  // Opening the image saw that the whole table is inside it.
+  const std::size_t at = Read32(record_, 36) + (std::size_t{first.kernFirst - 1U} * seconds) + (second.kernSecond - 1U);
+  return static_cast<std::int8_t>(From(at)[0]);
 }
 
 // ---- The image ----
@@ -224,17 +244,22 @@ bool FontImage::Hold(Face& face) noexcept {
   if (held_ == kMostHeld) {
     return false;
   }
-  // Its stretch of the image: from where the first of its three tables
-  // begins to where the last of them ends. Opening the image saw that each
-  // is inside it.
+  // Its stretch of the image: from where the first of its tables begins to
+  // where the last of them ends, its kerning among them if it has any.
+  // Opening the image saw that each is inside it.
   const std::span<const std::uint8_t> record = face.record_;
   const std::uint64_t rangesAt = Read32(record, 16);
   const std::uint64_t glyphsAt = Read32(record, 24);
   const std::uint64_t picturesAt = Read32(record, 28);
-  const std::uint64_t begins = std::min({rangesAt, glyphsAt, picturesAt});
-  const std::uint64_t ends =
+  std::uint64_t begins = std::min({rangesAt, glyphsAt, picturesAt});
+  std::uint64_t ends =
       std::max({rangesAt + (std::uint64_t{Read32(record, 12)} * kRangeBytes),
                 glyphsAt + (std::uint64_t{Read32(record, 20)} * kGlyphBytes), picturesAt + Read32(record, 32)});
+  if (face.KerningBytes() > 0) {
+    const std::uint64_t kerningAt = Read32(record, 36);
+    begins = std::min(begins, kerningAt);
+    ends = std::max<std::uint64_t>(ends, kerningAt + face.KerningBytes());
+  }
   std::span<const std::uint8_t> stretch;
   if (ends > begins) {
     stretch = map_->Map(static_cast<std::size_t>(begins), static_cast<std::size_t>(ends - begins));

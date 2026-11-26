@@ -20,8 +20,19 @@ moves the pen, is in quarters of a pixel and is the outline's own, not
 rounded to the pixels its picture was fitted to: so the widths of a line's
 characters add up to what the line is wide at any size. Glyph 0 of a face
 is what is drawn for a character it has no glyph for. `draw/font.h`
-describes the layout byte by byte. There is no kerning yet, and no
-ligatures; bytes are kept for kerning in a face's record and a glyph's.
+describes the layout byte by byte.
+
+A face may kern: set two of its glyphs that follow one another closer
+together, or further apart, than their advances would. Its glyphs are put
+in classes for that, twice over: those that kern alike with whatever
+follows them are one class as the first of two, and those that kern alike
+after whatever comes before are one class as the second. A glyph's record
+has its two classes, a byte each, 0 for a glyph that does not kern; and the
+face has a table with a signed byte for each class of first glyphs and
+each of second, in quarters of a pixel. So a pair's kerning is one byte
+read, found from two the glyphs have. The image has kerning and nothing
+uses it yet: the measure that sets text (below) is to add it to an advance
+before it rounds. There are no ligatures.
 
 ## Making the image
 
@@ -53,13 +64,13 @@ over.
 
 ```
 $ bn-font build courier.preset --out courier.bnfn
-mono     regular     26 px:  381 glyphs (2074 lacking), pictures   20833 bytes; ascent 21, descent 9, line 29, x-height 12
-mono     regular     30 px:  381 glyphs (2074 lacking), pictures   27877 bytes; ascent 24, descent 11, line 34, x-height 14
-mono     regular     34 px:  381 glyphs (2074 lacking), pictures   35732 bytes; ascent 27, descent 12, line 38, x-height 16
-mono     bold        26 px:  381 glyphs (2074 lacking), pictures   22159 bytes; ascent 21, descent 9, line 29, x-height 12
-mono     bold        30 px:  381 glyphs (2074 lacking), pictures   29667 bytes; ascent 24, descent 11, line 34, x-height 14
-mono     bold        34 px:  381 glyphs (2074 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16
-faces 6, pictures 173838 bytes, image 204534 bytes
+mono     regular     26 px:  381 glyphs (2075 lacking), pictures   20833 bytes; ascent 21, descent 9, line 29, x-height 12; no kerning
+mono     regular     30 px:  381 glyphs (2075 lacking), pictures   27877 bytes; ascent 24, descent 11, line 34, x-height 14; no kerning
+mono     regular     34 px:  381 glyphs (2075 lacking), pictures   35732 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning
+mono     bold        26 px:  381 glyphs (2075 lacking), pictures   22159 bytes; ascent 21, descent 9, line 29, x-height 12; no kerning
+mono     bold        30 px:  381 glyphs (2075 lacking), pictures   29667 bytes; ascent 24, descent 11, line 34, x-height 14; no kerning
+mono     bold        34 px:  381 glyphs (2075 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning
+faces 6, pictures 173838 bytes, kerning 0 bytes, image 204534 bytes
 ```
 
 Glyphs are drawn with FreeType's light hinting, which moves an outline up
@@ -72,26 +83,68 @@ names fonts from the builder's computer need not be either. The pictures
 are not compressed; what they would take if they were is for `bn-font
 sizes` to say (below).
 
+A face is kerned as its font is. The fonts of the presets keep their
+kerning in the table called GPOS, as pair adjustments, which FreeType reads
+only a part of, so `bn-font` reads it itself (`tools/font/kerning.h`): the
+lookups of the `kern` feature for the default language of every script the
+font names; a lookup's subtables in order, a list of pairs passing on a
+pair it does not name and a table of classes answering for every pair
+whose first glyph it covers; and what several lookups say of a pair added
+up. Each pair is then put to the nearest quarter of a pixel at the face's
+size, and the face's glyphs into classes that kern no pair otherwise than
+the font does. Three things a font may have are left out, the first two
+counted in what `build` says of a face: a lookup of kerning that looks at
+more than two glyphs (the four fonts of Noto Sans have one each, for an
+accent on a dotless i before a bracket, and the four of Source Serif 4
+one, for the dot between two l's); whatever a pair moves besides the first
+glyph's advance (no font of the presets has any); and kerning across a
+mark that stands between two letters, since a table asked about
+neighbours cannot. A monospace font has no kerning, and its faces have
+none. A face with more than 255 classes of either kind would be built
+without kerning, and said; the most any font of the presets comes to is
+212.
+
 `bn-font info` says what an image holds, reading it by the code the
 firmware reads it with; with `--glyphs` and some characters, what each face
 has for them: the glyph's number, its advance in quarters of a pixel, its
 picture's size and where its top left corner lies from the pen on the
-baseline, and its levels of ink added up.
+baseline, its levels of ink added up, and its two classes for kerning.
 
 ```
 $ bn-font info courier.bnfn --glyphs U+0041 U+0067 U+0020 U+03B1
 image 204534 bytes, faces 6
-mono     regular     26 px:  381 glyphs; ascent 21, descent 9, line 29, x-height 12
-  U+0041: glyph 34, advance 62, 16 by 15 at 0, 15, ink 249
-  U+0067: glyph 72, advance 62, 14 by 17 at 1, 12, ink 288
-  U+0020: glyph 1, advance 62, 0 by 0 at 0, 0, ink 0
+mono     regular     26 px:  381 glyphs; ascent 21, descent 9, line 29, x-height 12; kerning 0 by 0
+  U+0041: glyph 34, advance 62, 16 by 15 at 0, 15, ink 249, kerns as 0 and 0
+  U+0067: glyph 72, advance 62, 14 by 17 at 1, 12, ink 288, kerns as 0 and 0
+  U+0020: glyph 1, advance 62, 0 by 0 at 0, 0, ink 0, kerns as 0 and 0
   U+03B1: no glyph
-mono     regular     30 px:  381 glyphs; ascent 24, descent 11, line 34, x-height 14
-  U+0041: glyph 34, advance 72, 18 by 18 at 0, 18, ink 340
-  U+0067: glyph 72, advance 72, 17 by 20 at 1, 14, ink 385
+mono     regular     30 px:  381 glyphs; ascent 24, descent 11, line 34, x-height 14; kerning 0 by 0
+  U+0041: glyph 34, advance 72, 18 by 18 at 0, 18, ink 340, kerns as 0 and 0
+  U+0067: glyph 72, advance 72, 17 by 20 at 1, 14, ink 385, kerns as 0 and 0
 ```
 
 (and so on for the other four faces).
+
+With `--kerning` and some characters it says every two of them that a face
+kerns, and by how many quarters of a pixel the second is set further on:
+less than nothing is nearer. Of the image of the `noto` preset (below), an
+A, a V, an r, a comma and an o in the serif at 30 pixels: a comma is four
+pixels nearer after an r, and a V two and a half after an A.
+
+```
+$ bn-font info fonts.bnfn --kerning U+0041 U+0056 U+0072 U+002C U+006F
+image 10143222 bytes, faces 50
+...
+serif    regular     30 px: 1982 glyphs; ascent 33, descent 9, line 41, x-height 17; kerning 111 by 92
+  U+0041 U+0056: -10
+  U+0041 U+006F: -2
+  U+0056 U+0041: -10
+  U+0056 U+002C: -13
+  U+0056 U+006F: -7
+  U+0072 U+002C: -16
+  U+002C U+0056: -13
+  U+006F U+0056: -7
+```
 
 `bn-font sizes` says what an image's pictures would take if they were kept
 in other ways than the image keeps them, which is as they are: for
@@ -181,30 +234,36 @@ before, 30 being the size text is first read in: on the X4's panel, about
 the characters an image is made with than Noto has (about 900 and about
 860 to 1,400 a face, against about 1,980), so their images have Noto Sans
 besides, as the fallback face, for what they lack. As built, with the
-12 MB of the `fonts` partition to fit in:
+12 MB (12.58 million bytes) of the `fonts` partition to fit in:
 
-| Preset | Monospace face | Faces | Image |
-|---|---|---|---|
-| `noto` | Courier Prime | 50 | 9.65 MB |
-| `noto` | Noto Sans Mono | 50 | 11.48 MB |
-| `plex` | Courier Prime | 55 | 5.56 MB |
-| `plex` | IBM Plex Mono | 55 | 6.05 MB |
-| `source` | Courier Prime | 55 | 6.03 MB |
-| `source` | Source Code Pro | 55 | 6.67 MB |
+| Preset | Monospace face | Faces | Image | Of it kerning |
+|---|---|---|---|---|
+| `noto` | Courier Prime | 50 | 10.14 MB | 0.49 MB |
+| `noto` | Noto Sans Mono | 50 | 11.98 MB | 0.49 MB |
+| `plex` | Courier Prime | 55 | 6.99 MB | 1.43 MB |
+| `plex` | IBM Plex Mono | 55 | 7.49 MB | 1.43 MB |
+| `source` | Courier Prime | 55 | 7.07 MB | 1.03 MB |
+| `source` | Source Code Pro | 55 | 7.70 MB | 1.03 MB |
 
 ```
-$ cmake --build --preset host-release --target fonts
+$ bn-font build ladder.preset noto.preset mono-courier-prime.preset --fonts FOLDER --out fonts.bnfn
+serif    regular     22 px: 1982 glyphs (474 lacking), pictures  106959 bytes; ascent 24, descent 7, line 30, x-height 12; kerning 42240 pairs, 111 by 92
+serif    regular     26 px: 1982 glyphs (474 lacking), pictures  143543 bytes; ascent 28, descent 8, line 35, x-height 14; kerning 42270 pairs, 111 by 92
 ...
-mono     bold        34 px:  381 glyphs (2074 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16
-mono     bold        38 px:  381 glyphs (2074 lacking), pictures   47138 bytes; ascent 30, descent 13, line 43, x-height 18
-faces 50, pictures 8620836 bytes, image 9639730 bytes
+mono     bold        34 px:  381 glyphs (2075 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning
+mono     bold        38 px:  381 glyphs (2075 lacking), pictures   47138 bytes; ascent 30, descent 13, line 43, x-height 18; no kerning
+faces 50, pictures 8629148 bytes, kerning 494212 bytes, image 10143222 bytes
 ```
+
+(which is what the `fonts` target runs.)
 
 All of these typefaces are under the SIL Open Font License; what that asks
 of a firmware given out with an image made of them is in `THIRD_PARTY.md`
-(Fonts in a firmware). The tests download none of them: they read each
-preset with either monospace face, and `e2e.FontTool` holds every font
-file a preset names to being one the build has a commit and a hash for.
+(Fonts in a firmware). The tests read each preset with either monospace
+face, and `e2e.FontTool` holds every font file a preset names to being one
+the build has a commit and a hash for. They download two of the files and
+no more, Noto Serif Italic and Noto Sans Regular, when a build with tests
+is built: fonts that kern, for `e2e.FontKerning` (below).
 
 ## Reading the image
 
@@ -213,7 +272,9 @@ number, by role, style and size, or the nearest style a role has at a size
 (bold italic gives way to bold, then to italic, and any of them to
 regular). A `draw::Face` gives a glyph for a code point, with its picture
 as a span of the image's own bytes; nothing is copied, and nothing is
-allocated.
+allocated. `Face::Kern()` says how much further on a glyph is set after
+another of the same face, in quarters of a pixel: a glyph says which face
+gave it, and one face's glyph is not kerned with another's.
 
 The image is not trusted, though the firmware's own build made it: a
 partition can hold anything.
@@ -226,10 +287,13 @@ partition can hold anything.
   the most (`Face::kMostSteps`), whatever the tables hold, and `LastSteps()`
   says how many. A glyph whose picture would run outside its face's
   pictures is not given.
+- **Kerning** two glyphs reads one byte of the face's table, which opening
+  the image saw to be inside it; a glyph whose record says a class the
+  table has no row or no place for is not kerned.
 - **RAM**: none but the objects themselves: under 300 bytes for an image,
   most of it the list of the faces it holds (below), and 0.6 KB in the
   device's hardware layer for the list of what it has mapped. **Flash**:
-  2.7 KB for the reader, 1.2 KB for the measure below and 0.7 KB for the
+  2.9 KB for the reader, 1.2 KB for the measure below and 0.7 KB for the
   partition's mapping, as compiled for the device, besides the image
   itself.
 
@@ -242,7 +306,7 @@ gives a stretch of bytes when asked and takes it back, and only the header
 and the table of faces are kept readable, 49 KB of them at the most. A
 face then says its role, style, size and metrics, and is found by them, but
 has no glyphs until it is held (`FontImage::Hold()`): that maps the one
-stretch of the image from the first of the face's three tables to the end
+stretch of the image from the first of the face's tables to the end
 of the last, which is the face and nothing else in an image `bn-font` made,
 since it writes a face's tables and pictures together. Sixteen faces are
 held at the most, and `ReleaseFaces()` gives them all up: whoever sets a
@@ -276,8 +340,9 @@ pen. A piece of a word is as wide as its glyphs' steps added up, and a
 space and a hyphen are rounded as a letter is, so what is drawn from the
 same glyphs lines up with what was measured; widths are still counted four
 to the pixel, as the paragraph setter is given them, each a whole number
-of pixels. The image keeps its quarters because kerning, when there is
-any, is to be added to the advance before the rounding. The hyphen shown at a line's end is
+of pixels. The measure does not kern yet: a face's kerning is in quarters,
+as its advances are, to be added to an advance before the rounding. The
+hyphen shown at a line's end is
 the style's U+2010, or its hyphen-minus. Reading UTF-8 a character at a
 time, strictly, is `core/utf8.h`, which the hyphenator shares.
 
@@ -289,7 +354,18 @@ is opened through a map as well, one that gives every stretch as a copy of
 exactly its size and frees it when it is given up, so that a byte read
 outside a face's own stretch, or after the face was given up, is seen: it
 has to go as the image opened whole goes, and every face, once held, to
-give the same glyphs. The builder's tests,
+give the same glyphs and to kern them alike. Kerning has tests of its own
+besides: a face kerns the pairs it was given and no others, no glyph of
+another face, and nothing by a class its table has not. The builder's
+reading of a font's kerning is tried on tables written for it a number at
+a time, each thing it has to know of them by itself, and on tables cut
+short at every byte and with every byte changed; and `e2e.FontKerning`
+sets `bn-font` beside a second reading of two real fonts that kern, Noto
+Serif Italic and Noto Sans Regular, which shares none of its code: the
+fonts' tables are read there from the description of their layout, and
+every two characters of every face have to be kerned in the image by what
+the tables come to at the face's size, as `bn-font info --kerning` has to
+say too. The builder's tests,
 and `e2e.FontTool`, try `bn-font` on a real font, Courier Prime, which the
 build downloads for them (`third_party/courier-prime`): the test takes the
 image apart itself, and the font file as far as its tables of characters

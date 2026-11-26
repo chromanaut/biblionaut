@@ -11,6 +11,7 @@ find_package(ZLIB REQUIRED)
 
 add_library(bn_font_tool STATIC
   build.cpp
+  kerning.cpp
   preset.cpp
   sizes.cpp)
 # Sources include each other as "font/<file>.h".

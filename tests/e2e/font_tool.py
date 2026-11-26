@@ -9,8 +9,10 @@ build downloads.
   - `bn-font build` has to make an image of a preset, and say what went
     into each face.
   - The image is taken apart here, from the description of its layout: its
-    header and faces, each face's ranges, glyphs and pictures, all of which
-    have to lie inside it, in order and apart.
+    header and faces, each face's ranges, glyphs, kerning and pictures, all
+    of which have to lie inside it, in order and apart. Courier Prime has
+    no kerning, and its faces have to have none: what an image makes of a
+    font that kerns is font_kerning.py's.
   - The font file is taken apart here too, as far as its tables of
     characters (`cmap`) and of widths (`hmtx`): a character has a glyph in
     the image exactly when the font has one for it, and the glyph moves the
@@ -85,6 +87,7 @@ class FontFile:
         for i in range(count):
             tag, _, offset, length = struct.unpack_from(">4sIII", data, 12 + 16 * i)
             tables[tag.decode("ascii")] = data[offset:offset + length]
+        self.tables = tables
         self.units_per_em = struct.unpack_from(">H", tables["head"], 18)[0]
         widths_given = struct.unpack_from(">H", tables["hhea"], 34)[0]
         hmtx = tables["hmtx"]
@@ -149,10 +152,20 @@ class ImageFace:
     def __init__(self, image: bytes, number: int):
         record = 16 + 48 * number
         (self.role, self.style, self.size, self.ascent, self.descent, self.line, self.x_height, range_count,
-         ranges_at, self.glyph_count, glyphs_at, pictures_at, picture_bytes) = struct.unpack_from(
-             "<BBHhhHHIIIIII", image, record)
+         ranges_at, self.glyph_count, glyphs_at, pictures_at, picture_bytes, kerning_at, self.kern_firsts,
+         self.kern_seconds) = struct.unpack_from("<BBHhhHHIIIIIIIBB", image, record)
         what = f"face {number}"
-        expect(image[record + 36:record + 48] == bytes(12), f"{what}: the bytes kept for kerning are not nothing")
+        expect(image[record + 42:record + 48] == bytes(6), f"{what}: the last six bytes of its record are not nothing")
+        # Its kerning: a table between its glyphs' records and its pictures,
+        # or none at all.
+        kerning_bytes = self.kern_firsts * self.kern_seconds
+        if kerning_bytes:
+            expect(glyphs_at + 12 * self.glyph_count <= kerning_at and kerning_at + kerning_bytes <= pictures_at,
+                   f"{what}: its kerning is not between its glyphs and its pictures")
+        else:
+            expect((kerning_at, self.kern_firsts, self.kern_seconds) == (0, 0, 0),
+                   f"{what}: it has classes for kerning and no table, or a table of none")
+        self.kerning = struct.unpack_from(f"<{kerning_bytes}b", image, kerning_at)
         expect(ranges_at + 12 * range_count <= len(image), f"{what}: its ranges run outside the image")
         expect(glyphs_at + 12 * self.glyph_count <= len(image), f"{what}: its glyphs run outside the image")
         expect(pictures_at + picture_bytes <= len(image), f"{what}: its pictures run outside the image")
@@ -163,9 +176,10 @@ class ImageFace:
         self.glyphs = []
         at = 0
         for index in range(self.glyph_count):
-            advance, width, height, left, top, kept, picture = struct.unpack_from(
-                "<HBBbbHI", image, glyphs_at + 12 * index)
-            expect(kept == 0, f"{what}, glyph {index}: the bytes kept for kerning are not nothing")
+            advance, width, height, left, top, kern_first, kern_second, picture = struct.unpack_from(
+                "<HBBbbBBI", image, glyphs_at + 12 * index)
+            expect(kern_first <= self.kern_firsts and kern_second <= self.kern_seconds,
+                   f"{what}, glyph {index}: it is of a class for kerning the face has not")
             expect(picture == at, f"{what}, glyph {index}: its picture is at {picture}, not {at}")
             size = (width * height * 2 + 7) // 8
             packed = image[pictures_at + picture:pictures_at + picture + size]
@@ -176,7 +190,8 @@ class ImageFace:
                        f"{what}, glyph {index}: the last byte of its picture is not filled out with nothing")
             at += size
             self.glyphs.append({"index": index, "advance": advance, "width": width, "height": height, "left": left,
-                                "top": top, "ink": sum(pixels), "pixels": pixels, "packed": packed})
+                                "top": top, "ink": sum(pixels), "pixels": pixels, "packed": packed,
+                                "kern_first": kern_first, "kern_second": kern_second})
         expect(at == picture_bytes, f"{what}: its pictures take {at} bytes, and it says {picture_bytes}")
 
         # Ranges: in order, apart, their glyphs one after another from 1.
@@ -194,6 +209,12 @@ class ImageFace:
             free = first + count
         expect(glyph == self.glyph_count, f"{what}: its ranges come to {glyph} glyphs of {self.glyph_count}")
 
+    def kern(self, first: dict, second: dict) -> int:
+        """How much further on `second` is set after `first`, in quarters of a pixel."""
+        if first["kern_first"] == 0 or second["kern_second"] == 0:
+            return 0
+        return self.kerning[(first["kern_first"] - 1) * self.kern_seconds + second["kern_second"] - 1]
+
 
 def read_image(image: bytes) -> list[ImageFace]:
     expect(image[:4] == b"BNFN" and image[4] == 1 and image[5] == 0, "the image does not begin as one")
@@ -204,11 +225,11 @@ def read_image(image: bytes) -> list[ImageFace]:
 
 
 BUILD_LINE = re.compile(r"^(\S+) +(\S+) +(\d+) px: +(\d+) glyphs \((\d+) lacking\), pictures +(\d+) bytes; "
-                        r"ascent (-?\d+), descent (-?\d+), line (\d+), x-height (\d+)$")
+                        r"ascent (-?\d+), descent (-?\d+), line (\d+), x-height (\d+); no kerning$")
 INFO_LINE = re.compile(r"^(\S+) +(\S+) +(\d+) px: +(\d+) glyphs; ascent (-?\d+), descent (-?\d+), line (\d+), "
-                       r"x-height (\d+)$")
+                       r"x-height (\d+); kerning 0 by 0$")
 GLYPH_LINE = re.compile(r"^  U\+([0-9A-F]{4,6}): (?:no glyph|glyph (\d+), advance (\d+), (\d+) by (\d+) at (-?\d+), "
-                        r"(-?\d+), ink (\d+))$")
+                        r"(-?\d+), ink (\d+), kerns as 0 and 0)$")
 STYLES = ("regular", "bold", "italic", "bold-italic")
 SIZES_LINE = re.compile(r"^  (.+?) +(\d+) bytes +(\d+)%$")
 
@@ -283,7 +304,9 @@ def main() -> int:
         expect(len(faces) == len(FILES) * len(SIZES), f"the image has {len(faces)} faces")
         expect(len(said) == len(faces) + 1, f"build said {len(said)} lines for {len(faces)} faces")
         expect(said[-1] == f"faces {len(faces)}, pictures {sum(face.picture_bytes for face in faces)} bytes, "
-               f"image {len(image)} bytes", f"build's last line: {said[-1]!r}")
+               f"kerning 0 bytes, image {len(image)} bytes", f"build's last line: {said[-1]!r}")
+        expect(all(face.kern_firsts == 0 and not face.kerning for face in faces),
+               "a face of Courier Prime, which has no kerning, has some in the image")
 
         # What the reader makes of the same image.
         result = run(tool, "info", str(image_path), "--glyphs", *written.split())

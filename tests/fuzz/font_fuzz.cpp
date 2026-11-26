@@ -28,15 +28,21 @@
 //     they are, a code point has a glyph exactly when going through the
 //     ranges one by one finds it in one, and the glyph is the one the
 //     image's bytes say, read here the plain way;
+//   - a glyph has the classes for kerning its record says, and its face's
+//     number; every two glyphs found in a face are kerned by what the
+//     image's bytes say, read here the plain way, which is nothing if
+//     either is of class 0 or of a class the face's table has not; and a
+//     glyph that says it is another face's is not kerned at all;
 //   - opened through a map (core/byte_map.h), an image that opens as a span
 //     opens, unless the map has not room for its table of faces, and has
 //     only that table mapped; a face has the same numbers, and no glyph
 //     until it is held; it is held exactly when there is room for its
 //     stretch of the image, from the first of its tables to the end of the
-//     last, and that stretch is all that is mapped for it; held, it gives
-//     for a code point or a number the glyph the image opened as a span
-//     gives, with the same picture; given up, it has none again; and
-//     nothing is left mapped when the image is gone.
+//     last, its kerning among them, and that stretch is all that is mapped
+//     for it; held, it gives for a code point or a number the glyph the
+//     image opened as a span gives, with the same picture, and kerns two
+//     glyphs as that does; given up, it has none again; and nothing is left
+//     mapped when the image is gone.
 //
 // The image is in memory of exactly its size, so the sanitizer sees a byte
 // read outside it; and each stretch a map gives is a copy of exactly its
@@ -167,6 +173,48 @@ bool PlainGlyph(const Bytes& image, std::size_t record, std::uint64_t index, con
   return true;
 }
 
+// What the image's bytes, read the plain way, say glyph `second` of the
+// face at `record` is kerned by after its glyph `first`. Both are glyphs
+// the face has.
+int PlainKerning(const Bytes& image, std::size_t record, std::uint32_t first, std::uint32_t second) {
+  const std::size_t glyphs = Get32(image, record + 24);
+  const unsigned firsts = image[record + 40];
+  const unsigned seconds = image[record + 41];
+  const unsigned row = image[glyphs + (std::size_t{first} * kGlyphBytes) + 6];
+  const unsigned column = image[glyphs + (std::size_t{second} * kGlyphBytes) + 7];
+  if (row == 0 || row > firsts || column == 0 || column > seconds) {
+    return 0;
+  }
+  return static_cast<std::int8_t>(image[Get32(image, record + 36) + (std::size_t{row - 1} * seconds) + (column - 1)]);
+}
+
+// The most glyphs of a face that are kerned with one another here.
+constexpr std::size_t kGlyphsKerned = 12;
+
+// Every two of `glyphs`, which are the face's, are kerned as the image's
+// bytes say; and none with a glyph that says it is another face's.
+void CheckKerning(const Bytes& image, const Face& face, std::size_t number, const std::vector<Glyph>& glyphs) {
+  const std::size_t record = kHeaderBytes + (number * kFaceBytes);
+  BN_FUZZ_CHECK(face.KernFirsts() == image[record + 40] && face.KernSeconds() == image[record + 41] &&
+                    face.KerningBytes() == std::size_t{image[record + 40]} * image[record + 41],
+                "a face's classes for kerning are not the image's");
+  const std::size_t records = Get32(image, record + 24);
+  for (const Glyph& first : glyphs) {
+    BN_FUZZ_CHECK(first.face == number &&
+                      first.kernFirst == image[records + (std::size_t{first.index} * kGlyphBytes) + 6] &&
+                      first.kernSecond == image[records + (std::size_t{first.index} * kGlyphBytes) + 7],
+                  "a glyph's classes for kerning, or its face, are not what the image's bytes say");
+    for (const Glyph& second : glyphs) {
+      BN_FUZZ_CHECK(face.Kern(first, second) == PlainKerning(image, record, first.index, second.index),
+                    "two glyphs are not kerned by what the image's bytes say");
+      Glyph stranger = second;
+      stranger.face = static_cast<std::uint16_t>(second.face + 1U);
+      BN_FUZZ_CHECK(face.Kern(first, stranger) == 0 && face.Kern(stranger, second) == 0,
+                    "a glyph of another face is kerned");
+    }
+  }
+}
+
 void CheckFace(const Bytes& image, const FontImage& fonts, std::size_t number, std::span<const std::uint32_t> asked) {
   const Face face = fonts.FaceAt(number);
   BN_FUZZ_CHECK(face.Valid(), "a face the image has is not one");
@@ -217,6 +265,8 @@ void CheckFace(const Bytes& image, const FontImage& fonts, std::size_t number, s
     codePoints.push_back(range.first + range.count - 1);
     codePoints.push_back(range.first + range.count);
   }
+  std::vector<Glyph> foundGlyphs;
+  foundGlyphs.reserve(kGlyphsKerned);
   for (const std::uint32_t codePoint : codePoints) {
     Glyph glyph;
     const bool has = face.Find(codePoint, glyph);
@@ -225,6 +275,9 @@ void CheckFace(const Bytes& image, const FontImage& fonts, std::size_t number, s
     BN_FUZZ_CHECK(face.LastSteps() <= Face::kMostSteps, "finding a glyph took more steps than it says it may");
     if (has) {
       CheckGlyph(image, face, glyph);
+      if (foundGlyphs.size() < kGlyphsKerned) {
+        foundGlyphs.push_back(glyph);
+      }
     }
     if (!inOrder) {
       continue;
@@ -254,12 +307,14 @@ void CheckFace(const Bytes& image, const FontImage& fonts, std::size_t number, s
   Glyph missing;
   Glyph first;
   BN_FUZZ_CHECK(face.Missing(missing) == face.GlyphAt(0, first), "the glyph for what a face lacks is not glyph 0");
+  CheckKerning(image, face, number, foundGlyphs);
 }
 
 bool SameGlyph(const Glyph& one, const Glyph& other) {
   return one.index == other.index && one.advance == other.advance && one.width == other.width &&
          one.height == other.height && one.left == other.left && one.top == other.top &&
-         one.pictureAt == other.pictureAt && std::ranges::equal(one.picture, other.picture);
+         one.pictureAt == other.pictureAt && std::ranges::equal(one.picture, other.picture) &&
+         one.kernFirst == other.kernFirst && one.kernSecond == other.kernSecond && one.face == other.face;
 }
 
 // The same image through a map, beside `whole`, which has it opened as a
@@ -286,22 +341,30 @@ void CheckThroughAMap(const Bytes& image, const FontImage& whole, std::span<cons
       BN_FUZZ_CHECK(other.Valid() && one.Role() == other.Role() && one.Style() == other.Style() &&
                         one.Size() == other.Size() && one.Ascent() == other.Ascent() &&
                         one.Descent() == other.Descent() && one.LineHeight() == other.LineHeight() &&
-                        one.XHeight() == other.XHeight() && one.Glyphs() == other.Glyphs(),
+                        one.XHeight() == other.XHeight() && one.Glyphs() == other.Glyphs() &&
+                        one.KernFirsts() == other.KernFirsts() && one.KernSeconds() == other.KernSeconds(),
                     "a face has other numbers through a map");
       Glyph glyph;
       Glyph same;
       BN_FUZZ_CHECK(!other.Held() && !other.Missing(glyph) && !other.Find(asked[0], glyph) && other.LastSteps() == 0,
                     "a face that is not held has a glyph");
       // Its stretch of the image, worked out here: from the first of its
-      // three tables to the end of the last.
+      // tables to the end of the last, its kerning one of them if it has
+      // any.
       const std::size_t record = kHeaderBytes + (number * kFaceBytes);
       const std::uint64_t rangesAt = Get32(image, record + 16);
       const std::uint64_t glyphsAt = Get32(image, record + 24);
       const std::uint64_t picturesAt = Get32(image, record + 28);
-      const std::uint64_t begins = std::min({rangesAt, glyphsAt, picturesAt});
-      const std::uint64_t ends = std::max({rangesAt + (std::uint64_t{Get32(image, record + 12)} * kRangeBytes),
-                                           glyphsAt + (std::uint64_t{Get32(image, record + 20)} * kGlyphBytes),
-                                           picturesAt + Get32(image, record + 32)});
+      const std::uint64_t kerningAt = Get32(image, record + 36);
+      const std::uint64_t kerningBytes = std::uint64_t{image[record + 40]} * image[record + 41];
+      std::uint64_t begins = std::min({rangesAt, glyphsAt, picturesAt});
+      std::uint64_t ends = std::max({rangesAt + (std::uint64_t{Get32(image, record + 12)} * kRangeBytes),
+                                     glyphsAt + (std::uint64_t{Get32(image, record + 20)} * kGlyphBytes),
+                                     picturesAt + Get32(image, record + 32)});
+      if (kerningBytes > 0) {
+        begins = std::min(begins, kerningAt);
+        ends = std::max(ends, kerningAt + kerningBytes);
+      }
       const bool held = fonts.Hold(other);
       BN_FUZZ_CHECK(held == (ends - begins <= room - head),
                     "a face is held, or is not, against the room there is for its stretch");
@@ -321,11 +384,17 @@ void CheckThroughAMap(const Bytes& image, const FontImage& whole, std::span<cons
         codePoints.push_back(range.first);
         codePoints.push_back(range.first + range.count - 1);
       }
+      std::vector<Glyph> wholeGlyphs;
+      std::vector<Glyph> mappedGlyphs;
       for (const std::uint32_t codePoint : codePoints) {
         const bool found = one.Find(codePoint, glyph);
         BN_FUZZ_CHECK(other.Find(codePoint, same) == found && one.LastSteps() == other.LastSteps(),
                       "a code point is found through a map and not whole, or the other way");
         BN_FUZZ_CHECK(!found || SameGlyph(glyph, same), "a glyph is another through a map");
+        if (found && wholeGlyphs.size() < kGlyphsKerned) {
+          wholeGlyphs.push_back(glyph);
+          mappedGlyphs.push_back(same);
+        }
         if (found) {
           const std::span<const std::uint8_t> bytes = fonts.Bytes(same.pictureAt, same.picture.size());
           BN_FUZZ_CHECK(same.picture.empty() ? bytes.empty() : bytes.data() == same.picture.data(),
@@ -337,9 +406,19 @@ void CheckThroughAMap(const Bytes& image, const FontImage& whole, std::span<cons
         BN_FUZZ_CHECK(other.GlyphAt(index, same) == found && (!found || SameGlyph(glyph, same)),
                       "a glyph by its number is another through a map");
       }
+      // Its kerning, read from its stretch, is the whole image's.
+      for (std::size_t first = 0; first < wholeGlyphs.size(); ++first) {
+        for (std::size_t second = 0; second < wholeGlyphs.size(); ++second) {
+          BN_FUZZ_CHECK(other.Kern(mappedGlyphs[first], mappedGlyphs[second]) ==
+                            one.Kern(wholeGlyphs[first], wholeGlyphs[second]),
+                        "two glyphs are kerned otherwise through a map");
+        }
+      }
       fonts.ReleaseFaces();
       BN_FUZZ_CHECK(fonts.Held() == 0 && map.Stretches() == 1 && !fonts.FaceAt(number).Held(),
                     "a face given up is still held");
+      BN_FUZZ_CHECK(wholeGlyphs.empty() || fonts.FaceAt(number).Kern(wholeGlyphs[0], wholeGlyphs[0]) == 0,
+                    "a face given up kerns");
     }
   }
   BN_FUZZ_CHECK(map.Stretches() == 0 && map.MappedBytes() == 0, "bytes are left mapped when the image is gone");

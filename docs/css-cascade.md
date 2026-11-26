@@ -40,8 +40,8 @@ says what they come to for each element of a document.
   around it.
 - **Values are as the sheets wrote them.** `inherit`, an em and "larger"
   are given back as they are: what an element takes from the one it is
-  inside is for whatever keeps the styles of the open elements, which is
-  not built. The one exception is a list of font families, which is given
+  inside, and what those values come to as amounts, is worked out after
+  it ([What each element comes to](element-styles.md)). The one exception is a list of font families, which is given
   as the kind of face it comes to: the `body` of the document below, which
   the sheet gives `Georgia, "Times New Roman", serif`, has
   `font-family: serif`.

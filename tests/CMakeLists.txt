@@ -130,6 +130,7 @@ bn_add_unit_test(epub_tests
     unit/epub/document_sheets_test.cpp
     unit/epub/package_test.cpp
     unit/epub/sheets_digest_test.cpp
+    unit/epub/style_stack_test.cpp
     unit/epub/toc_test.cpp
     unit/epub/xml_test.cpp
     unit/epub/zip_test.cpp
@@ -316,6 +317,15 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/css_cascade_tool.py
       $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/css_cascade_tool)
   set_tests_properties(e2e.CssCascade PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-css cascade --styles, and through it what each element of a document
+  # comes to, against a second working-out that keeps the document as a
+  # tree and has its own list of what HTML's elements are given.
+  add_test(
+    NAME e2e.Styles
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/styles_tool.py
+      $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/styles_tool)
+  set_tests_properties(e2e.Styles PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # bn-bundle, and through it the making of a book's bundle, against a
   # second reading of the bundle's bytes set beside a reading of the book by

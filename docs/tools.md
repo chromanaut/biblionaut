@@ -13,7 +13,7 @@ piece it runs.
 | `bn-xml` | `tools/xml` | Does the same for XML | [XML](xml.md) |
 | `bn-epub` | `tools/epub` | Says what a book says of itself, and reads its table of contents | [What a book says of itself](package.md), [The table of contents](toc.md) |
 | `bn-bundle` | `tools/bundle` | Makes the bundle of a book, and says what a bundle holds | [The file a book is imported into](bundle.md#a-bundle-made-from-a-book) |
-| `bn-css` | `tools/css` | Reads a style sheet, says which kind of face a `font-family` comes to, finds the sheets a document asks for, and says what their rules come to | [Style sheets](css.md), [Kinds of face](css-families.md), [A book's rules](css-cascade.md), [What a document asks for](document-sheets.md) |
+| `bn-css` | `tools/css` | Reads a style sheet, says which kind of face a `font-family` comes to, finds the sheets a document asks for, and says what their rules come to and what each element then comes to | [Style sheets](css.md), [Kinds of face](css-families.md), [A book's rules](css-cascade.md), [What a document asks for](document-sheets.md), [What each element comes to](element-styles.md) |
 | `bn-svg` | `tools/svg` | Draws an SVG file as the firmware does | [Drawings](svg.md) |
 | `bn-png` | `tools/png` | Reads a PNG picture as the firmware does | [Pictures](pictures.md) |
 | `bn-jpeg` | `tools/jpeg` | Does the same for a JPEG picture | [Pictures](pictures.md#jpeg) |

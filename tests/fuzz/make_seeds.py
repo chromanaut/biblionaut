@@ -1191,6 +1191,238 @@ def document_sheets_seeds() -> None:
     })
 
 
+# What each element comes to: a sheet with every way a value is turned
+# into an amount, and a document with every kind of element, the
+# attributes that say how something looks or what it is, and what is
+# nothing with something inside it.
+STYLES_SHEET = rb"""html { font-size: 110%; margin: 1em } body { margin: 0 5% 2em; padding: 1px; line-height: 1.4 }
+h1 { font-size: 2.5rem; margin: 2em 0 1em; text-align: center; page-break-before: always; page-break-after: auto }
+p { text-indent: 1.5em; margin: 0; text-align: justify; line-height: 120% } .first::first-letter { float: left;
+  font-size: 3em; font-weight: bold; font-family: Georgia } .small { font-size: small } .big { font-size: 18px }
+.rem { font-size: 1.2rem; margin-left: 2rem; line-height: 1.5rem } .px { line-height: 20px; margin: 10px 2.5% -1em 1in }
+.sans { font-family: "Trade Gothic", sans-serif } .unset { font-family: initial; font-weight: initial;
+  text-align: initial; line-height: normal; text-indent: initial; list-style: initial }
+.b6 { font-weight: 600 } .b5 { font-weight: 500 } .er { font-weight: bolder } .u { text-decoration: underline }
+.s { text-decoration: line-through } .nou { text-decoration: none } .up { vertical-align: super }
+.down { vertical-align: -0.2em } .base { vertical-align: baseline } .caps { font-variant: small-caps }
+.same { font-weight: inherit; font-style: inherit; font-size: inherit; text-align: inherit; text-indent: inherit;
+  line-height: inherit; list-style-type: inherit; vertical-align: inherit; font-family: inherit; font-variant: inherit }
+.own { margin: inherit; padding: inherit; width: inherit; height: inherit; float: inherit; display: inherit;
+  break-before: inherit; break-after: inherit; break-inside: inherit }
+.block { display: block } .inline { display: inline } .item { display: list-item } .gone { display: none }
+.auto { margin: 0 auto; width: 75% } .left { float: left; height: 2em } .keep { break-after: avoid;
+  break-inside: avoid; break-before: avoid } .none { list-style-type: none } .roman { list-style: upper-roman }
+.huge { font-size: 99999em; margin: 99999em -99999px; line-height: 99999; text-indent: -99999% }
+"""
+
+STYLES_DOCUMENT = b"""<html|xml:lang|en-GB|lang|fr
+<head
+<title
+>
+>
+<body
+<h1|class|keep
+<small
+>
+<big|class|same
+>
+>
+<h2
+>
+<h3
+>
+<h4
+>
+<h5|class|rem
+>
+<h6|align|RIGHT
+>
+<p|class|first small
+<i
+<b
+<sup
+<em|class|base
+>
+>
+>
+>
+<span|class|big up
+<span|class|down
+>
+>
+>
+<div|class|px sans
+<p|class|rem unset
+<code|class|same
+>
+<kbd
+>
+>
+<pre
+<span
+>
+>
+>
+<p|class|b6 u
+<span|class|b5
+<span|class|er
+<s
+<u|class|nou
+<ins
+>
+>
+>
+>
+>
+<sub|class|up block
+>
+>
+<blockquote|align|center
+<address
+>
+>
+<ul
+<li
+<ul
+<li
+<ul|type|Square
+<li|type|a
+>
+>
+>
+>
+>
+<li|class|none same
+>
+>
+<ol|type|A|class|roman
+<li
+>
+<li|type|x|class|unset
+>
+>
+<menu
+<li
+>
+>
+<dl
+<dt
+>
+<dd
+>
+>
+<figure
+>
+<hr|align|center
+>
+<table|align|center
+<caption|align|left
+>
+<tr|align|right
+<th
+>
+<td|align|justify|class|auto
+>
+>
+>
+<center
+<p|class|own
+>
+>
+<div|class|gone
+<p|class|block
+<b
+>
+>
+>
+<p|hidden|
+<i
+>
+>
+<span|class|left item
+>
+<div|class|inline|dir|rtl
+<p|dir|LTR
+<span|dir|up
+>
+>
+>
+<p|lang|de
+<span|xml:lang|de-CH|lang|it
+>
+<span|lang|
+>
+<span|lang|DE
+>
+<span|lang|a-tag-that-is-longer-than-a-tag-may-be
+>
+>
+<p|class|huge
+<p|class|huge
+<p|class|huge
+>
+>
+>
+<math
+<mi
+>
+>
+<ruby
+<rt
+>
+>
+<unknown|style|font-size: 2em; margin: 1em; display: block; list-style: square
+>
+>
+>
+"""
+
+# Every word the stack of styles reads, each on an item of a list with an
+# element inside it that says the same again, so that what is taken from
+# outside has something to take; all of it inside text that is raised,
+# slanted and underlined. In three parts, each short enough for the
+# engine to keep whole.
+STYLES_WORDS = [
+    (b"font-size", b"xx-small x-small small medium large x-large xx-large smaller larger initial inherit 0 12px 2rem"),
+    (b"font-weight", b"normal bold bolder lighter 100 600 900 initial inherit"),
+    (b"font-style", b"normal italic oblique initial inherit"),
+    (b"font-variant", b"normal small-caps initial inherit"),
+    (b"text-decoration", b"none underline line-through overline initial inherit"),
+    (b"vertical-align", b"baseline sub super top text-top middle bottom text-bottom 2px -2px 50% initial inherit"),
+    (b"font-family", b"serif sans-serif monospace cursive Georgia initial inherit"),
+    (b"text-align", b"left right center justify start end initial inherit"),
+    (b"text-indent", b"0 1.5em -1em 5% 10px 1rem initial inherit"),
+    (b"line-height", b"normal 1.2 1.2em 120% 20px 1.5rem 0 initial inherit"),
+    (b"list-style-type", b"none disc circle square decimal decimal-leading-zero lower-alpha upper-alpha lower-roman "
+     b"upper-roman lower-latin upper-latin initial inherit"),
+    (b"display", b"block inline inline-block list-item none initial inherit"),
+    (b"margin-left", b"0 auto 1em -1em 5% 10px 1rem initial inherit"),
+    (b"padding-top", b"0 1em 5% 10px 1rem initial inherit"),
+    (b"width", b"auto 0 10em 50% 100px initial inherit"),
+    (b"height", b"auto 0 10em 50% 100px initial inherit"),
+    (b"float", b"left right none initial inherit"),
+    (b"break-before", b"auto always avoid left right page initial inherit"),
+    (b"break-after", b"auto always avoid page initial inherit"),
+    (b"break-inside", b"auto avoid initial inherit"),
+]
+
+
+def styles_words(part: int) -> tuple[bytes, bytes]:
+    """The sheet and the document for a third of those properties."""
+    words = [(name, n, word) for name, all_words in STYLES_WORDS[part::3] for n, word in enumerate(all_words.split(b" "))]
+    sheet = b"".join(b".%s-%d { %s: %s }\n" % (name, n, name, word) for name, n, word in words)
+    document = (b"<html|lang|en\n<body\n<ol|type|a\n<sup\n<i\n<u|dir|rtl\n" +
+                b"".join(b"<li|class|%s-%d\n<b|class|%s-%d\n>\n>\n" % (name, n, name, n) for name, n, _ in words) +
+                b">\n" * 6)
+    return sheet, document
+
+
+# Elements deeper than a stack keeps, each naming a language of its own,
+# with one that is nothing far down and something inside it.
+STYLES_DEEP_DOCUMENT = (b"".join(b"<div|lang|l%d|class|%s\n" % (n, b"gone" if n == 36 else b"big") for n in range(40)) +
+                        b"<p\n>\n" + b">\n" * 40)
+
+
 def css_rules_seeds() -> None:
     clear("css_rules")
 
@@ -1237,6 +1469,17 @@ def css_rules_seeds() -> None:
          small)
     seed("no-room-for-the-later-selectors-of-a-rule", 3, b"p, q, r, s, t, u, v, w { float: left } q { width: 1px }",
          b"q { float: right }", small)
+    # The stack of styles: how many open elements it keeps is the two high
+    # bits.
+    seed("what-each-element-comes-to", 0, STYLES_SHEET, STYLES_DOCUMENT)
+    seed("what-each-element-comes-to-with-three-kept", 1 << 6, STYLES_SHEET, STYLES_DOCUMENT)
+    seed("what-each-element-comes-to-with-one-kept", 2 << 6, STYLES_SHEET, STYLES_DOCUMENT)
+    seed("what-each-element-comes-to-with-none-kept", 3 << 6, STYLES_SHEET, STYLES_DOCUMENT)
+    seed("what-each-element-comes-to-with-no-sheet", 0, STYLES_DOCUMENT)
+    seed("elements-deeper-than-are-kept-and-more-languages", 0, STYLES_SHEET, STYLES_DEEP_DOCUMENT)
+    seed("elements-deeper-than-three-kept", 1 << 6, STYLES_SHEET, STYLES_DEEP_DOCUMENT)
+    for part, kept in enumerate((0, 0, 2 << 6)):
+        seed(f"the-words-the-stack-of-styles-reads-{part + 1}-of-3", kept, *styles_words(part))
     seed("a-document-and-no-sheet", 0, RULES_DOCUMENT)
     seed("a-sheet-and-no-document", 0, RULES_SHEET, b"")
     seed("nothing", 0)

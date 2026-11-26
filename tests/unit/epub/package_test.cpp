@@ -481,6 +481,129 @@ TEST(Package, TidiesTheTitleAndTakesTheFirstOfEachThatSaysAnything) {
   EXPECT_EQ(f.package->Language(), "");
 }
 
+TEST(Package, TakesTheIdentifierThePackageNamesAndFailingThatTheFirst) {
+  const auto book = [](const std::string& metadata) {
+    return Files{{"META-INF/container.xml", Container("content.opf")},
+                 {"content.opf", Opf(metadata, "<item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>",
+                                     "<itemref idref=\"a\"/>")},
+                 {"a.xhtml", "a"}};
+  };
+  PackageFixture f;
+  // The package these tests write names the identifier whose id is "id".
+  ASSERT_EQ(f.Read(book("<dc:identifier id=\"isbn\">9780000000002</dc:identifier>\n"
+                        "<dc:identifier id=\"id\">\n  urn:uuid:1234  5678\n</dc:identifier>\n"
+                        "<dc:identifier id=\"id\">a second with that id</dc:identifier>\n")),
+            PackageStatus::kOk);
+  EXPECT_EQ(f.package->Identifier(), "urn:uuid:1234 5678") << "the one named, tidied as a title is";
+
+  // The one named has nothing in it, or there is none of that id: the
+  // first that has anything.
+  ASSERT_EQ(f.Read(book("<dc:identifier id=\"id\">  </dc:identifier><dc:identifier/>\n"
+                        "<dc:identifier id=\"isbn\">9780000000002</dc:identifier>\n"
+                        "<dc:identifier>another</dc:identifier>\n")),
+            PackageStatus::kOk);
+  EXPECT_EQ(f.package->Identifier(), "9780000000002");
+  ASSERT_EQ(f.Read(book("<dc:Identifier>written the old way</dc:Identifier>\n")), PackageStatus::kOk);
+  EXPECT_EQ(f.package->Identifier(), "written the old way");
+
+  // A package that names none takes the first; and a book may give none.
+  ASSERT_EQ(f.Read({{"META-INF/container.xml", Container("content.opf")},
+                    {"content.opf",
+                     "<package><metadata><identifier id=\"x\">first</identifier><identifier id=\"id\">second"
+                     "</identifier></metadata><manifest><item id=\"a\" href=\"a.xhtml\"/></manifest>"
+                     "<spine><itemref idref=\"a\"/></spine></package>"},
+                    {"a.xhtml", "a"}}),
+            PackageStatus::kOk);
+  EXPECT_EQ(f.package->Identifier(), "first");
+  ASSERT_EQ(f.Read(book(kMetadata)), PackageStatus::kOk);
+  EXPECT_EQ(f.package->Identifier(), "");
+
+  // One that is too long is cut, at a character. And what a book said is
+  // not left over for the next.
+  ASSERT_EQ(f.Read(book("<dc:identifier id=\"id\">" + std::string(127, 'x') + "\xC3\xA9 and more</dc:identifier>\n")),
+            PackageStatus::kOk);
+  EXPECT_EQ(f.package->Identifier(), std::string(127, 'x'));
+  ASSERT_EQ(f.Read(book("<dc:identifier>plain</dc:identifier>\n")), PackageStatus::kOk);
+  EXPECT_EQ(f.package->Identifier(), "plain");
+
+  // Nor by a reader that is given another book after one that named its
+  // identifier: the second book's is its own first.
+  ASSERT_EQ(f.Read(book("<dc:identifier id=\"id\">named</dc:identifier>\n")), PackageStatus::kOk);
+  ASSERT_EQ(f.package->Identifier(), "named");
+  ZipBuilder builder;
+  for (const auto& [path, contents] : book("<dc:identifier id=\"other\">the next book's</dc:identifier>\n")) {
+    builder.Add(path, BytesOf(contents), {.deflate = true});
+  }
+  f.directory.Close();
+  f.entries.Close();
+  f.storage.Put("/book.epub", builder.Finish());
+  ASSERT_EQ(f.directory.Open(f.storage, "/book.epub", bn::core::OpenMode::kRead), StorageStatus::kOk);
+  ASSERT_EQ(f.entries.Open(f.storage, "/book.epub", bn::core::OpenMode::kRead), StorageStatus::kOk);
+  ASSERT_EQ(f.archive.Open(f.directory), bn::epub::ZipStatus::kOk);
+  ASSERT_EQ(f.ReadInSteps(), PackageStatus::kOk);
+  EXPECT_EQ(f.package->Identifier(), "the next book's");
+}
+
+TEST(Package, KnowsAPictureByItsPlaceAmongTheManifestsPictures) {
+  const std::string manifest =
+      "<item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+      "<item id=\"p0\" href=\"images/one.jpg\" media-type=\"image/jpeg\"/>\n"
+      "<item id=\"css\" href=\"main.css\" media-type=\"text/css\"/>\n"
+      "<item id=\"p1\" href=\"images/two.png\" media-type=\"image/png\"/>\n"
+      "<item id=\"p2\" href=\"images/three.gif\" media-type=\"image/gif\"/>\n"
+      "<item id=\"again\" href=\"images/two.png\" media-type=\"image/png\"/>\n"
+      "<item id=\"p4\" href=\"images/four%20and%20a%20space.svg\" media-type=\"image/svg+xml\"/>\n"
+      "<item id=\"gone\" href=\"images/not-in-the-zip.jpg\" media-type=\"image/jpg\"/>\n"
+      "<item id=\"odd\" href=\"images/called-a-page.jpg\" media-type=\"application/xhtml+xml\"/>\n";
+  PackageFixture f;
+  const Files book = {
+      {"META-INF/container.xml", Container("OPS/content.opf")},
+      {"OPS/content.opf", Opf("<meta name=\"cover\" content=\"p2\"/>", manifest, "<itemref idref=\"a\"/>")},
+      {"OPS/a.xhtml", "a"},
+      {"OPS/images/one.jpg", "1"},
+      {"OPS/images/two.png", "2"},
+      {"OPS/images/three.gif", "3"},
+      {"OPS/images/four and a space.svg", "4"},
+      {"OPS/images/called-a-page.jpg", "5"}};
+  ASSERT_EQ(f.Read(book), PackageStatus::kOk);
+  EXPECT_EQ(f.package->Pictures(), 6u) << "every item that is a picture by its media type, in the ZIP file or not";
+
+  const auto place = [&f](const std::string& path) { return f.package->PictureOf(path).index; };
+  EXPECT_EQ(place("OPS/images/one.jpg"), 0u);
+  EXPECT_EQ(place("OPS/images/two.png"), 1u) << "the first of two items with one path";
+  EXPECT_EQ(place("OPS/images/three.gif"), 2u);
+  EXPECT_EQ(place("OPS/images/four and a space.svg"), 4u) << "by the path the file has, not as the manifest wrote it";
+  EXPECT_EQ(place("OPS/images/not-in-the-zip.jpg"), 5u) << "a picture has a place whether or not its file is there";
+  EXPECT_EQ(place("OPS/a.xhtml"), Package::kNotPicture);
+  EXPECT_EQ(place("OPS/images/called-a-page.jpg"), Package::kNotPicture) << "by what the manifest says it is";
+  EXPECT_EQ(place("OPS/images/no-such.jpg"), Package::kNotPicture);
+  EXPECT_EQ(place("images/one.jpg"), Package::kNotPicture) << "a path within the book, whole";
+  EXPECT_EQ(place(""), Package::kNotPicture);
+
+  EXPECT_EQ(f.package->PictureOf("OPS/images/one.jpg").type, MediaType::kJpeg);
+  EXPECT_EQ(f.package->PictureOf("OPS/images/four and a space.svg").type, MediaType::kSvg);
+  EXPECT_EQ(f.package->PictureOf("OPS/images/not-in-the-zip.jpg").type, MediaType::kJpeg);
+  EXPECT_TRUE(f.package->PictureOf("OPS/images/three.gif").isCover);
+  EXPECT_FALSE(f.package->PictureOf("OPS/images/one.jpg").isCover);
+  EXPECT_FALSE(f.package->PictureOf("OPS/a.xhtml").isCover);
+
+  // A book with no pictures has none; and one that could not be read has
+  // nothing to say of any.
+  ASSERT_EQ(f.Read({{"META-INF/container.xml", Container("content.opf")},
+                    {"content.opf", Opf("", "<item id=\"a\" href=\"a.xhtml\" media-type=\"application/xhtml+xml\"/>",
+                                        "<itemref idref=\"a\"/>")},
+                    {"a.xhtml", "a"}}),
+            PackageStatus::kOk);
+  EXPECT_EQ(f.package->Pictures(), 0u);
+  EXPECT_EQ(f.package->PictureOf("a.xhtml").index, Package::kNotPicture);
+  ASSERT_NE(f.Read({{"META-INF/container.xml", Container("content.opf")},
+                    {"content.opf", Opf("", "<item id=\"p\" href=\"p.jpg\" media-type=\"image/jpeg\"/>", "")},
+                    {"p.jpg", "1"}}),
+            PackageStatus::kOk);
+  EXPECT_EQ(f.package->Pictures(), 0u);
+  EXPECT_EQ(f.package->PictureOf("p.jpg").index, Package::kNotPicture);
+}
+
 TEST(Package, ReadsTheOldWayOfWritingMetadata) {
   // As books made before EPUB wrote it: the names with capitals, inside
   // another element.

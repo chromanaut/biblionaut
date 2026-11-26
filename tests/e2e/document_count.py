@@ -14,7 +14,7 @@ references, an id given twice, an anchor named and not given an id, a
 document the spine names twice, an item of the spine that is a picture,
 and one that is no file of the book.
 
-usage: document_count.py CHECK_BOOKS BN_ZIP BN_XML BN_EPUB BN_CSS BN_PNG BN_JPEG WORK_DIR
+usage: document_count.py CHECK_BOOKS BN_ZIP BN_XML BN_EPUB BN_CSS BN_PNG BN_JPEG BN_BUNDLE WORK_DIR
 """
 
 from __future__ import annotations
@@ -83,6 +83,9 @@ def write_book(path: Path, title: str, items: list[tuple[str, str, str]], spine:
 
 
 EXPECTED = f"""\
+A book's bundle before any chapter is imported, in bytes: 16384 at the median, 16384 for nine in ten, 16384 at the \
+most; its pictures: 1 at the median, 1 for nine in ten, 1 at the most; the entries of its contents: 0 at the median, 0 \
+for nine in ten, 0 at the most.
 Of the 4 documents of their spines, a book's largest paragraph, in bytes: 18000 at the median, 18000 for nine in ten, \
 18000 at the most; the most paragraphs in one of its documents: 8 at the median, 8 for nine in ten, 8 at the most; the \
 most ids in one: 3000 at the median, 3000 for nine in ten, 3000 at the most.
@@ -114,11 +117,11 @@ The tools and Python agree about every book.
 
 
 def main() -> int:
-    if len(sys.argv) != 9:
+    if len(sys.argv) != 10:
         print(__doc__, file=sys.stderr)
         return 2
-    script, zip_tool, xml_tool, epub, css, png, jpeg = sys.argv[1:8]
-    work = Path(sys.argv[8])
+    script, zip_tool, xml_tool, epub, css, png, jpeg, bundle = sys.argv[1:9]
+    work = Path(sys.argv[9])
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     try:
@@ -135,7 +138,7 @@ def main() -> int:
                    [("third", "third.xhtml", page), ("fourth", "fourth.xhtml", page)], ["third", "fourth"],
                    {"third.xhtml": THIRD, "fourth.xhtml": FOURTH})
         ran = subprocess.run([sys.executable, "-I", script, "--zip", zip_tool, "--xml", xml_tool, "--epub", epub, "--css",
-                              css, "--png", png, "--jpeg", jpeg, "--document-report", str(work)],
+                              css, "--png", png, "--jpeg", jpeg, "--bundle", bundle, "--document-report", str(work)],
                              capture_output=True, check=False)
         said = ran.stdout.decode("utf-8", "replace")
         expect(ran.returncode == 0, f"check-books.py ended with {ran.returncode}:\n{said}{ran.stderr.decode()}")

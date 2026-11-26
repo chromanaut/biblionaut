@@ -120,6 +120,7 @@ target_link_libraries(draw_tests PRIVATE ZLIB::ZLIB)
 # compressing and the checksums.
 bn_add_unit_test(epub_tests
   SOURCES
+    unit/epub/book_bundle_test.cpp
     unit/epub/book_files_test.cpp
     unit/epub/book_path_test.cpp
     unit/epub/bundle_test.cpp
@@ -316,6 +317,15 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/css_cascade_tool)
   set_tests_properties(e2e.CssCascade PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
+  # bn-bundle, and through it the making of a book's bundle, against a
+  # second reading of the bundle's bytes set beside a reading of the book by
+  # zipfile and ElementTree.
+  add_test(
+    NAME e2e.BundleTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/bundle_tool.py
+      $<TARGET_FILE:bn-bundle> ${CMAKE_CURRENT_BINARY_DIR}/bundle_tool)
+  set_tests_properties(e2e.BundleTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
   # bn-css sheets and bn-css document, and through them the finding of the
   # sheets a document asks for, against a second working-out in the test
   # for books it makes: each document's list, what was left out by its
@@ -436,7 +446,7 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-epub> $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/book_check)
   set_tests_properties(e2e.BookCheck PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
-  # bn-zip, bn-xml, bn-epub, bn-css, bn-png and bn-jpeg over the real books
+  # bn-zip, bn-xml, bn-epub, bn-css, bn-png, bn-jpeg and bn-bundle over the real books
   # in corpus/, each against a reading of the same book by Python; and the
   # books themselves against the list of what they should be.
   add_test(
@@ -444,7 +454,7 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check-books.py
       --zip $<TARGET_FILE:bn-zip> --xml $<TARGET_FILE:bn-xml> --epub $<TARGET_FILE:bn-epub>
       --css $<TARGET_FILE:bn-css> --png $<TARGET_FILE:bn-png> --jpeg $<TARGET_FILE:bn-jpeg>
-      ${PROJECT_SOURCE_DIR}/corpus)
+      --bundle $<TARGET_FILE:bn-bundle> ${PROJECT_SOURCE_DIR}/corpus)
   set_tests_properties(e2e.Corpus PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # What the same script counts in the documents of a spine, their
@@ -454,6 +464,7 @@ if(Python3_Interpreter_FOUND)
     NAME e2e.DocumentCount
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/document_count.py
       ${PROJECT_SOURCE_DIR}/tools/check-books.py $<TARGET_FILE:bn-zip> $<TARGET_FILE:bn-xml> $<TARGET_FILE:bn-epub>
-      $<TARGET_FILE:bn-css> $<TARGET_FILE:bn-png> $<TARGET_FILE:bn-jpeg> ${CMAKE_CURRENT_BINARY_DIR}/document_count)
+      $<TARGET_FILE:bn-css> $<TARGET_FILE:bn-png> $<TARGET_FILE:bn-jpeg> $<TARGET_FILE:bn-bundle>
+      ${CMAKE_CURRENT_BINARY_DIR}/document_count)
   set_tests_properties(e2e.DocumentCount PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

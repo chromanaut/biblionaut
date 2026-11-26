@@ -2042,6 +2042,123 @@ def picture_cache_seeds() -> None:
           bytes([0b0000011]) + picture_cache_file(20, 23, 2, 0, bytes((7 * n) % 256 for n in range(69))))
 
 
+# ---- book_bundle: byte 0 (how the book is made), then the package file,
+# the NCX and the nav of a book whose other files the target has ----
+
+BUNDLE_PACKAGE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uuid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>A Book to Bundle</dc:title><dc:creator>Ren\xc3\xa9e Writer</dc:creator><dc:language>en-GB</dc:language>
+<dc:identifier id="isbn">9780000000002</dc:identifier><dc:identifier id="uuid">urn:uuid:0aa1</dc:identifier>
+<meta name="cover" content="cover-image"/>
+</metadata>
+<manifest>
+<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+<item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+<item id="plate" href="img/plate.png" media-type="image/png"/>
+<item id="ch2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+<item id="cover-image" href="img/cover.jpg" media-type="image/jpeg"/>
+<item id="ch3" href="ch%203.xhtml" media-type="application/xhtml+xml"/>
+<item id="gone" href="img/gone.jpg" media-type="image/jpeg"/>
+<item id="gif" href="img/a%20b.gif" media-type="image/gif"/>
+<item id="again" href="img/plate.png" media-type="image/png"/>
+<item id="svg" href="img/d.svg" media-type="image/svg+xml"/>
+<item id="lost" href="lost.xhtml" media-type="application/xhtml+xml"/>
+<item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/>
+<item id="css" href="style.css" media-type="text/css"/>
+</manifest>
+<spine toc="ncx">
+<itemref idref="ch1"/><itemref idref="ch2"/><itemref idref="lost"/><itemref idref="ch3"/>
+<itemref idref="svg"/><itemref idref="notes" linear="no"/>
+</spine>
+</package>
+"""
+
+BUNDLE_NCX = b"""<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+<navPoint><navLabel><text>One</text></navLabel><content src="ch1.xhtml"/>
+<navPoint><navLabel><text>A  part
+ of it</text></navLabel><content src="ch1.xhtml#part-2"/></navPoint></navPoint>
+<navPoint><navLabel><text>A heading</text></navLabel></navPoint>
+<navPoint><navLabel><text>Two &amp; three</text></navLabel><content src="text/ch2.xhtml#a%20place"/></navPoint>
+<navPoint><navLabel><text>Elsewhere</text></navLabel><content src="https://example.com/"/></navPoint>
+</navMap></ncx>
+"""
+
+
+def book_bundle_seeds() -> None:
+    clear("book_bundle")
+
+    def made(name: str, choices: int, package: bytes, ncx: bytes, nav: bytes = b"") -> None:
+        write("book_bundle", name, bytes([choices]) + struct.pack("<H", len(package)) + package
+              + struct.pack("<H", len(ncx)) + ncx + nav)
+
+    made("a-book-with-pictures-and-an-ncx", 0x00, BUNDLE_PACKAGE, BUNDLE_NCX)
+    made("compressed-last-first-with-a-comment", 0x1C, BUNDLE_PACKAGE, BUNDLE_NCX)
+    made("little-room-for-the-parser", 0x06, BUNDLE_PACKAGE, BUNDLE_NCX)
+    # As EPUB 3 has it: a nav, which is the one read, and a cover named by
+    # a property.
+    package = BUNDLE_PACKAGE.replace(b'<item id="ncx"', b'<item id="nav" href="nav.xhtml" properties="nav" '
+                                     b'media-type="application/xhtml+xml"/>\n<item id="ncx"') \
+        .replace(b'<item id="plate" href="img/plate.png"', b'<item id="plate" properties="cover-image" href="img/plate.png"')
+    made("a-nav-and-an-ncx", 0x04, package, BUNDLE_NCX, NAV)
+    made("a-nav-that-is-no-table", 0x00, package, BUNDLE_NCX, b"<html><body><p>No list here.</p></body></html>")
+    # Tables of contents that are not there, are no table, and go wrong
+    # part way.
+    made("no-table-of-contents", 0x00, BUNDLE_PACKAGE.replace(b'<item id="ncx" href="toc.ncx" '
+                                                               b'media-type="application/x-dtbncx+xml"/>\n', b"")
+         .replace(b' toc="ncx"', b""), b"")
+    made("a-table-that-is-not-xml", 0x00, BUNDLE_PACKAGE, b"this is no table of contents")
+    made("a-table-cut-short", 0x00, BUNDLE_PACKAGE, BUNDLE_NCX[:BUNDLE_NCX.index(b"<navPoint><navLabel><text>Two")] + b"<<<")
+    made("a-table-of-nothing", 0x00, BUNDLE_PACKAGE, b"")
+    made("a-package-cut-short", 0x00, BUNDLE_PACKAGE.replace(b"</package>", b"<guide><<<"), BUNDLE_NCX)
+    made("no-identifier-and-no-author", 0x00,
+         BUNDLE_PACKAGE.replace(b'<dc:identifier id="isbn">9780000000002</dc:identifier>', b"")
+         .replace(b'<dc:identifier id="uuid">urn:uuid:0aa1</dc:identifier>', b"")
+         .replace(b"<dc:creator>Ren\xc3\xa9e Writer</dc:creator>", b""), BUNDLE_NCX)
+    made("an-identifier-that-is-not-the-one-named", 0x00, BUNDLE_PACKAGE.replace(b'id="uuid">', b'id="other">'), BUNDLE_NCX)
+    # More pictures than a page of records holds: the directory is gone
+    # through twice. Four of them have files.
+    many = b"".join(b'<item id="q%d" href="img/q%d.png" media-type="image/png"/>\n' % (number, number)
+                    for number in range(180))
+    made("more-pictures-than-a-pass", 0x08, BUNDLE_PACKAGE.replace(b"</manifest>", many + b"</manifest>"), BUNDLE_NCX)
+    made("no-pictures", 0x00, BUNDLE_PACKAGE.replace(b"image/", b"text/x-"), BUNDLE_NCX)
+    # A long table of contents: entries enough to fill pages of the bundle.
+    entries = b"".join(b'<navPoint><navLabel><text>Entry number %d of a long table</text></navLabel>'
+                       b'<content src="ch1.xhtml#at-%d"/></navPoint>\n' % (number, number) for number in range(120))
+    made("a-long-table", 0x04, BUNDLE_PACKAGE, b'<ncx><navMap>' + entries + b"</navMap></ncx>")
+    made("not-a-package", 0x00, b"<html/>", BUNDLE_NCX)
+    made("nothing", 0x00, b"", b"")
+
+    # The same kind of book as a ZIP file of the bytes themselves.
+    book = Zip()
+    book.add("mimetype", b"application/epub+zip")
+    book.add("META-INF/container.xml", CONTAINER % b"OEBPS/content.opf", deflated=True)
+    book.add("OEBPS/img/plate.png", b"a plate")
+    book.add("OEBPS/content.opf", BUNDLE_PACKAGE, deflated=True)
+    book.add("OEBPS/toc.ncx", BUNDLE_NCX, deflated=True)
+    book.add("OEBPS/img/cover.jpg", b"a cover")
+    book.add("OEBPS/ch1.xhtml", b"<html/>", deflated=True)
+    book.add("OEBPS/text/ch2.xhtml", b"<html/>")
+    write("book_bundle", "a-whole-zip-file", bytes([0x01]) + book.finish())
+
+    # And one whose directory has a picture's name twice, an entry too
+    # large for the reader to take, and a name longer than any the package
+    # could have kept.
+    book = Zip()
+    book.add("mimetype", b"application/epub+zip")
+    book.add("META-INF/container.xml", CONTAINER % b"OEBPS/content.opf", deflated=True)
+    book.add("OEBPS/img/plate.png", b"a plate")
+    book.add("OEBPS/img/a b.gif", b"too large to be read", size=0xFFFFFFFF)
+    book.add("OEBPS/content.opf", BUNDLE_PACKAGE, deflated=True)
+    book.add("OEBPS/img/plate.png", b"a plate of the same name")
+    book.add("OEBPS/" + "long/" * 110 + "d.svg", b"<svg/>")
+    book.add("OEBPS/toc.ncx", BUNDLE_NCX, deflated=True)
+    book.add("OEBPS/img/cover.jpg", b"a cover")
+    book.add("OEBPS/ch1.xhtml", b"<html/>", deflated=True)
+    write("book_bundle", "a-zip-file-with-a-name-twice-and-entries-not-to-be-read", bytes([0x01]) + book.finish())
+
+
 # ---- bundle: byte 0 (what is mended, and the chapter that is committed
 # afterwards), then a bundle, given as its length and the pieces of it
 # that are not nothing ----
@@ -2314,6 +2431,7 @@ def main() -> None:
     scale_seeds()
     picture_cache_seeds()
     bundle_seeds()
+    book_bundle_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

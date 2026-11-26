@@ -9,13 +9,24 @@ for a tool or a test), and gives back:
 
 - the title, the author and the language: the first of each that has
   anything in it, with its spaces tidied;
+- the identifier: the `dc:identifier` the package names as its unique one
+  (`unique-identifier`), if that has anything in it, and otherwise the
+  first that has. It is what the book is known by to the world, such as
+  an ISBN or a UUID; two books can give the same, and a book need not
+  give one;
 - the spine, which is the documents in reading order, each with the ZIP
   entry it is in, its kind, and whether the book counts it as part of the
   run of the text (`linear="no"` marks one that is not);
 - the entry of the cover picture, of the EPUB 3 table of contents (the
   nav document) and of the EPUB 2 one (the NCX), where the book has them.
   The tables of contents are found here and read by `TocReader` ([The
-  table of contents](toc.md)).
+  table of contents](toc.md));
+- how many of the manifest's files are pictures (JPEG, PNG, GIF or SVG by
+  what the manifest says of them), and which of them a path is
+  (`PictureOf()`): a picture is known by its place among them, in the
+  manifest's order. Nothing more is kept for that: the place is counted,
+  from the manifest's 16 bytes a file, when it is asked for. Where the
+  manifest has a file more than once, the first of those is the picture.
 
 How it does that:
 

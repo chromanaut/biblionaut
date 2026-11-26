@@ -32,6 +32,7 @@ constexpr std::size_t kAtPackage = 24;
 constexpr std::size_t kAtDocuments = 28;
 constexpr std::size_t kAtPictures = 30;
 constexpr std::size_t kAtContents = 32;
+constexpr std::size_t kAtAmiss = 34;
 constexpr std::size_t kAtSlotOffset = 36;
 constexpr std::size_t kAtSlotBytes = 40;
 constexpr std::size_t kAtDataBegin = 44;
@@ -239,14 +240,14 @@ bool BundleMaker::WritePage(std::uint32_t offset) noexcept {
   return true;
 }
 
-BundleStatus BundleMaker::Begin(core::BlockFile& file, const BundleBook& book) noexcept {
+BundleStatus BundleMaker::Begin(core::BlockFile& file) noexcept {
   stage_ = Stage::kIdle;
   status_ = BundleStatus::kMisused;
   if (page_.size() != kPage || !file.IsOpen() || file.Size() != 0) {
     return status_;
   }
   file_ = &file;
-  book_ = book;
+  book_ = {};
   tablesBegun_ = 0;
   tableOffset_.fill(0);
   tableBytes_.fill(0);
@@ -308,12 +309,13 @@ BundleStatus BundleMaker::WriteFile(const BundleFile& file) noexcept {
   return Write(record);
 }
 
-BundleStatus BundleMaker::Finish() noexcept {
+BundleStatus BundleMaker::Finish(const BundleBook& book) noexcept {
   if (stage_ != Stage::kTables || tablesBegun_ != kBundleTables ||
-      tableBytes_[static_cast<std::size_t>(BundleTable::kSpine)] != book_.documents * kFileBytes ||
-      tableBytes_[static_cast<std::size_t>(BundleTable::kPictures)] != book_.pictures * kFileBytes) {
+      tableBytes_[static_cast<std::size_t>(BundleTable::kSpine)] != book.documents * kFileBytes ||
+      tableBytes_[static_cast<std::size_t>(BundleTable::kPictures)] != book.pictures * kFileBytes) {
     return BundleStatus::kMisused;
   }
+  book_ = book;
   if (filled_ != 0) {
     std::fill(page_.begin() + static_cast<std::ptrdiff_t>(filled_), page_.end(), std::uint8_t{0});
     if (!WritePage(pageOffset_)) {
@@ -364,6 +366,7 @@ void BundleMaker::FillHeaderPage() noexcept {
   Put16(page_, kAtDocuments, book_.documents);
   Put16(page_, kAtPictures, book_.pictures);
   Put16(page_, kAtContents, book_.contents);
+  Put16(page_, kAtAmiss, book_.amiss);
   Put32(page_, kAtSlotOffset, slotOffset_);
   Put32(page_, kAtSlotBytes, slotBytes_);
   Put32(page_, kAtDataBegin, slotOffset_ + (slotBytes_ * 2));
@@ -561,6 +564,7 @@ void Bundle::OpenHeader() noexcept {
   book_.documents = Get16(page, kAtDocuments);
   book_.pictures = Get16(page, kAtPictures);
   book_.contents = Get16(page, kAtContents);
+  book_.amiss = Get16(page, kAtAmiss);
   const std::span<const std::uint8_t> madeBy = page.subspan(kAtMadeBy, book_.madeBy.size());
   std::copy(madeBy.begin(), madeBy.end(), book_.madeBy.begin());
   slotOffset_ = Get32(page, kAtSlotOffset);

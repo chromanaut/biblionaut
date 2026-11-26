@@ -15,8 +15,9 @@ from and the terms it is passed on under, which are not this project's
 licence. They are kept byte for byte as they were fetched.
 
 `tools/check-books.py` runs `bn-zip`, `bn-xml`, `bn-epub`, `bn-css`,
-`bn-png` and `bn-jpeg` over every EPUB under a folder, and compares what each says of a
-book with a reading of the same book by Python:
+`bn-png`, `bn-jpeg` and `bn-bundle` over every EPUB under a folder, and
+compares what each says of a book with a reading of the same book by
+Python:
 
 ```
 tools/check-books.py corpus
@@ -24,9 +25,10 @@ tools/check-books.py --tools build/host ~/books
 ```
 
 ```
-28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 1676 sheets asked for by 859 documents, 42379 properties set for 15299 elements of 141 documents, 80 PNG pictures of 62626058 pixels, 45 JPEG pictures of 46766091 pixels.
+28 books: 1228 entries in their ZIP files, 945 XML documents with 1899986 events, 840 documents in their spines, 79 readings of tables of contents with 3914 entries, 77 style sheets with 1406 rules, 1676 sheets asked for by 859 documents, 42379 properties set for 15299 elements of 141 documents, 80 PNG pictures of 62626058 pixels, 45 JPEG pictures of 46766091 pixels, 28 bundles of 2385 records.
 Memory for the rows of a book's widest PNG picture, in bytes: 9602 at the median, 11202 for nine in ten, 11202 at the most; over the 18 books that have one.
 Memory for the rows of a book's widest JPEG picture read at its whole size (a progressive one at an eighth), in bytes: 22528 at the median, 29952 for nine in ten, 40960 at the most; over the 17 books that have one.
+A book's bundle before any chapter is imported, in bytes: 16384 at the median, 36864 for nine in ten, 49152 at the most; its pictures: 1 at the median, 12 for nine in ten, 38 at the most; the entries of its contents: 33 at the median, 145 for nine in ten, 153 at the most.
 Of the 834 documents of their spines, a book's largest paragraph, in bytes: 3824 at the median, 21717 for nine in ten, 141354 at the most; the most paragraphs in one of its documents: 123 at the median, 1050 for nine in ten, 2108 at the most; the most ids in one: 15 at the median, 123 for nine in ten, 501 at the most.
 Items of the spines that are not XHTML by their media type, and were not counted: 6 of the kind svg.
 28 files listed in SHA256SUMS: all there and unchanged.
@@ -74,6 +76,16 @@ The tools and Python agree about every book.
   so has every JPEG `bn-jpeg book --reduce 8` reads, at an eighth of its
   size, where the reader's arithmetic and the second reading's are the
   same.
+- **The bundle**: `bn-bundle make` makes the book's bundle, and a second
+  reading of the bundle's bytes, by the places the format gives things,
+  is set beside the book as `zipfile` and ElementTree read it: what the
+  header page says of the EPUB (its size, the checksum of its ZIP
+  directory, the checksum of its package), the title, author, language
+  and identifier, a record for every document of the spine and every
+  picture with where `zipfile` says the file is, and every entry of the
+  table of contents the book is read by. `bn-bundle info` then prints
+  what that reading comes to, line for line ([The file a book is
+  imported into](bundle.md#a-bundle-made-from-a-book)).
 
 **What it counts and compares with nothing.** No tool reads a document's
 text yet, so there is nothing to set these beside; they are counted so
@@ -151,7 +163,8 @@ an item that is no file.
 Where they differ it prints a line for each difference, starting
 `DIFFERENT`, and ends with 1. It takes the tools from `build/host-release`
 if they are built there, or else from `build/host`; `--tools` names another
-build, and `--zip`, `--xml`, `--epub`, `--css`, `--png` and `--jpeg` one tool each.
+build, and `--zip`, `--xml`, `--epub`, `--css`, `--png`, `--jpeg` and `--bundle` one
+tool each.
 
 A folder with a file named `SHA256SUMS` in it is checked against that file
 as well: every file listed has to be there with that SHA-256, and every

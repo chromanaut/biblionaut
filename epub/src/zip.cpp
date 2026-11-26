@@ -348,6 +348,37 @@ std::ptrdiff_t ZipEntryReader::Raw::Read(std::span<std::uint8_t> dst) noexcept {
 ZipEntryReader::ZipEntryReader(std::span<std::uint8_t> window) noexcept
     : inflater_(raw_, window), hasWindow_(window.size() >= core::Inflater::kWindowBytes) {}
 
+void ZipDirectorySum::Begin(const ZipArchive& archive, core::BlockFile& file, std::span<std::uint8_t> page) noexcept {
+  file_ = &file;
+  page_ = page;
+  at_ = archive.DirectoryOffset();
+  end_ = at_ + archive.DirectoryBytes();
+  checksum_ = 0;
+  running_ = archive.IsOpen() && file.IsOpen() && !page.empty();
+  status_ = running_ ? ZipStatus::kOk : ZipStatus::kNotOpen;
+}
+
+bool ZipDirectorySum::Step() noexcept {
+  if (!running_) {
+    return false;
+  }
+  if (at_ < end_) {
+    // As far as the end of the block of the file it is in, so that a step
+    // is one read of storage.
+    const auto block = static_cast<std::uint32_t>(page_.size());
+    const std::uint32_t count = std::min<std::uint32_t>(end_ - at_, block - (at_ % block));
+    if (!file_->ReadAt(at_, page_.first(count))) {
+      status_ = ZipStatus::kStorageFailed;
+      running_ = false;
+      return false;
+    }
+    checksum_ = core::Crc32(page_.first(count), checksum_);
+    at_ += count;
+  }
+  running_ = at_ < end_;
+  return running_;
+}
+
 ZipStatus ReadZipEntryName(core::BlockFile& file, const ZipEntry& entry, std::span<char> name,
                            std::size_t& length) noexcept {
   length = 0;

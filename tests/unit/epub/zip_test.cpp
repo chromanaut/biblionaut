@@ -9,11 +9,13 @@
 #include <cstdlib>
 #include <random>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "core/block_file.h"
+#include "core/checksum.h"
 #include "core/inflate.h"
 #include "core/metrics.h"
 #include "storage_fakes.h"
@@ -1197,6 +1199,88 @@ Bytes Assorted() {
   builder.Add("b.txt", Text(60, 31), {.descriptor = true});
   builder.Add("c", Text(200, 32), {.deflate = true, .headerExtra = Noise(6, 33), .comment = "c"});
   return builder.Finish(BytesOf("end"));
+}
+
+TEST(ZipDirectorySum, IsTheChecksumOfTheDirectorysBytesReadABlockAStep) {
+  // A directory of some 18 KB, which begins part way through a block of
+  // the file.
+  ZipBuilder builder;
+  for (int i = 0; i < 300; ++i) {
+    builder.Add("folder/a-file-with-a-name-of-some-length-" + std::to_string(i) + ".xhtml", Text(40, 1));
+  }
+  const Bytes zip = builder.Finish();
+  const std::size_t end = zip.size() - 22;
+  const std::uint32_t bytes =
+      std::uint32_t{zip[end + 12]} | (std::uint32_t{zip[end + 13]} << 8U) | (std::uint32_t{zip[end + 14]} << 16U);
+  const std::uint32_t offset =
+      std::uint32_t{zip[end + 16]} | (std::uint32_t{zip[end + 17]} << 8U) | (std::uint32_t{zip[end + 18]} << 16U);
+  ASSERT_GT(bytes, 16'000u);
+  ASSERT_NE(offset % 4096, 0u);
+
+  FakeStorage storage;
+  storage.Put("/book.zip", zip);
+  ASSERT_EQ(storage.Start(), StorageStatus::kOk);
+  std::array<std::uint8_t, 4096> buffer{};
+  std::array<std::uint8_t, 4096> otherBuffer{};
+  alignas(4) std::array<std::uint8_t, 4096> page{};
+  BlockFile file(buffer);
+  BlockFile other(otherBuffer);
+  ASSERT_EQ(file.Open(storage, "/book.zip", OpenMode::kRead), StorageStatus::kOk);
+  ASSERT_EQ(other.Open(storage, "/book.zip", OpenMode::kRead), StorageStatus::kOk);
+  ZipArchive archive;
+  ASSERT_EQ(archive.Open(file), ZipStatus::kOk);
+  EXPECT_EQ(archive.DirectoryOffset(), offset);
+  EXPECT_EQ(archive.DirectoryBytes(), bytes);
+
+  bn::epub::ZipDirectorySum sum;
+  EXPECT_FALSE(sum.Step()) << "nothing begun";
+  EXPECT_EQ(sum.Status(), ZipStatus::kNotOpen);
+  sum.Begin(archive, other, page);
+  int steps = 0;
+  for (bool more = true; more; ++steps) {
+    const std::size_t reads = storage.reads.size();
+    more = sum.Step();
+    ASSERT_LE(storage.reads.size(), reads + 1) << "a step is one read of storage";
+  }
+  EXPECT_EQ(sum.Status(), ZipStatus::kOk);
+  EXPECT_EQ(sum.Checksum(), bn::core::Crc32(std::span(zip).subspan(offset, bytes)));
+  const std::size_t blocks = ((offset + bytes + 4095) / 4096) - (offset / 4096);
+  EXPECT_EQ(steps, static_cast<int>(blocks)) << "as many as the blocks of the file the directory lies in";
+
+  // One byte of one entry's record changed, and it is another.
+  Bytes changed = zip;
+  changed[offset + (bytes / 2)] ^= 0x01U;
+  storage.Put("/changed.zip", changed);
+  ASSERT_EQ(other.Open(storage, "/changed.zip", OpenMode::kRead), StorageStatus::kOk);
+  const std::uint32_t whole = sum.Checksum();
+  sum.Begin(archive, other, page);
+  while (sum.Step()) {
+  }
+  EXPECT_EQ(sum.Status(), ZipStatus::kOk);
+  EXPECT_NE(sum.Checksum(), whole);
+
+  // Storage that fails, a file shorter than its directory, and nothing to
+  // work with.
+  ASSERT_EQ(other.Open(storage, "/book.zip", OpenMode::kRead), StorageStatus::kOk);
+  storage.failReads = true;
+  sum.Begin(archive, other, page);
+  while (sum.Step()) {
+  }
+  EXPECT_EQ(sum.Status(), ZipStatus::kStorageFailed);
+  storage.failReads = false;
+  storage.Put("/short.zip", Bytes(zip.begin(), zip.begin() + offset + 100));
+  ASSERT_EQ(other.Open(storage, "/short.zip", OpenMode::kRead), StorageStatus::kOk);
+  sum.Begin(archive, other, page);
+  while (sum.Step()) {
+  }
+  EXPECT_EQ(sum.Status(), ZipStatus::kStorageFailed);
+  sum.Begin(archive, other, std::span<std::uint8_t>{});
+  EXPECT_FALSE(sum.Step());
+  EXPECT_EQ(sum.Status(), ZipStatus::kNotOpen);
+  ZipArchive closed;
+  sum.Begin(closed, other, page);
+  EXPECT_FALSE(sum.Step());
+  EXPECT_EQ(sum.Status(), ZipStatus::kNotOpen);
 }
 
 TEST(Zip, SurvivesDamageAnywhereInAFile) {

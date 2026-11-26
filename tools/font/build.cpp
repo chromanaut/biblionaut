@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "font/kerning.h"
+#include "font/ligatures.h"
 
 namespace bn::font_tool {
 
@@ -19,6 +20,7 @@ constexpr std::size_t kHeaderBytes = 16;
 constexpr std::size_t kFaceBytes = 48;
 constexpr std::size_t kRangeBytes = 12;
 constexpr std::size_t kGlyphBytes = 12;
+constexpr std::size_t kLigatureBytes = 8;
 constexpr std::uint8_t kVersion = 1;
 
 void Put16(std::vector<std::uint8_t>& out, std::size_t at, std::uint32_t value) {
@@ -90,6 +92,7 @@ struct DrawnFace {
   std::vector<std::uint32_t> codePoints;  // For glyphs 1 on.
   std::vector<std::uint32_t> fontGlyphs;  // The font's own number for each glyph, 0 on.
   KerningClasses kerning;
+  FaceLigatures ligatures;
 };
 
 // A table of a font file, by its four letters: empty if the font has none.
@@ -106,8 +109,9 @@ std::vector<std::uint8_t> FontTable(FT_Face face, char a, char b, char c, char d
   return bytes;
 }
 
-// The kerning of the font `face`, for the glyphs it has for `characters`.
-FontKerning KerningOf(FT_Face face, const std::vector<CodePoints>& characters) {
+// The glyphs the font `face` has for `characters`, by its own numbers: in
+// order, each once.
+std::vector<std::uint16_t> GlyphsFor(FT_Face face, const std::vector<CodePoints>& characters) {
   std::vector<std::uint16_t> glyphs;
   for (const auto& [first, last] : characters) {
     for (std::uint32_t codePoint = first; codePoint <= last; ++codePoint) {
@@ -119,6 +123,12 @@ FontKerning KerningOf(FT_Face face, const std::vector<CodePoints>& characters) {
   }
   std::sort(glyphs.begin(), glyphs.end());
   glyphs.erase(std::unique(glyphs.begin(), glyphs.end()), glyphs.end());
+  return glyphs;
+}
+
+// The kerning of the font `face`, for the glyphs `glyphs`, which are in
+// order and each there once.
+FontKerning KerningOf(FT_Face face, const std::vector<std::uint16_t>& glyphs) {
   return ReadKerning(FontTable(face, 'G', 'P', 'O', 'S'), FontTable(face, 'G', 'D', 'E', 'F'), glyphs);
 }
 
@@ -176,7 +186,7 @@ bool Draw(FT_Face face, FT_UInt index, Picture& picture, std::string& error) {
 
 // Draws one face of the preset at one size.
 bool DrawFace(FT_Face face, const FaceFile& file, std::uint16_t size, const std::vector<CodePoints>& characters,
-              DrawnFace& drawn, std::string& error) {
+              const std::vector<std::uint16_t>& others, DrawnFace& drawn, std::string& error) {
   if (FT_Set_Pixel_Sizes(face, 0, size) != 0) {
     error = file.path + ": FreeType could not set the size " + std::to_string(size);
     return false;
@@ -217,7 +227,19 @@ bool DrawFace(FT_Face face, const FaceFile& file, std::uint16_t size, const std:
       drawn.fontGlyphs.push_back(index);
     }
   }
+  // The glyphs no character has, which stand for ligatures: after the rest.
+  for (const std::uint16_t index : others) {
+    Picture picture;
+    if (!Draw(face, index, picture, error)) {
+      error.insert(0, file.path + ": ");
+      return false;
+    }
+    drawn.built.pictureBytes += picture.bytes.size();
+    drawn.glyphs.push_back(std::move(picture));
+    drawn.fontGlyphs.push_back(index);
+  }
   drawn.built.glyphs = drawn.glyphs.size();
+  drawn.built.ligatureGlyphs = others.size();
   return true;
 }
 
@@ -295,6 +317,16 @@ bool Write(const std::vector<DrawnFace>& faces, std::vector<std::uint8_t>& image
         image.push_back(static_cast<std::uint8_t>(quarters));
       }
     }
+    // And the ligatures after it, for the same reason.
+    const std::size_t ligaturesAt = image.size();
+    for (const FaceLigature& ligature : face.ligatures.ligatures) {
+      const std::size_t at = image.size();
+      image.resize(at + kLigatureBytes, 0);
+      Put16(image, at, ligature.first);
+      Put16(image, at + 2, ligature.second);
+      Put16(image, at + 4, ligature.third);
+      Put16(image, at + 6, ligature.glyph);
+    }
     const std::size_t picturesAt = image.size();
     for (const Picture& drawn : face.glyphs) {
       image.insert(image.end(), drawn.bytes.begin(), drawn.bytes.end());
@@ -317,6 +349,10 @@ bool Write(const std::vector<DrawnFace>& faces, std::vector<std::uint8_t>& image
       Put32(image, record + 36, static_cast<std::uint32_t>(kerningAt));
       image[record + 40] = static_cast<std::uint8_t>(face.kerning.firsts);
       image[record + 41] = static_cast<std::uint8_t>(face.kerning.seconds);
+    }
+    if (!face.ligatures.ligatures.empty()) {
+      image[record + 42] = static_cast<std::uint8_t>(face.ligatures.ligatures.size());
+      Put32(image, record + 44, static_cast<std::uint32_t>(ligaturesAt));
     }
   }
   if (image.size() > std::numeric_limits<std::uint32_t>::max()) {
@@ -372,18 +408,38 @@ Built BuildImage(const Preset& preset) {
       built.error = file.path + ": FreeType cannot read it as a font (named on line " + std::to_string(file.line) + ")";
       return built;
     }
-    // The font's kerning is read once, in its own units, and made each
-    // size's.
-    const FontKerning kerning = KerningOf(font.Get(), characters);
+    // The font's ligatures and its kerning are read once each, in its own
+    // numbers and units, and made each size's. A glyph that stands for a
+    // ligature and is no character's is drawn with the face's, and kerned.
+    const std::vector<std::uint16_t> glyphs = GlyphsFor(font.Get(), characters);
+    const FontLigatures ligatures = ReadLigatures(FontTable(font.Get(), 'G', 'S', 'U', 'B'), glyphs);
+    if (ligatures.damaged) {
+      built.warnings.push_back(file.path + ": its table of ligatures is cut short, or points outside itself: " +
+                               "what could be read of it is what is used");
+    }
+    std::vector<std::uint16_t> others;
+    for (const std::uint16_t glyph : LigatureGlyphs(ligatures)) {
+      if (!std::binary_search(glyphs.begin(), glyphs.end(), glyph)) {
+        others.push_back(glyph);
+      }
+    }
+    std::vector<std::uint16_t> kerned = glyphs;
+    kerned.insert(kerned.end(), others.begin(), others.end());
+    std::sort(kerned.begin(), kerned.end());
+    kerned.erase(std::unique(kerned.begin(), kerned.end()), kerned.end());
+    const FontKerning kerning = KerningOf(font.Get(), kerned);
     if (kerning.damaged) {
       built.warnings.push_back(file.path + ": its tables of kerning are cut short, or point outside themselves: " +
                                "what could be read of them is what is used");
     }
     for (const std::uint16_t size : preset.sizes) {
       DrawnFace drawn;
-      if (!DrawFace(font.Get(), file, size, characters, drawn, built.error)) {
+      if (!DrawFace(font.Get(), file, size, characters, others, drawn, built.error)) {
         return built;
       }
+      drawn.ligatures = FaceLigaturesOf(ligatures, drawn.fontGlyphs);
+      drawn.built.ligatures = drawn.ligatures.ligatures.size();
+      drawn.built.ligaturesLeftOut = drawn.ligatures.leftOut;
       KernFace(kerning, size, font.Get()->units_per_EM, drawn);
       drawn.built.kernLookupsLeftOut = kerning.lookupsLeftOut;
       drawn.built.kernAdjustmentsLeftOut = kerning.otherAdjustments;

@@ -22,6 +22,11 @@
 // a pixel at the face's size, so a pair kerned by less than an eighth of a
 // pixel there is not kerned in that face. A face whose font has no kerning,
 // as a monospace font has none, has none.
+//
+// A face has the ligatures its font makes of its own accord (font/ligatures.h
+// says what is read of them), of two glyphs or three. The glyph that stands
+// for one is drawn with the face's others if no character has it, after
+// all of those, and is kerned as the font kerns it.
 
 namespace bn::font_tool {
 
@@ -49,6 +54,13 @@ struct BuiltFace {
   // more than two glyphs, and pairs that adjust more than an advance.
   std::size_t kernLookupsLeftOut = 0;
   std::size_t kernAdjustmentsLeftOut = 0;
+  // Its ligatures: how many it has, how many of its glyphs are there only
+  // to stand for one (`glyphs` counts them), and how many of its font's
+  // were left out: what the font keeps with them that is not a ligature,
+  // and ligatures an image cannot hold.
+  std::size_t ligatures = 0;
+  std::size_t ligatureGlyphs = 0;
+  std::size_t ligaturesLeftOut = 0;
 };
 
 struct Built {

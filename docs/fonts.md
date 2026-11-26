@@ -31,8 +31,21 @@ has its two classes, a byte each, 0 for a glyph that does not kern; and the
 face has a table with a signed byte for each class of first glyphs and
 each of second, in quarters of a pixel. So a pair's kerning is one byte
 read, found from two the glyphs have. The measure that sets text (below)
-adds it to the first glyph's advance before it rounds. There are no
-ligatures.
+adds it to the first glyph's advance before it rounds.
+
+A face may have ligatures: one glyph that it draws in place of two or
+three of its glyphs that follow one another, as one for an f and an i.
+It has a list of them, eight bytes each: the glyphs a ligature is made
+of, by their numbers in the face, and the glyph that stands for them.
+The list is in the order the ligatures are tried in, so that one of two
+f's and an i comes before one of the two f's. The glyph that stands for a
+ligature is a glyph of the face like any other, with an advance of its
+own, which is seldom what its letters' come to, and classes for kerning.
+It may be a character's own, as Noto's ligature of an f and an i is its
+glyph for U+FB01; or one no character has, as Source Serif 4's of an f
+and a j is, and then its number is after those of all the characters'
+glyphs. Nothing sets text with them yet: the measure below draws each
+character with its own glyph.
 
 ## Making the image
 
@@ -64,12 +77,12 @@ over.
 
 ```
 $ bn-font build courier.preset --out courier.bnfn
-mono     regular     26 px:  381 glyphs (2075 lacking), pictures   20833 bytes; ascent 21, descent 9, line 29, x-height 12; no kerning
-mono     regular     30 px:  381 glyphs (2075 lacking), pictures   27877 bytes; ascent 24, descent 11, line 34, x-height 14; no kerning
-mono     regular     34 px:  381 glyphs (2075 lacking), pictures   35732 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning
-mono     bold        26 px:  381 glyphs (2075 lacking), pictures   22159 bytes; ascent 21, descent 9, line 29, x-height 12; no kerning
-mono     bold        30 px:  381 glyphs (2075 lacking), pictures   29667 bytes; ascent 24, descent 11, line 34, x-height 14; no kerning
-mono     bold        34 px:  381 glyphs (2075 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning
+mono     regular     26 px:  381 glyphs (2075 lacking), pictures   20833 bytes; ascent 21, descent 9, line 29, x-height 12; no kerning; no ligatures
+mono     regular     30 px:  381 glyphs (2075 lacking), pictures   27877 bytes; ascent 24, descent 11, line 34, x-height 14; no kerning; no ligatures
+mono     regular     34 px:  381 glyphs (2075 lacking), pictures   35732 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning; no ligatures
+mono     bold        26 px:  381 glyphs (2075 lacking), pictures   22159 bytes; ascent 21, descent 9, line 29, x-height 12; no kerning; no ligatures
+mono     bold        30 px:  381 glyphs (2075 lacking), pictures   29667 bytes; ascent 24, descent 11, line 34, x-height 14; no kerning; no ligatures
+mono     bold        34 px:  381 glyphs (2075 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning; no ligatures
 faces 6, pictures 173838 bytes, kerning 0 bytes, image 204534 bytes
 ```
 
@@ -104,21 +117,57 @@ none. A face with more than 255 classes of either kind would be built
 without kerning, and said; the most any font of the presets comes to is
 212.
 
+A face has the ligatures its font makes of its own accord, and no others:
+which letters are joined differs from one font to the next, and a font
+with a glyph for a ligature need not make it. A font says it in the table
+called GSUB, which FreeType does not read, so `bn-font` reads that too
+(`tools/font/ligatures.h`): the lookups of the `liga` feature, the one for
+ordinary text, for the default language of every script the font names;
+of those the ligature substitutions; and each one's ligatures in the
+order the font has them, which is the order it tries them in. A ligature
+is kept if every glyph it is made of is one a character of the image is
+drawn with, and its own glyph is drawn for it if no character's is that
+glyph already. The fonts of the presets join only an f with what follows
+it: Noto Serif and Noto Sans two f's, an f and an i, an f and an l, and
+two f's with an i or an l, each with the glyph of its character (U+FB00
+to U+FB04); IBM Plex Serif an f with an i or an l, and IBM Plex Sans with
+an i; Source Sans 3 two f's, and an f or two with a t; and Source Serif 4
+nine in its upright styles and sixteen in its italics, a j, a b, an h and
+a k among what an f is joined to, four of the nine and eleven of the
+sixteen with glyphs no character has.
+The monospace fonts join nothing. What is left out is counted in what
+`build` says of a face: a ligature of more than three glyphs, or one
+past the 255 a face holds; anything under `liga` that is not a ligature
+substitution; and, where a font has more than one lookup of them, a
+ligature of a later lookup that a list cannot say as the font makes it.
+A font goes through a line with one lookup and then, through what that
+made of it, with the next, and a list is tried once at each place in
+turn: so a later lookup's ligature is left out if it is made of a glyph
+an earlier lookup makes, or if a ligature of an earlier lookup lies within
+it, which the font has joined by then. (One difference is left in:
+where an earlier lookup's ligature begins inside a later lookup's and
+runs past its end, the font makes the earlier lookup's, and the list
+whichever begins first in the line. No font of the presets has more than
+one lookup of ligatures.) A lookup that passes over marks is read as one
+that does not, so letters with a mark between them are not joined.
+
 `bn-font info` says what an image holds, reading it by the code the
 firmware reads it with; with `--glyphs` and some characters, what each face
 has for them: the glyph's number, its advance in quarters of a pixel, its
 picture's size and where its top left corner lies from the pen on the
 baseline, its levels of ink added up, and its two classes for kerning.
+A face's own line ends with how many classes of each kind its kerning
+has, and how many ligatures.
 
 ```
 $ bn-font info courier.bnfn --glyphs U+0041 U+0067 U+0020 U+03B1
 image 204534 bytes, faces 6
-mono     regular     26 px:  381 glyphs; ascent 21, descent 9, line 29, x-height 12; kerning 0 by 0
+mono     regular     26 px:  381 glyphs; ascent 21, descent 9, line 29, x-height 12; kerning 0 by 0; ligatures 0
   U+0041: glyph 34, advance 62, 16 by 15 at 0, 15, ink 249, kerns as 0 and 0
   U+0067: glyph 72, advance 62, 14 by 17 at 1, 12, ink 288, kerns as 0 and 0
   U+0020: glyph 1, advance 62, 0 by 0 at 0, 0, ink 0, kerns as 0 and 0
   U+03B1: no glyph
-mono     regular     30 px:  381 glyphs; ascent 24, descent 11, line 34, x-height 14; kerning 0 by 0
+mono     regular     30 px:  381 glyphs; ascent 24, descent 11, line 34, x-height 14; kerning 0 by 0; ligatures 0
   U+0041: glyph 34, advance 72, 18 by 18 at 0, 18, ink 340, kerns as 0 and 0
   U+0067: glyph 72, advance 72, 17 by 20 at 1, 14, ink 385, kerns as 0 and 0
 ```
@@ -133,9 +182,9 @@ pixels nearer after an r, and a V two and a half after an A.
 
 ```
 $ bn-font info fonts.bnfn --kerning U+0041 U+0056 U+0072 U+002C U+006F
-image 10143222 bytes, faces 50
+image 10144822 bytes, faces 50
 ...
-serif    regular     30 px: 1982 glyphs; ascent 33, descent 9, line 41, x-height 17; kerning 111 by 92
+serif    regular     30 px: 1982 glyphs; ascent 33, descent 9, line 41, x-height 17; kerning 111 by 92; ligatures 5
   U+0041 U+0056: -10
   U+0041 U+006F: -2
   U+0056 U+0041: -10
@@ -144,6 +193,44 @@ serif    regular     30 px: 1982 glyphs; ascent 33, descent 9, line 41, x-height
   U+0072 U+002C: -16
   U+002C U+0056: -13
   U+006F U+0056: -7
+```
+
+With `--ligatures` and some characters it says every two and three of
+them that a face joins, in the order they were named: the number of the
+glyph that stands for them, and its advance. Of the same image, an f, an
+i and an l in the serif at 30 pixels:
+
+```
+$ bn-font info fonts.bnfn --ligatures U+0066 U+0069 U+006C
+image 10144822 bytes, faces 50
+...
+serif    regular     30 px: 1982 glyphs; ascent 33, descent 9, line 41, x-height 17; kerning 111 by 92; ligatures 5
+  U+0066 U+0066: glyph 1974, advance 85
+  U+0066 U+0066 U+0069: glyph 1977, advance 120
+  U+0066 U+0066 U+006C: glyph 1978, advance 120
+  U+0066 U+0069: glyph 1975, advance 80
+  U+0066 U+006C: glyph 1976, advance 79
+```
+
+And of an image of the `source` preset, in the serif's italic, where the
+last glyph a character has is 859 and those after it are the ligatures'
+own:
+
+```
+$ bn-font info source.bnfn --ligatures U+0066 U+0069 U+006C U+006A U+0074
+image 7111217 bytes, faces 55
+...
+serif    italic      30 px:  871 glyphs; ascent 32, descent 11, line 41, x-height 15; kerning 161 by 145; ligatures 16
+  U+0066 U+0066: glyph 855, advance 68
+  U+0066 U+0066 U+0066: glyph 861, advance 101
+  U+0066 U+0066 U+0069: glyph 858, advance 100
+  U+0066 U+0066 U+006C: glyph 859, advance 100
+  U+0066 U+0066 U+006A: glyph 863, advance 93
+  U+0066 U+0066 U+0074: glyph 865, advance 105
+  U+0066 U+0069: glyph 856, advance 67
+  U+0066 U+006C: glyph 857, advance 67
+  U+0066 U+006A: glyph 868, advance 60
+  U+0066 U+0074: glyph 870, advance 72
 ```
 
 `bn-font sizes` says what an image's pictures would take if they were kept
@@ -242,17 +329,21 @@ besides, as the fallback face, for what they lack. As built, with the
 | `noto` | Noto Sans Mono | 50 | 11.98 MB | 0.49 MB |
 | `plex` | Courier Prime | 55 | 6.99 MB | 1.43 MB |
 | `plex` | IBM Plex Mono | 55 | 7.49 MB | 1.43 MB |
-| `source` | Courier Prime | 55 | 7.07 MB | 1.03 MB |
-| `source` | Source Code Pro | 55 | 7.70 MB | 1.03 MB |
+| `source` | Courier Prime | 55 | 7.11 MB | 1.03 MB |
+| `source` | Source Code Pro | 55 | 7.75 MB | 1.03 MB |
+
+Ligatures are little of an image: eight bytes each, 2 KB of a `noto`
+image and under 1 KB of a `plex`; and 45 KB of a `source`, where the
+glyphs of most are drawn for them and kerned.
 
 ```
 $ bn-font build ladder.preset noto.preset mono-courier-prime.preset --fonts FOLDER --out fonts.bnfn
-serif    regular     22 px: 1982 glyphs (474 lacking), pictures  106959 bytes; ascent 24, descent 7, line 30, x-height 12; kerning 42240 pairs, 111 by 92
-serif    regular     26 px: 1982 glyphs (474 lacking), pictures  143543 bytes; ascent 28, descent 8, line 35, x-height 14; kerning 42270 pairs, 111 by 92
+serif    regular     22 px: 1982 glyphs (474 lacking), pictures  106959 bytes; ascent 24, descent 7, line 30, x-height 12; kerning 42240 pairs, 111 by 92; 5 ligatures
+serif    regular     26 px: 1982 glyphs (474 lacking), pictures  143543 bytes; ascent 28, descent 8, line 35, x-height 14; kerning 42270 pairs, 111 by 92; 5 ligatures
 ...
-mono     bold        34 px:  381 glyphs (2075 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning
-mono     bold        38 px:  381 glyphs (2075 lacking), pictures   47138 bytes; ascent 30, descent 13, line 43, x-height 18; no kerning
-faces 50, pictures 8629148 bytes, kerning 494212 bytes, image 10143222 bytes
+mono     bold        34 px:  381 glyphs (2075 lacking), pictures   37570 bytes; ascent 27, descent 12, line 38, x-height 16; no kerning; no ligatures
+mono     bold        38 px:  381 glyphs (2075 lacking), pictures   47138 bytes; ascent 30, descent 13, line 43, x-height 18; no kerning; no ligatures
+faces 50, pictures 8629148 bytes, kerning 494212 bytes, image 10144822 bytes
 ```
 
 (which is what the `fonts` target runs.)
@@ -263,7 +354,8 @@ of a firmware given out with an image made of them is in `THIRD_PARTY.md`
 face, and `e2e.FontTool` holds every font file a preset names to being one
 the build has a commit and a hash for. They download two of the files and
 no more, Noto Serif Italic and Noto Sans Regular, when a build with tests
-is built: fonts that kern, for `e2e.FontKerning` (below).
+is built: fonts that kern and that make ligatures, for `e2e.FontKerning`
+and `e2e.FontLigatures` (below).
 
 ## Reading the image
 
@@ -275,6 +367,10 @@ as a span of the image's own bytes; nothing is copied, and nothing is
 allocated. `Face::Kern()` says how much further on a glyph is set after
 another of the same face, in quarters of a pixel: a glyph says which face
 gave it, and one face's glyph is not kerned with another's.
+`Face::Ligature()` is given glyphs that follow one another and says
+whether the face draws one glyph in place of the first two or three, and
+which: the first in its list that is made of them. It joins only its own
+glyphs.
 
 The image is not trusted, though the firmware's own build made it: a
 partition can hold anything.
@@ -290,10 +386,13 @@ partition can hold anything.
 - **Kerning** two glyphs reads one byte of the face's table, which opening
   the image saw to be inside it; a glyph whose record says a class the
   table has no row or no place for is not kerned.
+- **Finding a ligature** goes through the face's list, which opening the
+  image saw to be inside it, once: 255 ligatures at the most. One whose
+  glyph the face cannot give is not made.
 - **RAM**: none but the objects themselves: under 300 bytes for an image,
   most of it the list of the faces it holds (below), and 0.6 KB in the
   device's hardware layer for the list of what it has mapped. **Flash**:
-  2.9 KB for the reader, 1.2 KB for the measure below and 0.7 KB for the
+  3.3 KB for the reader, 1.2 KB for the measure below and 0.7 KB for the
   partition's mapping, as compiled for the device, besides the image
   itself.
 
@@ -383,7 +482,15 @@ Serif Italic and Noto Sans Regular, which shares none of its code: the
 fonts' tables are read there from the description of their layout, and
 every two characters of every face have to be kerned in the image by what
 the tables come to at the face's size, as `bn-font info --kerning` has to
-say too. The builder's tests,
+say too. Ligatures are tried in the same three ways: a face makes the
+first of its list that fits, of its own glyphs only, and none whose glyph
+it cannot give; the builder's reading of a font's ligatures is given
+tables written for it, cut short and changed as the kerning's are; and
+`e2e.FontLigatures` reads the same two fonts' tables a second way and
+holds an image's lists to them, once with the ligatures' own characters
+among those drawn and once without, when their glyphs are no
+character's, and `bn-font info --ligatures` to saying the same. The
+builder's tests,
 and `e2e.FontTool`, try `bn-font` on a real font, Courier Prime, which the
 build downloads for them (`third_party/courier-prime`): the test takes the
 image apart itself, and the font file as far as its tables of characters

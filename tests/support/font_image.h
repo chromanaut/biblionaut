@@ -15,6 +15,10 @@
 // are put in one class here: each character that is the first of some pair
 // has a class of its own as a first, in the order of the code points, and
 // each that is the second of some pair likewise as a second.
+//
+// A face's ligatures are given by the characters they are made of. The
+// glyph that stands for them is some character's own, or one of the face's
+// extra glyphs, which no character has and which come after all the rest.
 
 namespace bn::test {
 
@@ -46,6 +50,15 @@ inline ImageGlyph Blank(std::uint16_t advance) {
   return glyph;
 }
 
+// A ligature: the characters whose glyphs it is made of, two or three, and
+// the glyph drawn in their place: the glyph of the character `glyph`, or,
+// if `extra` is not less than nothing, that one of the face's extra glyphs.
+struct ImageLigature {
+  std::vector<std::uint32_t> letters;
+  std::uint32_t glyph = 0;
+  int extra = -1;
+};
+
 struct ImageFace {
   std::uint8_t role = 0;
   std::uint8_t style = 0;
@@ -59,6 +72,10 @@ struct ImageFace {
   // How much further on the second of two characters is set after the
   // first, in quarters of a pixel. Both have to have glyphs.
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::int8_t> kerning;
+  // Glyphs no character has, numbered after the characters' glyphs; and the
+  // ligatures, in the order the face is to try them.
+  std::vector<ImageGlyph> extras;
+  std::vector<ImageLigature> ligatures;
 };
 
 // A face of `role` and `style` at `size`, with glyph 0 and no others.
@@ -83,6 +100,8 @@ struct ImageFacePlaces {
   std::size_t kerning = 0;  // The table, a byte for each of `kernFirsts` by `kernSeconds`.
   std::size_t kernFirsts = 0;
   std::size_t kernSeconds = 0;
+  std::size_t ligatures = 0;  // The list, eight bytes for each of `ligatureCount`.
+  std::size_t ligatureCount = 0;
 };
 
 inline void PutLe16(std::vector<std::uint8_t>& out, std::size_t at, std::uint32_t value) {
@@ -130,13 +149,19 @@ inline std::vector<std::uint8_t> FontImageBytes(const std::vector<ImageFace>& fa
       std::uint32_t glyph;
     };
     std::vector<Range> ranges;
+    std::map<std::uint32_t, std::uint32_t> numberOf;  // A character's glyph.
     for (const auto& [codePoint, glyph] : face.glyphs) {
       if (!ranges.empty() && ranges.back().first + ranges.back().count == codePoint) {
         ++ranges.back().count;
       } else {
         ranges.push_back({codePoint, 1, static_cast<std::uint32_t>(glyphs.size())});
       }
+      numberOf[codePoint] = static_cast<std::uint32_t>(glyphs.size());
       glyphs.push_back(&glyph);
+    }
+    const std::size_t firstExtra = glyphs.size();
+    for (const ImageGlyph& extra : face.extras) {
+      glyphs.push_back(&extra);
     }
     ImageFacePlaces put;
     put.record = kHeader + (f * kFace);
@@ -184,6 +209,20 @@ inline std::vector<std::uint8_t> FontImageBytes(const std::vector<ImageFace>& fa
       out[put.kerning + ((firstClass[pair.first] - 1U) * put.kernSeconds) + (secondClass[pair.second] - 1U)] =
           static_cast<std::uint8_t>(quarters);
     }
+    // The ligatures, after the kerning: the glyphs of the letters, 0 for a
+    // third there is none of, and the glyph that stands for them.
+    put.ligatures = out.size();
+    put.ligatureCount = face.ligatures.size();
+    for (const ImageLigature& ligature : face.ligatures) {
+      const std::size_t at = out.size();
+      out.resize(at + 8, 0);
+      for (std::size_t letter = 0; letter < ligature.letters.size() && letter < 3; ++letter) {
+        PutLe16(out, at + (2 * letter), numberOf[ligature.letters[letter]]);
+      }
+      PutLe16(out, at + 6,
+              ligature.extra >= 0 ? static_cast<std::uint32_t>(firstExtra + static_cast<std::size_t>(ligature.extra))
+                                  : numberOf[ligature.glyph]);
+    }
     std::vector<std::uint8_t> pictures;
     for (std::size_t g = 0; g < glyphs.size(); ++g) {
       const ImageGlyph& glyph = *glyphs[g];
@@ -218,6 +257,10 @@ inline std::vector<std::uint8_t> FontImageBytes(const std::vector<ImageFace>& fa
       PutLe32(out, put.record + 36, static_cast<std::uint32_t>(put.kerning));
       out[put.record + 40] = static_cast<std::uint8_t>(put.kernFirsts);
       out[put.record + 41] = static_cast<std::uint8_t>(put.kernSeconds);
+    }
+    if (put.ligatureCount > 0) {
+      out[put.record + 42] = static_cast<std::uint8_t>(put.ligatureCount);
+      PutLe32(out, put.record + 44, static_cast<std::uint32_t>(put.ligatures));
     }
     if (places != nullptr) {
       places->push_back(put);

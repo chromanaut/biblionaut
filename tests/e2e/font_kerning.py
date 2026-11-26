@@ -60,8 +60,8 @@ KNOWN = {
 LEFT_OUT = {"NotoSerif-Italic.ttf": 0, "NotoSans-Regular.ttf": 1}
 
 BUILD_LINE = re.compile(r"^(\S+) +(\S+) +(\d+) px: .*; kerning (\d+) pairs, (\d+) by (\d+)"
-                        r"(?:, (\d+) lookups? that looks? at more than two glyphs left out)?$")
-INFO_LINE = re.compile(r"^(\S+) +(\S+) +(\d+) px: .*; kerning (\d+) by (\d+)$")
+                        r"(?:, (\d+) lookups? that looks? at more than two glyphs left out)?; \d+ ligatures$")
+INFO_LINE = re.compile(r"^(\S+) +(\S+) +(\d+) px: .*; kerning (\d+) by (\d+); ligatures \d+$")
 PAIR_LINE = re.compile(r"^  U\+([0-9A-F]{4,6}) U\+([0-9A-F]{4,6}): (-?\d+)$")
 GLYPH_LINE = re.compile(r"^  U\+([0-9A-F]{4,6}): glyph (\d+), .*, kerns as (\d+) and (\d+)$")
 

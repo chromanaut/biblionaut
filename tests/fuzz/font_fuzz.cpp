@@ -33,16 +33,21 @@
 //     image's bytes say, read here the plain way, which is nothing if
 //     either is of class 0 or of a class the face's table has not; and a
 //     glyph that says it is another face's is not kerned at all;
+//   - of every two and three glyphs found in a face, it makes the ligature
+//     the image's bytes say, read here the plain way: the first in its list
+//     that is of those glyphs, with a glyph that can be had; the glyph it
+//     gives for one is as much inside the image as any; and it makes none
+//     of a glyph that says it is another face's;
 //   - opened through a map (core/byte_map.h), an image that opens as a span
 //     opens, unless the map has not room for its table of faces, and has
 //     only that table mapped; a face has the same numbers, and no glyph
 //     until it is held; it is held exactly when there is room for its
 //     stretch of the image, from the first of its tables to the end of the
-//     last, its kerning among them, and that stretch is all that is mapped
-//     for it; held, it gives for a code point or a number the glyph the
-//     image opened as a span gives, with the same picture, and kerns two
-//     glyphs as that does; given up, it has none again; and nothing is left
-//     mapped when the image is gone.
+//     last, its kerning and its ligatures among them, and that stretch is
+//     all that is mapped for it; held, it gives for a code point or a number
+//     the glyph the image opened as a span gives, with the same picture, and
+//     kerns two glyphs and joins two or three as that does; given up, it has
+//     none again; and nothing is left mapped when the image is gone.
 //
 // The image is in memory of exactly its size, so the sanitizer sees a byte
 // read outside it; and each stretch a map gives is a copy of exactly its
@@ -188,8 +193,11 @@ int PlainKerning(const Bytes& image, std::size_t record, std::uint32_t first, st
   return static_cast<std::int8_t>(image[Get32(image, record + 36) + (std::size_t{row - 1} * seconds) + (column - 1)]);
 }
 
-// The most glyphs of a face that are kerned with one another here.
+// The most glyphs of a face that are kerned with one another here, and
+// joined.
 constexpr std::size_t kGlyphsKerned = 12;
+
+constexpr std::size_t kLigatureBytes = 8;
 
 // Every two of `glyphs`, which are the face's, are kerned as the image's
 // bytes say; and none with a glyph that says it is another face's.
@@ -213,6 +221,68 @@ void CheckKerning(const Bytes& image, const Face& face, std::size_t number, cons
                     "a glyph of another face is kerned");
     }
   }
+}
+
+// What the image's bytes, read the plain way, say the face at `record`
+// draws in place of its glyphs `first`, `second` and, if `withThird`,
+// `third`: how many of them, and which glyph into `stands`. 0 for none.
+std::size_t PlainLigature(const Bytes& image, std::size_t record, std::uint32_t first, std::uint32_t second,
+                          bool withThird, std::uint32_t third, std::uint32_t& stands) {
+  const std::size_t count = image[record + 42];
+  const std::size_t list = Get32(image, record + 44);
+  for (std::size_t i = 0; i < count; ++i) {
+    const std::size_t at = list + (i * kLigatureBytes);
+    const std::uint32_t wantsThird = Get16(image, at + 4);
+    if (Get16(image, at) != first || Get16(image, at + 2) != second ||
+        (wantsThird != 0 && (!withThird || wantsThird != third))) {
+      continue;
+    }
+    // The first that fits is the one, whether or not its glyph can be had.
+    stands = Get16(image, at + 6);
+    if (!PlainGlyph(image, record, stands, nullptr)) {
+      return 0;
+    }
+    return wantsThird != 0 ? 3 : 2;
+  }
+  return 0;
+}
+
+// Of every two and three of `glyphs`, which are the face's, it makes the
+// ligature the image's bytes say; and none of a glyph that says it is
+// another face's.
+void CheckLigatures(const Bytes& image, const Face& face, std::size_t number, const std::vector<Glyph>& glyphs) {
+  const std::size_t record = kHeaderBytes + (number * kFaceBytes);
+  BN_FUZZ_CHECK(face.Ligatures() == image[record + 42], "a face's ligatures are not as many as the image says");
+  for (const Glyph& first : glyphs) {
+    for (const Glyph& second : glyphs) {
+      const std::array<Glyph, 2> two = {first, second};
+      Glyph ligature;
+      std::uint32_t stands = 0;
+      std::size_t wanted = PlainLigature(image, record, first.index, second.index, false, 0, stands);
+      std::size_t made = face.Ligature(two, ligature);
+      BN_FUZZ_CHECK(made == wanted && (made == 0 || ligature.index == stands),
+                    "two glyphs are not joined as the image's bytes say");
+      if (made != 0) {
+        CheckGlyph(image, face, ligature);
+      }
+      Glyph stranger = second;
+      stranger.face = static_cast<std::uint16_t>(second.face + 1U);
+      const std::array<Glyph, 2> strange = {first, stranger};
+      const std::array<Glyph, 2> stranged = {stranger, second};
+      BN_FUZZ_CHECK(face.Ligature(strange, ligature) == 0 && face.Ligature(stranged, ligature) == 0,
+                    "a glyph of another face is joined");
+      for (const Glyph& third : glyphs) {
+        const std::array<Glyph, 3> three = {first, second, third};
+        wanted = PlainLigature(image, record, first.index, second.index, true, third.index, stands);
+        made = face.Ligature(three, ligature);
+        BN_FUZZ_CHECK(made == wanted && (made == 0 || ligature.index == stands),
+                      "three glyphs are not joined as the image's bytes say");
+      }
+    }
+  }
+  const std::array<Glyph, 1> one = {glyphs.empty() ? Glyph{} : glyphs[0]};
+  Glyph none;
+  BN_FUZZ_CHECK(face.Ligature(one, none) == 0, "one glyph is joined");
 }
 
 void CheckFace(const Bytes& image, const FontImage& fonts, std::size_t number, std::span<const std::uint32_t> asked) {
@@ -308,6 +378,7 @@ void CheckFace(const Bytes& image, const FontImage& fonts, std::size_t number, s
   Glyph first;
   BN_FUZZ_CHECK(face.Missing(missing) == face.GlyphAt(0, first), "the glyph for what a face lacks is not glyph 0");
   CheckKerning(image, face, number, foundGlyphs);
+  CheckLigatures(image, face, number, foundGlyphs);
 }
 
 bool SameGlyph(const Glyph& one, const Glyph& other) {
@@ -342,15 +413,16 @@ void CheckThroughAMap(const Bytes& image, const FontImage& whole, std::span<cons
                         one.Size() == other.Size() && one.Ascent() == other.Ascent() &&
                         one.Descent() == other.Descent() && one.LineHeight() == other.LineHeight() &&
                         one.XHeight() == other.XHeight() && one.Glyphs() == other.Glyphs() &&
-                        one.KernFirsts() == other.KernFirsts() && one.KernSeconds() == other.KernSeconds(),
+                        one.Ligatures() == other.Ligatures() && one.KernFirsts() == other.KernFirsts() &&
+                        one.KernSeconds() == other.KernSeconds(),
                     "a face has other numbers through a map");
       Glyph glyph;
       Glyph same;
       BN_FUZZ_CHECK(!other.Held() && !other.Missing(glyph) && !other.Find(asked[0], glyph) && other.LastSteps() == 0,
                     "a face that is not held has a glyph");
       // Its stretch of the image, worked out here: from the first of its
-      // tables to the end of the last, its kerning one of them if it has
-      // any.
+      // tables to the end of the last, its kerning and its ligatures among
+      // them if it has any.
       const std::size_t record = kHeaderBytes + (number * kFaceBytes);
       const std::uint64_t rangesAt = Get32(image, record + 16);
       const std::uint64_t glyphsAt = Get32(image, record + 24);
@@ -364,6 +436,12 @@ void CheckThroughAMap(const Bytes& image, const FontImage& whole, std::span<cons
       if (kerningBytes > 0) {
         begins = std::min(begins, kerningAt);
         ends = std::max(ends, kerningAt + kerningBytes);
+      }
+      const std::uint64_t ligaturesAt = Get32(image, record + 44);
+      const std::uint64_t ligatureBytes = std::uint64_t{image[record + 42]} * kLigatureBytes;
+      if (ligatureBytes > 0) {
+        begins = std::min(begins, ligaturesAt);
+        ends = std::max(ends, ligaturesAt + ligatureBytes);
       }
       const bool held = fonts.Hold(other);
       BN_FUZZ_CHECK(held == (ends - begins <= room - head),
@@ -414,11 +492,29 @@ void CheckThroughAMap(const Bytes& image, const FontImage& whole, std::span<cons
                         "two glyphs are kerned otherwise through a map");
         }
       }
+      // And its ligatures.
+      for (std::size_t first = 0; first < wholeGlyphs.size(); ++first) {
+        for (std::size_t second = 0; second < wholeGlyphs.size(); ++second) {
+          for (std::size_t third = 0; third < wholeGlyphs.size(); ++third) {
+            const std::array<Glyph, 3> wholeThree = {wholeGlyphs[first], wholeGlyphs[second], wholeGlyphs[third]};
+            const std::array<Glyph, 3> mappedThree = {mappedGlyphs[first], mappedGlyphs[second], mappedGlyphs[third]};
+            Glyph wholeLigature;
+            Glyph mappedLigature;
+            const std::size_t made = one.Ligature(wholeThree, wholeLigature);
+            BN_FUZZ_CHECK(other.Ligature(mappedThree, mappedLigature) == made &&
+                              (made == 0 || SameGlyph(wholeLigature, mappedLigature)),
+                          "three glyphs are joined otherwise through a map");
+          }
+        }
+      }
       fonts.ReleaseFaces();
       BN_FUZZ_CHECK(fonts.Held() == 0 && map.Stretches() == 1 && !fonts.FaceAt(number).Held(),
                     "a face given up is still held");
       BN_FUZZ_CHECK(wholeGlyphs.empty() || fonts.FaceAt(number).Kern(wholeGlyphs[0], wholeGlyphs[0]) == 0,
                     "a face given up kerns");
+      Glyph joined;
+      BN_FUZZ_CHECK(wholeGlyphs.size() < 2 || fonts.FaceAt(number).Ligature(wholeGlyphs, joined) == 0,
+                    "a face given up joins");
     }
   }
   BN_FUZZ_CHECK(map.Stretches() == 0 && map.MappedBytes() == 0, "bytes are left mapped when the image is gone");

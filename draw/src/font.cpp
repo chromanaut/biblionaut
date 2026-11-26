@@ -12,6 +12,7 @@ constexpr std::size_t kHeaderBytes = 16;
 constexpr std::size_t kFaceBytes = 48;
 constexpr std::size_t kRangeBytes = 12;
 constexpr std::size_t kGlyphBytes = 12;
+constexpr std::size_t kLigatureBytes = 8;
 constexpr std::uint8_t kVersion = 1;
 constexpr std::uint8_t kLastRole = 3;
 constexpr std::uint8_t kLastStyle = kBold | kItalic;
@@ -52,7 +53,8 @@ bool RecordsGood(std::span<const std::uint8_t> head, std::size_t faces, std::uin
         !Inside(Read32(record, 16), Read32(record, 12), kRangeBytes, bytes) ||
         !Inside(Read32(record, 24), Read32(record, 20), kGlyphBytes, bytes) ||
         !Inside(Read32(record, 28), Read32(record, 32), 1, bytes) ||
-        !Inside(Read32(record, 36), std::uint64_t{record[40]} * record[41], 1, bytes)) {
+        !Inside(Read32(record, 36), std::uint64_t{record[40]} * record[41], 1, bytes) ||
+        !Inside(Read32(record, 44), record[42], kLigatureBytes, bytes)) {
       return false;
     }
   }
@@ -87,6 +89,7 @@ std::uint16_t Face::XHeight() const noexcept { return Valid() ? Read16(record_, 
 std::uint32_t Face::Glyphs() const noexcept { return Valid() ? Read32(record_, 20) : 0; }
 std::uint8_t Face::KernFirsts() const noexcept { return Valid() ? record_[40] : 0; }
 std::uint8_t Face::KernSeconds() const noexcept { return Valid() ? record_[41] : 0; }
+std::uint8_t Face::Ligatures() const noexcept { return Valid() ? record_[42] : 0; }
 
 bool Face::Find(std::uint32_t codePoint, Glyph& glyph) const noexcept {
   steps_ = 0;
@@ -159,6 +162,34 @@ std::int8_t Face::Kern(const Glyph& first, const Glyph& second) const noexcept {
   // Opening the image saw that the whole table is inside it.
   const std::size_t at = Read32(record_, 36) + (std::size_t{first.kernFirst - 1U} * seconds) + (second.kernSecond - 1U);
   return static_cast<std::int8_t>(From(at)[0]);
+}
+
+std::size_t Face::Ligature(std::span<const Glyph> glyphs, Glyph& ligature) const noexcept {
+  const std::size_t count = Ligatures();
+  if (!held_ || count == 0 || glyphs.size() < 2 || glyphs[0].face != index_ || glyphs[1].face != index_) {
+    return 0;
+  }
+  // Opening the image saw that the whole list is inside it.
+  const std::span<const std::uint8_t> list = From(Read32(record_, 44));
+  for (std::size_t i = 0; i < count; ++i) {
+    const std::span<const std::uint8_t> entry = list.subspan(i * kLigatureBytes, kLigatureBytes);
+    if (Read16(entry, 0) != glyphs[0].index || Read16(entry, 2) != glyphs[1].index) {
+      continue;
+    }
+    const std::uint16_t third = Read16(entry, 4);
+    if (third != 0 && (glyphs.size() < 3 || glyphs[2].face != index_ || glyphs[2].index != third)) {
+      continue;
+    }
+    // A glyph it names that the face has not, or whose picture is not to be
+    // had, is no ligature.
+    Glyph found;
+    if (!GlyphAt(Read16(entry, 6), found)) {
+      return 0;
+    }
+    ligature = found;
+    return third != 0 ? 3 : 2;
+  }
+  return 0;
 }
 
 // ---- The image ----
@@ -245,7 +276,8 @@ bool FontImage::Hold(Face& face) noexcept {
     return false;
   }
   // Its stretch of the image: from where the first of its tables begins to
-  // where the last of them ends, its kerning among them if it has any.
+  // where the last of them ends, its kerning and its ligatures among them
+  // if it has any.
   // Opening the image saw that each is inside it.
   const std::span<const std::uint8_t> record = face.record_;
   const std::uint64_t rangesAt = Read32(record, 16);
@@ -259,6 +291,11 @@ bool FontImage::Hold(Face& face) noexcept {
     const std::uint64_t kerningAt = Read32(record, 36);
     begins = std::min(begins, kerningAt);
     ends = std::max<std::uint64_t>(ends, kerningAt + face.KerningBytes());
+  }
+  if (face.Ligatures() > 0) {
+    const std::uint64_t ligaturesAt = Read32(record, 44);
+    begins = std::min(begins, ligaturesAt);
+    ends = std::max<std::uint64_t>(ends, ligaturesAt + (std::uint64_t{face.Ligatures()} * kLigatureBytes));
   }
   std::span<const std::uint8_t> stretch;
   if (ends > begins) {

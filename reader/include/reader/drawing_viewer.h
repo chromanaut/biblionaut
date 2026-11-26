@@ -103,8 +103,8 @@ namespace bn::reader {
 //
 // The memory for the bands, for the renderer, for what a drawing defines
 // and for the links of what is kept is taken from the heap at Start():
-// about 96 KB for the X4's panel, most of it the filler's cells, the
-// definitions and the links. What a picture needs besides is taken the
+// about 88 KB for the X4's panel, most of it the filler's cells and the
+// definitions. What a picture needs besides is taken the
 // first time one is shown: about 73 KB, PNG's window and the readers' rows
 // the most of it.
 class DrawingViewer final : public Screen {
@@ -140,9 +140,11 @@ class DrawingViewer final : public Screen {
   static constexpr draw::Fixed kThinnestStroke = 4096;
   // Where a drawing is kept while it is shown, once read, to be drawn a
   // band at a time (draw/spool.h): a hidden file at the top of the card,
-  // made again for each drawing. And how many chunks it may have: 4 MB.
+  // made again for each drawing. And how many chunks it may have: 2 MB,
+  // which is twice what the largest drawing in the public books keeps, and
+  // 8 KB of links.
   static constexpr std::string_view kSpoolPath = "/.drawing-spool";
-  static constexpr std::size_t kSpoolChunks = 8192;
+  static constexpr std::size_t kSpoolChunks = 4096;
   // Where what is shown is kept, to be shown again: a hidden folder at the
   // top of the card.
   static constexpr std::string_view kCacheFolder = "/.picture-cache";

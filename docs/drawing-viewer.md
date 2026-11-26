@@ -67,11 +67,12 @@ A drawing is read once, and kept on the card while it is shown, in a
 hidden file at the top of the card (`/.drawing-spool`, made again for each
 drawing): what it draws for each band of the panel ([Keeping a
 drawing](drawing-spool.md)). Each band is then drawn from what was kept, its own part and no
-more. If the card will not keep it, or it would be more than 4 MB, the
+more. If the card will not keep it, or it would be more than 2 MB, which
+is twice what the largest drawing in the public books keeps, the
 drawing is read again for each band instead, as it could always be, and a
-line says why. The viewer takes about 109 KB of the heap when it starts:
+line says why. The viewer takes about 101 KB of the heap when it starts:
 26 KB for the filler's cells, which also hold what each band has in hand
-while the file is read, 24 KB for what a drawing defines, 16 KB for the
+while the file is read, 24 KB for what a drawing defines, 8 KB for the
 links of what is kept, 13 KB for a band of grays, which also gathers what
 is kept into writes of up to 8 KB while the file is read, since the card
 writes a few kilobytes at once faster than a chunk at a time, 8 KB for the renderer, a

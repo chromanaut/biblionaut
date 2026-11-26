@@ -84,7 +84,7 @@ struct SvgReport {
   std::uint32_t reused = 0;     // and bytes of them gone through again, for `use`.
   std::uint32_t rules = 0;      // Rules of style sheets kept,
   std::uint32_t gradients = 0;  // and linear gradients.
-  std::uint32_t looked = 0;     // Times what is kept was looked through, which a call does twice at the most.
+  std::uint32_t looked = 0;     // Times what is kept was looked through, which a call does three times at the most.
 
   bool Has(SvgLeftOut what) const noexcept { return (leftOut & static_cast<std::uint32_t>(what)) != 0; }
 };
@@ -212,11 +212,12 @@ struct SvgSize {
 // (what each line of an outline that is stroked comes to is Stroker's
 // bound, and a stroke's dashes are bounded for each outline); of what it
 // has kept it reads no more than kReusedPerStep bytes; and it goes through
-// the records of what it has kept twice at the most, which are no more
-// than the memory given has room for: to find what a `use` names, or
-// what a gradient's `href` does, or to style an element and find the
-// gradient it is filled with. A piece of a style sheet's text is read in
-// the call it comes in.
+// the records of what it has kept three times at the most, which are no
+// more than the memory given has room for: once to find what a gradient's
+// `href` names; twice to style an element and find the gradient it is
+// filled with; and for a `use`, which is styled and filled as any element
+// is, a third time to find what it names. A piece of a style sheet's text
+// is read in the call it comes in.
 //
 // The file is not trusted. Whatever its bytes, it ends in a status and a
 // report. Used by one task. The object is 8,136 bytes on the device: half
@@ -280,8 +281,10 @@ class SvgRenderer {
   // A rule that needs more is left out, and reported.
   static constexpr std::size_t kLongestClasses = 64;
   static constexpr std::size_t kLongestRule = 256;
-  // How many times one call can look through the records of what is kept.
-  static constexpr std::uint32_t kMostLooksPerStep = 2;
+  // How many times one call can look through the records of what is kept:
+  // for a `use` that a style sheet's rules may style and that is filled
+  // with a gradient, once for each of those and once for what it names.
+  static constexpr std::uint32_t kMostLooksPerStep = 3;
 
   SvgRenderer() noexcept;
   ~SvgRenderer() = default;

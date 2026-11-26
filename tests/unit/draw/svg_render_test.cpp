@@ -59,6 +59,7 @@ struct Drawing {
   SvgReport report;
   std::uint32_t errorOffset = 0;
   std::size_t calls = 0;
+  std::uint32_t mostLooksInACall = 0;  // Through what is kept.
 
   std::uint8_t At(std::size_t x, std::size_t y) const { return gray[(y * width) + x]; }
   // Whether the pixels from (left, top) up to (right, bottom) are all
@@ -117,6 +118,7 @@ Drawing Draw(std::string_view file, std::size_t width, std::size_t height, std::
         // Every drawing here is held to the bound on looking through what
         // is kept.
         EXPECT_LE(renderer.Report().looked - looked, SvgRenderer::kMostLooksPerStep);
+        drawing.mostLooksInACall = std::max(drawing.mostLooksInACall, renderer.Report().looked - looked);
         bytes.remove_prefix(std::min(taken, bytes.size()));
         ++drawing.calls;
       }
@@ -1839,6 +1841,31 @@ TEST(SvgRender, ASheetInDefsTakesItsMemoryInTheFilesOrderWhateverThePieces) {
     EXPECT_EQ(drawing.status, SvgStatus::kOk) << piece;
     EXPECT_EQ(drawing.report.kept, held.size()) << piece;
     EXPECT_TRUE(drawing.IsBox(4, 0, 6, 2, kBlack)) << piece;
+  }
+}
+
+TEST(SvgRender, ACallLooksThroughWhatIsKeptThreeTimesForAUseAndTwiceForAShape) {
+  // A style sheet, a gradient, and something defined: every element after
+  // them is styled, which is a look through what is kept; one filled with
+  // the gradient is another; and a `use` has what it names to find as
+  // well, in the call its tag ends in.
+  const std::string_view kept =
+      "<style>.a{fill-opacity:.5}</style>"
+      "<linearGradient id='g'><stop/><stop offset='1' stop-color='#fff'/></linearGradient>"
+      "<defs><rect id='r' width='8' height='4'/></defs>";
+  const Drawing shape = DrawBody(std::string(kept) + "<rect width='8' height='4' fill='url(#g)'/>");
+  EXPECT_EQ(shape.mostLooksInACall, 2u);
+  const Drawing used = DrawBody(std::string(kept) + "<use href='#r' fill='url(#g)'/>");
+  EXPECT_EQ(used.mostLooksInACall, SvgRenderer::kMostLooksPerStep);
+  EXPECT_EQ(used.mostLooksInACall, 3u);
+  // And what is used is drawn as the shape is: filled with the gradient.
+  EXPECT_EQ(used.gray, shape.gray);
+  EXPECT_LT(used.At(0, 0), used.At(7, 0));
+  // Whether or not what it names is there, and in any pieces.
+  for (const std::size_t piece : {SIZE_MAX, std::size_t{1}, std::size_t{3}}) {
+    const Drawing unfound = Draw(Svg(40, 20, std::string(kept) + "<use href='#p' fill='url(#g)'/>"), 40, 20, 0, piece);
+    EXPECT_EQ(unfound.mostLooksInACall, 3u) << piece;
+    EXPECT_EQ(unfound.report.leftOut, Bits({SvgLeftOut::kUse})) << piece;
   }
 }
 

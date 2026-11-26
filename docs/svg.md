@@ -444,9 +444,10 @@ strip only what it defines for later use.
   what those commands come to in lines is bounded
   (`kMostLinesPerStep`), a stroke's dashes included. A shape's stroke is
   drawn in the call after its fill. It looks through
-  the records of what is kept twice at the most: to find what a `use` or
-  a gradient's `href` names, or to style an element and find the gradient
-  it is filled with. A piece of a sheet's text is read in the call it
+  the records of what is kept three times at the most: once to find what
+  a gradient's `href` names, twice to style an element and find the
+  gradient it is filled with, and a third time, for a `use`, to find what
+  it names. A piece of a sheet's text is read in the call it
   comes in.
 - **Bad input**: the file is not trusted. Whatever its bytes, it ends in a
   status (`ok`, `not svg`, `malformed`, `truncated`), and what came before

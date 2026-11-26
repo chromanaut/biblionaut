@@ -93,7 +93,6 @@ namespace {
 using bn::core::BlockFile;
 using bn::core::OpenMode;
 using bn::core::StorageStatus;
-using bn::epub::BlockKind;
 using bn::epub::BlockStyle;
 using bn::epub::BundleChapter;
 using bn::epub::ChapterState;
@@ -102,6 +101,7 @@ using bn::epub::LinkKind;
 using bn::epub::RunStyle;
 using bn::epub::SegmentAnchor;
 using bn::epub::SegmentBlock;
+using bn::epub::SegmentBlockKind;
 using bn::epub::SegmentItem;
 using bn::epub::SegmentLength;
 using bn::epub::SegmentPicture;
@@ -400,7 +400,7 @@ class Giver {
       return;
     }
     source_ += step;
-    Held(writer_.BeginBlock(static_cast<BlockKind>(kind), level, style, source_), 2);
+    Held(writer_.BeginBlock(static_cast<SegmentBlockKind>(kind), level, style, source_), 2);
     Block block;
     block.kind = kind;
     block.level = level;

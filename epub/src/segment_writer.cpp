@@ -187,12 +187,12 @@ bool SegmentWriter::EmitText() noexcept {
   return AppendToBlock(text_.first(bytes));
 }
 
-SegmentStatus SegmentWriter::BeginBlock(BlockKind kind, std::uint8_t level, const BlockStyle& style,
+SegmentStatus SegmentWriter::BeginBlock(SegmentBlockKind kind, std::uint8_t level, const BlockStyle& style,
                                         std::uint32_t source) noexcept {
   if (status_ != SegmentStatus::kOk) {
     return status_;
   }
-  const bool levelIsRight = kind == BlockKind::kHeading ? (level >= 1 && level <= 6) : level == 0;
+  const bool levelIsRight = kind == SegmentBlockKind::kHeading ? (level >= 1 && level <= 6) : level == 0;
   if (stage_ != Stage::kBlocks || inBlock_ || !levelIsRight || static_cast<std::uint8_t>(kind) == 0 ||
       static_cast<std::uint8_t>(kind) >= kSegmentIndexPage) {
     return Fail(SegmentStatus::kMisused);
@@ -227,7 +227,7 @@ void SegmentWriter::CountCharacters(std::string_view text) noexcept {
     const std::uint32_t row = character.codePoint < 65536 ? character.codePoint >> 8U : 255U;
     chapter_.characterRows[row / 8] |= static_cast<std::uint8_t>(1U << (row % 8));
   }
-  if (blockKind_ != static_cast<std::uint8_t>(BlockKind::kHeading) && runClass_ < kBundleClasses) {
+  if (blockKind_ != static_cast<std::uint8_t>(SegmentBlockKind::kHeading) && runClass_ < kBundleClasses) {
     chapter_.classCharacters[runClass_] += static_cast<std::uint32_t>(text.size());
   }
 }

@@ -47,7 +47,7 @@ from epub_tool import Failure, expect  # noqa: E402
 PAGE = 4096
 SECTOR = 512
 MOST_ITEM = 4088
-KINDS = ["paragraph", "heading", "item", "picture", "rule", "cell"]
+KINDS = ["paragraph", "heading", "list-item", "picture", "rule", "table-cell"]
 LINKS = ["inside", "note", "outside"]
 TEXT, STYLE, LINK, ENDLINK, PICTURE, END = 1, 2, 3, 4, 5, 6
 INDEX_PAGE, ANCHOR_PAGE = 0xF0, 0xF1

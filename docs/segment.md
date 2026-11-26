@@ -3,9 +3,10 @@
 A chapter of a book, once imported, is a run of bytes in the book's
 bundle ([The file a book is imported into](bundle.md)): a *segment*.
 `epub/segment.h` says what those bytes are, and has what writes a segment
-(`SegmentWriter`) and what reads one (`SegmentReader`). Nothing turns a
-document into a chapter yet: the writer is given blocks by the tests and
-by `bn-bundle`, which make them up.
+(`SegmentWriter`) and what reads one (`SegmentReader`). A document's
+blocks are found by `DocumentBlocks` ([A document's blocks](document-blocks.md)),
+and nothing gives them to the writer yet: it is given blocks by the tests
+and by `bn-bundle`, which make them up.
 
 ## What a chapter is
 

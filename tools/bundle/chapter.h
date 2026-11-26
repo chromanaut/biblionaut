@@ -13,8 +13,8 @@
 //   chapter STATE REASON SOURCE-BYTES     STATE is whole or cut-short
 //   language TAG                          one for each the text names
 //   size PICTURE WIDTH HEIGHT             one for each picture whose size is known
-//   block KIND LEVEL SOURCE [FIELD...]    KIND is paragraph, heading, item,
-//                                         picture, rule or cell, or a number
+//   block KIND LEVEL SOURCE [FIELD...]    KIND is paragraph, heading, list-item,
+//                                         picture, rule or table-cell, or a number
 //   text TEXT
 //   style BITS BOOK-BITS FAMILY LANGUAGE SIZE
 //   link KIND CHAPTER [FRAGMENT]          KIND is inside, note or outside

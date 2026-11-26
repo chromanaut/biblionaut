@@ -78,20 +78,20 @@ const char* SegmentStatusName(SegmentStatus status) noexcept {
   return "?";
 }
 
-const char* BlockKindName(std::uint8_t kind) noexcept {
+const char* SegmentBlockKindName(std::uint8_t kind) noexcept {
   switch (kind) {
-    case static_cast<std::uint8_t>(BlockKind::kParagraph):
+    case static_cast<std::uint8_t>(SegmentBlockKind::kParagraph):
       return "paragraph";
-    case static_cast<std::uint8_t>(BlockKind::kHeading):
+    case static_cast<std::uint8_t>(SegmentBlockKind::kHeading):
       return "heading";
-    case static_cast<std::uint8_t>(BlockKind::kListItem):
-      return "item";
-    case static_cast<std::uint8_t>(BlockKind::kPicture):
+    case static_cast<std::uint8_t>(SegmentBlockKind::kListItem):
+      return "list-item";
+    case static_cast<std::uint8_t>(SegmentBlockKind::kPicture):
       return "picture";
-    case static_cast<std::uint8_t>(BlockKind::kRule):
+    case static_cast<std::uint8_t>(SegmentBlockKind::kRule):
       return "rule";
-    case static_cast<std::uint8_t>(BlockKind::kTableCell):
-      return "cell";
+    case static_cast<std::uint8_t>(SegmentBlockKind::kTableCell):
+      return "table-cell";
     default:
       return "?";
   }

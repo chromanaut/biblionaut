@@ -118,9 +118,12 @@ inline constexpr std::uint16_t kSegmentNoPicture = 65535;
 inline constexpr std::uint8_t kSegmentIndexPage = 0xF0;
 inline constexpr std::uint8_t kSegmentAnchorPage = 0xF1;
 
-// The kinds of block. A reader gives a block's kind as the number the
-// segment has, which may be one that is not here.
-enum class BlockKind : std::uint8_t {
+// The kinds of block, as the numbers a segment has for them: the kinds a
+// document's blocks are (document_blocks.h) and a picture standing by
+// itself, from 1 so that no record begins with nothing. A reader gives a
+// block's kind as the number the segment has, which may be one that is
+// not here.
+enum class SegmentBlockKind : std::uint8_t {
   kParagraph = 1,
   kHeading,  // Its level is 1 to 6.
   kListItem,
@@ -129,8 +132,9 @@ enum class BlockKind : std::uint8_t {
   kTableCell,
 };
 
-// "paragraph", "heading", ...; "?" for a number that is no kind.
-const char* BlockKindName(std::uint8_t kind) noexcept;
+// "paragraph", "heading", "list-item", "picture", "rule", "table-cell";
+// "?" for a number that is no kind.
+const char* SegmentBlockKindName(std::uint8_t kind) noexcept;
 
 // A length: three amounts that are added together. An amount in em is
 // turned into the first when a block is written, so that nothing kept
@@ -321,7 +325,7 @@ class SegmentWriter {
   // Begins a block. `level` is 1 to 6 for a heading and 0 for the others.
   // `source` is where in the document whatever began the block began; one
   // that is before the last block's is taken as the last block's.
-  [[nodiscard]] SegmentStatus BeginBlock(BlockKind kind, std::uint8_t level, const BlockStyle& style,
+  [[nodiscard]] SegmentStatus BeginBlock(SegmentBlockKind kind, std::uint8_t level, const BlockStyle& style,
                                          std::uint32_t source) noexcept;
   // Text of the block in hand: kSegmentMostText bytes at the most.
   [[nodiscard]] SegmentStatus Text(std::string_view text) noexcept;
@@ -507,7 +511,7 @@ struct SegmentItem {
 
 // A block's head, as a reader gives it.
 struct SegmentBlock {
-  std::uint8_t kind = 0;  // A BlockKind, or a number that is none.
+  std::uint8_t kind = 0;  // A SegmentBlockKind, or a number that is none.
   std::uint8_t level = 0;
   BlockStyle style;
   // Which block of the chapter it is, where it begins in the segment, and

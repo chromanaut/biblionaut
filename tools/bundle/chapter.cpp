@@ -26,7 +26,6 @@ namespace bn::tools {
 namespace {
 
 using core::StorageStatus;
-using epub::BlockKind;
 using epub::BlockStyle;
 using epub::Bundle;
 using epub::BundleChapter;
@@ -37,6 +36,7 @@ using epub::LinkKind;
 using epub::RunStyle;
 using epub::SegmentAnchor;
 using epub::SegmentBlock;
+using epub::SegmentBlockKind;
 using epub::SegmentItem;
 using epub::SegmentLength;
 using epub::SegmentPicture;
@@ -100,7 +100,8 @@ constexpr std::array<std::string_view, 15> kFieldNames = {"align",  "direction",
                                                           "left",   "right",     "before", "after", "breaking",
                                                           "depths", "marker",    "table",  "width", "height"};
 constexpr std::array<std::string_view, 3> kLinkNames = {"inside", "note", "outside"};
-constexpr std::array<std::string_view, 6> kKindNames = {"paragraph", "heading", "item", "picture", "rule", "cell"};
+constexpr std::array<std::string_view, 6> kKindNames = {"paragraph", "heading", "list-item",
+                                                        "picture",   "rule",    "table-cell"};
 
 void AddNumbers(std::string& out, std::initializer_list<long long> numbers) {
   bool first = true;
@@ -450,7 +451,7 @@ bool GiveLine(SegmentWriter& writer, std::string_view line, Described& described
         return false;
       }
     }
-    status = writer.BeginBlock(static_cast<BlockKind>(kind), static_cast<std::uint8_t>(numbers[2]), style,
+    status = writer.BeginBlock(static_cast<SegmentBlockKind>(kind), static_cast<std::uint8_t>(numbers[2]), style,
                                static_cast<std::uint32_t>(numbers[3]));
     return true;
   }

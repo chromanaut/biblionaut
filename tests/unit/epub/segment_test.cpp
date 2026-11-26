@@ -25,7 +25,6 @@ namespace {
 using bn::core::BlockFile;
 using bn::core::OpenMode;
 using bn::core::StorageStatus;
-using bn::epub::BlockKind;
 using bn::epub::BlockStyle;
 using bn::epub::Bundle;
 using bn::epub::BundleBook;
@@ -39,6 +38,7 @@ using bn::epub::ItemKind;
 using bn::epub::LinkKind;
 using bn::epub::RunStyle;
 using bn::epub::SegmentBlock;
+using bn::epub::SegmentBlockKind;
 using bn::epub::SegmentItem;
 using bn::epub::SegmentLength;
 using bn::epub::SegmentPicture;
@@ -102,7 +102,7 @@ std::string Words(Random& random, std::size_t bytes) {
 struct Op {
   enum class What : std::uint8_t { kBegin, kText, kStyle, kLinkStart, kLinkEnd, kPicture, kEnd, kAnchor };
   What what = What::kText;
-  BlockKind kind = BlockKind::kParagraph;
+  SegmentBlockKind kind = SegmentBlockKind::kParagraph;
   std::uint8_t level = 0;
   BlockStyle style;
   std::uint32_t source = 0;
@@ -116,11 +116,11 @@ struct Op {
   SegmentLength height;
 };
 
-Op Begin(BlockKind kind, std::uint32_t source, const BlockStyle& style = {}, std::uint8_t level = 0) {
+Op Begin(SegmentBlockKind kind, std::uint32_t source, const BlockStyle& style = {}, std::uint8_t level = 0) {
   Op op;
   op.what = Op::What::kBegin;
   op.kind = kind;
-  op.level = kind == BlockKind::kHeading && level == 0 ? std::uint8_t{2} : level;
+  op.level = kind == SegmentBlockKind::kHeading && level == 0 ? std::uint8_t{2} : level;
   op.style = style;
   op.source = source;
   return op;
@@ -395,24 +395,24 @@ std::vector<Op> MakeChapter(std::uint32_t seed, std::size_t blocks, std::uint8_t
       anchor();  // One or two ids on something that makes no block.
     }
     const std::uint32_t pick = random.Below(20);
-    const BlockKind kind = pick < 12   ? BlockKind::kParagraph
-                           : pick < 14 ? BlockKind::kHeading
-                           : pick < 16 ? BlockKind::kListItem
-                           : pick < 17 ? BlockKind::kPicture
-                           : pick < 18 ? BlockKind::kRule
-                                       : BlockKind::kTableCell;
+    const SegmentBlockKind kind = pick < 12   ? SegmentBlockKind::kParagraph
+                                  : pick < 14 ? SegmentBlockKind::kHeading
+                                  : pick < 16 ? SegmentBlockKind::kListItem
+                                  : pick < 17 ? SegmentBlockKind::kPicture
+                                  : pick < 18 ? SegmentBlockKind::kRule
+                                              : SegmentBlockKind::kTableCell;
     source += random.Below(900);
     const BlockStyle blockStyle = SomeStyle(random);
     const std::uint8_t level =
-        kind == BlockKind::kHeading ? static_cast<std::uint8_t>(1 + random.Below(6)) : std::uint8_t{0};
+        kind == SegmentBlockKind::kHeading ? static_cast<std::uint8_t>(1 + random.Below(6)) : std::uint8_t{0};
     ops.push_back(Begin(kind, source, blockStyle, level));
-    if (kind == BlockKind::kPicture) {
+    if (kind == SegmentBlockKind::kPicture) {
       const auto number = static_cast<std::uint16_t>(random.Below(40));
       const SegmentLength width = Length(random);
       const SegmentLength height = Length(random);
       const std::uint32_t altBytes = random.OneIn(2) ? random.Below(200) : 0;
       ops.push_back(PictureOp(number, 0, width, height, altBytes == 0 ? std::string() : Words(random, altBytes)));
-    } else if (kind != BlockKind::kRule) {
+    } else if (kind != SegmentBlockKind::kRule) {
       const std::uint32_t runs = 1 + random.Below(5);
       for (std::uint32_t run = 0; run < runs; ++run) {
         if (random.OneIn(2)) {
@@ -467,7 +467,7 @@ std::vector<Op> MakeSmallChapter(std::uint32_t seed, std::size_t blocks) {
   Random random(seed);
   std::vector<Op> ops;
   for (std::size_t i = 0; i < blocks; ++i) {
-    const BlockKind kind = random.OneIn(9) ? BlockKind::kListItem : BlockKind::kParagraph;
+    const SegmentBlockKind kind = random.OneIn(9) ? SegmentBlockKind::kListItem : SegmentBlockKind::kParagraph;
     const BlockStyle blockStyle = random.OneIn(4) ? SomeStyle(random) : BlockStyle{};
     ops.push_back(Begin(kind, static_cast<std::uint32_t>(i * 30), blockStyle));
     ops.push_back(TextOp(Words(random, 1 + random.Below(12))));
@@ -1185,11 +1185,11 @@ TEST(Segment, IsLaidOutAsTheFormatSays) {
   run.size = 900;
   const std::vector<Op> ops = {
       AnchorOp("top"),
-      Begin(BlockKind::kHeading, 100, style, 2),
+      Begin(SegmentBlockKind::kHeading, 100, style, 2),
       TextOp("On"),
       TextOp("e"),
       Simple(Op::What::kEnd),
-      Begin(BlockKind::kParagraph, 180),
+      Begin(SegmentBlockKind::kParagraph, 180),
       TextOp("ab"),
       StyleOp(run),
       LinkOp(LinkKind::kNote, 7, "n1"),
@@ -1198,7 +1198,7 @@ TEST(Segment, IsLaidOutAsTheFormatSays) {
       Simple(Op::What::kLinkEnd),
       PictureOp(9, bn::epub::kPictureInLine, {.em = 64, .px = 0, .percent = 0}, {.em = 0, .px = 80, .percent = 0}, "x"),
       Simple(Op::What::kEnd),
-      Begin(BlockKind::kRule, 260),
+      Begin(SegmentBlockKind::kRule, 260),
       Simple(Op::What::kEnd),
   };
   const std::uint32_t begin = f.bundle.DataEnd();
@@ -1555,14 +1555,14 @@ TEST(SegmentReader, TakesTheFirstOfTwoIdsOfOneNameAndAnIdBetweenBlocksIsAtTheNex
   SegmentFixture f;
   f.MakeBundle(1);
   const std::vector<Op> ops = {
-      Begin(BlockKind::kParagraph, 10),
+      Begin(SegmentBlockKind::kParagraph, 10),
       TextOp("first"),
       AnchorOp("twice"),
       Simple(Op::What::kEnd),
       AnchorOp("between"),
       AnchorOp(""),
       AnchorOp("twice"),
-      Begin(BlockKind::kParagraph, 20),
+      Begin(SegmentBlockKind::kParagraph, 20),
       TextOp("second"),
       Simple(Op::What::kEnd),
       AnchorOp("after"),
@@ -1595,12 +1595,12 @@ TEST(SegmentWriter, CutsLongTextIntoItemsAtCharactersAndCountsTheRowsItUses) {
   for (int i = 0; i < 2000; ++i) {
     text += "\xE6\xBC\xA2";
   }
-  std::vector<Op> ops = {Begin(BlockKind::kParagraph, 0), TextOp("a")};
+  std::vector<Op> ops = {Begin(SegmentBlockKind::kParagraph, 0), TextOp("a")};
   for (std::size_t at = 0; at < text.size(); at += 3000) {
     ops.push_back(TextOp(text.substr(at, 3000)));
   }
   ops.push_back(Simple(Op::What::kEnd));
-  ops.push_back(Begin(BlockKind::kParagraph, 1));
+  ops.push_back(Begin(SegmentBlockKind::kParagraph, 1));
   ops.push_back(TextOp(std::string(3000, '\x80')));
   ops.push_back(TextOp("\xF0\x9F\x98\x80 \xCE\xB1 z"));
   ops.push_back(Simple(Op::What::kEnd));
@@ -1633,7 +1633,7 @@ TEST(SegmentWriter, CutsLongTextIntoItemsAtCharactersAndCountsTheRowsItUses) {
 
   // More than an item may be at one call is refused.
   ASSERT_EQ(f.writer.Begin(f.file, f.bundle.DataEnd()), SegmentStatus::kOk);
-  ASSERT_EQ(f.writer.BeginBlock(BlockKind::kParagraph, 0, {}, 0), SegmentStatus::kOk);
+  ASSERT_EQ(f.writer.BeginBlock(SegmentBlockKind::kParagraph, 0, {}, 0), SegmentStatus::kOk);
   EXPECT_EQ(f.writer.Text(std::string(4088, 'x')), SegmentStatus::kOk);
   EXPECT_EQ(f.writer.Text(std::string(4089, 'x')), SegmentStatus::kMisused);
 }
@@ -1647,7 +1647,7 @@ TEST(SegmentWriter, WritesAPageFromWhicheverCallFillsOne) {
   for (std::size_t bytes = 4010; bytes <= 4060; ++bytes) {
     SegmentFixture f;
     f.MakeBundle(1);
-    const std::vector<Op> ops = {Begin(BlockKind::kParagraph, 7), TextOp(std::string(bytes, 'x')),
+    const std::vector<Op> ops = {Begin(SegmentBlockKind::kParagraph, 7), TextOp(std::string(bytes, 'x')),
                                  Simple(Op::What::kEnd)};
     ASSERT_EQ(f.Write(ops, 99), SegmentStatus::kOk) << bytes;
     const BundleChapter record = f.writer.Chapter();
@@ -1679,7 +1679,7 @@ TEST(SegmentWriter, WritesAnIndexPageAfterEvery256BlocksAndLeavesBlocksPast65536
   const std::uint32_t blocks = 65536 + 300;
   for (std::uint32_t i = 0; i < blocks; ++i) {
     const std::size_t before = f.storage.written.size();
-    ASSERT_EQ(f.writer.BeginBlock(BlockKind::kParagraph, 0, {}, i * 10), SegmentStatus::kOk);
+    ASSERT_EQ(f.writer.BeginBlock(SegmentBlockKind::kParagraph, 0, {}, i * 10), SegmentStatus::kOk);
     ASSERT_EQ(f.writer.Text(std::to_string(i)), SegmentStatus::kOk);
     if (i == 65535 || i == 65536 || i == 65600) {
       ASSERT_EQ(f.writer.Anchor("in-" + std::to_string(i)), SegmentStatus::kOk);
@@ -1774,7 +1774,7 @@ TEST(SegmentWriter, LeavesOutAndCountsWhatThereIsNoRoomFor) {
   // between blocks.
   ASSERT_EQ(f.Give(AnchorOp(std::string(256, 'n'))), SegmentStatus::kOk);
   EXPECT_EQ(f.writer.LeftOut(), 4U);
-  ASSERT_EQ(f.Give(Begin(BlockKind::kParagraph, 0)), SegmentStatus::kOk);
+  ASSERT_EQ(f.Give(Begin(SegmentBlockKind::kParagraph, 0)), SegmentStatus::kOk);
   const auto name = [](int number) {
     std::string text = std::to_string(number);
     text.append(249 - text.size(), '.');
@@ -1791,7 +1791,7 @@ TEST(SegmentWriter, LeavesOutAndCountsWhatThereIsNoRoomFor) {
   EXPECT_EQ(f.writer.LeftOut(), 4U + (2100 - (128 * 16)));
 
   // And 600 pictures in one block, of which the directory has 512.
-  ASSERT_EQ(f.Give(Begin(BlockKind::kParagraph, 10)), SegmentStatus::kOk);
+  ASSERT_EQ(f.Give(Begin(SegmentBlockKind::kParagraph, 10)), SegmentStatus::kOk);
   for (int i = 0; i < 600; ++i) {
     ASSERT_EQ(f.Give(PictureOp(static_cast<std::uint16_t>(5000 - i), 0, {}, {}, "")), SegmentStatus::kOk);
     ASSERT_EQ(f.Give(PictureOp(bn::epub::kSegmentNoPicture, 0, {}, {}, "")), SegmentStatus::kOk);
@@ -1854,7 +1854,7 @@ TEST(SegmentWriter, RefusesWhatIsOutOfTurnAndStaysRefused) {
   };
   // Nothing before Begin(), and a place that is no sector's start or is
   // past the file's end.
-  EXPECT_EQ(f.writer.BeginBlock(BlockKind::kParagraph, 0, {}, 0), SegmentStatus::kMisused);
+  EXPECT_EQ(f.writer.BeginBlock(SegmentBlockKind::kParagraph, 0, {}, 0), SegmentStatus::kMisused);
   EXPECT_EQ(f.writer.Begin(f.file, f.bundle.DataEnd() + 100), SegmentStatus::kMisused);
   EXPECT_EQ(f.writer.Begin(f.file, f.bundle.DataEnd() + 512), SegmentStatus::kMisused);
   // Memory that is too little.
@@ -1864,20 +1864,22 @@ TEST(SegmentWriter, RefusesWhatIsOutOfTurnAndStaysRefused) {
 
   EXPECT_EQ(begun()->Text("x"), SegmentStatus::kMisused) << "text outside a block";
   EXPECT_EQ(f.writer.Text("x"), SegmentStatus::kMisused) << "and it stays so";
-  EXPECT_EQ(f.writer.BeginBlock(BlockKind::kParagraph, 0, {}, 0), SegmentStatus::kMisused);
+  EXPECT_EQ(f.writer.BeginBlock(SegmentBlockKind::kParagraph, 0, {}, 0), SegmentStatus::kMisused);
   EXPECT_EQ(begun()->EndBlock(), SegmentStatus::kMisused);
-  EXPECT_EQ(begun()->BeginBlock(BlockKind::kHeading, 0, {}, 0), SegmentStatus::kMisused) << "a heading of no level";
-  EXPECT_EQ(begun()->BeginBlock(BlockKind::kHeading, 7, {}, 0), SegmentStatus::kMisused);
-  EXPECT_EQ(begun()->BeginBlock(BlockKind::kParagraph, 1, {}, 0), SegmentStatus::kMisused);
-  EXPECT_EQ(begun()->BeginBlock(static_cast<BlockKind>(0), 0, {}, 0), SegmentStatus::kMisused);
-  EXPECT_EQ(begun()->BeginBlock(static_cast<BlockKind>(0xF0), 0, {}, 0), SegmentStatus::kMisused);
+  EXPECT_EQ(begun()->BeginBlock(SegmentBlockKind::kHeading, 0, {}, 0), SegmentStatus::kMisused)
+      << "a heading of no level";
+  EXPECT_EQ(begun()->BeginBlock(SegmentBlockKind::kHeading, 7, {}, 0), SegmentStatus::kMisused);
+  EXPECT_EQ(begun()->BeginBlock(SegmentBlockKind::kParagraph, 1, {}, 0), SegmentStatus::kMisused);
+  EXPECT_EQ(begun()->BeginBlock(static_cast<SegmentBlockKind>(0), 0, {}, 0), SegmentStatus::kMisused);
+  EXPECT_EQ(begun()->BeginBlock(static_cast<SegmentBlockKind>(0xF0), 0, {}, 0), SegmentStatus::kMisused);
 
   const auto inBlock = [&begun] {
     SegmentWriter* writer = begun();
-    EXPECT_EQ(writer->BeginBlock(BlockKind::kParagraph, 0, {}, 0), SegmentStatus::kOk);
+    EXPECT_EQ(writer->BeginBlock(SegmentBlockKind::kParagraph, 0, {}, 0), SegmentStatus::kOk);
     return writer;
   };
-  EXPECT_EQ(inBlock()->BeginBlock(BlockKind::kParagraph, 0, {}, 0), SegmentStatus::kMisused) << "a block in a block";
+  EXPECT_EQ(inBlock()->BeginBlock(SegmentBlockKind::kParagraph, 0, {}, 0), SegmentStatus::kMisused)
+      << "a block in a block";
   EXPECT_EQ(inBlock()->LinkEnd(), SegmentStatus::kMisused) << "no link is open";
   EXPECT_EQ(inBlock()->LinkStart(LinkKind::kInside, 0, std::string(256, 'f')), SegmentStatus::kMisused);
   EXPECT_EQ(inBlock()->Picture(1, 0, {}, {}, std::string(256, 'a')), SegmentStatus::kMisused);
@@ -2142,10 +2144,10 @@ TEST(SegmentWriter, TakesABlockThatBeginsBeforeTheLastAsBeginningWhereTheLastDid
   SegmentFixture f;
   f.MakeBundle(1);
   const std::vector<Op> ops = {
-      Begin(BlockKind::kParagraph, 50), TextOp("a"), Simple(Op::What::kEnd),
-      Begin(BlockKind::kParagraph, 20), TextOp("b"), Simple(Op::What::kEnd),
-      Begin(BlockKind::kParagraph, 70), TextOp("c"), Simple(Op::What::kEnd),
-      Begin(BlockKind::kParagraph, 60), TextOp("d"), Simple(Op::What::kEnd),
+      Begin(SegmentBlockKind::kParagraph, 50), TextOp("a"), Simple(Op::What::kEnd),
+      Begin(SegmentBlockKind::kParagraph, 20), TextOp("b"), Simple(Op::What::kEnd),
+      Begin(SegmentBlockKind::kParagraph, 70), TextOp("c"), Simple(Op::What::kEnd),
+      Begin(SegmentBlockKind::kParagraph, 60), TextOp("d"), Simple(Op::What::kEnd),
   };
   f.WriteAndCommit(0, ops);
   const Walked walked = Walk(f.OnCard(), f.writer.Chapter());
@@ -2327,7 +2329,7 @@ TEST(SegmentReader, PassesOverAnItemOfAKindItDoesNotKnowAndGivesABlockOfOneAsIts
   WantBlock got;
   ASSERT_EQ(f.ReadWholeBlock(got), SegmentStatus::kOk);
   EXPECT_EQ(got.kind, 9);
-  EXPECT_STREQ(bn::epub::BlockKindName(got.kind), "?");
+  EXPECT_STREQ(bn::epub::SegmentBlockKindName(got.kind), "?");
   ASSERT_EQ(got.items.size(), 1U);
   EXPECT_EQ(got.items[0].text, "ab");
   EXPECT_EQ(got.characters, 2U);

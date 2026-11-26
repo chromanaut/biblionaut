@@ -1,6 +1,8 @@
 #include "reader/pattern_viewer.h"
 
 #include <algorithm>
+#include <memory>
+#include <new>
 #include <utility>
 
 #include "core/checksum.h"
@@ -57,7 +59,8 @@ void PatternViewer::Start() noexcept {
   if (state_ != State::kNotStarted) {
     return;
   }
-  if (!display_.Start()) {
+  band_.reset(new (std::nothrow) std::uint8_t[kBandBytes]());
+  if (!band_ || !display_.Start()) {
     Fail();
     return;
   }
@@ -268,7 +271,7 @@ bool PatternViewer::WriteBands(std::uint8_t picture, bool toNew, bool toOld) noe
   for (std::size_t row = 0; row < size.height; row += layout.rows) {
     // Each band is rendered once, then written wherever it is wanted.
     const std::size_t rows = std::min<std::size_t>(layout.rows, size.height - row);
-    const std::span<std::uint8_t> band = std::span(band_).first(rows * layout.rowBytes);
+    const std::span<std::uint8_t> band = std::span(band_.get(), kBandBytes).first(rows * layout.rowBytes);
     const auto firstRow = static_cast<std::uint16_t>(row);
     pattern.RenderRows(firstRow, band);
     if (toNew && !display_.WriteRows(core::DisplayPlane::kNew, firstRow, band)) {
@@ -293,7 +296,7 @@ void PatternViewer::PrepareChecks() noexcept {
     for (std::size_t index = 0; index < layout.count; ++index) {
       const std::size_t row = index * layout.rows;
       const std::size_t rows = std::min<std::size_t>(layout.rows, size.height - row);
-      const std::span<std::uint8_t> band = std::span(band_).first(rows * layout.rowBytes);
+      const std::span<std::uint8_t> band = std::span(band_.get(), kBandBytes).first(rows * layout.rowBytes);
       if (picture == 0) {
         std::fill(band.begin(), band.end(), std::uint8_t{0xFF});
       } else {
@@ -322,7 +325,7 @@ void PatternViewer::CheckNextBand() noexcept {
   const std::size_t plane = checkStep_ % 2U;  // The new-image plane, then the old.
   const std::size_t row = index * layout.rows;
   const std::size_t rows = std::min<std::size_t>(layout.rows, size.height - row);
-  const std::span<std::uint8_t> band = std::span(band_).first(rows * layout.rowBytes);
+  const std::span<std::uint8_t> band = std::span(band_.get(), kBandBytes).first(rows * layout.rowBytes);
   if (!display_.ReadRows(plane == 0 ? core::DisplayPlane::kNew : core::DisplayPlane::kOld,
                          static_cast<std::uint16_t>(row), band)) {
     // This panel cannot be read, or would not be: stop asking.

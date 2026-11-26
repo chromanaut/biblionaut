@@ -141,6 +141,13 @@ TEST(PatternViewer, DoesNothingUntilStartedAndFailsIfThePanelCannotBeSetUp) {
   EXPECT_EQ(fixture.display.calls.size(), 1u);
 }
 
+TEST(PatternViewer, HoldsNoBandOfThePictureUntilItIsStarted) {
+  // The band the pictures are drawn through is 8,000 bytes. The viewer is
+  // part of the application whether or not it is what the panel shows, so
+  // the band is not part of the viewer: it is taken when the viewer starts.
+  EXPECT_LT(sizeof(PatternViewer), 1000u);
+}
+
 TEST(PatternViewer, StartsWithTheFirstPictureByAFullRefreshAndGetsTheSecondReady) {
   ViewerFixture fixture;
   fixture.viewer.Start();

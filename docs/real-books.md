@@ -70,6 +70,10 @@ The tools and Python agree about every book.
   finding the document's sheets itself, the second working-out given
   those the second finding has. The second working-out is slow, which is
   why it is not every document.
+- **What each element comes to**: for the same documents, what `bn-css
+  document --styles` says of each element is what a second working-out
+  of that says, by checksum, with the same count of each kind of thing
+  left out and of the languages named.
 - **The pictures**: every PNG `bn-png book` reads has the header, the
   ending, the rows and the checksum of their gray that a second reading of
   it by Python comes to ([Pictures](pictures.md) has what that reading is); and

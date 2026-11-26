@@ -23,7 +23,10 @@ compares, book by book:
     finds it by its name;
   - bn-css document with a second working-out of what the rules come to
     for each element, on the first few documents of the book, each given
-    the sheets the second finding gives it;
+    the sheets the second finding gives it; and bn-css document --styles
+    with a second working-out of what each element then comes to, with
+    what it takes from the element it is inside and what its element
+    gives it, on the same documents;
   - bn-png book with a second reading of every PNG picture: its header, how
     the reading ended, and the checksum of every row of gray;
   - bn-jpeg book with a second reading of every JPEG picture, both read at
@@ -112,6 +115,7 @@ sys.dont_write_bytecode = True  # Or Python leaves compiled copies of the tests'
 import bundle_tool  # noqa: E402  (found through the path set just above)
 import css_cascade_tool  # noqa: E402
 import css_tool  # noqa: E402
+import styles_tool  # noqa: E402
 import epub_tool  # noqa: E402
 import jpeg_tool  # noqa: E402
 import png_tool  # noqa: E402
@@ -707,6 +711,34 @@ def check_cascade(tool: str, path: Path, figures: dict) -> list[str]:
             figures["cascade_too_many_classes"] = figures.get("cascade_too_many_classes", 0) + took["too_many_classes"]
             figures["level bytes"] = [max(figures.get("level bytes", [0])[0], took["level_bytes"])]
             figures["most work"] = [max(figures.get("most work", [0])[0], took["most_work"])]
+
+            # What each element then comes to, by the stack of styles and by the second working-out of that.
+            result = run(tool, "document", "--styles", "--sum", str(path), name)
+            said = result.stdout.decode("utf-8", "replace").split()
+            if result.returncode != 0 or len(said) < 4 or said[0] != "styles":
+                problems.append(f"bn-css document --styles: {name!r}: ended with {result.returncode}: "
+                                f"{result.stderr[-120:]!r}")
+                continue
+            took = {key: int(value) for key, value in (item.split("=") for item in said[2:])}
+            expected, counted, left_out, languages = styles_tool.styles_lines(sheets, document, known_families(tool))
+            theirs = dict(left_out, languages=languages, elements=counted, lines=len(expected))
+            mine = {key: took.get(key) for key in theirs}
+            if said[1] != f"{css_cascade_tool.checksum(expected):08x}" or mine != theirs:
+                got = [line for line in run(tool, "document", "--styles", str(path), name).stdout.split(b"\n")[:-1]
+                       if line[:2] not in (b"S ", b"X ")]
+                at = next((i for i, (a, b) in enumerate(zip(got, expected)) if a != b), min(len(got), len(expected)))
+                problems.append(f"bn-css document --styles: {name!r}: {said[1]} {mine}; the second working-out has "
+                                f"{css_cascade_tool.checksum(expected):08x} {theirs}; line {at + 1} is "
+                                f"{got[at:at + 1]!r} and {expected[at:at + 1]!r}")
+                continue
+            figures["styles_documents"] = figures.get("styles_documents", 0) + 1
+            figures["styles_elements"] = figures.get("styles_elements", 0) + counted
+            figures["styles_lines"] = figures.get("styles_lines", 0) + len(expected) - (2 * counted)
+            figures["most languages"] = [max(figures.get("most languages", [0])[0], languages)]
+            for kind, count in left_out.items():
+                if count:
+                    figures[f"styles left out\t{kind}"] = figures.get(f"styles left out\t{kind}", 0) + count
+                    figures[f"books styles left out\t{kind}"] = 1
     return problems[:4]
 
 
@@ -1007,6 +1039,23 @@ def print_css_report(totals: dict, books: int) -> None:
     if totals.get("level bytes"):
         print(f"  bytes kept for each open element, in the documents the cascade was tried on: {spread(totals['level bytes'])}")
         print(f"  the most work for one element: {spread(totals['most work'])}")
+    if totals.get("styles_documents"):
+        print(f"\nWhat each element comes to, in the {totals['styles_documents']} documents the stack of styles was "
+              f"tried on: {totals.get('styles_elements', 0)} elements, of which {totals.get('styles_lines', 0)} "
+              "things are said:")
+        print(f"  languages a document's elements name between them: {spread(totals['most languages'])}")
+        kinds = sorted(((count, key.split("\t")[1]) for key, count in totals.items()
+                        if key.startswith("styles left out\t")), reverse=True)
+        if not kinds:
+            print("  nothing was left out")
+        names = {"styles_too_deep": "an element deeper than is kept", "page_margins": "a margin or a padding of the page",
+                 "inherits_of_own": "inherit for what is an element's own",
+                 "languages_left_out": "a language there was no room for",
+                 "breaks_avoided_before": "no page to end before an element",
+                 "not_shown": "mathematics, or a note of a ruby"}
+        for count, kind in kinds:
+            in_books = totals.get("books styles left out" + chr(9) + kind, 0)
+            print(f"  left out: {count:6}  in {in_books:4} books  {names.get(kind, kind)}")
     print(f"\nWhat documents ask for: {totals.get('asked documents', 0)} documents are given "
           f"{totals.get('asked sheets', 0)} sheets, {totals.get('own styles', 0)} of them with rules of their own:")
     if totals.get("sheets read"):

@@ -1,5 +1,6 @@
 // The fuzz target for the table of a book's rules and the cascade
-// (epub/css_rules.h).
+// (epub/css_rules.h), and for what each element then comes to
+// (epub/style_stack.h).
 //
 // What it is given:
 //
@@ -7,6 +8,7 @@
 //            bits 2 to 3: how much the cascade has, for the open elements
 //            bits 4 to 5: how the document's sheets are ordered, and
 //                         whether one is left out of what it is given
+//            bits 6 to 7: how many open elements the stack of styles keeps
 //   the rest up to four sheets and then a document, a byte of zero between
 //            one and the next: whatever comes last is the document
 //
@@ -31,7 +33,17 @@
 //     number within kCssMaxNumber;
 //   - a table taken back is as it was: the same size, and the document
 //     gone through with it comes to what it would with a table that was
-//     never told of the last sheet.
+//     never told of the last sheet;
+//   - a stack of styles beside the cascade counts the elements that are
+//     open, keeps no more of them and no more languages than it has room
+//     for, counts each element deeper than that, and does no more work
+//     for an element than the most it says; what it says of an
+//     element is of kinds and bits there are; an element inside one that
+//     is nothing is nothing; a block's text is neither raised nor lowered,
+//     and no text is both; a distance between lines has an amount of its
+//     own kind and no other; a first letter is told of when a rule set
+//     something for it and not otherwise; and the document gone through
+//     again comes to the same.
 
 #include <algorithm>
 #include <array>
@@ -47,6 +59,7 @@
 #include "css_reference.h"
 #include "epub/css.h"
 #include "epub/css_rules.h"
+#include "epub/style_stack.h"
 #include "epub/xml.h"
 #include "fuzz_support.h"
 
@@ -61,6 +74,7 @@ using bn::epub::CssValue;
 
 constexpr std::array<std::size_t, 4> kTableBytes = {65535, 4096, 300, 40};
 constexpr std::array<std::size_t, 4> kCascadeBytes = {4096, 96, 6, 0};
+constexpr std::array<std::size_t, 4> kStyleLevels = {32, 3, 1, 0};
 constexpr std::size_t kMostSheets = 4;
 // A document of more than this is cut off, and an element is given no
 // more attributes: what is being tried is the table, not how long a test
@@ -171,20 +185,110 @@ struct Said {
   }
 };
 
-// Goes through the document with a cascade over `rules`; and with
-// `reference` beside it, if that is given, which has to say the same.
+// How text is set, held to what there is and added up.
+void CheckText(const bn::epub::TextStyle& text, const bn::epub::StyleStack& stack, Said& said) {
+  constexpr auto kNoSuchBits = static_cast<std::uint16_t>(~bn::epub::kTextBits);
+  BN_FUZZ_CHECK((text.bits & kNoSuchBits) == 0 && (text.fromBook & kNoSuchBits) == 0,
+                "a bit of how text is set that there is not");
+  BN_FUZZ_CHECK((text.bits & bn::epub::kTextRaised) == 0 || (text.bits & bn::epub::kTextLowered) == 0,
+                "text that is both raised and lowered");
+  BN_FUZZ_CHECK(text.family <= bn::epub::CssFamilyClass::kOther, "a kind of face there is not");
+  BN_FUZZ_CHECK(text.language <= stack.Languages(), "a language that is not kept");
+  said.Add(text.bits + (std::uint32_t{text.fromBook} << 8U) + (std::uint32_t{text.size} << 16U));
+  said.Add(static_cast<std::uint32_t>(text.family) + (text.familyFromBook ? 16U : 0U) + (text.sizeFromBook ? 32U : 0U) +
+           (std::uint32_t{text.language} << 8U));
+}
+
+void Add(const bn::epub::StyleLength& length, Said& said) {
+  said.Add(static_cast<std::uint16_t>(length.em) + (std::uint32_t{static_cast<std::uint16_t>(length.px)} << 16U));
+  said.Add(static_cast<std::uint16_t>(length.percent));
+}
+
+// What an element comes to, held to what its header says and added up.
+// `insideNothing` is whether an element it is inside is nothing.
+void CheckElement(const bn::epub::ElementStyle& element, const CssStyle& firstLetter, bool insideNothing,
+                  const bn::epub::StyleStack& stack, Said& said) {
+  using bn::epub::StyleDisplay;
+  BN_FUZZ_CHECK(element.display <= StyleDisplay::kListItem, "a way of being on a page that there is not");
+  BN_FUZZ_CHECK(!insideNothing || element.display == StyleDisplay::kNone,
+                "an element inside one that is nothing is something");
+  said.Add(static_cast<std::uint32_t>(element.display));
+  if (element.display == StyleDisplay::kNone) {
+    return;
+  }
+  CheckText(element.text, stack, said);
+  constexpr auto kMoved = static_cast<std::uint16_t>(bn::epub::kTextRaised | bn::epub::kTextLowered);
+  BN_FUZZ_CHECK(element.display == StyleDisplay::kInline || (element.text.bits & kMoved) == 0,
+                "a block whose text is raised or lowered");
+  BN_FUZZ_CHECK(element.align <= bn::epub::StyleAlign::kEnd && element.marker <= bn::epub::StyleMarker::kUpperRoman &&
+                    element.lineHeight.kind <= bn::epub::StyleLineHeight::Kind::kLength &&
+                    element.floated <= bn::epub::StyleFloat::kRight,
+                "an alignment, a marker, a kind of line height or a side that there is not");
+  BN_FUZZ_CHECK((element.marginFromBook & 0xF0U) == 0 && (element.paddingFromBook & 0xF0U) == 0,
+                "a side that there is not");
+  BN_FUZZ_CHECK(
+      (element.lineHeight.kind == bn::epub::StyleLineHeight::Kind::kMultiple || element.lineHeight.multiple == 0) &&
+          (element.lineHeight.kind == bn::epub::StyleLineHeight::Kind::kLength || element.lineHeight.length.IsZero()),
+      "a distance between lines that is of one kind and has an amount of another");
+  BN_FUZZ_CHECK(element.hasFirstLetter == (firstLetter.set != 0),
+                "a first letter told of that no rule set, or one that a rule set not told of");
+  said.Add(static_cast<std::uint32_t>(element.align) + (static_cast<std::uint32_t>(element.marker) << 4U) +
+           (static_cast<std::uint32_t>(element.lineHeight.kind) << 8U) +
+           (static_cast<std::uint32_t>(element.floated) << 12U) + (std::uint32_t{element.lineHeight.multiple} << 16U));
+  said.Add((element.alignFromBook ? 1U : 0U) + (element.hasIndent ? 2U : 0U) + (element.indentFromBook ? 4U : 0U) +
+           (element.lineHeightFromBook ? 8U : 0U) + (element.markerFromBook ? 16U : 0U) +
+           (element.rightToLeft ? 32U : 0U) + (element.spacesAsWritten ? 64U : 0U) +
+           (element.marginLeftAuto ? 128U : 0U) + (element.marginRightAuto ? 256U : 0U) +
+           (element.hasWidth ? 512U : 0U) + (element.hasHeight ? 1024U : 0U) + (element.breakBefore ? 2048U : 0U) +
+           (element.breakAfter ? 4096U : 0U) + (element.keepWithNext ? 8192U : 0U) +
+           (element.keepTogether ? 16384U : 0U) + (element.keepWithNextFromBook ? 32768U : 0U) +
+           (std::uint32_t{element.marginFromBook} << 16U) + (std::uint32_t{element.paddingFromBook} << 24U));
+  Add(element.indent, said);
+  Add(element.lineHeight.length, said);
+  Add(element.width, said);
+  Add(element.height, said);
+  for (std::size_t side = 0; side < 4; ++side) {
+    Add(element.margin.at(side), said);
+    Add(element.padding.at(side), said);
+  }
+  if (element.hasFirstLetter) {
+    CheckText(element.firstLetter, stack, said);
+    said.Add(element.firstLetterFloated ? 1U : 0U);
+  }
+}
+
+// Goes through the document with a cascade over `rules`, and a stack of
+// styles beside it that keeps `styleLevels` open elements; and with
+// `reference` beside the cascade, if that is given, which has to say the
+// same.
 Said Go(const CssRules& rules, std::span<const std::uint8_t> sheets, const std::vector<Step>& steps,
-        std::size_t cascadeBytes, bn::test::CssReference* reference) {
+        std::size_t cascadeBytes, std::size_t styleLevels, bn::test::CssReference* reference) {
   std::vector<std::uint8_t> memory(cascadeBytes);
   CssCascade cascade(rules, memory);
   cascade.Begin(sheets);
   if (reference != nullptr) {
     reference->Begin({sheets.begin(), sheets.end()}, cascade.Levels());
   }
+  // The stack's memory to the byte, so that a level written past it is seen.
+  std::vector<std::uint8_t> styleMemory(
+      styleLevels == 0 ? 0 : bn::epub::StyleStack::kLanguagesBytes + (styleLevels * bn::epub::StyleStack::kLevelBytes));
+  bn::epub::StyleStack stack(styleMemory);
+  BN_FUZZ_CHECK(stack.Levels() == styleLevels,
+                "the stack of styles keeps another number of elements than it has room for");
+  stack.Begin();
+  std::vector<bool> nothing;  // For each open element, whether it or one it is inside is nothing.
+  std::uint32_t tooDeep = 0;
   Said said;
   for (const Step& step : steps) {
     if (!step.opens) {
       cascade.Close();
+      const std::size_t open = stack.Depth();
+      stack.Close();
+      BN_FUZZ_CHECK(stack.Depth() == (open == 0 ? 0 : open - 1),
+                    "an element closed and the stack of styles does not count it so");
+      if (!nothing.empty()) {
+        nothing.pop_back();
+      }
       if (reference != nullptr) {
         reference->Close();
       }
@@ -210,6 +314,29 @@ Said Go(const CssRules& rules, std::span<const std::uint8_t> sheets, const std::
     CheckValues(firstLetter);
     said.Add(style);
     said.Add(firstLetter);
+    {
+      const std::size_t deep = stack.Depth();
+      bn::epub::ElementStyle element;
+      stack.Open(step.name, attributes, style, firstLetter, element);
+      BN_FUZZ_CHECK(stack.Depth() == deep + 1, "an element opened and the stack of styles does not count it open");
+      BN_FUZZ_CHECK(stack.Work() <= bn::epub::StyleStack::MostWorkFor(attributes.Count()),
+                    "an element took more work of the stack of styles than the most it says");
+      tooDeep += deep >= styleLevels ? 1 : 0;
+      BN_FUZZ_CHECK(stack.LeftOut(bn::epub::StyleLeftOut::kTooDeep) == tooDeep,
+                    "the elements too deep to keep are not counted as they came");
+      BN_FUZZ_CHECK(
+          stack.Languages() <= bn::epub::StyleStack::kMaxLanguages && (styleLevels != 0 || stack.Languages() == 0),
+          "more languages are kept than there is room for");
+      for (std::size_t language = 1; language <= stack.Languages(); ++language) {
+        const std::string_view tag = stack.Language(static_cast<std::uint8_t>(language));
+        BN_FUZZ_CHECK(!tag.empty() && tag.size() <= bn::epub::StyleStack::kMaxLanguageBytes,
+                      "a language's tag is empty, or longer than one may be");
+        (void)bn::fuzz::Touch(tag);
+      }
+      const bool insideNothing = !nothing.empty() && nothing.back();
+      CheckElement(element, firstLetter, insideNothing, stack, said);
+      nothing.push_back(insideNothing || element.display == bn::epub::StyleDisplay::kNone);
+    }
     if (reference != nullptr) {
       CssStyle plain;
       CssStyle plainFirstLetter;
@@ -227,6 +354,9 @@ Said Go(const CssRules& rules, std::span<const std::uint8_t> sheets, const std::
     }
   }
   BN_FUZZ_CHECK(cascade.Depth() == 0, "the document ended and the cascade has an element open");
+  for (std::size_t kind = 0; kind < bn::epub::kStyleLeftOutKinds; ++kind) {
+    said.Add(stack.LeftOut(static_cast<bn::epub::StyleLeftOut>(kind)));
+  }
   return said;
 }
 
@@ -263,6 +393,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 
   const std::size_t tableBytes = kTableBytes[choices & 3U];
   const std::size_t cascadeBytes = kCascadeBytes[(choices >> 2U) & 3U];
+  const std::size_t styleLevels = kStyleLevels[(choices >> 6U) & 3U];
   std::vector<std::uint8_t> memory(tableBytes);
   CssRules rules(memory);
   bn::test::CssReference reference;
@@ -311,7 +442,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       break;
   }
 
-  const Said all = Go(rules, given, steps, cascadeBytes, whole ? &reference : nullptr);
+  const Said all = Go(rules, given, steps, cascadeBytes, styleLevels, whole ? &reference : nullptr);
+  BN_FUZZ_CHECK(Go(rules, given, steps, cascadeBytes, styleLevels, nullptr).digest == all.digest,
+                "a document gone through again came to something else");
 
   // Back to before the last sheet: the table is as it was, and says of
   // the document what a table that never had that sheet says.
@@ -320,7 +453,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     CheckTable(rules, tableBytes);
     BN_FUZZ_CHECK(rules.Bytes() == bytesBefore && rules.Sheets() == sheets.size() - 1,
                   "a table taken back is not the size it was");
-    const Said back = Go(rules, given, steps, cascadeBytes, nullptr);
+    const Said back = Go(rules, given, steps, cascadeBytes, styleLevels, nullptr);
 
     std::vector<std::uint8_t> otherMemory(tableBytes);
     CssRules other(otherMemory);
@@ -333,7 +466,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     BN_FUZZ_CHECK(other.Bytes() == rules.Bytes() && other.Names() == rules.Names() && other.Nodes() == rules.Nodes() &&
                       other.Rules() == rules.Rules() && other.Selectors() == rules.Selectors(),
                   "a table taken back does not hold what one never told of the last sheet holds");
-    const Said never = Go(other, given, steps, cascadeBytes, nullptr);
+    const Said never = Go(other, given, steps, cascadeBytes, styleLevels, nullptr);
     BN_FUZZ_CHECK(back.digest == never.digest,
                   "a table taken back says something else of a document than one never told of the last sheet");
 
@@ -342,7 +475,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     BN_FUZZ_CHECK(rules.BeginSheet(number) && number == sheets.size() - 1, "a table taken back does not take a sheet");
     Read(sheets.back(), rules);
     rules.EndSheet();
-    const Said again = Go(rules, given, steps, cascadeBytes, nullptr);
+    const Said again = Go(rules, given, steps, cascadeBytes, styleLevels, nullptr);
     BN_FUZZ_CHECK(again.digest == all.digest,
                   "a sheet read again after the table was taken back came to something else");
   }

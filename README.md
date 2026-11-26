@@ -128,6 +128,8 @@ Reading a book:
   of a book's rules, and the cascade.
 - [What a document asks for](docs/document-sheets.md): the sheets a
   document is read with.
+- [What each element comes to](docs/element-styles.md): what an element
+  takes from the one it is inside, and what its element gives it.
 - [The file a book is imported into](docs/bundle.md): the bundle, as a
   container that loses no chapter when the power goes, and as made from
   a book.

@@ -84,6 +84,13 @@ ImageFace TestFace(std::uint8_t role, std::uint8_t style, std::uint16_t size) {
   face.glyphs['b'].advance = static_cast<std::uint16_t>(face.glyphs['b'].advance + 1);
   face.glyphs[' '] = bn::test::Blank(size);
   face.glyphs['-'] = bn::test::Block(size, 5, 2);
+  // Kerning, in quarters of a pixel: a v after a u two pixels nearer, a u
+  // after a v one further, a u after an a a quarter nearer; and an a after
+  // an n two nearer, which is where "hyphenation" may be broken.
+  face.kerning[{'u', 'v'}] = -8;
+  face.kerning[{'v', 'u'}] = 4;
+  face.kerning[{'a', 'u'}] = -1;
+  face.kerning[{'n', 'a'}] = -8;
   return face;
 }
 
@@ -848,6 +855,150 @@ TEST(TextViewer, DrawsTheSameTwoLettersTheSameDistanceApartWhereverTheyAre) {
     // After an a, which is every other letter from the first, 16; after a b, 15.
     EXPECT_EQ(glyphs[i].x - glyphs[i - 1].x, i % 2 == 1 ? 16 : 15) << i;
   }
+}
+
+TEST(TextViewer, SetsTwoLettersAsFarApartAsTheirFaceKernsThem) {
+  Fixture fixture;
+  fixture.display.Resize({.width = 400, .height = 600});
+  // At 30 a letter is 15 pixels and a space 8. A v is 13 after a u and a u
+  // 16 after a v; an a is 15 and a half, 16 by itself, and a u 15 after it,
+  // a quarter of a pixel nearer.
+  fixture.Text("uvuvuv au av\n");
+  fixture.Start();
+  fixture.Settle();
+  const auto glyphs = fixture.viewer->Glyphs();
+  ASSERT_EQ(glyphs.size(), 10U);
+  std::vector<int> gaps;
+  for (std::size_t i = 1; i < glyphs.size(); ++i) {
+    gaps.push_back(glyphs[i].x - glyphs[i - 1].x);
+  }
+  EXPECT_EQ(glyphs[0].x, kMargin);
+  // u v u v u v, a space, a u, a space, a v: the last v of the first word
+  // has nothing after it but the space, and its own step.
+  EXPECT_EQ(gaps, (std::vector<int>{13, 16, 13, 16, 13, 15 + 8, 15, 15 + 8, 16}));
+}
+
+TEST(TextViewer, KernsNothingAcrossAChangeOfStyleOrWhatIsNotDrawn) {
+  Fixture fixture;
+  fixture.display.Resize({.width = 400, .height = 600});
+  // A u and a v with a change to italic between them, with a soft hyphen
+  // between them where no line ends, with nothing between them, and both
+  // in italic, whose face kerns them as the regular does.
+  fixture.Text("u*v* u\xC2\xADv uv *uv*\n");
+  fixture.Start();
+  fixture.Settle();
+  const auto glyphs = fixture.viewer->Glyphs();
+  ASSERT_EQ(glyphs.size(), 8U);
+  EXPECT_EQ(glyphs[1].x - glyphs[0].x, 15);
+  EXPECT_EQ(glyphs[3].x - glyphs[2].x, 15);
+  EXPECT_EQ(glyphs[5].x - glyphs[4].x, 13);
+  EXPECT_EQ(glyphs[7].x - glyphs[6].x, 13);
+}
+
+TEST(TextViewer, KernsNothingAcrossAChangeOfStyleThoughOneFaceDrawsBoth) {
+  Fixture fixture;
+  fixture.display.Resize({.width = 400, .height = 600});
+  // The sans has no italic, so what is in italic is drawn in its regular
+  // face: a u and a v with a change of style between them are one face's
+  // glyphs, and were measured apart all the same.
+  fixture.Text("u*v* uv\n");
+  fixture.Start();
+  fixture.Settle();
+  fixture.Press(Button::kBack);
+  fixture.Settle();
+  const auto glyphs = fixture.viewer->Glyphs();
+  ASSERT_EQ(glyphs.size(), 4U);
+  // The sans, which is a pixel taller.
+  EXPECT_EQ(glyphs[0].height, 16);
+  EXPECT_EQ(glyphs[1].height, 16);
+  EXPECT_EQ(glyphs[1].x - glyphs[0].x, 15);
+  EXPECT_EQ(glyphs[3].x - glyphs[2].x, 13);
+}
+
+TEST(TextViewer, DrawsTheSamePairTheSameDistanceApartOnEveryLineAndEndsEachLineOnTheMargin) {
+  Fixture fixture;
+  fixture.display.Resize({.width = 400, .height = 600});
+  // Words of u and v, 44 pixels each (13, 16 and the last u's own 15) or
+  // 29, spread over lines of 352 pixels.
+  std::string text;
+  for (int word = 0; word < 60; ++word) {
+    text += (word % 3) == 1 ? "uv " : "uvu ";
+  }
+  fixture.Text(text + "\n");
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_TRUE(fixture.viewer->AtEnd());
+  const auto lines = fixture.ByLine(36);
+  ASSERT_GT(lines.size(), 4U);
+  std::size_t number = 0;
+  int nearer = 0;
+  int further = 0;
+  for (const auto& [line, glyphs] : lines) {
+    int right = 0;
+    for (std::size_t i = 0; i < glyphs.size(); ++i) {
+      right = std::max<int>(right, glyphs[i].x + glyphs[i].width);
+      if (i == 0) {
+        continue;
+      }
+      // Inside a word a letter is 13 or 16 after the one before, and no
+      // other distance; between words, more than either.
+      const int gap = glyphs[i].x - glyphs[i - 1].x;
+      nearer += gap == 13 ? 1 : 0;
+      further += gap == 16 ? 1 : 0;
+      EXPECT_TRUE(gap == 13 || gap == 16 || gap >= 15 + 8) << line << " " << gap;
+    }
+    EXPECT_EQ(glyphs.front().x, kMargin) << line;
+    if (++number < lines.size()) {
+      // The last letter's picture is three pixels short of its step: the
+      // line is as wide as the measure counted it, to the pixel.
+      EXPECT_EQ(right, 400 - kMargin - 3) << line;
+    }
+  }
+  // Every word has a v after a u, and two in three a u after that.
+  EXPECT_EQ(nearer, 60);
+  EXPECT_EQ(further, 40);
+}
+
+TEST(TextViewer, PutsTheHyphenOfABrokenWordWhereItsLastLetterWasMeasured) {
+  Fixture fixture;
+  // Room for 112 pixels across and for four lines. "hyphen" and its hyphen
+  // are 96 of them: five letters of 15, an n of 13 since it was measured
+  // before the a that follows it, and a hyphen of 8.
+  fixture.display.Resize({.width = 160, .height = 200});
+  fixture.Text("hyphenation hyphenation\n");
+  fixture.Start();
+  fixture.Settle();
+  const auto lines = fixture.ByLine(36);
+  ASSERT_EQ(lines.size(), 4U);
+  int hyphens = 0;
+  for (const auto& [line, glyphs] : lines) {
+    // A hyphen is the glyph five pixels wide and two high.
+    const TextViewer::Placed& last = glyphs.back();
+    if (last.width != 5 || last.height != 2) {
+      EXPECT_EQ(glyphs.size(), 5U) << line;  // "ation"
+      continue;
+    }
+    ++hyphens;
+    ASSERT_EQ(glyphs.size(), 7U) << line;  // "hyphen" and the hyphen.
+    EXPECT_EQ(glyphs[5].x - glyphs[4].x, 15) << line;
+    EXPECT_EQ(last.x - glyphs[5].x, 13) << line;
+    EXPECT_EQ(last.x, kMargin + (5 * 15) + 13) << line;
+  }
+  EXPECT_EQ(hyphens, 2);
+
+  // A word that changes style where it is broken: the n was measured with
+  // nothing after it, and its hyphen is a letter's 15 pixels on.
+  Fixture other;
+  other.display.Resize({.width = 160, .height = 200});
+  other.Text("hyphen*ation*\n");
+  other.Start();
+  other.Settle();
+  const auto broken = other.ByLine(36);
+  ASSERT_EQ(broken.size(), 2U);
+  const auto& first = broken.begin()->second;
+  ASSERT_EQ(first.size(), 7U);
+  EXPECT_EQ(first[6].width, 5);
+  EXPECT_EQ(first[6].x - first[5].x, 15);
 }
 
 TEST(TextViewer, SharesWhatIsLeftOverOfALineOutEvenlyAmongThePlacesBetweenItsWords) {

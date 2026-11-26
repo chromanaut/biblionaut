@@ -30,9 +30,9 @@ after whatever comes before are one class as the second. A glyph's record
 has its two classes, a byte each, 0 for a glyph that does not kern; and the
 face has a table with a signed byte for each class of first glyphs and
 each of second, in quarters of a pixel. So a pair's kerning is one byte
-read, found from two the glyphs have. The image has kerning and nothing
-uses it yet: the measure that sets text (below) is to add it to an advance
-before it rounds. There are no ligatures.
+read, found from two the glyphs have. The measure that sets text (below)
+adds it to the first glyph's advance before it rounds. There are no
+ligatures.
 
 ## Making the image
 
@@ -328,20 +328,38 @@ any other character is (of the presets' typefaces Noto and IBM Plex have a
 glyph for it, and Source and Courier Prime have not).
 
 Every glyph is drawn on a whole pixel, and a glyph is always the same
-number of pixels after the one before it: its advance to the nearest pixel,
-a half going up (`FaceMeasure::PenStep()`). An image has advances in
-quarters of a pixel, and the plain way to use them, adding them up and
-drawing each glyph at the nearest pixel to where the pen has got to, puts
-the same two letters a pixel further apart in one place than in another,
-by what was left over before them: with an `o` of 17 and a quarter pixels,
-two of them are 17 pixels apart three times and 18 the fourth. That is
-plain to the eye on a page, so it is the step that is rounded and not the
-pen. A piece of a word is as wide as its glyphs' steps added up, and a
-space and a hyphen are rounded as a letter is, so what is drawn from the
-same glyphs lines up with what was measured; widths are still counted four
-to the pixel, as the paragraph setter is given them, each a whole number
-of pixels. The measure does not kern yet: a face's kerning is in quarters,
-as its advances are, to be added to an advance before the rounding. The
+number of pixels after the one before it, whichever two they are: the
+first's advance and what their face kerns the two by, added in quarters of
+a pixel and then put to the nearest pixel, a half going up
+(`FaceMeasure::PenStep()`). An image has advances in quarters of a pixel,
+and the plain way to use them, adding them up and drawing each glyph at
+the nearest pixel to where the pen has got to, puts the same two letters a
+pixel further apart in one place than in another, by what was left over
+before them: with an `o` of 17 and a quarter pixels, two of them are 17
+pixels apart three times and 18 the fourth. That is plain to the eye on a
+page, so it is the step that is rounded and not the pen; and the kerning
+is added before the rounding, since half a pixel of it rounded by itself
+would be a whole pixel or none. So a kerning of less than half a pixel
+moves a letter a whole pixel or not at all, by what the advance before it
+has over a pixel, and the same for that pair everywhere.
+
+Two glyphs are kerned when one follows the other in a stretch the
+paragraph setter has measured as one, which is as much of a word as is in
+one style, and one face gave both. So nothing is kerned across a space,
+across a change of style, or between a letter and a glyph the fallback
+face lent; nor across a soft hyphen or a zero width space, since the
+setter measures what is before one apart from what is after. Where the
+hyphenator would let a word be broken makes no difference: the letter
+before such a place is kerned with the one after it, and is as wide as
+that whether or not a line ends there, so the hyphen of a broken word
+stands where its letter was measured. A piece of a word is as wide as its
+glyphs' steps added up, and a space and a hyphen are rounded as a letter
+is, so what is drawn from the same glyphs by the same steps lines up with
+what was measured; widths are still counted four to the pixel, as the
+paragraph setter is given them, each a whole number of pixels. (A stretch
+of letters too wide for a line, or too long for the setter to take as one
+word, is measured a letter at a time and so without kerning; whoever draws
+it kerned draws it a little narrower than it was counted.) The
 hyphen shown at a line's end is
 the style's U+2010, or its hyphen-minus. Reading UTF-8 a character at a
 time, strictly, is `core/utf8.h`, which the hyphenator shares.
@@ -394,9 +412,9 @@ tools/idf -DBN_FONTS_IMAGE=$PWD/build/host-release/fonts/fonts.bnfn fonts-flash
 ```
 
 ```
--- The fonts image: 9649010 bytes of the partition's 12582912.
+-- The fonts image: 10143222 bytes of the partition's 12582912.
 ...
-Wrote 9649012 bytes (3561560 compressed) at 0x00400000 in 54.8 seconds (1407.7 kbit/s).
+Wrote 10143224 bytes (3665717 compressed) at 0x00400000 in 56.6 seconds (1433.4 kbit/s).
 Hash of data verified.
 ```
 

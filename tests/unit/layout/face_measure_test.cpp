@@ -29,6 +29,12 @@ using bn::test::ImageFace;
 // 10 more; and a fallback with a Greek alpha that neither has. So an a is
 // 10 pixels, a b 10 and a quarter, a c 10 and a half, a d 10 and three
 // quarters, and an e 11.
+//
+// The serif kerns four pairs, in quarters of a pixel: a u after a q half a
+// pixel nearer, a z after a k a quarter nearer, a k after a z a pixel and a
+// half further, and a k after a k 15 pixels nearer, which is more than a k
+// is wide. The italic kerns a z after a k, by more. The fallback has a
+// Greek gamma too, and kerns it after an alpha.
 std::vector<std::uint8_t> ThreeFaces() {
   ImageFace serif = bn::test::EmptyFace(0, 0);
   ImageFace italic = bn::test::EmptyFace(0, bn::draw::kItalic);
@@ -45,8 +51,15 @@ std::vector<std::uint8_t> ThreeFaces() {
   serif.glyphs[0xFFFD] = Block(60, 10, 12, 2);
   serif.missing = Block(36, 8, 12, 1);
   italic.missing = Block(38, 8, 12, 1);
+  serif.kerning[{'q', 'u'}] = -2;
+  serif.kerning[{'k', 'z'}] = -1;
+  serif.kerning[{'z', 'k'}] = 6;
+  serif.kerning[{'k', 'k'}] = -60;
+  italic.kerning[{'k', 'z'}] = -9;
   ImageFace fallback = bn::test::EmptyFace(3, 0);
   fallback.glyphs[0x3B1] = Block(45, 8, 10);
+  fallback.glyphs[0x3B3] = Block(48, 8, 10);
+  fallback.kerning[{0x3B1, 0x3B3}] = -8;
   fallback.glyphs['a'] = Block(99, 8, 10);  // Never used: the serif has one.
   return FontImageBytes({serif, italic, fallback});
 }
@@ -122,6 +135,94 @@ TEST_F(FaceMeasureTest, GivesALetterTheSameRoomWhereverItComes) {
   std::array<std::uint16_t, 3> pieces{};
   measure_.Measure("bbbbbbbb", 0, uneven, pieces);
   EXPECT_EQ(pieces, (std::array<std::uint16_t, 3>{4 * 10, 4 * 40, 4 * 30}));
+}
+
+TEST_F(FaceMeasureTest, KernsALetterWithTheNextBeforeItRoundsTheStep) {
+  const auto glyph = [&](std::uint16_t style, std::uint32_t codePoint) {
+    Glyph found;
+    EXPECT_TRUE(measure_.GlyphFor(style, codePoint, found)) << codePoint;
+    return found;
+  };
+  // A k is 12 and a half pixels: 13 by itself, and 12 before a z, a quarter
+  // of a pixel nearer. A kerning of less than half a pixel moves a letter a
+  // whole one, or not at all, by what its advance has over a pixel.
+  EXPECT_EQ(FaceMeasure::PenStep(glyph(0, 'k')), 13);
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 'k'), glyph(0, 'z')), 12);
+  // A q is 14 pixels, and 13 and a half before a u: 14 either way.
+  EXPECT_EQ(FaceMeasure::PenStep(glyph(0, 'q')), 14);
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 'q'), glyph(0, 'u')), 14);
+  // A z is 16 and a quarter, and 17 and three quarters before a k.
+  EXPECT_EQ(FaceMeasure::PenStep(glyph(0, 'z')), 16);
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 'z'), glyph(0, 'k')), 18);
+  // The other way round is another pair, and most pairs are not kerned.
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 'u'), glyph(0, 'q')), FaceMeasure::PenStep(glyph(0, 'u')));
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 'k'), glyph(0, 'a')), 13);
+  // A pen is never moved back.
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 'k'), glyph(0, 'k')), 0);
+
+  // Another style's face kerns as it does: its k is 15 pixels, and 12 and
+  // three quarters before a z.
+  EXPECT_EQ(FaceMeasure::PenStep(glyph(1, 'k')), 15);
+  EXPECT_EQ(measure_.PenStep(1, glyph(1, 'k'), glyph(1, 'z')), 13);
+  // Glyphs of two faces are not kerned, whichever style is asked about.
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 'k'), glyph(1, 'z')), 13);
+  EXPECT_EQ(measure_.PenStep(1, glyph(1, 'k'), glyph(0, 'z')), 15);
+  EXPECT_EQ(measure_.PenStep(1, glyph(0, 'k'), glyph(0, 'z')), 13);
+
+  // What the fallback face lends is kerned by the fallback face: an alpha
+  // is 11 and a quarter pixels, and 9 and a quarter before a gamma. But not
+  // with a letter of the style's own.
+  EXPECT_EQ(FaceMeasure::PenStep(glyph(0, 0x3B1)), 11);
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 0x3B1), glyph(0, 0x3B3)), 9);
+  EXPECT_EQ(measure_.PenStep(1, glyph(1, 0x3B1), glyph(1, 0x3B3)), 9);
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 'k'), glyph(0, 0x3B3)), 13);
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 0x3B1), glyph(0, 'k')), 11);
+  // Without a fallback face, neither is: both are the style's glyph 0.
+  measure_.SetFallback({});
+  EXPECT_EQ(measure_.PenStep(0, glyph(0, 0x3B1), glyph(0, 0x3B3)), FaceMeasure::PenStep(glyph(0, 0x3B1)));
+}
+
+TEST_F(FaceMeasureTest, MeasuresAWordWithItsLettersKerned) {
+  // The last letter has nothing after it, and its own step.
+  EXPECT_EQ(Width("kz"), 4 * (12 + 16));
+  EXPECT_EQ(Width("zk"), 4 * (18 + 13));
+  EXPECT_EQ(Width("kzk"), 4 * (12 + 18 + 13));
+  // In the italic a z is 18 and three quarters pixels.
+  EXPECT_EQ(Width("kz", 1), 4 * (13 + 19));
+  // The same two letters are as far apart wherever they come in a word.
+  EXPECT_EQ(Width("akzkzkza"), 4 * (10 + 12 + 18 + 12 + 18 + 12 + 16 + 10));
+  // What the fallback lends among a style's own letters: k, alpha, gamma, z.
+  EXPECT_EQ(Width("k\xCE\xB1\xCE\xB3z"), 4 * (13 + 9 + 12 + 16));
+}
+
+TEST_F(FaceMeasureTest, KernsAcrossWhereAWordIsCutIntoPieces) {
+  // A word cut after every letter: each piece is as wide as its letter's
+  // step before the next, so the pieces add up to the word however it is
+  // cut, and a pair is as far apart with a cut between as without.
+  const std::array<std::uint8_t, 6> ends = {1, 2, 3, 4, 5, 6};
+  std::array<std::uint16_t, 6> widths{};
+  measure_.Measure("kzkzkz", 0, ends, widths);
+  EXPECT_EQ(widths, (std::array<std::uint16_t, 6>{4 * 12, 4 * 18, 4 * 12, 4 * 18, 4 * 12, 4 * 16}));
+  EXPECT_EQ(Width("kzkzkz"), 4 * (12 + 18 + 12 + 18 + 12 + 16));
+  // Cut in two, with a piece of nothing at the end.
+  const std::array<std::uint8_t, 3> uneven = {3, 6, 6};
+  std::array<std::uint16_t, 3> pieces{};
+  measure_.Measure("kzkzkz", 0, uneven, pieces);
+  EXPECT_EQ(pieces, (std::array<std::uint16_t, 3>{4 * (12 + 18 + 12), 4 * (18 + 12 + 16), 0}));
+  // And with a piece of nothing in the middle: the letter before it is
+  // kerned with the one after.
+  const std::array<std::uint8_t, 3> hollow = {1, 1, 2};
+  measure_.Measure("kz", 0, hollow, pieces);
+  EXPECT_EQ(pieces, (std::array<std::uint16_t, 3>{4 * 12, 0, 4 * 16}));
+}
+
+TEST_F(FaceMeasureTest, KernsNothingAcrossWhatIsNotDrawn) {
+  // A soft hyphen between a k and a z, and a zero width space: the k is
+  // as wide as it is by itself.
+  EXPECT_EQ(Width("k\xC2\xADz"), 4 * (13 + 16));
+  EXPECT_EQ(Width("k\xE2\x80\x8Bz"), 4 * (13 + 16));
+  // And the letters after it are kerned with one another again.
+  EXPECT_EQ(Width("k\xC2\xADzk"), 4 * (13 + 18 + 13));
 }
 
 TEST_F(FaceMeasureTest, MeasuresACharacterOfSeveralBytesInThePieceItBegins) {

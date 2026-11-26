@@ -582,8 +582,12 @@ void TextViewer::PageSet(std::uint64_t now) noexcept {
 
 void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) noexcept {
   // Everything here is in whole pixels, as the measure counted the line:
-  // a glyph is drawn where the pen is, and the pen moves on by the glyph's
-  // step, so two letters are as far apart here as anywhere else.
+  // a glyph is drawn where the pen is, and the pen moves on by the step the
+  // measure gave the glyph, which is kerned with the glyph after it where
+  // the measure kerned the two: one straight after the other in one style,
+  // with no space and nothing that is not drawn between. So two letters are
+  // as far apart here as anywhere else. A glyph is kept until what follows
+  // it is known, and placed then.
   const std::int32_t available = pageWidth_ - (2 * kMargin);
   const auto width = static_cast<std::int32_t>(line.width / layout::FaceMeasure::kUnitsToAPixel);
   // What is over, on a line to be spread, goes between its words: the same
@@ -604,12 +608,28 @@ void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) 
   // to the middle of the line and not to an end of it.
   std::int32_t owed = line.spaces / 2;
   bool inSpace = false;
+  draw::Glyph kept;
+  std::uint16_t keptStyle = kRegular;
+  bool keeping = false;
+  // Places the glyph that is kept, and moves the pen past it: by its step
+  // before `next`, if `next` follows it in the style `nextIn`, and by its
+  // own if nothing does.
+  const auto place = [&](const draw::Glyph* next, std::uint16_t nextIn) {
+    if (!keeping) {
+      return;
+    }
+    PlaceGlyph(kept, pen, baseline);
+    pen += next != nullptr && nextIn == keptStyle ? measure_.PenStep(keptStyle, kept, *next)
+                                                  : layout::FaceMeasure::PenStep(kept);
+    keeping = false;
+  };
   for (std::size_t at = line.begin; at < line.end && at < text.size();) {
     while (nextStyle < paragraph_.styles.size() && paragraph_.styles[nextStyle].first <= at) {
       style = paragraph_.styles[nextStyle].second;
       ++nextStyle;
     }
     if (text[at] == ' ') {
+      place(nullptr, style);
       // A run of spaces is one place between words.
       if (!inSpace) {
         // The pixels left over are owed a share at each place, and a place
@@ -631,14 +651,47 @@ void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) 
     at += character.bytes;
     draw::Glyph glyph;
     if (measure_.GlyphFor(style, character.good ? character.codePoint : kReplacement, glyph)) {
-      PlaceGlyph(glyph, pen, baseline);
-      pen += layout::FaceMeasure::PenStep(glyph);
+      place(&glyph, style);
+      kept = glyph;
+      keptStyle = style;
+      keeping = true;
+    } else {
+      // What is not drawn comes between two glyphs as a space does.
+      place(nullptr, style);
     }
+  }
+  // The last glyph of a line that ends inside a word, where a hyphen is
+  // shown, was measured before the letter that begins the next line: the
+  // hyphen goes where that puts it, so that the line is as wide as it was
+  // counted.
+  draw::Glyph following;
+  if (line.hyphen && keeping && FollowingGlyph(line.end, keptStyle, following)) {
+    place(&following, keptStyle);
+  } else {
+    place(nullptr, style);
   }
   draw::Glyph hyphen;
   if (line.hyphen && measure_.HyphenGlyph(style, hyphen)) {
     PlaceGlyph(hyphen, pen, baseline);
   }
+}
+
+bool TextViewer::FollowingGlyph(std::size_t at, std::uint16_t style, draw::Glyph& glyph) const noexcept {
+  const std::string_view text = paragraph_.text;
+  if (at >= text.size() || text[at] == ' ' || text[at] == '\n') {
+    return false;
+  }
+  // The style the paragraph is in at `at`: the last that begins at or
+  // before it.
+  std::uint16_t styleAt = kRegular;
+  for (const auto& [from, which] : paragraph_.styles) {
+    if (from > at) {
+      break;
+    }
+    styleAt = which;
+  }
+  const core::Character character = core::CharacterAt(text, at);
+  return styleAt == style && measure_.GlyphFor(style, character.good ? character.codePoint : kReplacement, glyph);
 }
 
 void TextViewer::PlaceGlyph(const draw::Glyph& glyph, std::int32_t pen, std::int32_t baseline) noexcept {

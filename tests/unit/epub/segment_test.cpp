@@ -371,7 +371,9 @@ void AddText(std::vector<Op>& ops, Random& random, std::size_t bytes) {
 }
 
 // A chapter of so many blocks, of every kind and with everything a block
-// may have, the same for the same seed. `languages` is how many languages
+// may have, the same for the same seed whatever builds it: each number is
+// drawn in a statement of its own, since the order in which the arguments
+// of one call are worked out is the compiler's to choose. `languages` is how many languages
 // its style items may name. With `longText`, a block in every few has
 // pages of text; without, none has more than a few sentences.
 std::vector<Op> MakeChapter(std::uint32_t seed, std::size_t blocks, std::uint8_t languages = 0, bool longText = true) {
@@ -400,12 +402,16 @@ std::vector<Op> MakeChapter(std::uint32_t seed, std::size_t blocks, std::uint8_t
                            : pick < 18 ? BlockKind::kRule
                                        : BlockKind::kTableCell;
     source += random.Below(900);
-    ops.push_back(
-        Begin(kind, source, SomeStyle(random),
-              kind == BlockKind::kHeading ? static_cast<std::uint8_t>(1 + random.Below(6)) : std::uint8_t{0}));
+    const BlockStyle blockStyle = SomeStyle(random);
+    const std::uint8_t level =
+        kind == BlockKind::kHeading ? static_cast<std::uint8_t>(1 + random.Below(6)) : std::uint8_t{0};
+    ops.push_back(Begin(kind, source, blockStyle, level));
     if (kind == BlockKind::kPicture) {
-      ops.push_back(PictureOp(static_cast<std::uint16_t>(random.Below(40)), 0, Length(random), Length(random),
-                              random.OneIn(2) ? Words(random, random.Below(200)) : std::string()));
+      const auto number = static_cast<std::uint16_t>(random.Below(40));
+      const SegmentLength width = Length(random);
+      const SegmentLength height = Length(random);
+      const std::uint32_t altBytes = random.OneIn(2) ? random.Below(200) : 0;
+      ops.push_back(PictureOp(number, 0, width, height, altBytes == 0 ? std::string() : Words(random, altBytes)));
     } else if (kind != BlockKind::kRule) {
       const std::uint32_t runs = 1 + random.Below(5);
       for (std::uint32_t run = 0; run < runs; ++run) {
@@ -421,8 +427,10 @@ std::vector<Op> MakeChapter(std::uint32_t seed, std::size_t blocks, std::uint8_t
         }
         const bool link = random.OneIn(5);
         if (link) {
-          ops.push_back(LinkOp(static_cast<LinkKind>(random.Below(3)), static_cast<std::uint16_t>(random.Below(60)),
-                               random.OneIn(3) ? std::string() : "to-" + std::to_string(random.Below(900))));
+          const auto linkKind = static_cast<LinkKind>(random.Below(3));
+          const auto chapter = static_cast<std::uint16_t>(random.Below(60));
+          const bool named = !random.OneIn(3);
+          ops.push_back(LinkOp(linkKind, chapter, named ? "to-" + std::to_string(random.Below(900)) : std::string()));
         }
         // Mostly a sentence or two; now and then pages of it.
         const std::uint32_t size = longText ? random.Below(30) : 9;
@@ -434,9 +442,11 @@ std::vector<Op> MakeChapter(std::uint32_t seed, std::size_t blocks, std::uint8_t
           anchor();
         }
         if (random.OneIn(9)) {
-          ops.push_back(
-              PictureOp(random.OneIn(8) ? bn::epub::kSegmentNoPicture : static_cast<std::uint16_t>(random.Below(40)),
-                        bn::epub::kPictureInLine, Length(random), Length(random), "a picture"));
+          const std::uint16_t number =
+              random.OneIn(8) ? bn::epub::kSegmentNoPicture : static_cast<std::uint16_t>(random.Below(40));
+          const SegmentLength width = Length(random);
+          const SegmentLength height = Length(random);
+          ops.push_back(PictureOp(number, bn::epub::kPictureInLine, width, height, "a picture"));
         }
         if (link) {
           ops.push_back(Simple(Op::What::kLinkEnd));
@@ -457,8 +467,9 @@ std::vector<Op> MakeSmallChapter(std::uint32_t seed, std::size_t blocks) {
   Random random(seed);
   std::vector<Op> ops;
   for (std::size_t i = 0; i < blocks; ++i) {
-    ops.push_back(Begin(random.OneIn(9) ? BlockKind::kListItem : BlockKind::kParagraph,
-                        static_cast<std::uint32_t>(i * 30), random.OneIn(4) ? SomeStyle(random) : BlockStyle{}));
+    const BlockKind kind = random.OneIn(9) ? BlockKind::kListItem : BlockKind::kParagraph;
+    const BlockStyle blockStyle = random.OneIn(4) ? SomeStyle(random) : BlockStyle{};
+    ops.push_back(Begin(kind, static_cast<std::uint32_t>(i * 30), blockStyle));
     ops.push_back(TextOp(Words(random, 1 + random.Below(12))));
     if (random.OneIn(6)) {
       RunStyle run;
@@ -476,8 +487,10 @@ std::vector<Op> MakeSmallChapter(std::uint32_t seed, std::size_t blocks) {
       ops.push_back(AnchorOp(name));
     }
     if (random.OneIn(12)) {
-      ops.push_back(PictureOp(static_cast<std::uint16_t>(random.Below(9)), bn::epub::kPictureInLine, Length(random),
-                              Length(random), "alt"));
+      const auto number = static_cast<std::uint16_t>(random.Below(9));
+      const SegmentLength width = Length(random);
+      const SegmentLength height = Length(random);
+      ops.push_back(PictureOp(number, bn::epub::kPictureInLine, width, height, "alt"));
     }
     ops.push_back(Simple(Op::What::kEnd));
   }
@@ -907,12 +920,14 @@ struct SegmentFixture {
     if (status != SegmentStatus::kOk) {
       return status;
     }
+    std::size_t before = storage.written.size();
     status = writer.BeginEndBlocks();
+    CheckWrites(before, 2);
     const auto steps = [this] {
       for (bool more = true; more;) {
-        const std::size_t before = storage.written.size();
+        const std::size_t mark = storage.written.size();
         more = writer.Step();
-        CheckWrites(before, 1);
+        CheckWrites(mark, 1);
       }
       return writer.Status();
     };
@@ -922,7 +937,11 @@ struct SegmentFixture {
         status = writer.SetPictureSize(i, found->second.first, found->second.second);
       }
     }
+    // Beginning the directory is a call like any other: its first bytes
+    // may be the ones that fill a page.
+    before = storage.written.size();
     status = status == SegmentStatus::kOk ? writer.BeginFinish(state, 0, sourceBytes) : status;
+    CheckWrites(before, 2);
     lastPage = true;
     return status == SegmentStatus::kOk ? steps() : status;
   }
@@ -1617,6 +1636,34 @@ TEST(SegmentWriter, CutsLongTextIntoItemsAtCharactersAndCountsTheRowsItUses) {
   ASSERT_EQ(f.writer.BeginBlock(BlockKind::kParagraph, 0, {}, 0), SegmentStatus::kOk);
   EXPECT_EQ(f.writer.Text(std::string(4088, 'x')), SegmentStatus::kOk);
   EXPECT_EQ(f.writer.Text(std::string(4089, 'x')), SegmentStatus::kMisused);
+}
+
+TEST(SegmentWriter, WritesAPageFromWhicheverCallFillsOne) {
+  // A chapter of one block, as long as leaves each number of bytes from 0
+  // to 40 short of a page before its directory: so that the page is filled
+  // by the text, by the block's end, by the index page, by the first bytes
+  // of the directory, or by none of them. Each is a segment that reads
+  // back, written in pages that follow one another.
+  for (std::size_t bytes = 4010; bytes <= 4060; ++bytes) {
+    SegmentFixture f;
+    f.MakeBundle(1);
+    const std::vector<Op> ops = {Begin(BlockKind::kParagraph, 7), TextOp(std::string(bytes, 'x')),
+                                 Simple(Op::What::kEnd)};
+    ASSERT_EQ(f.Write(ops, 99), SegmentStatus::kOk) << bytes;
+    const BundleChapter record = f.writer.Chapter();
+    // The block's head, four text items with their heads, its end; then
+    // the index page with its head.
+    EXPECT_EQ(record.directoryOffset, 4 + (4 * 4) + bytes + 12 + 4 + 16) << bytes;
+    EXPECT_EQ(f.OnCard().size(), record.segmentOffset + record.segmentBytes) << bytes;
+    const Walked walked = Walk(f.OnCard(), record);
+    EXPECT_TRUE(walked.wrong.empty()) << bytes << ": " << (walked.wrong.empty() ? "" : walked.wrong.front());
+    ASSERT_EQ(f.bundle.Commit(0, record), BundleStatus::kOk) << bytes;
+    ASSERT_EQ(f.OpenChapter(0), SegmentStatus::kOk) << bytes;
+    ASSERT_EQ(f.reader.SeekStart(), SegmentStatus::kOk);
+    WantBlock got;
+    ASSERT_EQ(f.ReadWholeBlock(got), SegmentStatus::kOk) << bytes;
+    EXPECT_EQ(got.characters, bytes);
+  }
 }
 
 TEST(SegmentWriter, WritesAnIndexPageAfterEvery256BlocksAndLeavesBlocksPast65536OutOfTheIndex) {

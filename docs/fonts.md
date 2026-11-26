@@ -261,9 +261,23 @@ it, with the fallback face if that has, and otherwise with its style's
 face's glyph 0; a soft hyphen and a zero width space are not drawn and take
 no room; a byte that is not UTF-8 is drawn as U+FFFD, which is found as
 any other character is (of the presets' typefaces Noto and IBM Plex have a
-glyph for it, and Source and Courier Prime have not). A piece of a word is
-as wide as its glyphs' advances added up, so what is drawn from the same
-glyphs lines up with what was measured. The hyphen shown at a line's end is
+glyph for it, and Source and Courier Prime have not).
+
+Every glyph is drawn on a whole pixel, and a glyph is always the same
+number of pixels after the one before it: its advance to the nearest pixel,
+a half going up (`FaceMeasure::PenStep()`). An image has advances in
+quarters of a pixel, and the plain way to use them, adding them up and
+drawing each glyph at the nearest pixel to where the pen has got to, puts
+the same two letters a pixel further apart in one place than in another,
+by what was left over before them: with an `o` of 17 and a quarter pixels,
+two of them are 17 pixels apart three times and 18 the fourth. That is
+plain to the eye on a page, so it is the step that is rounded and not the
+pen. A piece of a word is as wide as its glyphs' steps added up, and a
+space and a hyphen are rounded as a letter is, so what is drawn from the
+same glyphs lines up with what was measured; widths are still counted four
+to the pixel, as the paragraph setter is given them, each a whole number
+of pixels. The image keeps its quarters because kerning, when there is
+any, is to be added to the advance before the rounding. The hyphen shown at a line's end is
 the style's U+2010, or its hyphen-minus. Reading UTF-8 a character at a
 time, strictly, is `core/utf8.h`, which the hyphenator shares.
 

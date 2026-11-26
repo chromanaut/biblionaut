@@ -234,7 +234,8 @@ class TextViewer final : public Screen {
   void PageSet(std::uint64_t now) noexcept;
   // Places `line` of the paragraph with its baseline `baseline` pixels down.
   void PlaceLine(const layout::TextLine& line, std::int32_t baseline) noexcept;
-  void PlaceGlyph(const draw::Glyph& glyph, std::int32_t penQuarters, std::int32_t baseline) noexcept;
+  // Places `glyph` with the pen `pen` pixels from the page's left edge.
+  void PlaceGlyph(const draw::Glyph& glyph, std::int32_t pen, std::int32_t baseline) noexcept;
   // Makes the band of the panel's rows from `top`: the ink of each of its
   // pixels, from the page's glyphs. Returns how many rows it is.
   std::size_t MakeBand(std::size_t top) noexcept;

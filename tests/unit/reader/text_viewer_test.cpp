@@ -77,8 +77,9 @@ ImageFace TestFace(std::uint8_t role, std::uint8_t style, std::uint16_t size) {
     face.glyphs[letter] = Striped(static_cast<std::uint16_t>(size * 2), width, static_cast<std::uint8_t>(size / 2),
                                   static_cast<std::uint8_t>(letter));
   }
-  // Pens that do not fall on whole pixels: an a moves the pen half a pixel
-  // further than the other letters do, and a b a quarter.
+  // Advances that are not whole pixels: an a's is half a pixel more than
+  // the other letters', and a b's a quarter. So the pen moves a pixel
+  // further after an a than after the others, and no further after a b.
   face.glyphs['a'].advance = static_cast<std::uint16_t>(face.glyphs['a'].advance + 2);
   face.glyphs['b'].advance = static_cast<std::uint16_t>(face.glyphs['b'].advance + 1);
   face.glyphs[' '] = bn::test::Blank(size);
@@ -254,11 +255,11 @@ struct Fixture {
   // letter's picture where its glyph says, the darker where two meet.
   std::vector<std::uint8_t> InkOfOneLine(const std::string& text, const ImageFace& face) const {
     std::vector<std::uint8_t> ink(static_cast<std::size_t>(PageWidth()) * static_cast<std::size_t>(PageHeight()), 0);
-    int pen = kMargin * 4;
+    int pen = kMargin;
     const int baseline = kMargin + face.ascent;
     for (const char letter : text) {
       const ImageGlyph& glyph = face.glyphs.at(static_cast<std::uint32_t>(letter));
-      const int left = ((pen + 2) / 4) + glyph.left;
+      const int left = pen + glyph.left;
       const int top = baseline - glyph.top;
       for (int y = 0; y < glyph.height; ++y) {
         for (int x = 0; x < glyph.width; ++x) {
@@ -267,7 +268,8 @@ struct Fixture {
           at = std::max(at, glyph.ink[(static_cast<std::size_t>(y) * glyph.width) + static_cast<std::size_t>(x)]);
         }
       }
-      pen += glyph.advance;
+      // The pen moves a whole number of pixels: the advance, a half going up.
+      pen += (glyph.advance + 2) / 4;
     }
     return ink;
   }
@@ -427,11 +429,11 @@ TEST(TextViewer, SpreadsEveryLineOfAParagraphButTheLastToTheFullWidth) {
     EXPECT_EQ(left, kMargin);
     if (++number < lines.size()) {
       // The last letter's picture is three pixels short of its advance, and
-      // the pen is put to the nearest pixel.
-      EXPECT_NEAR(right, 400 - kMargin - 3, 1) << line;
+      // the line ends on the margin to the pixel.
+      EXPECT_EQ(right, 400 - kMargin - 3) << line;
     } else {
       // The last is set as it comes: no letter is further from the one
-      // before it than a letter's advance and a space's, 15 and 7.5.
+      // before it than a letter's step and a space's, 15 and 8.
       std::vector<int> across;
       for (const TextViewer::Placed& placed : glyphs) {
         across.push_back(placed.x);
@@ -829,12 +831,32 @@ TEST(TextViewer, FailsWhenThePanelDoes) {
   EXPECT_EQ(stuck.viewer->Shown(), 0U);
 }
 
-TEST(TextViewer, GivesWhatIsLeftOverOfALineToTheFirstPlacesBetweenItsWords) {
+TEST(TextViewer, DrawsTheSameTwoLettersTheSameDistanceApartWhereverTheyAre) {
   Fixture fixture;
   fixture.display.Resize({.width = 400, .height = 600});
-  // Words of one letter: fifteen to a line come to 1,320 quarters of the
-  // 1,408 there are, and fourteen to 1,230; either way what is over does
-  // not go into the places between them a whole number of times.
+  // At 30 an a's advance is 15 and a half pixels and a b's 15 and a
+  // quarter. A pen that kept the parts of a pixel, put to the nearest pixel
+  // for each letter, would draw a b 16 pixels after an a in one place and
+  // 15 in another.
+  fixture.Text("abababababababab\n");
+  fixture.Start();
+  fixture.Settle();
+  const auto glyphs = fixture.viewer->Glyphs();
+  ASSERT_EQ(glyphs.size(), 16U);
+  EXPECT_EQ(glyphs[0].x, kMargin);
+  for (std::size_t i = 1; i < glyphs.size(); ++i) {
+    // After an a, which is every other letter from the first, 16; after a b, 15.
+    EXPECT_EQ(glyphs[i].x - glyphs[i - 1].x, i % 2 == 1 ? 16 : 15) << i;
+  }
+}
+
+TEST(TextViewer, SharesWhatIsLeftOverOfALineOutEvenlyAmongThePlacesBetweenItsWords) {
+  Fixture fixture;
+  fixture.display.Resize({.width = 400, .height = 600});
+  // Words of one letter, 15 pixels, with spaces of 8: fifteen to a line
+  // come to 337 pixels of the 352 there are, and fourteen to 314; either
+  // way what is over does not go into the places between them a whole
+  // number of times.
   std::string text;
   for (int word = 0; word < 70; ++word) {
     text += "x ";
@@ -850,14 +872,49 @@ TEST(TextViewer, GivesWhatIsLeftOverOfALineToTheFirstPlacesBetweenItsWords) {
     if (++number == lines.size()) {
       break;
     }
-    int last = 0;
+    std::vector<int> across;
     for (const TextViewer::Placed& placed : glyphs) {
-      last = std::max<int>(last, placed.x);
+      across.push_back(placed.x);
     }
-    // The last letter's pen is its advance short of the right margin, to
-    // the quarter: (96 + 1408 - 60) quarters, which is pixel 361.
-    EXPECT_EQ(last, 361) << line;
-    EXPECT_TRUE(glyphs.size() == 14 || glyphs.size() == 15) << glyphs.size();
+    std::sort(across.begin(), across.end());
+    // The first letter is on the left margin and the last its step short of
+    // the right one: pixel 400 - 24 - 15.
+    EXPECT_EQ(across.front(), kMargin) << line;
+    EXPECT_EQ(across.back(), 361) << line;
+    ASSERT_TRUE(glyphs.size() == 14 || glyphs.size() == 15) << glyphs.size();
+    // No two places differ by more than a pixel, and the pixels over are
+    // not all at one end of the line: one of 14 places has a pixel more,
+    // or one of 13 a pixel less, and it is the seventh, the middle one.
+    std::vector<int> gaps;
+    for (std::size_t i = 1; i < across.size(); ++i) {
+      gaps.push_back(across[i] - across[i - 1]);
+    }
+    const auto [least, most] = std::minmax_element(gaps.begin(), gaps.end());
+    EXPECT_EQ(*most - *least, 1) << line;
+    EXPECT_EQ(gaps.front(), gaps.back()) << line;
+    const int common = gaps.front();
+    EXPECT_EQ(std::count(gaps.begin(), gaps.end(), common), static_cast<std::ptrdiff_t>(gaps.size()) - 1) << line;
+    EXPECT_NE(gaps[6], common) << line;
+  }
+}
+
+TEST(TextViewer, SpreadsALineOfTwoWordsByTheOnePlaceBetweenThem) {
+  Fixture fixture;
+  // Room for 112 pixels: two words of three letters and their space are
+  // 98, and three words do not fit. The page has room for two lines.
+  fixture.Text("xxx xxx xxx xxx\n");
+  fixture.Start();
+  fixture.Settle();
+  const auto lines = fixture.ByLine(36);
+  ASSERT_EQ(lines.size(), 2U);
+  std::size_t number = 0;
+  for (const auto& [line, glyphs] : lines) {
+    ASSERT_EQ(glyphs.size(), 6U) << line;
+    EXPECT_EQ(glyphs[0].x, kMargin) << line;
+    // The second word begins 14 pixels further on in a line that is spread
+    // than in the last, which is not; and so ends on the right margin.
+    EXPECT_EQ(glyphs[3].x - glyphs[2].x, ++number < lines.size() ? 15 + 8 + 14 : 15 + 8) << line;
+    EXPECT_EQ(glyphs[5].x, number < lines.size() ? 160 - kMargin - 15 : kMargin + 98 - 15) << line;
   }
 }
 

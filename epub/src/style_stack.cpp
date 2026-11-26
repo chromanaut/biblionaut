@@ -643,6 +643,37 @@ StyleStack::Level StyleStack::Outside() const noexcept {
   return kept == 0 ? Level{} : Load(kept - 1);
 }
 
+StyleStack::Level StyleStack::At(std::size_t index) const noexcept {
+  const std::size_t kept = std::min(depth_, levels_);
+  return kept == 0 || index >= depth_ ? Level{} : Load(std::min(index, kept - 1));
+}
+
+void StyleStack::Passes(std::size_t index, ElementStyle& said) const noexcept {
+  const Level level = At(index);
+  said.text.bits = level.bits;
+  said.text.fromBook = level.fromBook;
+  said.text.family = static_cast<CssFamilyClass>(level.family);
+  said.text.familyFromBook = (level.flags & kFamilyFromBook) != 0;
+  said.text.language = level.language;
+  said.text.size = level.size;
+  said.text.sizeFromBook = (level.flags & kSizeFromBook) != 0;
+  said.align = static_cast<StyleAlign>(level.align);
+  said.alignFromBook = (level.flags & kAlignFromBook) != 0;
+  said.hasIndent = (level.flags & kHasIndent) != 0;
+  said.indent = level.indent;
+  said.indentFromBook = (level.flags & kIndentFromBook) != 0;
+  said.lineHeight.kind = static_cast<StyleLineHeight::Kind>(level.lineKind);
+  said.lineHeight.multiple = level.lineMultiple;
+  said.lineHeight.length = level.lineLength;
+  said.lineHeightFromBook = (level.flags & kLineFromBook) != 0;
+  said.marker = static_cast<StyleMarker>(level.marker);
+  said.markerFromBook = (level.flags & kMarkerFromBook) != 0;
+  said.rightToLeft = (level.flags & kRightToLeft) != 0;
+  said.spacesAsWritten = (level.flags & kSpacesAsWritten) != 0;
+}
+
+std::uint8_t StyleStack::Lists(std::size_t index) const noexcept { return At(index).lists; }
+
 std::string_view StyleStack::Language(std::uint8_t language) const noexcept {
   if (language == 0 || language > languages_) {
     return {};

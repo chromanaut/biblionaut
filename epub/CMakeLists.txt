@@ -10,6 +10,7 @@ add_library(bn_epub STATIC
   src/css.cpp
   src/css_families.cpp
   src/css_rules.cpp
+  src/document_blocks.cpp
   src/document_sheets.cpp
   src/package.cpp
   src/package_digest.cpp

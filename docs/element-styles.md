@@ -22,9 +22,10 @@ element, as it opens, what it comes to:
 
 Each thing it says comes with whether the book said it or the element
 gives it, so that a reader's own choices can stand in for a book's styles
-without the book being read again. Nothing yet makes blocks of text out
-of what it says: which elements' text goes into which paragraph, and the
-space between one and the next.
+without the book being read again. What makes blocks of text out of
+what it says, which elements' text goes into which paragraph and the
+space between one and the next, goes through a document with it ([A
+document's blocks](document-blocks.md)).
 
 **The rules it goes by.**
 

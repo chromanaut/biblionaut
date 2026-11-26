@@ -26,7 +26,9 @@ compares, book by book:
     the sheets the second finding gives it; and bn-css document --styles
     with a second working-out of what each element then comes to, with
     what it takes from the element it is inside and what its element
-    gives it, on the same documents;
+    gives it, on the same documents; and bn-css document --blocks with a
+    second working-out of the blocks of text each of those documents is
+    made into, with each block's record and how its text is set;
   - bn-png book with a second reading of every PNG picture: its header, how
     the reading ended, and the checksum of every row of gray;
   - bn-jpeg book with a second reading of every JPEG picture, both read at
@@ -115,6 +117,7 @@ sys.dont_write_bytecode = True  # Or Python leaves compiled copies of the tests'
 import bundle_tool  # noqa: E402  (found through the path set just above)
 import css_cascade_tool  # noqa: E402
 import css_tool  # noqa: E402
+import blocks_tool  # noqa: E402
 import styles_tool  # noqa: E402
 import epub_tool  # noqa: E402
 import jpeg_tool  # noqa: E402
@@ -739,6 +742,38 @@ def check_cascade(tool: str, path: Path, figures: dict) -> list[str]:
                 if count:
                     figures[f"styles left out\t{kind}"] = figures.get(f"styles left out\t{kind}", 0) + count
                     figures[f"books styles left out\t{kind}"] = 1
+
+            # The blocks the document is made into, by the tool and by the second working-out of those; which does
+            # not go deeper than the tool keeps.
+            if left_out["styles_too_deep"]:
+                figures["blocks_not_compared"] = figures.get("blocks_not_compared", 0) + 1
+                continue
+            result = run(tool, "document", "--blocks", "--sum", str(path), name)
+            said = result.stdout.decode("utf-8", "replace").split()
+            if result.returncode != 0 or len(said) < 4 or said[0] != "blocks":
+                problems.append(f"bn-css document --blocks: {name!r}: ended with {result.returncode}: "
+                                f"{result.stderr[-120:]!r}")
+                continue
+            took = {key: int(value) for key, value in (item.split("=") for item in said[2:])}
+            expected, counted, counts, left_out, languages = blocks_tool.blocks_lines(sheets, document,
+                                                                                     known_families(tool))
+            theirs = dict(counts, **left_out, languages=languages, elements=counted, lines=len(expected), work_over=0)
+            mine = {key: took.get(key) for key in theirs}
+            if said[1] != f"{css_cascade_tool.checksum(expected):08x}" or mine != theirs:
+                got = [line for line in run(tool, "document", "--blocks", str(path), name).stdout.split(b"\n")[:-1]
+                       if line[:2] != b"X "]
+                at = next((i for i, (a, b) in enumerate(zip(got, expected)) if a != b), min(len(got), len(expected)))
+                differ = {key: (mine[key], theirs[key]) for key in theirs if mine[key] != theirs[key]}
+                problems.append(f"bn-css document --blocks: {name!r}: {said[1]}; the second working-out has "
+                                f"{css_cascade_tool.checksum(expected):08x}; they differ in {differ}; line {at + 1} "
+                                f"is {got[at:at + 1]!r} and {expected[at:at + 1]!r}, after {got[max(0, at - 4):at]!r}")
+                continue
+            figures["blocks_documents"] = figures.get("blocks_documents", 0) + 1
+            figures["blocks most work"] = [max(figures.get("blocks most work", [0])[0], took["blocks_most_work"])]
+            for kind, count in counts.items():
+                figures[f"blocks counted\t{kind}"] = figures.get(f"blocks counted\t{kind}", 0) + count
+                if count:
+                    figures[f"books blocks counted\t{kind}"] = 1
     return problems[:4]
 
 
@@ -1056,6 +1091,26 @@ def print_css_report(totals: dict, books: int) -> None:
         for count, kind in kinds:
             in_books = totals.get("books styles left out" + chr(9) + kind, 0)
             print(f"  left out: {count:6}  in {in_books:4} books  {names.get(kind, kind)}")
+    if totals.get("blocks_documents"):
+        def counted(kind: str) -> int:
+            return totals.get("blocks counted" + chr(9) + kind, 0)
+
+        def in_books(kind: str) -> int:
+            return totals.get("books blocks counted" + chr(9) + kind, 0)
+
+        print(f"\nThe blocks of the {totals['blocks_documents']} documents they were looked for in: "
+              f"{counted('blocks')} blocks:")
+        print(f"  {counted('paragraphs')} paragraphs, {counted('headings')} headings, {counted('list_items')} items "
+              f"of lists, {counted('cells')} cells of tables, {counted('rules')} rules")
+        for kind, words in (("markers", "the first block of an item, with its marker"),
+                            ("line_ends", "a line ended by br"), ("pictures", "a picture"),
+                            ("first_letters", "a first letter with a style of its own"),
+                            ("floated_letters", "of those, floated: a dropped capital"),
+                            ("begin_floated", "a block that begins in floated text"),
+                            ("floated", "a block in something floated"),
+                            ("centred", "a block centred by its margins")):
+            print(f"  {counted(kind):8}  in {in_books(kind):4} books  {words}")
+        print(f"  the most work for one call: {spread(totals['blocks most work'])}")
     print(f"\nWhat documents ask for: {totals.get('asked documents', 0)} documents are given "
           f"{totals.get('asked sheets', 0)} sheets, {totals.get('own styles', 0)} of them with rules of their own:")
     if totals.get("sheets read"):
@@ -1254,6 +1309,9 @@ def main() -> int:
     if totals.get("sheets_not_compared"):
         print(f"{totals['sheets_not_compared']} books were not put through the second finding of their documents' "
               "sheets: the tool had no room for a sheet, or one was damaged.")
+    if totals.get("blocks_not_compared"):
+        print(f"{totals['blocks_not_compared']} documents were not put through the second working-out of their "
+              "blocks: an element was deeper than the tool keeps.")
     if totals.get("cascade_not_compared"):
         print(f"{totals['cascade_not_compared']} documents were not put through the second working-out of the cascade: "
               "the tool had left a rule out, or an element was too deep.")

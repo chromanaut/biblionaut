@@ -74,6 +74,11 @@ The tools and Python agree about every book.
   document --styles` says of each element is what a second working-out
   of that says, by checksum, with the same count of each kind of thing
   left out and of the languages named.
+- **A document's blocks**: for the same documents, the blocks `bn-css
+  document --blocks` makes of each, with their records and how their
+  text is set, are those a second working-out makes, by checksum, with
+  the same count of each kind of block and of what else is counted of
+  them.
 - **The pictures**: every PNG `bn-png book` reads has the header, the
   ending, the rows and the checksum of their gray that a second reading of
   it by Python comes to ([Pictures](pictures.md) has what that reading is); and

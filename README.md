@@ -130,6 +130,8 @@ Reading a book:
   document is read with.
 - [What each element comes to](docs/element-styles.md): what an element
   takes from the one it is inside, and what its element gives it.
+- [A document's blocks](docs/document-blocks.md): where a block of text
+  begins and ends, its kind, and its record.
 - [The file a book is imported into](docs/bundle.md): the bundle, as a
   container that loses no chapter when the power goes, and as made from
   a book.

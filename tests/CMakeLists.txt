@@ -127,6 +127,7 @@ bn_add_unit_test(epub_tests
     unit/epub/css_families_test.cpp
     unit/epub/css_rules_test.cpp
     unit/epub/css_test.cpp
+    unit/epub/document_blocks_test.cpp
     unit/epub/document_sheets_test.cpp
     unit/epub/package_test.cpp
     unit/epub/sheets_digest_test.cpp
@@ -326,6 +327,15 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/styles_tool.py
       $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/styles_tool)
   set_tests_properties(e2e.Styles PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # bn-css cascade --blocks, and through it the finding of a document's
+  # blocks, against a second working-out that lays the whole document out
+  # as one list of places and answers every question from that.
+  add_test(
+    NAME e2e.Blocks
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/blocks_tool.py
+      $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/blocks_tool)
+  set_tests_properties(e2e.Blocks PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # bn-bundle, and through it the making of a book's bundle, against a
   # second reading of the bundle's bytes set beside a reading of the book by

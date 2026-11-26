@@ -2213,14 +2213,18 @@ def bundle_seeds() -> None:
     seed("not-a-bundle", 0x0F, b"<html/>" * 700)
 
 
-# ---- font: byte 0 (whether the image's length is mended), four code points
-# to ask for, then a fonts image ----
+# ---- font: byte 0 (whether the image's length is mended, and how much room
+# the map has), four code points to ask for, then a fonts image ----
 
 
 def font_image(faces: list[dict]) -> bytes:
     """A fonts image (draw/font.h) written the plain way. A face is its
     role, style and size, and `glyphs`: code point to (advance, width,
-    height, left, top), each drawn as a block of ink."""
+    height, left, top), each drawn as a block of ink. It may have
+    `kerning`: two code points to the quarters of a pixel the second is set
+    further on after the first; each character that is the first of a pair
+    is then a class of its own as a first, in the order of the code points,
+    and each that is the second of one likewise as a second."""
     out = bytearray(16 + 48 * len(faces))
     out[0:5] = b"BNFN\x01"
     struct.pack_into("<H", out, 6, len(faces))
@@ -2235,20 +2239,32 @@ def font_image(faces: list[dict]) -> bytes:
         ranges_at = len(out)
         for first, count, glyph in ranges:
             out += struct.pack("<III", first, count, glyph)
+        kerning = face.get("kerning", {})
+        firsts = {code: at for at, code in enumerate(sorted({first for first, _ in kerning}), start=1)}
+        seconds = {code: at for at, code in enumerate(sorted({second for _, second in kerning}), start=1)}
+        codes = [None] + sorted(face["glyphs"])
         glyphs_at = len(out)
         pictures = bytearray()
         for index, (advance, width, height, left, top) in enumerate(drawn):
-            out += struct.pack("<HBBbbHI", advance, width, height, left, top, 0, len(pictures))
+            out += struct.pack("<HBBbbBBI", advance, width, height, left, top, firsts.get(codes[index], 0),
+                               seconds.get(codes[index], 0), len(pictures))
             pixels = [(x + y + index) % 4 for y in range(height) for x in range(width)]
             packed = bytearray((len(pixels) * 2 + 7) // 8)
             for at, ink in enumerate(pixels):
                 packed[at // 4] |= ink << (6 - (at % 4) * 2)
             pictures += packed
+        kerning_at = len(out)
+        table = bytearray(len(firsts) * len(seconds))
+        for (first, second), quarters in kerning.items():
+            table[(firsts[first] - 1) * len(seconds) + seconds[second] - 1] = quarters & 0xFF
+        out += table
         pictures_at = len(out)
         out += pictures
         struct.pack_into("<BBHhhHHIIIIII", out, 16 + 48 * number, face["role"], face["style"], face["size"],
                          face["size"] - 4, 5, face["size"] + 4, face["size"] // 2, len(ranges), ranges_at,
                          len(drawn), glyphs_at, pictures_at, len(pictures))
+        if table:
+            struct.pack_into("<IBB", out, 16 + 48 * number + 36, kerning_at, len(firsts), len(seconds))
     struct.pack_into("<I", out, 8, len(out))
     return bytes(out)
 
@@ -2256,8 +2272,9 @@ def font_image(faces: list[dict]) -> bytes:
 def font_seeds() -> None:
     clear("font")
 
-    def seed(name: str, image: bytes, mended: bool = False, asked: tuple[int, ...] = (0x61, 0x20, 0xE9, 0x2010)) -> None:
-        write("font", name, bytes([int(mended)]) + struct.pack("<4H", *asked) + image)
+    def seed(name: str, image: bytes, mended: bool = False, asked: tuple[int, ...] = (0x61, 0x20, 0xE9, 0x2010),
+             choices: int = 0) -> None:
+        write("font", name, bytes([int(mended) | choices]) + struct.pack("<4H", *asked) + image)
 
     letters = {code: (36 + code % 5, 7, 9, 0, 9) for code in range(0x61, 0x67)}
     letters[0x20] = (20, 0, 0, 0, 0)
@@ -2300,6 +2317,58 @@ def font_seeds() -> None:
     spoiled = bytearray(whole)
     struct.pack_into("<H", spoiled, 6, 1025)
     seed("more-faces-than-may-be", bytes(spoiled))
+
+    # Kerning: a face that kerns, asked for letters that do; two faces that
+    # kern the same letters otherwise, and one beside them that does not.
+    # Four classes of first glyphs and five of second, so that a row is not
+    # as long as there are rows.
+    pairs = {(0x61, 0x62): -4, (0x61, 0x63): 2, (0x64, 0x62): -8, (0x66, 0x66): 5, (0xE9, 0x61): -1,
+             (0x64, 0x65): 7}
+    kerned = [{"role": 0, "style": 0, "size": 20, "glyphs": letters, "kerning": pairs}]
+    seed("kerned", font_image(kerned), asked=(0x61, 0x62, 0x64, 0x63))
+    seed("kerned-through-a-small-map", font_image(kerned), asked=(0x61, 0x62, 0x64, 0xE9), choices=0x02 | (5 << 2))
+    seed("faces-that-kern-and-one-that-does-not", font_image(
+        [{"role": 0, "style": 0, "size": 20, "glyphs": letters, "kerning": pairs},
+         {"role": 0, "style": 2, "size": 20, "glyphs": letters, "kerning": {(0x61, 0x62): 9, (0x62, 0x61): -9}},
+         {"role": 2, "style": 0, "size": 20, "glyphs": letters}]), asked=(0x61, 0x62, 0x64, 0x63))
+    whole = font_image(kerned)
+    glyphs_at = struct.unpack_from("<I", whole, 16 + 24)[0]
+    # A glyph of a class the table has no row for, and one it has no place for.
+    spoiled = bytearray(whole)
+    spoiled[glyphs_at + 12 * 2 + 6] = 200
+    spoiled[glyphs_at + 12 * 3 + 7] = 255
+    seed("classes-the-table-has-not", bytes(spoiled), asked=(0x61, 0x62, 0x64, 0x63))
+    # And one of the class after the last there is, of each kind.
+    firsts, seconds = struct.unpack_from("<BB", whole, 16 + 40)
+    spoiled = bytearray(whole)
+    spoiled[glyphs_at + 12 * 2 + 6] = firsts + 1
+    spoiled[glyphs_at + 12 * 3 + 7] = seconds + 1
+    seed("a-class-past-the-last", bytes(spoiled), asked=(0x61, 0x62, 0x64, 0x63))
+    # A table that begins too near the end to fit, and one with more classes
+    # than fit.
+    spoiled = bytearray(whole)
+    struct.pack_into("<I", spoiled, 16 + 36, len(whole) - 3)
+    seed("kerning-outside-the-image", bytes(spoiled))
+    # A table whose first row is inside the image and whose last is not.
+    spoiled = bytearray(whole)
+    struct.pack_into("<I", spoiled, 16 + 36, len(whole) - seconds - 2)
+    seed("kerning-that-runs-off-the-end", bytes(spoiled), asked=(0x61, 0x62, 0x64, 0x63))
+    spoiled = bytearray(whole)
+    spoiled[16 + 40] = 255
+    spoiled[16 + 41] = 255
+    seed("more-classes-than-fit", bytes(spoiled))
+    # A table that lies after everything else of its face: at the image's end.
+    spoiled = bytearray(whole)
+    kerning_at, firsts, seconds = struct.unpack_from("<IBB", whole, 16 + 36)
+    struct.pack_into("<I", spoiled, 16 + 36, len(whole))
+    spoiled += bytes(range(1, firsts * seconds + 1))
+    seed("kerning-apart-from-its-face", bytes(spoiled), mended=True, asked=(0x61, 0x62, 0x64, 0x63))
+    # And one that lies before everything else of its face: the second of
+    # two faces is given the first's.
+    two = bytearray(font_image(kerned + [{"role": 1, "style": 0, "size": 20, "glyphs": letters, "kerning": pairs}]))
+    two[16 + 48 + 36:16 + 48 + 40] = two[16 + 36:16 + 40]
+    seed("kerning-before-its-face", bytes(two), asked=(0x61, 0x62, 0x64, 0x63))
+    whole = font_image(one)
     seed("another-version", whole[:4] + b"\x02" + whole[5:])
     seed("not-an-image", b"<svg/>" * 20)
     seed("nothing", b"")

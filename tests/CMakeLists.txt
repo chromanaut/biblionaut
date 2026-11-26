@@ -202,7 +202,7 @@ bn_add_unit_test(tools_tests
 # nothing else.
 if(BN_FONT_TOOL)
   add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/courier-prime ${CMAKE_BINARY_DIR}/third_party/courier-prime)
-  target_sources(tools_tests PRIVATE unit/tools/font_tool_test.cpp)
+  target_sources(tools_tests PRIVATE unit/tools/font_kerning_test.cpp unit/tools/font_tool_test.cpp)
   # What bn-font says pictures compress to is checked against zlib.
   target_link_libraries(tools_tests PRIVATE bn_font_tool ZLIB::ZLIB)
   target_compile_definitions(tools_tests PRIVATE "BN_COURIER_PRIME_DIR=\"${BN_COURIER_PRIME_DIR}\"")
@@ -384,6 +384,15 @@ if(Python3_Interpreter_FOUND)
         $<TARGET_FILE:bn-font> ${BN_COURIER_PRIME_DIR} ${CMAKE_CURRENT_BINARY_DIR}/font_tool
         ${PROJECT_SOURCE_DIR})
     set_tests_properties(e2e.FontTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+    # The kerning bn-font reads out of a font and puts in an image, against
+    # a second reading of the tables of two real fonts that kern, which the
+    # build downloads (third_party/fonts, the target bn_font_files_tests).
+    add_test(
+      NAME e2e.FontKerning
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/font_kerning.py
+        $<TARGET_FILE:bn-font> ${BN_FONTS_DIR}/noto ${CMAKE_CURRENT_BINARY_DIR}/font_kerning)
+    set_tests_properties(e2e.FontKerning PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
     # The text viewer, run by the desktop application with a fonts image
     # bn-font makes of that font, against what must be so of its pages

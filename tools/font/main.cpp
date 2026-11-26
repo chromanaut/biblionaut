@@ -28,7 +28,7 @@ using bn::font_tool::StyleName;
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s build PRESET... --out IMAGE [--fonts FOLDER]\n"
-               "       %s info IMAGE [--glyphs U+XXXX[-U+YYYY]...]\n"
+               "       %s info IMAGE [--glyphs U+XXXX[-U+YYYY]...] [--kerning U+XXXX[-U+YYYY]...]\n"
                "       %s sizes IMAGE\n"
                "\n"
                "The fonts image: every face the firmware draws text in, at every size.\n"
@@ -48,12 +48,17 @@ void PrintUsage(const char* program) {
                "         bold and bold-italic. A file not named from / is found from the\n"
                "         preset's folder, or from FOLDER if --fonts names one.\n"
                "         `characters U+0020-U+007E ...` chooses what is drawn; without it,\n"
-               "         the set the firmware is built to show.\n"
+               "         the set the firmware is built to show. A face is kerned as its font\n"
+               "         is: for each face it says how many pairs, and in how many classes\n"
+               "         its glyphs are as the first of two and as the second.\n"
                "\n"
                "  info   says what an image holds: its faces, and with --glyphs what each\n"
                "         has for the characters named: the glyph's number, how far it\n"
                "         moves the pen in quarters of a pixel, its picture's size and\n"
-               "         where it lies from the pen, and its levels of ink added up.\n"
+               "         where it lies from the pen, its levels of ink added up, and its\n"
+               "         classes for kerning. With --kerning, every two of the characters\n"
+               "         named that a face kerns, and by how many quarters of a pixel the\n"
+               "         second is set further on: less than nothing is nearer.\n"
                "\n"
                "  sizes  says what an image's pictures would take kept in other ways than\n"
                "         the image keeps them: as runs, compressed a glyph at a time, and\n"
@@ -128,16 +133,33 @@ int RunBuild(const std::vector<std::string>& arguments) {
     return 1;
   }
   std::size_t pictures = 0;
+  std::size_t kerning = 0;
   for (const BuiltFace& face : built.faces) {
     std::printf(
         "%-8s %-11s %2u px: %4zu glyphs (%zu lacking), pictures %7zu bytes; ascent %d, descent %d, line %u, "
-        "x-height %u\n",
+        "x-height %u; ",
         std::string(RoleName(face.role)).c_str(), std::string(StyleName(face.style)).c_str(),
         static_cast<unsigned>(face.size), face.glyphs, face.lacking, face.pictureBytes, static_cast<int>(face.ascent),
         static_cast<int>(face.descent), static_cast<unsigned>(face.lineHeight), static_cast<unsigned>(face.xHeight));
+    if (face.kerned) {
+      std::printf("kerning %zu pairs, %zu by %zu", face.kernedPairs, face.kernFirsts, face.kernSeconds);
+      kerning += face.kernFirsts * face.kernSeconds;
+    } else {
+      std::printf("no kerning");
+    }
+    // What the font has of kerning that an image cannot hold.
+    if (face.kernLookupsLeftOut > 0) {
+      std::printf(", %zu %s at more than two glyphs left out", face.kernLookupsLeftOut,
+                  face.kernLookupsLeftOut == 1 ? "lookup that looks" : "lookups that look");
+    }
+    if (face.kernAdjustmentsLeftOut > 0) {
+      std::printf(", %zu pairs move more than an advance", face.kernAdjustmentsLeftOut);
+    }
+    std::printf("\n");
     pictures += face.pictureBytes;
   }
-  std::printf("faces %zu, pictures %zu bytes, image %zu bytes\n", built.faces.size(), pictures, built.image.size());
+  std::printf("faces %zu, pictures %zu bytes, kerning %zu bytes, image %zu bytes\n", built.faces.size(), pictures,
+              kerning, built.image.size());
   return 0;
 }
 
@@ -156,10 +178,33 @@ void PrintGlyphs(const bn::draw::Face& face, const std::vector<bn::font_tool::Co
           ink += glyph.Ink(x, y);
         }
       }
-      std::printf("  U+%04X: glyph %u, advance %u, %u by %u at %d, %d, ink %u\n", static_cast<unsigned>(codePoint),
-                  static_cast<unsigned>(glyph.index), static_cast<unsigned>(glyph.advance),
-                  static_cast<unsigned>(glyph.width), static_cast<unsigned>(glyph.height), static_cast<int>(glyph.left),
-                  static_cast<int>(glyph.top), ink);
+      std::printf("  U+%04X: glyph %u, advance %u, %u by %u at %d, %d, ink %u, kerns as %u and %u\n",
+                  static_cast<unsigned>(codePoint), static_cast<unsigned>(glyph.index),
+                  static_cast<unsigned>(glyph.advance), static_cast<unsigned>(glyph.width),
+                  static_cast<unsigned>(glyph.height), static_cast<int>(glyph.left), static_cast<int>(glyph.top), ink,
+                  static_cast<unsigned>(glyph.kernFirst), static_cast<unsigned>(glyph.kernSecond));
+    }
+  }
+}
+
+// Says every two of `characters` that `face` kerns, and by how much.
+void PrintKerning(const bn::draw::Face& face, const std::vector<bn::font_tool::CodePoints>& characters) {
+  std::vector<std::pair<std::uint32_t, bn::draw::Glyph>> glyphs;
+  for (const auto& [first, last] : characters) {
+    for (std::uint32_t codePoint = first; codePoint <= last; ++codePoint) {
+      bn::draw::Glyph glyph;
+      if (face.Find(codePoint, glyph)) {
+        glyphs.emplace_back(codePoint, glyph);
+      }
+    }
+  }
+  for (const auto& [first, firstGlyph] : glyphs) {
+    for (const auto& [second, secondGlyph] : glyphs) {
+      const std::int8_t quarters = face.Kern(firstGlyph, secondGlyph);
+      if (quarters != 0) {
+        std::printf("  U+%04X U+%04X: %d\n", static_cast<unsigned>(first), static_cast<unsigned>(second),
+                    static_cast<int>(quarters));
+      }
     }
   }
 }
@@ -168,18 +213,29 @@ int RunInfo(const std::vector<std::string>& arguments) {
   if (arguments.empty() || arguments[0].starts_with("--")) {
     return -1;
   }
+  // The characters named after --glyphs, and those after --kerning.
   std::vector<bn::font_tool::CodePoints> characters;
-  if (arguments.size() > 1) {
-    if (arguments[1] != "--glyphs" || arguments.size() == 2) {
-      return -1;
-    }
-    for (std::size_t i = 2; i < arguments.size(); ++i) {
-      bn::font_tool::CodePoints codePoints;
-      if (!bn::font_tool::ReadCodePoints(arguments[i], codePoints)) {
+  std::vector<bn::font_tool::CodePoints> kerned;
+  std::vector<bn::font_tool::CodePoints>* named = nullptr;
+  bool lastWasAnOption = false;
+  for (std::size_t i = 1; i < arguments.size(); ++i) {
+    if (arguments[i] == "--glyphs" || arguments[i] == "--kerning") {
+      if (lastWasAnOption) {
         return -1;
       }
-      characters.push_back(codePoints);
+      named = arguments[i] == "--glyphs" ? &characters : &kerned;
+      lastWasAnOption = true;
+      continue;
     }
+    bn::font_tool::CodePoints codePoints;
+    if (named == nullptr || !bn::font_tool::ReadCodePoints(arguments[i], codePoints)) {
+      return -1;
+    }
+    named->push_back(codePoints);
+    lastWasAnOption = false;
+  }
+  if (lastWasAnOption) {
+    return -1;  // An option with no characters after it.
   }
   std::string bytes;
   if (!ReadFile(arguments[0], bytes)) {
@@ -197,12 +253,14 @@ int RunInfo(const std::vector<std::string>& arguments) {
   std::printf("image %zu bytes, faces %zu\n", bytes.size(), fonts.Faces());
   for (std::size_t i = 0; i < fonts.Faces(); ++i) {
     const bn::draw::Face face = fonts.FaceAt(i);
-    std::printf("%-8s %-11s %2u px: %4u glyphs; ascent %d, descent %d, line %u, x-height %u\n",
+    std::printf("%-8s %-11s %2u px: %4u glyphs; ascent %d, descent %d, line %u, x-height %u; kerning %u by %u\n",
                 std::string(RoleName(face.Role())).c_str(), std::string(StyleName(face.Style())).c_str(),
                 static_cast<unsigned>(face.Size()), static_cast<unsigned>(face.Glyphs()),
                 static_cast<int>(face.Ascent()), static_cast<int>(face.Descent()),
-                static_cast<unsigned>(face.LineHeight()), static_cast<unsigned>(face.XHeight()));
+                static_cast<unsigned>(face.LineHeight()), static_cast<unsigned>(face.XHeight()),
+                static_cast<unsigned>(face.KernFirsts()), static_cast<unsigned>(face.KernSeconds()));
     PrintGlyphs(face, characters);
+    PrintKerning(face, kerned);
   }
   return 0;
 }

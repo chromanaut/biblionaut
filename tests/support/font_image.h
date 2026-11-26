@@ -3,12 +3,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <utility>
 #include <vector>
 
 // Making fonts images (draw/font.h) in memory for tests, the plain way from
 // the description of the layout: a face is its numbers and a list of glyphs,
 // each with the code point it is for and its picture a level of ink to a
 // pixel. Nothing here shares the font builder's code or the reader's.
+//
+// A face's kerning is given a pair of code points at a time. No two glyphs
+// are put in one class here: each character that is the first of some pair
+// has a class of its own as a first, in the order of the code points, and
+// each that is the second of some pair likewise as a second.
 
 namespace bn::test {
 
@@ -50,6 +56,9 @@ struct ImageFace {
   std::uint16_t xHeight = 10;
   ImageGlyph missing = Block(40, 8, 12, 1);    // Glyph 0.
   std::map<std::uint32_t, ImageGlyph> glyphs;  // By code point.
+  // How much further on the second of two characters is set after the
+  // first, in quarters of a pixel. Both have to have glyphs.
+  std::map<std::pair<std::uint32_t, std::uint32_t>, std::int8_t> kerning;
 };
 
 // A face of `role` and `style` at `size`, with glyph 0 and no others.
@@ -71,6 +80,9 @@ struct ImageFacePlaces {
   std::size_t glyphCount = 0;
   std::size_t pictures = 0;
   std::size_t pictureBytes = 0;
+  std::size_t kerning = 0;  // The table, a byte for each of `kernFirsts` by `kernSeconds`.
+  std::size_t kernFirsts = 0;
+  std::size_t kernSeconds = 0;
 };
 
 inline void PutLe16(std::vector<std::uint8_t>& out, std::size_t at, std::uint32_t value) {
@@ -137,9 +149,41 @@ inline std::vector<std::uint8_t> FontImageBytes(const std::vector<ImageFace>& fa
       PutLe32(out, at + 4, range.count);
       PutLe32(out, at + 8, range.glyph);
     }
+    // Kerning: a class for each character that is the first of a pair, and
+    // one for each that is the second, from 1 in the order of the code
+    // points.
+    std::map<std::uint32_t, std::uint8_t> firstClass;
+    std::map<std::uint32_t, std::uint8_t> secondClass;
+    for (const auto& [pair, quarters] : face.kerning) {
+      firstClass[pair.first] = 0;
+      secondClass[pair.second] = 0;
+    }
+    std::uint8_t next = 0;
+    for (auto& [codePoint, kernClass] : firstClass) {
+      kernClass = ++next;
+    }
+    next = 0;
+    for (auto& [codePoint, kernClass] : secondClass) {
+      kernClass = ++next;
+    }
     put.glyphs = out.size();
     put.glyphCount = glyphs.size();
     out.resize(put.glyphs + (glyphs.size() * 12), 0);
+    std::size_t numbered = 1;
+    for (const auto& [codePoint, glyph] : face.glyphs) {
+      const std::size_t at = put.glyphs + (numbered * 12);
+      out[at + 6] = firstClass.contains(codePoint) ? firstClass[codePoint] : 0;
+      out[at + 7] = secondClass.contains(codePoint) ? secondClass[codePoint] : 0;
+      ++numbered;
+    }
+    put.kerning = out.size();
+    put.kernFirsts = firstClass.size();
+    put.kernSeconds = secondClass.size();
+    out.resize(put.kerning + (put.kernFirsts * put.kernSeconds), 0);
+    for (const auto& [pair, quarters] : face.kerning) {
+      out[put.kerning + ((firstClass[pair.first] - 1U) * put.kernSeconds) + (secondClass[pair.second] - 1U)] =
+          static_cast<std::uint8_t>(quarters);
+    }
     std::vector<std::uint8_t> pictures;
     for (std::size_t g = 0; g < glyphs.size(); ++g) {
       const ImageGlyph& glyph = *glyphs[g];
@@ -170,6 +214,11 @@ inline std::vector<std::uint8_t> FontImageBytes(const std::vector<ImageFace>& fa
     PutLe32(out, put.record + 24, static_cast<std::uint32_t>(put.glyphs));
     PutLe32(out, put.record + 28, static_cast<std::uint32_t>(put.pictures));
     PutLe32(out, put.record + 32, static_cast<std::uint32_t>(put.pictureBytes));
+    if (put.kernFirsts * put.kernSeconds > 0) {
+      PutLe32(out, put.record + 36, static_cast<std::uint32_t>(put.kerning));
+      out[put.record + 40] = static_cast<std::uint8_t>(put.kernFirsts);
+      out[put.record + 41] = static_cast<std::uint8_t>(put.kernSeconds);
+    }
     if (places != nullptr) {
       places->push_back(put);
     }

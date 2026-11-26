@@ -29,7 +29,9 @@ using bn::test::ImageGlyph;
 using bn::test::PutLe16;
 using bn::test::PutLe32;
 
-// A face with the letters a to e, a space, and é.
+// A face with the letters a to e, a space, and é. It kerns three pairs: a
+// b after an a is a pixel nearer, a c after an a half a pixel further, and
+// a b after a d two pixels nearer.
 ImageFace SmallFace(std::uint8_t role = 0, std::uint8_t style = 0, std::uint16_t size = 20) {
   ImageFace face = bn::test::EmptyFace(role, style, size);
   face.glyphs[' '] = bn::test::Blank(20);
@@ -37,6 +39,9 @@ ImageFace SmallFace(std::uint8_t role = 0, std::uint8_t style = 0, std::uint16_t
     face.glyphs[letter] = Block(static_cast<std::uint16_t>(40 + letter - 'a'), 9, 10);
   }
   face.glyphs[0xE9] = Block(44, 9, 14, 2);
+  face.kerning[{'a', 'b'}] = -4;
+  face.kerning[{'a', 'c'}] = 2;
+  face.kerning[{'d', 'b'}] = -8;
   return face;
 }
 
@@ -81,14 +86,29 @@ bool EverythingLiesInside(const FontImage& fonts, std::span<const std::uint8_t> 
         return false;
       }
     }
+    std::vector<Glyph> first;
     for (std::uint32_t index = 0; index < face.Glyphs() && index < 64; ++index) {
-      if (face.GlyphAt(index, glyph) && !inside(glyph)) {
-        return false;
+      if (face.GlyphAt(index, glyph)) {
+        if (!inside(glyph)) {
+          return false;
+        }
+        first.push_back(glyph);
       }
     }
     if (face.Missing(glyph) && !inside(glyph)) {
       return false;
     }
+    // Its kerning, for every two of those glyphs: a byte each of the table,
+    // wherever the image says that is.
+    static_cast<void>(face.KernFirsts());
+    static_cast<void>(face.KernSeconds());
+    int kerned = 0;
+    for (const Glyph& one : first) {
+      for (const Glyph& other : first) {
+        kerned += face.Kern(one, other);
+      }
+    }
+    static_cast<void>(kerned);
   }
   return true;
 }
@@ -239,6 +259,139 @@ TEST(Face, GivesAPicturesInkAPixelAtATime) {
   ASSERT_TRUE(fonts.FaceAt(0).Find('y', glyph));
   EXPECT_EQ(glyph.Ink(0, 0), 3);
   EXPECT_EQ(glyph.Ink(1, 1), 3);
+}
+
+TEST(Face, KernsTwoOfItsGlyphsThatFollowOneAnother) {
+  std::vector<ImageFacePlaces> places;
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace()}, &places);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face face = fonts.FaceAt(0);
+  // a and d are firsts of pairs, b and c seconds: two classes of each, and
+  // a byte of table for each two.
+  EXPECT_EQ(face.KernFirsts(), 2);
+  EXPECT_EQ(face.KernSeconds(), 2);
+  EXPECT_EQ(face.KerningBytes(), 4U);
+  EXPECT_EQ(places[0].kernFirsts * places[0].kernSeconds, 4U);
+
+  const auto glyph = [&](std::uint32_t codePoint) {
+    Glyph found;
+    EXPECT_TRUE(face.Find(codePoint, found)) << codePoint;
+    return found;
+  };
+  EXPECT_EQ(glyph('a').kernFirst, 1);
+  EXPECT_EQ(glyph('d').kernFirst, 2);
+  EXPECT_EQ(glyph('b').kernSecond, 1);
+  EXPECT_EQ(glyph('c').kernSecond, 2);
+  EXPECT_EQ(glyph('e').kernFirst, 0);
+  EXPECT_EQ(glyph('a').kernSecond, 0);
+
+  EXPECT_EQ(face.Kern(glyph('a'), glyph('b')), -4);
+  EXPECT_EQ(face.Kern(glyph('a'), glyph('c')), 2);
+  EXPECT_EQ(face.Kern(glyph('d'), glyph('b')), -8);
+  // A pair it was given nothing for, though each kerns with another.
+  EXPECT_EQ(face.Kern(glyph('d'), glyph('c')), 0);
+  // The other way round is another pair.
+  EXPECT_EQ(face.Kern(glyph('b'), glyph('a')), 0);
+  EXPECT_EQ(face.Kern(glyph('c'), glyph('a')), 0);
+  // And glyphs that kern with nothing: a letter, the space, glyph 0.
+  EXPECT_EQ(face.Kern(glyph('e'), glyph('b')), 0);
+  EXPECT_EQ(face.Kern(glyph('a'), glyph('e')), 0);
+  EXPECT_EQ(face.Kern(glyph('a'), glyph(' ')), 0);
+  Glyph missing;
+  ASSERT_TRUE(face.Missing(missing));
+  EXPECT_EQ(face.Kern(glyph('a'), missing), 0);
+  EXPECT_EQ(face.Kern(missing, glyph('b')), 0);
+  EXPECT_EQ(face.Kern(glyph('a'), glyph('a')), 0);
+}
+
+TEST(Face, KernsNoGlyphThatIsNotItsOwn) {
+  // Two faces that kern the same pairs by different amounts, and one that
+  // kerns nothing.
+  ImageFace other = SmallFace(1);
+  other.kerning[{'a', 'b'}] = 12;
+  ImageFace plain = SmallFace(2);
+  plain.kerning.clear();
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), other, plain});
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face serif = fonts.FaceAt(0);
+  const Face sans = fonts.FaceAt(1);
+  const Face mono = fonts.FaceAt(2);
+  Glyph serifA;
+  Glyph serifB;
+  Glyph sansA;
+  Glyph sansB;
+  ASSERT_TRUE(serif.Find('a', serifA));
+  ASSERT_TRUE(serif.Find('b', serifB));
+  ASSERT_TRUE(sans.Find('a', sansA));
+  ASSERT_TRUE(sans.Find('b', sansB));
+  EXPECT_EQ(serifA.face, 0);
+  EXPECT_EQ(sansA.face, 1);
+  EXPECT_EQ(serif.Kern(serifA, serifB), -4);
+  EXPECT_EQ(sans.Kern(sansA, sansB), 12);
+  // One glyph of each face, either way, asked of either face; and a face
+  // asked about two glyphs of another.
+  EXPECT_EQ(serif.Kern(serifA, sansB), 0);
+  EXPECT_EQ(serif.Kern(sansA, serifB), 0);
+  EXPECT_EQ(sans.Kern(serifA, sansB), 0);
+  EXPECT_EQ(sans.Kern(serifA, serifB), 0);
+  EXPECT_EQ(serif.Kern(sansA, sansB), 0);
+
+  // A face with no kerning has no classes, and kerns nothing.
+  EXPECT_EQ(mono.KernFirsts(), 0);
+  EXPECT_EQ(mono.KernSeconds(), 0);
+  EXPECT_EQ(mono.KerningBytes(), 0U);
+  Glyph monoA;
+  Glyph monoB;
+  ASSERT_TRUE(mono.Find('a', monoA));
+  ASSERT_TRUE(mono.Find('b', monoB));
+  EXPECT_EQ(monoA.kernFirst, 0);
+  EXPECT_EQ(mono.Kern(monoA, monoB), 0);
+  // Nor does a face that is not one.
+  EXPECT_EQ(Face().Kern(serifA, serifB), 0);
+}
+
+TEST(Face, KernsNothingByAClassItsTableHasNot) {
+  std::vector<ImageFacePlaces> places;
+  const std::vector<std::uint8_t> good = FontImageBytes({SmallFace()}, &places);
+  // The records of a and b: glyph 0, the space, a, b.
+  const std::size_t a = places[0].glyphs + (std::size_t{2} * 12);
+  const std::size_t b = places[0].glyphs + (std::size_t{3} * 12);
+  for (const std::uint8_t spoiled : {std::uint8_t{3}, std::uint8_t{4}, std::uint8_t{0x80}, std::uint8_t{0xFF}}) {
+    // In memory of exactly the image's size, so that a byte read past the
+    // table, which ends where the pictures begin, would be another's.
+    std::vector<std::uint8_t> image = good;
+    image[a + 6] = spoiled;
+    FontImage fonts;
+    ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+    Face face = fonts.FaceAt(0);
+    Glyph first;
+    Glyph second;
+    ASSERT_TRUE(face.Find('a', first));
+    ASSERT_TRUE(face.Find('b', second));
+    EXPECT_EQ(first.kernFirst, spoiled);
+    EXPECT_EQ(face.Kern(first, second), 0) << static_cast<int>(spoiled);
+
+    image = good;
+    image[b + 7] = spoiled;
+    ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+    face = fonts.FaceAt(0);
+    ASSERT_TRUE(face.Find('a', first));
+    ASSERT_TRUE(face.Find('b', second));
+    EXPECT_EQ(face.Kern(first, second), 0) << static_cast<int>(spoiled);
+  }
+  // A class that the table does have is read as that class.
+  std::vector<std::uint8_t> image = good;
+  image[a + 6] = 2;  // An a that kerns as a d does.
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face face = fonts.FaceAt(0);
+  Glyph first;
+  Glyph second;
+  ASSERT_TRUE(face.Find('a', first));
+  ASSERT_TRUE(face.Find('b', second));
+  EXPECT_EQ(face.Kern(first, second), -8);
 }
 
 TEST(Face, DrawsGlyphZeroForWhatItLacks) {
@@ -485,6 +638,10 @@ TEST(FontImage, RefusesAFaceWhoseTablesLieOutsideIt) {
            Spoiling{28, size - 8},                                                // and of the pictures.
            Spoiling{32, static_cast<std::uint32_t>(places[1].pictureBytes + 1)},  // Which end where the image does.
            Spoiling{32, 0xFFFFFFFFU},
+           Spoiling{36, size - 3},     // And of the kerning, which is four bytes:
+           Spoiling{36, size + 1},     // begun too near the end, or beyond it,
+           Spoiling{36, 0xFFFFFFFEU},  //
+           Spoiling{40, 0x0000FFFFU},  // or with more classes than the image has bytes.
        }) {
     std::vector<std::uint8_t> image = good;
     PutLe32(image, record + spoiling.at, spoiling.value);
@@ -540,13 +697,15 @@ TEST(FontImage, WithAnyByteChangedGivesNothingFromOutsideIt) {
 bool SameGlyph(const Glyph& one, const Glyph& other) {
   return one.index == other.index && one.advance == other.advance && one.width == other.width &&
          one.height == other.height && one.left == other.left && one.top == other.top &&
-         one.pictureAt == other.pictureAt && std::ranges::equal(one.picture, other.picture);
+         one.pictureAt == other.pictureAt && std::ranges::equal(one.picture, other.picture) &&
+         one.kernFirst == other.kernFirst && one.kernSecond == other.kernSecond && one.face == other.face;
 }
 
 // Whether `image` opened through a map goes as it goes opened whole; and,
 // where it opens, whether every face has the same numbers, has no glyphs
 // until it is held, and then gives for every code point and glyph asked
-// what the whole image's face gives, the picture where the image has it.
+// what the whole image's face gives, the picture where the image has it,
+// and kerns every two of those glyphs alike.
 // Each stretch mapped is a copy of exactly its size, so the sanitizer sees
 // a byte read outside it; and nothing may be left mapped at the end.
 ::testing::AssertionResult SameThroughAMap(const std::vector<std::uint8_t>& image) {
@@ -574,7 +733,8 @@ bool SameGlyph(const Glyph& one, const Glyph& other) {
       if (!other.Valid() || one.Role() != other.Role() || one.Style() != other.Style() || one.Size() != other.Size() ||
           one.Ascent() != other.Ascent() || one.Descent() != other.Descent() ||
           one.LineHeight() != other.LineHeight() || one.XHeight() != other.XHeight() ||
-          one.Glyphs() != other.Glyphs()) {
+          one.Glyphs() != other.Glyphs() || one.KernFirsts() != other.KernFirsts() ||
+          one.KernSeconds() != other.KernSeconds()) {
         return ::testing::AssertionFailure() << "face " << i << " has other numbers";
       }
       Glyph glyph;
@@ -599,10 +759,25 @@ bool SameGlyph(const Glyph& one, const Glyph& other) {
                  << "face " << i << " has a picture elsewhere, at code point " << codePoint;
         }
       }
+      std::vector<Glyph> wholeGlyphs;
+      std::vector<Glyph> mappedGlyphs;
       for (std::uint32_t index = 0; index < one.Glyphs() && index < 64; ++index) {
         const bool found = one.GlyphAt(index, glyph);
         if (other.GlyphAt(index, same) != found || (found && !SameGlyph(glyph, same))) {
           return ::testing::AssertionFailure() << "face " << i << " differs at glyph " << index;
+        }
+        if (found) {
+          wholeGlyphs.push_back(glyph);
+          mappedGlyphs.push_back(same);
+        }
+      }
+      for (std::size_t first = 0; first < wholeGlyphs.size(); ++first) {
+        for (std::size_t second = 0; second < wholeGlyphs.size(); ++second) {
+          if (one.Kern(wholeGlyphs[first], wholeGlyphs[second]) !=
+              other.Kern(mappedGlyphs[first], mappedGlyphs[second])) {
+            return ::testing::AssertionFailure() << "face " << i << " kerns glyph " << wholeGlyphs[second].index
+                                                 << " after glyph " << wholeGlyphs[first].index << " otherwise";
+          }
         }
       }
       mapped.ReleaseFaces();
@@ -935,6 +1110,53 @@ TEST(FontImage, HoldsAFaceWhoseTablesAreApartAsOneStretch) {
   // The second face, whose tables are together, is.
   Face second = cramped.FaceAt(1);
   EXPECT_TRUE(cramped.Hold(second));
+}
+
+TEST(FontImage, HoldsAFacesKerningWhereverItLies) {
+  // The first face's table of kerning is made the third face's, which lies
+  // after the whole of the second face: its stretch runs on to the end of
+  // that table, and its kerning is read from there.
+  ImageFace last = SmallFace(2);
+  last.kerning = {{{'a', 'b'}, 20}, {{'a', 'c'}, 21}, {{'d', 'b'}, 22}, {{'d', 'c'}, 23}};
+  std::vector<ImageFacePlaces> places;
+  std::vector<std::uint8_t> image = FontImageBytes({SmallFace(), SmallFace(1), last}, &places);
+  PutLe32(image, places[0].record + 36, static_cast<std::uint32_t>(places[2].kerning));
+  EXPECT_TRUE(SameThroughAMap(image));
+
+  const std::size_t head = 16 + (3 * 48);
+  const std::size_t stretch = places[2].kerning + 4 - places[0].ranges;
+  bn::test::CopyingByteMap map(image, head + stretch);
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(map), FontStatus::kOk);
+  Face face = fonts.FaceAt(0);
+  ASSERT_TRUE(fonts.Hold(face));
+  EXPECT_EQ(fonts.HeldBytes(), stretch);
+  Glyph first;
+  Glyph second;
+  ASSERT_TRUE(face.Find('d', first));
+  ASSERT_TRUE(face.Find('c', second));
+  EXPECT_EQ(face.Kern(first, second), 23);
+  // A face that is not held kerns nothing, whatever glyphs it is shown.
+  const Face unheld = fonts.FaceAt(1);
+  EXPECT_EQ(unheld.Kern(first, second), 0);
+  // Nor does the face itself once it is given up, shown its own glyphs:
+  // its table is no longer to be read.
+  fonts.ReleaseFaces();
+  EXPECT_EQ(fonts.FaceAt(0).Kern(first, second), 0);
+
+  // A table before everything else of the face's is in its stretch too: the
+  // third face's is made the first's.
+  PutLe32(image, places[2].record + 36, static_cast<std::uint32_t>(places[0].kerning));
+  EXPECT_TRUE(SameThroughAMap(image));
+  bn::test::CopyingByteMap again(image);
+  FontImage fontsAgain;
+  ASSERT_EQ(fontsAgain.Open(again), FontStatus::kOk);
+  Face third = fontsAgain.FaceAt(2);
+  ASSERT_TRUE(fontsAgain.Hold(third));
+  EXPECT_EQ(fontsAgain.HeldBytes(), places[2].pictures + places[2].pictureBytes - places[0].kerning);
+  ASSERT_TRUE(third.Find('a', first));
+  ASSERT_TRUE(third.Find('b', second));
+  EXPECT_EQ(third.Kern(first, second), -4);
 }
 
 TEST(FontImage, OpenedThroughAMapRefusesWhatItRefusesWhole) {

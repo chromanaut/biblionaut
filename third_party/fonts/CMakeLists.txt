@@ -121,3 +121,13 @@ foreach(family noto plex source courier-prime)
   add_custom_target(bn_font_files_${family} DEPENDS ${BN_FONT_FILES_${family}})
   set(BN_FONT_FILES_${family} "${BN_FONT_FILES_${family}}" PARENT_SCOPE)
 endforeach()
+
+# The tests try bn-font's reading of kerning on two real fonts that kern:
+# Noto Serif Italic, which kerns Greek by other lookups than Latin, and
+# Noto Sans Regular, which has a rule an image cannot hold. So a build with
+# tests downloads those two when it is built, and no others.
+set(BN_FONT_FILES_TESTS "${BN_FONTS_DIR}/noto/NotoSerif-Italic.ttf" "${BN_FONTS_DIR}/noto/NotoSans-Regular.ttf")
+set(BN_FONT_FILES_TESTS "${BN_FONT_FILES_TESTS}" PARENT_SCOPE)
+if(BN_BUILD_TESTS)
+  add_custom_target(bn_font_files_tests ALL DEPENDS ${BN_FONT_FILES_TESTS})
+endif()

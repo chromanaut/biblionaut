@@ -93,6 +93,10 @@ FLOATS = {name: name for name in ("left", "right", "none")}
 BREAKS_AROUND = {"auto": "auto", "always": "always", "avoid": "avoid", "page": "always", "left": "always",
                  "right": "always", "recto": "always", "verso": "always", "avoid-page": "avoid"}
 BREAKS_INSIDE = {"auto": "auto", "avoid": "avoid", "avoid-page": "avoid"}
+LIST_STYLE_TYPES = {"none": "none", "disc": "disc", "circle": "circle", "square": "square", "decimal": "decimal",
+                    "decimal-leading-zero": "decimal-leading-zero", "lower-alpha": "lower-alpha",
+                    "lower-latin": "lower-alpha", "upper-alpha": "upper-alpha", "upper-latin": "upper-alpha",
+                    "lower-roman": "lower-roman", "upper-roman": "upper-roman"}
 
 # A unit: what it is kept as, and how many of that to one of it, as a fraction.
 UNITS = {"px": ("px", 1, 1), "em": ("em", 1, 1), "rem": ("rem", 1, 1), "%": ("%", 1, 1), "pt": ("px", 4, 3),
@@ -409,6 +413,32 @@ def declare(text: str, out: list[str], known: list | None = None, faces: list[st
         say("text-decoration", what)
         return True
 
+    def list_style() -> bool:
+        # What stands before an item, where, and a picture for it, in any order: the first is all that is told.
+        what = EVERYWHERE.get(lower(value))
+        if what is not None:
+            say("list-style-type", what)
+            return True
+        kinds = []
+        nones = 0
+        rest = value
+        while True:
+            piece, rest = next_piece(rest)
+            if not piece:
+                break
+            low = lower(piece)
+            if low == "none":
+                nones += 1
+            elif low in LIST_STYLE_TYPES:
+                kinds.append(LIST_STYLE_TYPES[low])
+            elif low not in ("inside", "outside") and not (len(piece) > 4 and low.startswith("url(") and
+                                                           piece.endswith(")")):
+                return False
+        if len(kinds) > 1 or (not kinds and not nones and not value.strip(SPACE)):
+            return False
+        say("list-style-type", kinds[0] if kinds else "none" if nones else "disc")
+        return True
+
     any_length = lambda v: length(v, negative=True)  # noqa: E731
     not_below = lambda v: length(v)  # noqa: E731
     understood = None
@@ -454,6 +484,10 @@ def declare(text: str, out: list[str], known: list | None = None, faces: list[st
         understood = words("break-inside", BREAKS_INSIDE)
     elif prop in ("width", "height"):
         understood = words(prop, AUTO, not_below)
+    elif prop == "list-style-type":
+        understood = words("list-style-type", LIST_STYLE_TYPES)
+    elif prop == "list-style":
+        understood = list_style()
     if understood is None:
         out.append("X property: " + name[:MOST_DROPPED_TEXT])
     elif not understood:
@@ -1123,11 +1157,13 @@ p[a=b, b { margin: 0 }
     properties = ["margin", "margin-top", "padding", "padding-left", "font-size", "line-height", "text-indent", "width",
                   "height", "vertical-align", "font-weight", "font-style", "font-variant", "font-family", "font",
                   "text-align", "text-decoration", "display", "float", "page-break-before", "break-inside", "color",
-                  "text-transform"]
+                  "text-transform", "list-style-type", "list-style", "list-style-position"]
     values = ["0", "1em", "-1.5em", "12pt", "2.54cm", "150%", "1.2", "auto", "inherit", "normal", "bold", "italic",
               "small-caps", "none", "left", "always", "avoid", "center", "underline", "700", "x-large", "1e3px",
               "3 em", "5vh", "calc(1px + 2px)", "Georgia, serif", "\"Gill Sans\"", "+.5in", "10mm", "1q", "2ex",
-              "red", "1px 2px", "1px 2px 3px", "bold 1em/1.5 serif", "super", "0.0004px", "999999999999px"]
+              "red", "1px 2px", "1px 2px 3px", "bold 1em/1.5 serif", "super", "0.0004px", "999999999999px",
+              "disc", "square inside", "lower-latin", "upper-roman", "none inside url(a.png)", "url(a b.png) circle",
+              "disc circle", "lower-greek", "none disc", "outside", "url(x", "decimal-leading-zero"]
     lines = []
     for _ in range(400):
         selector = rng.choice(["p", "div.a", ".b > i", "h1, h2", "a:link", "p::first-letter", "td[x]", "u + s", "*",

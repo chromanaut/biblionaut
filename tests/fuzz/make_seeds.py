@@ -874,6 +874,18 @@ pre, code { font-family: "Letter Gothic", Ubuntu Mono, "Courier New", monospace 
 """
 
 
+# What stands before an item of a list, by its own property and by the
+# one that says three things at once; and values that are not read.
+LISTS_SHEET = rb"""ol.toc, nav ol { list-style-type: none } ul { list-style-type: square }
+ol.a { list-style-type: lower-alpha } ol.b { list-style-type: UPPER-LATIN } ol.i { list-style-type: lower-roman }
+ol.z { list-style-type: decimal-leading-zero; list-style-type: lower-greek }
+ul.plain { list-style: none } ul.in { list-style: circle inside url("dot.png") } ul.pic { list-style: url(d.png) }
+ul.two { list-style: disc square } ul.odd { list-style: none disc; list-style: outside none upper-roman }
+li { list-style: inherit !important; list-style-position: inside; list-style-image: none; list-style: url(x }
+.end { list-style: initial; list-style: ; list-style-type: disc inside }
+"""
+
+
 def css_seeds() -> None:
     clear("css")
 
@@ -889,6 +901,8 @@ def css_seeds() -> None:
     seed("values-of-attributes-cut-short", 2, CUT_SHORT_SHEET)
     seed("a-style-attribute", 0, b"margin-left: 2em; font-weight: 700 !important; color: red; font-family: \"a;b\", serif")
     seed("a-media-query", 0, b"only screen and (max-width: 420px), not amzn-mobi")
+    seed("what-stands-before-an-item-of-a-list", 0, LISTS_SHEET)
+    seed("what-stands-before-an-item-of-a-list-two-bytes-at-a-time", 2, LISTS_SHEET)
     seed("the-kinds-of-face", 0, FAMILIES_SHEET)
     seed("the-kinds-of-face-a-few-bytes-at-a-time", 3, FAMILIES_SHEET)
     seed("a-list-of-families", 0, b'"AGaramondPro-Italic-0855", Monotype Sorts, "Shift Light", Arial-R, sans-serif')

@@ -20,7 +20,8 @@
 //     value all there, and a rank that its parts account for;
 //   - a declaration is of a property and a keyword there are, a number is
 //     within kCssMaxNumber, and is not below zero where the property
-//     cannot be;
+//     cannot be; what stands before an item of a list is one of the words
+//     for that, and those words are for nothing else;
 //   - a list of families comes to a kind of face, which is that of the
 //     first of its names that says, and `other` if none does;
 //   - the reader's counts are the counts of what it told;
@@ -145,13 +146,24 @@ class Listener final : public bn::epub::CssHandler {
     declared_ = true;
     ++declarations;
     const CssValue& value = declaration.value;
-    BN_FUZZ_CHECK(declaration.property <= CssProperty::kHeight, "a property there is not");
+    BN_FUZZ_CHECK(static_cast<std::size_t>(declaration.property) < bn::epub::kCssProperties, "a property there is not");
     Add(static_cast<std::uint32_t>(declaration.property) + (declaration.important ? 100U : 0U));
+    BN_FUZZ_CHECK(declaration.property != CssProperty::kListStyleType || value.kind == CssValue::Kind::kKeyword,
+                  "what stands before an item of a list is not a word");
     switch (value.kind) {
-      case CssValue::Kind::kKeyword:
-        BN_FUZZ_CHECK(value.keyword <= CssKeyword::kLarger, "a keyword there is not");
+      case CssValue::Kind::kKeyword: {
+        BN_FUZZ_CHECK(static_cast<std::size_t>(value.keyword) < bn::epub::kCssKeywords, "a keyword there is not");
+        const bool marker = value.keyword >= CssKeyword::kDisc && value.keyword <= CssKeyword::kUpperRoman;
+        if (declaration.property == CssProperty::kListStyleType) {
+          BN_FUZZ_CHECK(marker || value.keyword == CssKeyword::kNone || value.keyword == CssKeyword::kInherit ||
+                            value.keyword == CssKeyword::kInitial,
+                        "a word before an item of a list that is not one for that");
+        } else {
+          BN_FUZZ_CHECK(!marker, "a word for what stands before an item of a list, for another property");
+        }
         Add(static_cast<std::uint32_t>(value.keyword));
         break;
+      }
       case CssValue::Kind::kLength: {
         BN_FUZZ_CHECK(value.unit <= CssUnit::kPercent, "a unit there is not");
         BN_FUZZ_CHECK(value.number >= -bn::epub::kCssMaxNumber && value.number <= bn::epub::kCssMaxNumber,

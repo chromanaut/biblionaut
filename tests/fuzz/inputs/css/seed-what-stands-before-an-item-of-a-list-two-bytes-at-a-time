@@ -1,0 +1,7 @@
+ol.toc, nav ol { list-style-type: none } ul { list-style-type: square }
+ol.a { list-style-type: lower-alpha } ol.b { list-style-type: UPPER-LATIN } ol.i { list-style-type: lower-roman }
+ol.z { list-style-type: decimal-leading-zero; list-style-type: lower-greek }
+ul.plain { list-style: none } ul.in { list-style: circle inside url("dot.png") } ul.pic { list-style: url(d.png) }
+ul.two { list-style: disc square } ul.odd { list-style: none disc; list-style: outside none upper-roman }
+li { list-style: inherit !important; list-style-position: inside; list-style-image: none; list-style: url(x }
+.end { list-style: initial; list-style: ; list-style-type: disc inside }

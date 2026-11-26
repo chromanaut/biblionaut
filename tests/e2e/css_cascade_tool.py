@@ -40,7 +40,7 @@ MAX_CLASSES = 16
 PROPERTIES = ["font-style", "font-weight", "font-variant", "font-family", "font-size", "line-height", "text-align",
               "text-indent", "text-decoration", "vertical-align", "margin-top", "margin-right", "margin-bottom",
               "margin-left", "padding-top", "padding-right", "padding-bottom", "padding-left", "display", "float",
-              "break-before", "break-after", "break-inside", "width", "height"]
+              "break-before", "break-after", "break-inside", "width", "height", "list-style-type"]
 
 
 class Failure(Exception):
@@ -311,6 +311,8 @@ def random_sheet(rng: random.Random) -> bytes:
         declarations = "; ".join(rng.choice(["float: left", "float: right", "width: 1px", "width: 2em", "margin: 0 1px",
                                              "text-indent: 0", "font-family: A, \"b c\"", "font-family: serif",
                                              "font-family: \"Trade Gothic LT Std\", Georgia",
+                                             "list-style-type: none", "list-style: square inside",
+                                             "list-style-type: lower-latin",
                                              "font: italic 1em/1.2 Foo, 'Courier New'", "font-family: Monotype Corsiva",
                                              "height: 50%", "font: italic 1em/1.5 x", "color: red"]) +
                                  (" !important" if rng.random() < 0.15 else "") for _ in range(rng.randrange(1, 5)))

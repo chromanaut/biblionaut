@@ -33,11 +33,15 @@ to](css-cascade.md)).
 - **Properties**: `font-style`, `font-weight`, `font-variant`,
   `font-family`, `font-size`, `line-height`, `text-align`, `text-indent`,
   `text-decoration`, `vertical-align`, the four sides of `margin` and of
-  `padding`, `display`, `float`, `width`, `height`, and where a page may
-  break (`page-break-*` and `break-*`, as one). `margin`, `padding` and
-  `font` are taken apart into those. Any other property is dropped, and
-  so is a value that is not understood. `!important` is told with the
-  declaration.
+  `padding`, `display`, `float`, `width`, `height`, where a page may
+  break (`page-break-*` and `break-*`, as one), and what stands before an
+  item of a list (`list-style-type`: nothing, a disc, a circle, a square,
+  numbers, with a zero before the first nine or not, or letters or Roman
+  numbers in either case). `margin`, `padding`, `font` and `list-style`
+  are taken apart into those; of `list-style` that last is all that is
+  kept, and where a marker stands and a picture for it are passed over.
+  Any other property is dropped, and so is a value that is not
+  understood. `!important` is told with the declaration.
 - **A `font-family`** is told with its names as they were written and
   with the kind of face they come to: serif, sans, monospace, script or
   other ([Kinds of face](css-families.md)).
@@ -184,8 +188,8 @@ on sheets the test makes, on 600 of them damaged at random, and, through
 what was passed over across a folder of books. Over `corpus/` it begins:
 
 ```
-Style sheets: 1406 rules read, with 3660 declarations; 963 things passed over, in 28 books:
-       604  in   28 books  property
+Style sheets: 1406 rules read, with 3670 declarations; 953 things passed over, in 28 books:
+       594  in   28 books  property
        134  in   15 books  pseudo-class
         78  in   26 books  at-rule
         76  in   17 books  rule
@@ -193,7 +197,7 @@ Style sheets: 1406 rules read, with 3660 declarations; 963 things passed over, i
         19  in    9 books  media block
         17  in   17 books  value
          2  in    1 books  sibling selector
-  property, the 30 passed over most of 40:
+  property, the 30 passed over most of 38:
           75  in   15 books  all
           57  in   19 books  color
           39  in   24 books  border

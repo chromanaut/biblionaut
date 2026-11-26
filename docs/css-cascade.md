@@ -121,8 +121,8 @@ adds it up over a folder. Over `corpus/`:
 
 ```
 A table of all a book's rules, in the 28 books with style sheets:
-  bytes: 2172 at the median, 4090 for nine in ten, 4498 at the most
-  rules kept: 43 at the median, 87 for nine in ten, 105 at the most
+  bytes: 2172 at the median, 4090 for nine in ten, 4564 at the most
+  rules kept: 43 at the median, 88 for nine in ten, 105 at the most
   nodes: 7 at the median, 42 for nine in ten, 51 at the most
   books whose table is over 8 KB, 12 KB, 16 KB, 20 KB and 24 KB: 0, 0, 0, 0, 0
   rules left out of a table of 64 KB: 0

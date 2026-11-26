@@ -27,8 +27,9 @@
 //     namespace before an element's name) is dropped, and a rule all of
 //     whose selectors were dropped is dropped with them.
 //   - The properties of CssProperty. `margin`, `padding`, `font`,
-//     `page-break-*` and `break-*` are taken apart into those. Any other
-//     property is dropped, as is a value that is not understood.
+//     `list-style`, `page-break-*` and `break-*` are taken apart into
+//     those. Any other property is dropped, as is a value that is not
+//     understood.
 //   - `@media`: the rules in a block are read if the block is for `all`
 //     or `screen`, or for "not" some other kind of device, and has no
 //     condition in brackets. A reader's screen is not asked its size: what
@@ -73,10 +74,14 @@ enum class CssProperty : std::uint8_t {
   kBreakInside,  // auto, avoid
   kWidth,        // a length, or auto
   kHeight,
+  // What stands before an item of a list: none, disc, circle, square,
+  // decimal, decimal-leading-zero, lower-alpha, upper-alpha, lower-roman,
+  // upper-roman.
+  kListStyleType,
 };
 
 // How many properties there are.
-inline constexpr std::size_t kCssProperties = static_cast<std::size_t>(CssProperty::kHeight) + 1;
+inline constexpr std::size_t kCssProperties = static_cast<std::size_t>(CssProperty::kListStyleType) + 1;
 
 // The name of a property as CSS has it: "font-style", "margin-top", ...
 const char* CssPropertyName(CssProperty property) noexcept;
@@ -126,7 +131,19 @@ enum class CssKeyword : std::uint8_t {
   kXxLarge,
   kSmaller,
   kLarger,
+  kDisc,
+  kCircle,
+  kSquare,
+  kDecimal,
+  kDecimalLeadingZero,
+  kLowerAlpha,  // Also for `lower-latin`, which is the same letters.
+  kUpperAlpha,  // Also for `upper-latin`.
+  kLowerRoman,
+  kUpperRoman,
 };
+
+// How many keywords there are.
+inline constexpr std::size_t kCssKeywords = static_cast<std::size_t>(CssKeyword::kUpperRoman) + 1;
 
 // The word as CSS has it: "inherit", "small-caps", ... ("none" for kNone).
 const char* CssKeywordName(CssKeyword keyword) noexcept;

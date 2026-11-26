@@ -24,9 +24,11 @@ using bn::test::Block;
 using bn::test::FontImageBytes;
 using bn::test::ImageFace;
 
-// A serif whose letters a to z move the pen 40 quarters and up, each a
-// quarter more than the one before; an italic of it, each letter 10 more;
-// and a fallback with a Greek alpha that neither has.
+// A serif whose letters a to z have advances of 40 quarters of a pixel and
+// up, each a quarter more than the one before; an italic of it, each letter
+// 10 more; and a fallback with a Greek alpha that neither has. So an a is
+// 10 pixels, a b 10 and a quarter, a c 10 and a half, a d 10 and three
+// quarters, and an e 11.
 std::vector<std::uint8_t> ThreeFaces() {
   ImageFace serif = bn::test::EmptyFace(0, 0);
   ImageFace italic = bn::test::EmptyFace(0, bn::draw::kItalic);
@@ -71,18 +73,55 @@ class FaceMeasureTest : public testing::Test {
   FaceMeasure measure_;
 };
 
-TEST_F(FaceMeasureTest, MeasuresAPieceAsItsGlyphsAdvancesAddedUp) {
-  // "hyph" "en" "ation": h is 47, y 64, p 55, e 44, n 53, a 40, t 59, i 48, o 54.
+TEST_F(FaceMeasureTest, MovesThePenAWholeNumberOfPixelsAfterAGlyphAHalfGoingUp) {
+  const auto step = [](std::uint16_t advance) {
+    Glyph glyph;
+    glyph.advance = advance;
+    return FaceMeasure::PenStep(glyph);
+  };
+  EXPECT_EQ(step(0), 0);
+  EXPECT_EQ(step(1), 0);
+  EXPECT_EQ(step(2), 1);
+  EXPECT_EQ(step(40), 10);
+  EXPECT_EQ(step(41), 10);
+  EXPECT_EQ(step(42), 11);
+  EXPECT_EQ(step(43), 11);
+  EXPECT_EQ(step(44), 11);
+  EXPECT_EQ(step(0xFFFF), 0x4000);
+}
+
+TEST_F(FaceMeasureTest, MeasuresAPieceAsItsGlyphsStepsAddedUpInWholePixels) {
+  // "hyph" "en" "ation": in pixels h is 12, y 16, p 14, e 11, n 13, a 10,
+  // t 15, i 12, o 14; and a width is four to the pixel.
   const std::array<std::uint8_t, 3> ends = {4, 6, 11};
   std::array<std::uint16_t, 3> widths{};
   measure_.Measure("hyphenation", 0, ends, widths);
-  EXPECT_EQ(widths, (std::array<std::uint16_t, 3>{47 + 64 + 55 + 47, 44 + 53, 40 + 59 + 48 + 54 + 53}));
+  EXPECT_EQ(widths,
+            (std::array<std::uint16_t, 3>{4 * (12 + 16 + 14 + 12), 4 * (11 + 13), 4 * (10 + 15 + 12 + 14 + 13)}));
   EXPECT_EQ(measure_.BytesMeasured(), 11U);
 
-  // In another style, the other face's.
-  EXPECT_EQ(Width("abc", 1), 50 + 51 + 52);
+  // In another style, the other face's: 12.5, 12.75 and 13 pixels.
+  EXPECT_EQ(Width("abc", 1), 4 * (13 + 13 + 13));
   EXPECT_EQ(measure_.BytesMeasured(), 14U);
   EXPECT_EQ(Width(""), 0);
+}
+
+TEST_F(FaceMeasureTest, GivesALetterTheSameRoomWhereverItComes) {
+  // A c is 10 and a half pixels. Eight of them are 84 pixels added up as
+  // they are, and a pen put to the nearest pixel after each would move 11
+  // and 10 by turns. Here each is 11, however the word is cut.
+  EXPECT_EQ(Width("cccccccc"), 4 * 8 * 11);
+  const std::array<std::uint8_t, 8> ends = {1, 2, 3, 4, 5, 6, 7, 8};
+  std::array<std::uint16_t, 8> widths{};
+  measure_.Measure("cccccccc", 0, ends, widths);
+  for (const std::uint16_t width : widths) {
+    EXPECT_EQ(width, 4 * 11);
+  }
+  // And a b, a quarter over 10, is 10 each time.
+  const std::array<std::uint8_t, 3> uneven = {1, 5, 8};
+  std::array<std::uint16_t, 3> pieces{};
+  measure_.Measure("bbbbbbbb", 0, uneven, pieces);
+  EXPECT_EQ(pieces, (std::array<std::uint16_t, 3>{4 * 10, 4 * 40, 4 * 30}));
 }
 
 TEST_F(FaceMeasureTest, MeasuresACharacterOfSeveralBytesInThePieceItBegins) {
@@ -90,15 +129,18 @@ TEST_F(FaceMeasureTest, MeasuresACharacterOfSeveralBytesInThePieceItBegins) {
   const std::array<std::uint8_t, 2> ends = {3, 4};
   std::array<std::uint16_t, 2> widths{};
   measure_.Measure("c\xC3\xA9s", 0, ends, widths);
-  EXPECT_EQ(widths, (std::array<std::uint16_t, 2>{42 + 47, 58}));
+  // 10.5, 11.75 and 14.5 pixels.
+  EXPECT_EQ(widths, (std::array<std::uint16_t, 2>{4 * (11 + 12), 4 * 15}));
 }
 
 TEST_F(FaceMeasureTest, GivesTheSpaceAndTheHyphenOfAStyle) {
-  EXPECT_EQ(measure_.SpaceWidth(0), 20);
-  EXPECT_EQ(measure_.SpaceWidth(1), 22);
-  // The serif has U+2010 and is given it; the italic has a hyphen-minus only.
-  EXPECT_EQ(measure_.HyphenWidth(0), 26);
-  EXPECT_EQ(measure_.HyphenWidth(1), 28);
+  // Each to the nearest pixel, as a letter is: spaces of 5 and 5.5 pixels.
+  EXPECT_EQ(measure_.SpaceWidth(0), 4 * 5);
+  EXPECT_EQ(measure_.SpaceWidth(1), 4 * 6);
+  // The serif has U+2010, 6.5 pixels, and is given it; the italic has a
+  // hyphen-minus only, 7 pixels.
+  EXPECT_EQ(measure_.HyphenWidth(0), 4 * 7);
+  EXPECT_EQ(measure_.HyphenWidth(1), 4 * 7);
   Glyph glyph;
   ASSERT_TRUE(measure_.HyphenGlyph(0, glyph));
   EXPECT_EQ(glyph.advance, 26);
@@ -122,8 +164,9 @@ TEST_F(FaceMeasureTest, DrawsWhatAStyleLacksFromTheFallbackAndThenAsGlyphZero) {
   EXPECT_EQ(glyph.index, 0U);
   ASSERT_TRUE(measure_.GlyphFor(1, 0x3B2, glyph));
   EXPECT_EQ(glyph.advance, 38);
-  // And they are measured as they are drawn: a, alpha, beta.
-  EXPECT_EQ(Width("a\xCE\xB1\xCE\xB2"), 40 + 45 + 36);
+  // And they are measured as they are drawn: a, alpha, beta, of 10, 11.25
+  // and 9 pixels.
+  EXPECT_EQ(Width("a\xCE\xB1\xCE\xB2"), 4 * (10 + 11 + 9));
 
   // Without a fallback, what the style lacks is its glyph 0.
   measure_.SetFallback({});
@@ -142,29 +185,31 @@ TEST_F(FaceMeasureTest, GivesNoRoomToASoftHyphenOrAZeroWidthSpace) {
   EXPECT_EQ(Width("a\xC2\xAD"
                   "b\xE2\x80\x8B"
                   "c"),
-            40 + 41 + 42);
+            4 * (10 + 10 + 11));
 }
 
 TEST_F(FaceMeasureTest, MeasuresAByteThatIsNotUtf8AsTheReplacementCharacter) {
   // A byte that goes on with a character and begins none, a character cut
   // short, and one written the long way round: each byte is one.
+  // The replacement character is 15 pixels.
   EXPECT_EQ(Width("a\x80"
                   "b"),
-            40 + 60 + 41);
-  EXPECT_EQ(Width("a\xC3"), 40 + 60);
-  EXPECT_EQ(Width("\xC0\xAF"), 60 + 60);
-  // The italic has no replacement character, nor the fallback: its glyph 0.
-  EXPECT_EQ(Width("\xFF", 1), 38);
+            4 * (10 + 15 + 10));
+  EXPECT_EQ(Width("a\xC3"), 4 * (10 + 15));
+  EXPECT_EQ(Width("\xC0\xAF"), 4 * (15 + 15));
+  // The italic has no replacement character, nor the fallback: its glyph 0,
+  // of 9.5 pixels.
+  EXPECT_EQ(Width("\xFF", 1), 4 * 10);
 }
 
 TEST_F(FaceMeasureTest, GivesAStyleWithNoFaceOfItsOwnStyleZeros) {
   EXPECT_EQ(measure_.FaceOf(2).Style(), 0);
-  EXPECT_EQ(Width("abc", 2), 40 + 41 + 42);
-  EXPECT_EQ(measure_.SpaceWidth(7), 20);
+  EXPECT_EQ(Width("abc", 2), 4 * (10 + 10 + 11));
+  EXPECT_EQ(measure_.SpaceWidth(7), 4 * 5);
   // A style past the last there can be is style 0 as well.
   measure_.SetFace(FaceMeasure::kMostStyles, fonts_.Find(FaceRole::kSerif, bn::draw::kItalic, 20));
-  EXPECT_EQ(Width("abc", static_cast<std::uint16_t>(FaceMeasure::kMostStyles)), 40 + 41 + 42);
-  EXPECT_EQ(Width("abc", 0xFFFF), 40 + 41 + 42);
+  EXPECT_EQ(Width("abc", static_cast<std::uint16_t>(FaceMeasure::kMostStyles)), 4 * (10 + 10 + 11));
+  EXPECT_EQ(Width("abc", 0xFFFF), 4 * (10 + 10 + 11));
 }
 
 TEST_F(FaceMeasureTest, MeasuresNothingWithNoFaces) {
@@ -180,8 +225,8 @@ TEST_F(FaceMeasureTest, MeasuresNothingWithNoFaces) {
   EXPECT_FALSE(none.HyphenGlyph(0, glyph));
 }
 
-TEST_F(FaceMeasureTest, HoldsAPieceTooWideForItsNumberAtTheMost) {
-  // 255 letters of 300 quarters each are more than 16 bits hold.
+TEST_F(FaceMeasureTest, HoldsAPieceTooWideForItsNumberAtTheMostPixelsThereAre) {
+  // 255 letters of 75 pixels each are more than 16 bits hold in quarters.
   ImageFace wide;
   wide.glyphs['w'] = Block(300, 60, 10);
   const std::vector<std::uint8_t> image = FontImageBytes({wide});
@@ -198,18 +243,19 @@ TEST_F(FaceMeasureTest, HoldsAPieceTooWideForItsNumberAtTheMost) {
   const std::array<std::uint8_t, 1> whole = {255};
   std::array<std::uint16_t, 1> one{};
   measure.Measure(text, 0, whole, one);
-  EXPECT_EQ(one[0], 0xFFFF);
+  EXPECT_EQ(one[0], 4 * FaceMeasure::kMostPixels);
+  EXPECT_EQ(one[0], 0xFFFC);
 }
 
 TEST_F(FaceMeasureTest, StopsAtTheEndOfTheTextWhateverThePiecesSay) {
   const std::array<std::uint8_t, 3> ends = {2, 200, 255};
   std::array<std::uint16_t, 3> widths = {1, 1, 1};
   measure_.Measure("abc", 0, ends, widths);
-  EXPECT_EQ(widths, (std::array<std::uint16_t, 3>{40 + 41, 42, 0}));
+  EXPECT_EQ(widths, (std::array<std::uint16_t, 3>{4 * (10 + 10), 4 * 11, 0}));
   // And fills no more widths than it is given room for.
   std::array<std::uint16_t, 1> one = {1};
   measure_.Measure("abc", 0, ends, one);
-  EXPECT_EQ(one[0], 40 + 41);
+  EXPECT_EQ(one[0], 4 * (10 + 10));
 }
 
 // The lines of a paragraph set with it, each word's place and width.
@@ -242,13 +288,17 @@ TEST_F(FaceMeasureTest, SetsAParagraphWhoseLinesAreAsWideAsTheirGlyphs) {
   // The letters widen through the alphabet: three words, then two, two and one.
   ASSERT_EQ(sink.lines.size(), 4U);
   for (const bn::layout::TextLine& line : sink.lines) {
-    // A line's natural width is its words' glyphs and the spaces between.
+    // A line's natural width is its words' glyphs and the spaces between,
+    // each a whole number of pixels: its advance and half a pixel, less
+    // what is then over a pixel.
     const std::string_view words = text.substr(line.begin, line.end - line.begin);
     std::uint32_t wanted = 0;
     for (const char c : words) {
-      wanted += c == ' ' ? 20U : 40U + static_cast<std::uint32_t>(c - 'a');
+      const std::uint32_t advance = c == ' ' ? 20U : 40U + static_cast<std::uint32_t>(c - 'a');
+      wanted += ((advance + 2U) / 4U) * 4U;
     }
     EXPECT_EQ(line.width, wanted) << words;
+    EXPECT_EQ(line.width % 4U, 0U) << words;
     EXPECT_LE(line.width, width) << words;
   }
 }

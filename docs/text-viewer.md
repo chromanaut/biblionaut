@@ -32,7 +32,12 @@ line end inside one is a line the text ends, and what is between two
 asterisks is in italic. A paragraph is set by the paragraph setter with the
 image's faces for its measure and the built-in table of American English,
 its lines spread to the full width but the last, with 24 pixels left round
-the text and a third of a line between paragraphs.
+the text and a third of a line between paragraphs. Every glyph is on a
+whole pixel, and as many pixels after the one before it wherever the two
+come ([the measure](fonts.md#reading-the-image) says why). What a spread
+line has over goes between its words in whole pixels: the same to each
+place, and one more to as many places as there are pixels still left,
+taken evenly along the line.
 
 No picture of the page is kept. Setting a page leaves a list of its glyphs,
 each with where its picture goes (12 bytes a glyph, 3,072 of them at the
@@ -57,10 +62,10 @@ one already shown gives up its grays. For each page shown, a line says
 what it was and where the time went:
 
 ```
-text: page 1, serif 30 px, 21 lines, 368 glyphs: set 2 ms, planes 6 ms, refresh 3587 ms, gray planes 6 ms, gray pass 212 ms
-text: page 2, serif 30 px, 21 lines, 381 glyphs: set 1 ms, planes 7 ms, refresh 1585 ms, gray planes 6 ms, gray pass 216 ms; the end of the text
-text: page 1, serif 22 px, 29 lines, 709 glyphs: set 3 ms, planes 7 ms, refresh 1579 ms, gray planes 7 ms, gray pass 217 ms
-text: page 1, sans 22 px, 29 lines, 709 glyphs: set 3 ms, planes 8 ms, refresh 1587 ms, gray planes 9 ms, gray pass 216 ms
+text: page 1, serif 30 px, 21 lines, 368 glyphs: set 2 ms, planes 17 ms, refresh 3592 ms, gray planes 11 ms, gray pass 214 ms
+text: page 2, serif 30 px, 21 lines, 388 glyphs: set 1 ms, planes 12 ms, refresh 1605 ms, gray planes 12 ms, gray pass 225 ms; the end of the text
+text: page 1, serif 22 px, 29 lines, 709 glyphs: set 3 ms, planes 9 ms, refresh 1582 ms, gray planes 9 ms, gray pass 217 ms
+text: page 1, sans 22 px, 29 lines, 709 glyphs: set 4 ms, planes 11 ms, refresh 1584 ms, gray planes 9 ms, gray pass 218 ms
 ```
 
 (From the desktop, in a build with the sanitizers: the refreshes are the
@@ -87,29 +92,29 @@ preset in its partition and a file of text on its card:
 
 ```
 text: serif 22 px: 2 faces held, 262 KB of the image; 448 KB mapped
-text: page 1, serif 22 px, 22 lines, 609 glyphs: set 20 ms, planes 74 ms, refresh 3577 ms, gray planes 71 ms, gray pass 207 ms
-text: page 2, serif 22 px, 22 lines, 457 glyphs: set 15 ms, planes 65 ms, refresh 1576 ms, gray planes 64 ms, gray pass 204 ms
+text: page 1, serif 22 px, 22 lines, 610 glyphs: set 20 ms, planes 74 ms, refresh 3587 ms, gray planes 71 ms, gray pass 206 ms
+text: page 2, serif 22 px, 22 lines, 456 glyphs: set 14 ms, planes 66 ms, refresh 1577 ms, gray planes 64 ms, gray pass 204 ms
 text: sans 22 px: 2 faces held, 243 KB of the image; 448 KB mapped
-text: page 1, sans 22 px, 22 lines, 459 glyphs: set 16 ms, planes 63 ms, refresh 1577 ms, gray planes 61 ms, gray pass 207 ms
+text: page 1, sans 22 px, 22 lines, 458 glyphs: set 15 ms, planes 63 ms, refresh 1577 ms, gray planes 61 ms, gray pass 207 ms
 ```
 
 (and so on through 26, 30 and 34 px)
 
 ```
 text: serif 38 px: 2 faces held, 665 KB of the image; 832 KB mapped
-text: page 1, serif 38 px, 14 lines, 224 glyphs: set 17 ms, planes 69 ms, refresh 1570 ms, gray planes 67 ms, gray pass 201 ms
-text: page 2, serif 38 px, 14 lines, 204 glyphs: set 1 ms, planes 67 ms, refresh 1568 ms, gray planes 65 ms, gray pass 203 ms
+text: page 1, serif 38 px, 14 lines, 210 glyphs: set 16 ms, planes 67 ms, refresh 1572 ms, gray planes 65 ms, gray pass 202 ms
+text: page 2, serif 38 px, 14 lines, 219 glyphs: set 0 ms, planes 69 ms, refresh 1575 ms, gray planes 66 ms, gray pass 201 ms
 text: sans 38 px: 2 faces held, 617 KB of the image; 832 KB mapped
-text: page 1, sans 38 px, 14 lines, 201 glyphs: set 18 ms, planes 64 ms, refresh 1573 ms, gray planes 62 ms, gray pass 206 ms
-text: page 2, sans 38 px, 13 lines, 194 glyphs: set 5 ms, planes 63 ms, refresh 1569 ms, gray planes 61 ms, gray pass 207 ms
+text: page 1, sans 38 px, 14 lines, 201 glyphs: set 18 ms, planes 64 ms, refresh 1574 ms, gray planes 62 ms, gray pass 205 ms
+text: page 2, sans 38 px, 13 lines, 194 glyphs: set 5 ms, planes 63 ms, refresh 1579 ms, gray planes 61 ms, gray pass 207 ms
 text: the tour is done.
 ```
 
-Over the twenty pages, setting one took 33 ms at the most, of which reading
+Over the twenty pages, setting one took 32 ms at the most, of which reading
 its paragraphs off the card is a part; making its rows from the list of
 glyphs and writing them to the panel took 61 to 74 ms, and as long again
 for the marks of its grays; the rest of the 1.9 seconds a page takes is the
-panel's own: a half refresh of 1.57 seconds and a gray pass of 0.2. Ten
+panel's own: a half refresh of 1.58 seconds and a gray pass of 0.2. Ten
 times two faces were held, 22 stretches of the image mapped in all and
 none refused, 832 KB mapped at the most, of an image of 9.6 MB; and
 233,692 bytes of the heap stayed free. Whether the letters are good to

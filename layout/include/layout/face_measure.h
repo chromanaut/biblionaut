@@ -16,10 +16,23 @@
 // with its style's face if the face has a glyph for it, with the fallback
 // face if that has one, and otherwise with its style's face's glyph for
 // what it lacks. A soft hyphen and a zero width space are not drawn and
-// take no room. A character's width is its glyph's advance, in quarters of
-// a pixel, as the setter counts, and a piece of a word is as wide as its
-// characters added up: no kerning yet. So what is drawn from the pieces'
-// widths lines up exactly with what was measured.
+// take no room.
+//
+// Every glyph is drawn on a whole pixel, and a glyph is always the same
+// number of pixels after the one before it: its advance, which an image has
+// in quarters of a pixel, to the nearest pixel (PenStep()). So the same two
+// letters are the same distance apart wherever they come on a page. Adding
+// the advances up as they are and rounding where the pen has got to would
+// not give that: two letters would be a pixel further apart in one place
+// than in another, by what was left over before them, and that is plain to
+// the eye. There is no kerning yet; when there is, it is added to the
+// advance before the rounding.
+//
+// Widths are in quarters of a pixel, as the setter counts, and each is a
+// whole number of pixels: a piece of a word is as wide as its characters'
+// steps added up, and a space and a hyphen are rounded as a letter is. So
+// what is drawn from the pieces' widths lines up exactly with what was
+// measured.
 //
 // The hyphen shown where a line ends inside a word is the style's U+2010,
 // or its hyphen-minus if it has none.
@@ -43,6 +56,18 @@ class FaceMeasure final : public TextMeasure {
   bool GlyphFor(std::uint16_t style, std::uint32_t codePoint, draw::Glyph& glyph) const noexcept;
   // The glyph of the hyphen shown at a line's end.
   bool HyphenGlyph(std::uint16_t style, draw::Glyph& glyph) const noexcept;
+
+  // What a width is counted in: so many to a pixel.
+  static constexpr std::uint16_t kUnitsToAPixel = 4;
+  // The most pixels a width can say.
+  static constexpr std::uint16_t kMostPixels = 0xFFFF / kUnitsToAPixel;
+  // How many pixels the pen moves on after `glyph`: its advance to the
+  // nearest pixel, a half going up. Whoever draws what was measured moves
+  // the pen by this and by nothing else.
+  static constexpr std::uint16_t PenStep(const draw::Glyph& glyph) noexcept {
+    return static_cast<std::uint16_t>((static_cast<std::uint32_t>(glyph.advance) + (kUnitsToAPixel / 2U)) /
+                                      kUnitsToAPixel);
+  }
 
   void Measure(std::string_view text, std::uint16_t style, std::span<const std::uint8_t> ends,
                std::span<std::uint16_t> widths) noexcept override;

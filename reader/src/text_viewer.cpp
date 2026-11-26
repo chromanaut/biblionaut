@@ -581,19 +581,28 @@ void TextViewer::PageSet(std::uint64_t now) noexcept {
 }
 
 void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) noexcept {
-  const std::int32_t available = (pageWidth_ - (2 * kMargin)) * 4;
+  // Everything here is in whole pixels, as the measure counted the line:
+  // a glyph is drawn where the pen is, and the pen moves on by the glyph's
+  // step, so two letters are as far apart here as anywhere else.
+  const std::int32_t available = pageWidth_ - (2 * kMargin);
+  const auto width = static_cast<std::int32_t>(line.width / layout::FaceMeasure::kUnitsToAPixel);
   // What is over, on a line to be spread, goes between its words: the same
-  // to each place, and a quarter of a pixel more to the first few.
+  // to each place, and a pixel more to as many places as there are pixels
+  // still left, taken evenly along the line.
   std::int32_t extra = 0;
   std::int32_t leftOver = 0;
-  if (!line.last && !line.overfull && line.spaces > 0 && static_cast<std::int32_t>(line.width) < available) {
-    extra = (available - static_cast<std::int32_t>(line.width)) / line.spaces;
-    leftOver = (available - static_cast<std::int32_t>(line.width)) % line.spaces;
+  if (!line.last && !line.overfull && line.spaces > 0 && width < available) {
+    extra = (available - width) / line.spaces;
+    leftOver = (available - width) % line.spaces;
   }
   const std::string_view text = paragraph_.text;
   std::size_t nextStyle = 0;
   std::uint16_t style = kRegular;
-  std::int32_t pen = kMargin * 4;
+  std::int32_t pen = kMargin;
+  // Of the pixels left over, how much is owed so far, in parts of a pixel,
+  // `line.spaces` to one. It begins at a half, so that one pixel over goes
+  // to the middle of the line and not to an end of it.
+  std::int32_t owed = line.spaces / 2;
   bool inSpace = false;
   for (std::size_t at = line.begin; at < line.end && at < text.size();) {
     while (nextStyle < paragraph_.styles.size() && paragraph_.styles[nextStyle].first <= at) {
@@ -603,8 +612,15 @@ void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) 
     if (text[at] == ' ') {
       // A run of spaces is one place between words.
       if (!inSpace) {
-        pen += measure_.SpaceWidth(style) + extra + (leftOver > 0 ? 1 : 0);
-        leftOver = leftOver > 0 ? leftOver - 1 : 0;
+        // The pixels left over are owed a share at each place, and a place
+        // has one when what is owed has come to a whole pixel.
+        std::int32_t more = 0;
+        owed += leftOver;
+        if (leftOver > 0 && owed >= line.spaces) {
+          owed -= line.spaces;
+          more = 1;
+        }
+        pen += (measure_.SpaceWidth(style) / layout::FaceMeasure::kUnitsToAPixel) + extra + more;
         inSpace = true;
       }
       ++at;
@@ -616,7 +632,7 @@ void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) 
     draw::Glyph glyph;
     if (measure_.GlyphFor(style, character.good ? character.codePoint : kReplacement, glyph)) {
       PlaceGlyph(glyph, pen, baseline);
-      pen += glyph.advance;
+      pen += layout::FaceMeasure::PenStep(glyph);
     }
   }
   draw::Glyph hyphen;
@@ -625,12 +641,11 @@ void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) 
   }
 }
 
-void TextViewer::PlaceGlyph(const draw::Glyph& glyph, std::int32_t penQuarters, std::int32_t baseline) noexcept {
+void TextViewer::PlaceGlyph(const draw::Glyph& glyph, std::int32_t pen, std::int32_t baseline) noexcept {
   if (glyph.picture.empty()) {
     return;  // A space, or the like: nothing to draw.
   }
-  // The pen to the nearest pixel.
-  const std::int32_t left = ((penQuarters + 2) / 4) + glyph.left;
+  const std::int32_t left = pen + glyph.left;
   const std::int32_t top = baseline - glyph.top;
   if (left >= pageWidth_ || top >= pageHeight_ || left + glyph.width <= 0 || top + glyph.height <= 0 ||
       left > INT16_MAX || top > INT16_MAX) {

@@ -228,8 +228,12 @@ class Element:
         self.name = name
         self.attributes = attributes
         self.children: list[Element] = []
+        # The elements and the pieces of text inside it, in their order; a reference to an entity is "&".
+        self.content: list[Element | str] = []
         self.said: dict[str, str] = {}
         self.first_letter: dict[str, str] = {}
+        # What it came to, by name, for whoever works on from it; "display" alone for what is nothing.
+        self.came: dict = {}
 
 
 class Styles:
@@ -258,12 +262,21 @@ class Styles:
             element.said, element.first_letter = said[count]
             count += 1
             (open_elements[-1].children if open_elements else root).append(element)
+            if open_elements:
+                open_elements[-1].content.append(element)
             open_elements.append(element)
+
+        def text(piece: str) -> None:
+            if open_elements:
+                open_elements[-1].content.append(piece)
 
         parser = xml.parsers.expat.ParserCreate()
         parser.StartElementHandler = start
         parser.EndElementHandler = lambda _name: open_elements.pop()
+        parser.CharacterDataHandler = text
+        parser.SkippedEntityHandler = lambda _name, is_parameter: None if is_parameter else text("&")
         parser.Parse(document, True)
+        self.root = root
 
         self.elements = count
         self.lines: list[str] = []
@@ -318,6 +331,7 @@ class Styles:
                 self.left_out["not_shown"] += 1
             out.append("C display: none")
             now.hidden = True
+            element.came = {"display": "none"}
             return now
         if display != "inline":
             out.append("C display: " + display)
@@ -468,12 +482,14 @@ class Styles:
                     out.append(f"C {kind}-{which}: {shown}{book(from_book[kind][index])}")
 
         # Its width and height, the side it is floated to, and where a page may end.
+        sizes = {}
         for which in ("width", "height"):
             asked = said.get(which)
             if asked == "inherit":
                 self.left_out["inherits_of_own"] += 1
             elif asked is not None and amount(asked):
-                out.append(f"C {which}: {length_text(as_length(asked, text.size, root))}")
+                sizes[which] = as_length(asked, text.size, root)
+                out.append(f"C {which}: {length_text(sizes[which])}")
         if said.get("float") in ("left", "right"):
             out.append("C float: " + said["float"])
         elif said.get("float") == "inherit":
@@ -500,12 +516,18 @@ class Styles:
             self.left_out["inherits_of_own"] += 1
 
         # Its first letter.
+        letter, floated = None, False
         if element.first_letter:
             letter = Text(text)
             set_text(element.first_letter, text, True, root, letter)
             floated = element.first_letter.get("float") in ("left", "right")
             out.append("F first-letter: floated" if floated else "F first-letter")
             out.extend(letter.lines("F", self.languages))
+        element.came = {"display": display, "text": text, "lines": now, "space": space, "from_book": from_book,
+                        "auto": is_auto, "sizes": sizes, "floated": said.get("float") in ("left", "right"),
+                        "break_before": before == "always", "break_after": after == "always", "keep": keep,
+                        "keep_from_book": keep_from_book, "keep_together": said.get("break-inside") == "avoid",
+                        "letter": letter, "letter_floated": floated}
         return now
 
 

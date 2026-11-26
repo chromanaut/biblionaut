@@ -273,6 +273,18 @@ class StyleStack final {
   std::size_t Depth() const noexcept { return depth_; }
   std::size_t Levels() const noexcept { return levels_; }
 
+  // What the open element numbered `index`, the outermost being 0, passes
+  // to the elements inside it, as Open() said it of that element: how its
+  // text is set, what is set of a block's lines, what stands before the
+  // items of a list, the direction and the white space. The rest of `said`
+  // is left as it is. For an element deeper than is kept, what the deepest
+  // kept passes; for one that is not open, or with none kept, what an
+  // element inside nothing has.
+  void Passes(std::size_t index, ElementStyle& said) const noexcept;
+  // How many lists that element is inside, itself among them if it is
+  // one; 255 at the most.
+  std::uint8_t Lists(std::size_t index) const noexcept;
+
   // The tag of the language with this number, as it was first written; an
   // empty one for 0 or a number there is not.
   std::string_view Language(std::uint8_t language) const noexcept;
@@ -300,6 +312,8 @@ class StyleStack final {
   // The level of the element that the one opening is inside, as far as
   // one is kept.
   Level Outside() const noexcept;
+  // The level of the open element numbered `index`, as Passes() has it.
+  Level At(std::size_t index) const noexcept;
   std::uint8_t LanguageOf(std::string_view tag, std::uint8_t outside) noexcept;
   void Count(StyleLeftOut kind) noexcept { ++leftOut_[static_cast<std::size_t>(kind)]; }
 

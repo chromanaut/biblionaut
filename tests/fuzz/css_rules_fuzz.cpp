@@ -1,6 +1,7 @@
 // The fuzz target for the table of a book's rules and the cascade
-// (epub/css_rules.h), and for what each element then comes to
-// (epub/style_stack.h).
+// (epub/css_rules.h), for what each element then comes to
+// (epub/style_stack.h), and for the blocks a document is made into
+// (epub/document_blocks.h).
 //
 // What it is given:
 //
@@ -8,14 +9,16 @@
 //            bits 2 to 3: how much the cascade has, for the open elements
 //            bits 4 to 5: how the document's sheets are ordered, and
 //                         whether one is left out of what it is given
-//            bits 6 to 7: how many open elements the stack of styles keeps
+//            bits 6 to 7: how many open elements the stack of styles keeps,
+//                         and what finds the document's blocks
 //   the rest up to four sheets and then a document, a byte of zero between
 //            one and the next: whatever comes last is the document
 //
 // A document is not XML, which has a target of its own, but a line for
 // each thing a parser would tell of: `<name|attribute|value|...` for an
-// element that opens, with as many attributes as it has, and `>` for one
-// that closes. Any other line is passed over.
+// element that opens, with as many attributes as it has, `>` for one that
+// closes, `"` and then some text for text, and `#` for a picture. Any
+// other line is passed over.
 //
 // The sheets are read into a table, all but the last; where the table then
 // stands is kept, the last is read, and the document is gone through with
@@ -42,8 +45,18 @@
 //     is nothing is nothing; a block's text is neither raised nor lowered,
 //     and no text is both; a distance between lines has an amount of its
 //     own kind and no other; a first letter is told of when a rule set
-//     something for it and not otherwise; and the document gone through
-//     again comes to the same.
+//     something for it and not otherwise; what it says an open element
+//     passes to those inside it is what it said of that element as it
+//     opened; and the document gone through again comes to the same;
+//   - what finds the document's blocks says of each element what the
+//     stack of styles says of it; a block ends only where one is open, and
+//     only as an element opens or closes; one begins only where none is
+//     open; white space begins none, and other text and a picture are
+//     always part of one unless they are inside what is nothing, where
+//     nothing happens at all; a block's record is of kinds there are, a
+//     heading alone has a level, and a rule has no marker and no first
+//     letter; the floated text a block began with ends only for a block
+//     that began so; and no call does more work than the most it says.
 
 #include <algorithm>
 #include <array>
@@ -59,6 +72,7 @@
 #include "css_reference.h"
 #include "epub/css.h"
 #include "epub/css_rules.h"
+#include "epub/document_blocks.h"
 #include "epub/style_stack.h"
 #include "epub/xml.h"
 #include "fuzz_support.h"
@@ -85,6 +99,8 @@ constexpr std::size_t kMostAttributes = 24;
 // One element of a document: its name and attributes, or that it closes.
 struct Step {
   bool opens = false;
+  bool text = false;     // Text: `name` is the text.
+  bool picture = false;  // A picture.
   std::string name;
   std::vector<std::pair<std::string, std::string>> attributes;
 };
@@ -101,6 +117,15 @@ std::vector<Step> StepsOf(std::string_view document) {
     if (line == ">" && depth > 0) {
       steps.push_back({});
       --depth;
+    } else if (!line.empty() && line.front() == '"') {
+      Step step;
+      step.text = true;
+      step.name = line.substr(1);
+      steps.push_back(std::move(step));
+    } else if (line == "#") {
+      Step step;
+      step.picture = true;
+      steps.push_back(std::move(step));
     } else if (!line.empty() && line.front() == '<' && opened < kMostElements) {
       Step step;
       step.opens = true;
@@ -257,10 +282,78 @@ void CheckElement(const bn::epub::ElementStyle& element, const CssStyle& firstLe
   }
 }
 
-// Goes through the document with a cascade over `rules`, and a stack of
-// styles beside it that keeps `styleLevels` open elements; and with
-// `reference` beside the cascade, if that is given, which has to say the
-// same.
+// A block's record, held to what its header says and added up.
+void CheckRecord(const bn::epub::BlockRecord& record, const bn::epub::StyleStack& stack, Said& said) {
+  using bn::epub::BlockKind;
+  BN_FUZZ_CHECK(record.kind <= BlockKind::kTableCell, "a kind of block that there is not");
+  BN_FUZZ_CHECK(record.kind == BlockKind::kHeading ? record.headingLevel >= 1 && record.headingLevel <= 6
+                                                   : record.headingLevel == 0,
+                "a heading with no level, or a level on what is no heading");
+  BN_FUZZ_CHECK(record.align <= bn::epub::StyleAlign::kEnd && record.marker <= bn::epub::StyleMarker::kUpperRoman &&
+                    record.lineHeight.kind <= bn::epub::StyleLineHeight::Kind::kLength,
+                "an alignment, a marker or a kind of line height that there is not");
+  BN_FUZZ_CHECK(record.hasMarker ||
+                    (record.marker == bn::epub::StyleMarker::kNone && record.number == 0 && !record.markerFromBook),
+                "a marker's number on a block that has no marker");
+  BN_FUZZ_CHECK(record.centred || record.width.IsZero(), "a width on a block that is not centred");
+  BN_FUZZ_CHECK(record.hasFirstLetter || !record.firstLetterFloated, "a first letter floated that there is not");
+  BN_FUZZ_CHECK(
+      record.kind != BlockKind::kRule || (!record.hasMarker && !record.hasFirstLetter && !record.beginsFloated),
+      "a rule with a marker, a first letter or floated text");
+  said.Add(static_cast<std::uint32_t>(record.kind) + (std::uint32_t{record.headingLevel} << 4U) +
+           (static_cast<std::uint32_t>(record.align) << 8U) + (static_cast<std::uint32_t>(record.marker) << 12U) +
+           (static_cast<std::uint32_t>(record.lineHeight.kind) << 16U) + (std::uint32_t{record.quoteDepth} << 20U));
+  said.Add((record.alignFromBook ? 1U : 0U) + (record.rightToLeft ? 2U : 0U) + (record.spacesAsWritten ? 4U : 0U) +
+           (record.sizeFromBook ? 8U : 0U) + (record.lineHeightFromBook ? 16U : 0U) + (record.hasIndent ? 32U : 0U) +
+           (record.indentFromBook ? 64U : 0U) + (record.marginLeftFromBook ? 128U : 0U) +
+           (record.marginRightFromBook ? 256U : 0U) + (record.spaceBeforeFromBook ? 512U : 0U) +
+           (record.breakBefore ? 1024U : 0U) + (record.keepWithNext ? 2048U : 0U) +
+           (record.keepWithNextFromBook ? 4096U : 0U) + (record.keepTogether ? 8192U : 0U) +
+           (record.floated ? 16384U : 0U) + (record.centred ? 32768U : 0U) + (record.hasMarker ? 65536U : 0U) +
+           (record.markerFromBook ? 131072U : 0U) + (record.hasFirstLetter ? 262144U : 0U) +
+           (record.firstLetterFloated ? 524288U : 0U) + (record.beginsFloated ? 1048576U : 0U) +
+           (std::uint32_t{record.listDepth} << 24U));
+  said.Add(record.size + (std::uint32_t{record.lineHeight.multiple} << 16U));
+  said.Add(static_cast<std::uint32_t>(record.number));
+  Add(record.lineHeight.length, said);
+  Add(record.indent, said);
+  Add(record.marginLeft, said);
+  Add(record.marginRight, said);
+  Add(record.spaceBefore, said);
+  Add(record.width, said);
+  if (record.hasFirstLetter) {
+    CheckText(record.firstLetter, stack, said);
+  }
+}
+
+// What a call made of a document's blocks, held to what the header says.
+// `open` is whether a block was open before it, and is made whether one
+// is after; `element` is whether the call was for an element, which alone
+// can end a block; `floated` is whether the open block began floated.
+void CheckChange(const bn::epub::BlockChange& change, const bn::epub::DocumentBlocks& blocks, bool element, bool& open,
+                 bool& floated, Said& said) {
+  BN_FUZZ_CHECK(!change.ends || (open && element),
+                "a block ends where none is open, or where no element opens or closes");
+  open = open && !change.ends;
+  floated = floated && !change.ends;
+  BN_FUZZ_CHECK(!change.begins || !open, "a block begins where one is open");
+  if (change.begins) {
+    open = true;
+    CheckRecord(blocks.Record(), blocks.Styles(), said);
+    floated = blocks.Record().beginsFloated;
+  }
+  BN_FUZZ_CHECK(blocks.HasBlock() == open, "whether a block is open is not what the calls said");
+  BN_FUZZ_CHECK((!change.lineEnds && !change.shown) || open, "a line ends, or something is shown, in no block");
+  BN_FUZZ_CHECK(!change.floatEnds || (open && floated), "floated text ends in a block that did not begin with any");
+  floated = floated && !change.floatEnds;
+  said.Add((change.ends ? 1U : 0U) + (change.begins ? 2U : 0U) + (change.lineEnds ? 4U : 0U) +
+           (change.floatEnds ? 8U : 0U) + (change.shown ? 16U : 0U));
+}
+
+// Goes through the document with a cascade over `rules`, with a stack of
+// styles beside it that keeps `styleLevels` open elements, and with what
+// finds the document's blocks, keeping as many; and with `reference`
+// beside the cascade, if that is given, which has to say the same.
 Said Go(const CssRules& rules, std::span<const std::uint8_t> sheets, const std::vector<Step>& steps,
         std::size_t cascadeBytes, std::size_t styleLevels, bn::test::CssReference* reference) {
   std::vector<std::uint8_t> memory(cascadeBytes);
@@ -276,16 +369,55 @@ Said Go(const CssRules& rules, std::span<const std::uint8_t> sheets, const std::
   BN_FUZZ_CHECK(stack.Levels() == styleLevels,
                 "the stack of styles keeps another number of elements than it has room for");
   stack.Begin();
+  std::vector<std::uint8_t> blocksMemory(styleLevels == 0 ? 0
+                                                          : bn::epub::StyleStack::kLanguagesBytes +
+                                                                (styleLevels * bn::epub::DocumentBlocks::kLevelBytes));
+  bn::epub::DocumentBlocks blocks(blocksMemory);
+  BN_FUZZ_CHECK(blocks.Levels() == styleLevels,
+                "what finds the blocks keeps another number of elements than it has room for");
+  blocks.Begin();
+  bool blockOpen = false;
+  bool blockFloated = false;
   std::vector<bool> nothing;  // For each open element, whether it or one it is inside is nothing.
   std::uint32_t tooDeep = 0;
   Said said;
   for (const Step& step : steps) {
+    if (step.text || step.picture) {
+      const bool hidden = !nothing.empty() && nothing.back();
+      const bool blank = step.picture ? false : step.name.find_first_not_of(" \t\n\r\f") == std::string::npos;
+      const bool was = blockOpen;
+      const bn::epub::BlockChange change = step.picture ? blocks.Picture() : blocks.Text(step.name);
+      BN_FUZZ_CHECK(blocks.Work() <= bn::epub::DocumentBlocks::MostWorkFor(0, step.name.size(), blocks.Levels()),
+                    "text took more work of what finds the blocks than the most it says");
+      CheckChange(change, blocks, false, blockOpen, blockFloated, said);
+      BN_FUZZ_CHECK(!change.lineEnds && !change.floatEnds, "a line or floated text ends at text");
+      if (hidden) {
+        BN_FUZZ_CHECK(!change.begins && !change.shown, "what is inside something that is nothing is shown");
+      } else if (blank) {
+        BN_FUZZ_CHECK(!change.begins && change.shown == was, "white space begins a block, or is shown in none");
+      } else {
+        BN_FUZZ_CHECK(change.shown && change.begins == !was, "text or a picture is not part of a block");
+        const bn::epub::TextStyle now = blocks.TextNow();
+        Said scratch;
+        CheckText(now, blocks.Styles(), scratch);
+        said.Add(scratch.digest);
+      }
+      continue;
+    }
     if (!step.opens) {
       cascade.Close();
       const std::size_t open = stack.Depth();
       stack.Close();
       BN_FUZZ_CHECK(stack.Depth() == (open == 0 ? 0 : open - 1),
                     "an element closed and the stack of styles does not count it so");
+      const bool hidden = !nothing.empty() && nothing.back();
+      const bn::epub::BlockChange change = blocks.Close();
+      BN_FUZZ_CHECK(blocks.Depth() == stack.Depth(), "what finds the blocks counts other elements open than there are");
+      BN_FUZZ_CHECK(blocks.Work() <= bn::epub::DocumentBlocks::MostWorkFor(0, 0, blocks.Levels()),
+                    "a closing took more work of what finds the blocks than the most it says");
+      CheckChange(change, blocks, true, blockOpen, blockFloated, said);
+      BN_FUZZ_CHECK(!hidden || (!change.ends && !change.floatEnds), "what is nothing ends a block as it closes");
+      BN_FUZZ_CHECK(!change.begins && !change.lineEnds && !change.shown, "a closing begins something");
       if (!nothing.empty()) {
         nothing.pop_back();
       }
@@ -336,6 +468,37 @@ Said Go(const CssRules& rules, std::span<const std::uint8_t> sheets, const std::
       const bool insideNothing = !nothing.empty() && nothing.back();
       CheckElement(element, firstLetter, insideNothing, stack, said);
       nothing.push_back(insideNothing || element.display == bn::epub::StyleDisplay::kNone);
+
+      // What it says the element passes on is what it said of it, where the element is kept.
+      if (element.display != bn::epub::StyleDisplay::kNone && deep < styleLevels) {
+        bn::epub::ElementStyle passes;
+        stack.Passes(deep, passes);
+        BN_FUZZ_CHECK(
+            passes.text == element.text && passes.align == element.align &&
+                passes.alignFromBook == element.alignFromBook && passes.hasIndent == element.hasIndent &&
+                passes.indent == element.indent && passes.indentFromBook == element.indentFromBook &&
+                passes.lineHeight == element.lineHeight && passes.lineHeightFromBook == element.lineHeightFromBook &&
+                passes.marker == element.marker && passes.markerFromBook == element.markerFromBook &&
+                passes.rightToLeft == element.rightToLeft && passes.spacesAsWritten == element.spacesAsWritten,
+            "what an open element is said to pass on is not what was said of it as it opened");
+      }
+
+      // And the blocks: the same is said of the element, and what the header says holds of the rest.
+      bn::epub::ElementStyle again;
+      const bn::epub::BlockChange change = blocks.Open(step.name, attributes, style, firstLetter, again);
+      BN_FUZZ_CHECK(blocks.Depth() == stack.Depth(), "what finds the blocks counts other elements open than there are");
+      BN_FUZZ_CHECK(blocks.Work() <= bn::epub::DocumentBlocks::MostWorkFor(attributes.Count(), 0, blocks.Levels()),
+                    "an element took more work of what finds the blocks than the most it says");
+      Said one;
+      Said two;
+      CheckElement(element, firstLetter, insideNothing, stack, one);
+      CheckElement(again, firstLetter, insideNothing, blocks.Styles(), two);
+      BN_FUZZ_CHECK(one.digest == two.digest,
+                    "what finds the blocks says something else of an element than the stack of styles");
+      CheckChange(change, blocks, true, blockOpen, blockFloated, said);
+      BN_FUZZ_CHECK(!nothing.back() || (!change.ends && !change.begins && !change.lineEnds),
+                    "what is nothing ends or begins a block as it opens");
+      BN_FUZZ_CHECK(!change.floatEnds && !change.shown, "floated text ends, or text is shown, as an element opens");
     }
     if (reference != nullptr) {
       CssStyle plain;

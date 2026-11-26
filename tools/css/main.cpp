@@ -67,6 +67,7 @@
 #include "epub/book_files.h"
 #include "epub/css.h"
 #include "epub/css_rules.h"
+#include "epub/document_blocks.h"
 #include "epub/document_sheets.h"
 #include "epub/package.h"
 #include "epub/sheets_digest.h"
@@ -102,9 +103,9 @@ void PrintUsage(const char* program) {
                "       %s style TEXT\n"
                "       %s family TEXT | --names\n"
                "       %s book FILE [--dropped]\n"
-               "       %s cascade [--in BOOK] [--sum] [--styles] DOCUMENT SHEET...\n"
+               "       %s cascade [--in BOOK] [--sum] [--styles | --blocks] DOCUMENT SHEET...\n"
                "       %s sheets BOOK [--spine [--by-name]] [--dropped]\n"
-               "       %s document [--sum] [--styles] BOOK DOCUMENT\n"
+               "       %s document [--sum] [--styles | --blocks] BOOK DOCUMENT\n"
                "\n"
                "Reads CSS the way the firmware does.\n"
                "\n"
@@ -172,11 +173,21 @@ void PrintUsage(const char* program) {
                "             and the rest by their names; `book` after what the book said, and\n"
                "             nothing after what the element is given by being what it is; F for\n"
                "             what its first letter comes to\n"
+               "  --blocks   with cascade or document: print not the elements but the blocks of\n"
+               "             text the document is made into, as a bundle keeps them:\n"
+               "               B heading 2          a block begins: its kind, a heading's level\n"
+               "               R space-before: 1em  something of its record, a line for each thing\n"
+               "                                    that is not as a block that says nothing has it\n"
+               "               S text bold          how the text from here on is set\n"
+               "               L   a line ends (br)       P   a picture (img)\n"
+               "               F   the floated text the block began with ends\n"
+               "               E   the block ends\n"
                "  --sum      with cascade or document: print one line in place of the elements,\n"
                "             with the checksum (CRC-32) of their lines, how many elements and lines\n"
                "             there were, and what the table and the cascade took; with --styles,\n"
                "             also how many languages the document names and how many times each\n"
-               "             kind of thing was not taken as written\n"
+               "             kind of thing was not taken as written; with --blocks, the blocks\n"
+               "             of each kind as well, and what else was counted of them\n"
                "\n"
                "Ends with 0, or 1 if something could not be read.\n",
                program, program, program, program, program, program, program);
@@ -621,6 +632,214 @@ std::string StylesLeftOut(const bn::epub::StyleStack& stack) {
   return out;
 }
 
+// The memory a document's blocks are found in: the languages' tags, and
+// 32 elements open at once.
+constexpr std::size_t kBlockBytes =
+    bn::epub::StyleStack::kLanguagesBytes + (32 * bn::epub::DocumentBlocks::kLevelBytes);
+
+// How text is set, as its parts with "; " between them; "plain" for text
+// that nothing has said anything of.
+std::string StyleText(const bn::epub::TextStyle& text, const bn::epub::StyleStack& stack) {
+  std::string out;
+  const auto add = [&out](const std::string& part) { out += (out.empty() ? "" : "; ") + part; };
+  if (text.size != 1000 || text.sizeFromBook) {
+    add("size " + std::to_string(text.size) + Book(text.sizeFromBook));
+  }
+  if (text.bits != 0) {
+    add("text " + BitsText(text.bits));
+  }
+  if (text.fromBook != 0) {
+    add("text-book " + BitsText(text.fromBook));
+  }
+  if (text.family != bn::epub::CssFamilyClass::kUnset || text.familyFromBook) {
+    add(std::string("family ") + bn::epub::CssFamilyClassName(text.family) + Book(text.familyFromBook));
+  }
+  if (text.language != 0) {
+    add("language " + Escaped(stack.Language(text.language)));
+  }
+  return out.empty() ? "plain" : out;
+}
+
+// Goes through a document beside its parser, asking the cascade about
+// each element and writing down the blocks the document is made into.
+class Blocker final : public bn::epub::XmlHandler {
+ public:
+  Blocker(bn::epub::CssCascade& cascade, Lines& lines, bn::epub::DocumentBlocks& finder)
+      : cascade_(cascade), lines_(lines), blocks_(finder) {}
+
+  void OnStartElement(std::string_view name, const bn::epub::XmlAttributes& attributes) noexcept override {
+    bn::epub::CssStyle style;
+    bn::epub::CssStyle firstLetter;
+    cascade_.Open(name, attributes, style, firstLetter);
+    ++elements;
+    bn::epub::ElementStyle said;
+    Tell(blocks_.Open(name, attributes, style, firstLetter, said), 0, attributes.Count(), 0);
+    if (name == "img" || name == "IMG") {
+      Tell(blocks_.Picture(), 'P', 0, 0);
+    }
+  }
+  void OnEndElement(std::string_view /*name*/) noexcept override {
+    cascade_.Close();
+    Tell(blocks_.Close(), 0, 0, 0);
+  }
+  void OnText(std::string_view text) noexcept override { Tell(blocks_.Text(text), 'T', 0, text.size()); }
+  // A character, whichever it is.
+  void OnEntity(std::string_view /*name*/) noexcept override { Tell(blocks_.Text("&"), 'T', 0, 1); }
+
+  // What was counted, as words for the line that sums a document up.
+  std::string Counts() const {
+    std::string out = " blocks=" + std::to_string(blocks);
+    constexpr std::array<const char*, bn::epub::kBlockKinds> kKinds = {"paragraphs", "headings", "list_items", "rules",
+                                                                       "cells"};
+    for (std::size_t kind = 0; kind < kKinds.size(); ++kind) {
+      out += std::string(" ") + kKinds.at(kind) + "=" + std::to_string(kinds.at(kind));
+    }
+    out += " line_ends=" + std::to_string(lineEnds) + " pictures=" + std::to_string(pictures) +
+           " markers=" + std::to_string(markers) + " first_letters=" + std::to_string(firstLetters) +
+           " floated_letters=" + std::to_string(floatedLetters) + " begin_floated=" + std::to_string(beginFloated) +
+           " floated=" + std::to_string(floated) + " centred=" + std::to_string(centred) +
+           " blocks_most_work=" + std::to_string(mostWork) + " work_over=" + std::to_string(workOver);
+    return out;
+  }
+
+  std::uint32_t elements = 0;
+  std::uint32_t blocks = 0;
+  std::array<std::uint32_t, bn::epub::kBlockKinds> kinds{};
+  std::uint32_t lineEnds = 0;
+  std::uint32_t pictures = 0;
+  std::uint32_t markers = 0;
+  std::uint32_t firstLetters = 0;
+  std::uint32_t floatedLetters = 0;
+  std::uint32_t beginFloated = 0;
+  std::uint32_t floated = 0;
+  std::uint32_t centred = 0;
+  std::uint32_t mostWork = 0;
+  std::uint32_t workOver = 0;  // Calls that did more work than the most they may.
+
+ private:
+  // What a call made of the blocks; `content` is T for text, P for a
+  // picture, and nothing for an element.
+  void Tell(const bn::epub::BlockChange& change, char content, std::size_t attributes, std::size_t textBytes) {
+    mostWork = std::max(mostWork, blocks_.Work());
+    workOver += blocks_.Work() > bn::epub::DocumentBlocks::MostWorkFor(attributes, textBytes, blocks_.Levels()) ? 1 : 0;
+    if (change.ends) {
+      lines_.Add("E");
+    }
+    if (change.begins) {
+      Begins(blocks_.Record());
+      styled_ = false;
+    }
+    if (change.lineEnds) {
+      lines_.Add("L");
+      ++lineEnds;
+    }
+    if (change.floatEnds) {
+      lines_.Add("F");
+    }
+    if (content == 'P' && change.shown) {
+      lines_.Add("P");
+      ++pictures;
+    }
+    if (content == 'T' && change.shown) {
+      const bn::epub::TextStyle style = blocks_.TextNow();
+      if (!styled_ || !(style == style_)) {
+        lines_.Add("S " + StyleText(style, blocks_.Styles()));
+        style_ = style;
+        styled_ = true;
+      }
+    }
+  }
+
+  // A block begins: its kind, and a line for each thing of its record
+  // that is not as a block that says nothing has it.
+  void Begins(const bn::epub::BlockRecord& record) {
+    using bn::epub::StyleLineHeight;
+    ++blocks;
+    ++kinds.at(static_cast<std::size_t>(record.kind));
+    lines_.Add(std::string("B ") + bn::epub::BlockKindName(record.kind) +
+               (record.headingLevel != 0 ? " " + std::to_string(record.headingLevel) : ""));
+    if (record.align != bn::epub::StyleAlign::kUnset || record.alignFromBook) {
+      lines_.Add(std::string("R align: ") + bn::epub::StyleAlignName(record.align) + Book(record.alignFromBook));
+    }
+    if (record.rightToLeft) {
+      lines_.Add("R right-to-left");
+    }
+    if (record.spacesAsWritten) {
+      lines_.Add("R spaces-as-written");
+    }
+    if (record.size != 1000 || record.sizeFromBook) {
+      lines_.Add("R size: " + std::to_string(record.size) + Book(record.sizeFromBook));
+    }
+    if (record.lineHeight.kind == StyleLineHeight::Kind::kMultiple) {
+      lines_.Add("R line-height: x" + std::to_string(record.lineHeight.multiple) + Book(record.lineHeightFromBook));
+    } else if (record.lineHeight.kind == StyleLineHeight::Kind::kLength) {
+      lines_.Add("R line-height: " + LengthText(record.lineHeight.length) + Book(record.lineHeightFromBook));
+    } else if (record.lineHeightFromBook) {
+      lines_.Add("R line-height: normal book");
+    }
+    if (record.hasIndent) {
+      lines_.Add("R indent: " + LengthText(record.indent) + Book(record.indentFromBook));
+    }
+    if (!record.marginLeft.IsZero() || record.marginLeftFromBook) {
+      lines_.Add("R margin-left: " + LengthText(record.marginLeft) + Book(record.marginLeftFromBook));
+    }
+    if (!record.marginRight.IsZero() || record.marginRightFromBook) {
+      lines_.Add("R margin-right: " + LengthText(record.marginRight) + Book(record.marginRightFromBook));
+    }
+    if (!record.spaceBefore.IsZero() || record.spaceBeforeFromBook) {
+      lines_.Add("R space-before: " + LengthText(record.spaceBefore) + Book(record.spaceBeforeFromBook));
+    }
+    if (record.breakBefore) {
+      lines_.Add("R break-before");
+    }
+    if (record.keepWithNext || record.keepWithNextFromBook) {
+      lines_.Add(std::string(record.keepWithNext ? "R keep-with-next" : "R keep-with-next: no") +
+                 Book(record.keepWithNextFromBook));
+    }
+    if (record.keepTogether) {
+      lines_.Add("R keep-together");
+    }
+    if (record.floated) {
+      lines_.Add("R floated");
+      ++floated;
+    }
+    if (record.centred) {
+      lines_.Add("R centred: " + LengthText(record.width));
+      ++centred;
+    }
+    if (record.quoteDepth != 0) {
+      lines_.Add("R quote-depth: " + std::to_string(record.quoteDepth));
+    }
+    if (record.listDepth != 0) {
+      lines_.Add("R list-depth: " + std::to_string(record.listDepth));
+    }
+    if (record.hasMarker) {
+      lines_.Add(std::string("R marker: ") + bn::epub::StyleMarkerName(record.marker) + " " +
+                 std::to_string(record.number) + Book(record.markerFromBook));
+      ++markers;
+    }
+    if (record.hasFirstLetter) {
+      lines_.Add(std::string(record.firstLetterFloated ? "R first-letter floated: " : "R first-letter: ") +
+                 StyleText(record.firstLetter, blocks_.Styles()));
+      ++firstLetters;
+      floatedLetters += record.firstLetterFloated ? 1 : 0;
+    }
+    if (record.beginsFloated) {
+      lines_.Add("R begins-floated");
+      ++beginFloated;
+    }
+  }
+
+  bn::epub::CssCascade& cascade_;
+  Lines& lines_;
+  bn::epub::DocumentBlocks& blocks_;
+  bool styled_ = false;  // A style has been told of since the block began.
+  bn::epub::TextStyle style_;
+};
+
+// What of a document `cascade` and `document` print.
+enum class Show : std::uint8_t { kRules, kStyles, kBlocks };
+
 std::uint32_t DroppedInAll(const CssReader& reader) {
   std::uint32_t all = 0;
   for (std::size_t kind = 0; kind < bn::epub::kCssDroppedKinds; ++kind) {
@@ -865,7 +1084,7 @@ class Reading {
   std::optional<bn::core::BlockFile> fileBlock_;
 };
 
-int Cascade(const std::string& book, bool sum, bool styles, const std::string& document,
+int Cascade(const std::string& book, bool sum, Show show, const std::string& document,
             const std::vector<std::string>& sheets) {
   Reading reading(book);
   if (!reading.Start()) {
@@ -906,10 +1125,15 @@ int Cascade(const std::string& book, bool sum, bool styles, const std::string& d
   std::vector<std::uint8_t> styleMemory(kStyleBytes);
   bn::epub::StyleStack stack(styleMemory);
   stack.Begin();
-  Styler styler(cascade, lines, styles ? &stack : nullptr);
+  Styler styler(cascade, lines, show == Show::kStyles ? &stack : nullptr);
+  std::vector<std::uint8_t> blockMemory(kBlockBytes);
+  bn::epub::DocumentBlocks blocks(blockMemory);
+  blocks.Begin();
+  Blocker blocker(cascade, lines, blocks);
   std::vector<std::uint8_t> parserMemory(kParserBytes);
   bn::epub::XmlParser parser(parserMemory);
-  const bn::epub::XmlStatus status = parser.Parse(*source, styler);
+  const bn::epub::XmlStatus status =
+      show == Show::kBlocks ? parser.Parse(*source, blocker) : parser.Parse(*source, styler);
   if (status != bn::epub::XmlStatus::kOk || !reading.Sound()) {
     std::fprintf(stderr, "error: %s: %s at line %u\n", document.c_str(), bn::epub::XmlStatusName(status),
                  static_cast<unsigned>(parser.Line()));
@@ -919,11 +1143,17 @@ int Cascade(const std::string& book, bool sum, bool styles, const std::string& d
     std::printf(
         "%s %08x elements=%u lines=%u table_bytes=%zu nodes=%zu level_bytes=%zu left_out=%u too_deep=%u "
         "too_many_classes=%u most_work=%llu%s\n",
-        styles ? "styles" : "cascade", static_cast<unsigned>(lines.Checksum()), static_cast<unsigned>(styler.elements),
+        show == Show::kBlocks   ? "blocks"
+        : show == Show::kStyles ? "styles"
+                                : "cascade",
+        static_cast<unsigned>(lines.Checksum()), static_cast<unsigned>(styler.elements + blocker.elements),
         static_cast<unsigned>(lines.Count()), table.Bytes(), table.Nodes(), cascade.LevelBytes(),
         static_cast<unsigned>(table.LeftOutForRoom() + table.LeftOutForNodes()),
         static_cast<unsigned>(cascade.TooDeep()), static_cast<unsigned>(cascade.TooManyClasses()),
-        static_cast<unsigned long long>(cascade.MostWork()), styles ? StylesLeftOut(stack).c_str() : "");
+        static_cast<unsigned long long>(cascade.MostWork()),
+        show == Show::kBlocks   ? (blocker.Counts() + StylesLeftOut(blocks.Styles())).c_str()
+        : show == Show::kStyles ? StylesLeftOut(stack).c_str()
+                                : "");
   }
   return 0;
 }
@@ -1173,7 +1403,7 @@ int Sheets(const std::string& path, bool printDropped, Through through) {
   return 0;
 }
 
-int Document(const std::string& path, bool sum, bool styles, const std::string& document) {
+int Document(const std::string& path, bool sum, Show show, const std::string& document) {
   OpenBook book(path);
   if (!book.Start()) {
     std::fprintf(stderr, "error: cannot read %s\n", path.c_str());
@@ -1202,8 +1432,13 @@ int Document(const std::string& path, bool sum, bool styles, const std::string& 
   std::vector<std::uint8_t> styleMemory(kStyleBytes);
   bn::epub::StyleStack stack(styleMemory);
   stack.Begin();
-  Styler styler(cascade, lines, styles ? &stack : nullptr);
-  const bn::epub::XmlStatus status = finder.parser.Parse(*source, styler);
+  Styler styler(cascade, lines, show == Show::kStyles ? &stack : nullptr);
+  std::vector<std::uint8_t> blockMemory(kBlockBytes);
+  bn::epub::DocumentBlocks blocks(blockMemory);
+  blocks.Begin();
+  Blocker blocker(cascade, lines, blocks);
+  const bn::epub::XmlStatus status =
+      show == Show::kBlocks ? finder.parser.Parse(*source, blocker) : finder.parser.Parse(*source, styler);
   if (status != bn::epub::XmlStatus::kOk) {
     std::fprintf(stderr, "error: %s: %s at line %u\n", document.c_str(), bn::epub::XmlStatusName(status),
                  static_cast<unsigned>(finder.parser.Line()));
@@ -1213,12 +1448,18 @@ int Document(const std::string& path, bool sum, bool styles, const std::string& 
     std::printf(
         "%s %08x elements=%u lines=%u sheets=%zu own_style=%u sheets_left_out=%u table_bytes=%zu nodes=%zu "
         "level_bytes=%zu left_out=%u too_deep=%u too_many_classes=%u most_work=%llu%s\n",
-        styles ? "styles" : "document", static_cast<unsigned>(lines.Checksum()), static_cast<unsigned>(styler.elements),
+        show == Show::kBlocks   ? "blocks"
+        : show == Show::kStyles ? "styles"
+                                : "document",
+        static_cast<unsigned>(lines.Checksum()), static_cast<unsigned>(styler.elements + blocker.elements),
         static_cast<unsigned>(lines.Count()), finder.sheets.Sheets().size(), finder.sheets.HasOwnStyle() ? 1U : 0U,
         static_cast<unsigned>(finder.LeftOutInAll()), finder.table.Bytes(), finder.table.Nodes(), cascade.LevelBytes(),
         static_cast<unsigned>(finder.table.LeftOutForRoom() + finder.table.LeftOutForNodes()),
         static_cast<unsigned>(cascade.TooDeep()), static_cast<unsigned>(cascade.TooManyClasses()),
-        static_cast<unsigned long long>(cascade.MostWork()), styles ? StylesLeftOut(stack).c_str() : "");
+        static_cast<unsigned long long>(cascade.MostWork()),
+        show == Show::kBlocks   ? (blocker.Counts() + StylesLeftOut(blocks.Styles())).c_str()
+        : show == Show::kStyles ? StylesLeftOut(stack).c_str()
+                                : "");
   }
   return 0;
 }
@@ -1242,7 +1483,7 @@ int main(int argc, char** argv) {
   if (command == "cascade") {
     std::string book;
     bool sum = false;
-    bool styles = false;
+    Show show = Show::kRules;
     std::vector<std::string> names;
     for (int i = 2; i < argc; ++i) {
       const std::string argument = argv[i];
@@ -1250,14 +1491,16 @@ int main(int argc, char** argv) {
         book = argv[++i];
       } else if (argument == "--sum") {
         sum = true;
-      } else if (argument == "--styles") {
-        styles = true;
+      } else if (argument == "--styles" && show == Show::kRules) {
+        show = Show::kStyles;
+      } else if (argument == "--blocks" && show == Show::kRules) {
+        show = Show::kBlocks;
       } else {
         names.push_back(argument);
       }
     }
     if (!names.empty()) {
-      return Cascade(book, sum, styles, names.front(), {names.begin() + 1, names.end()});
+      return Cascade(book, sum, show, names.front(), {names.begin() + 1, names.end()});
     }
   }
   if (command == "sheets" && argc >= 3) {
@@ -1283,20 +1526,22 @@ int main(int argc, char** argv) {
   }
   if (command == "document") {
     bool sum = false;
-    bool styles = false;
+    Show show = Show::kRules;
     std::vector<std::string> names;
     for (int i = 2; i < argc; ++i) {
       const std::string argument = argv[i];
       if (argument == "--sum") {
         sum = true;
-      } else if (argument == "--styles") {
-        styles = true;
+      } else if (argument == "--styles" && show == Show::kRules) {
+        show = Show::kStyles;
+      } else if (argument == "--blocks" && show == Show::kRules) {
+        show = Show::kBlocks;
       } else {
         names.push_back(argument);
       }
     }
     if (names.size() == 2) {
-      return Document(names[0], sum, styles, names[1]);
+      return Document(names[0], sum, show, names[1]);
     }
   }
   PrintUsage(argv[0]);

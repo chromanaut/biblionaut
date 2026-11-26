@@ -916,6 +916,10 @@ def css_seeds() -> None:
 
 # ---- css_rules: byte 0 (how much memory, and how the sheets are given), then
 # ---- sheets and a document, a byte of zero between them ----
+#
+# A document is a line for each thing a parser tells of: `<name|attribute|
+# value` for an element that opens, `>` for one that closes, `"` and some
+# text for text, `#` for a picture.
 
 RULES_SHEET = rb"""body { margin: 0 5%; font-family: Georgia, "Times New Roman", serif }
 h1, h2 { text-align: center; page-break-before: always; margin: 2em 0 1em; font-weight: bold }
@@ -1423,6 +1427,272 @@ STYLES_DEEP_DOCUMENT = (b"".join(b"<div|lang|l%d|class|%s\n" % (n, b"gone" if n 
                         b"<p\n>\n" + b">\n" * 40)
 
 
+# A document's blocks: text straight in an element and beside blocks,
+# white space alone, line ends and rules and pictures, headings, lists with
+# their numbers, a table's cells, quotations, margins that meet and what
+# keeps them apart, pages that end, a first letter's style, and text that
+# begins floated.
+BLOCKS_SHEET = rb"""body { margin: 0 5%; line-height: 1.4 } h1 { margin: 2em 0 1em; page-break-before: always }
+h2 { page-break-after: avoid } h3 { break-after: always } p { margin: 0; text-indent: 1.5em }
+p.first { text-indent: 0; margin-top: 1em } p.first::first-letter { float: left; font-size: 3em; font-weight: bold }
+div.first::first-letter { font-variant: small-caps } .drop { float: left; font-size: 3em }
+.verse span { display: block; margin-left: 2em } .note { margin: 1em 2em; padding: 0.5em 1em 7px; font-size: 0.9em }
+.spacer { height: 2em; margin: 1em 0 } .pull { margin: -0.5em 0 1em -2em } .centre { width: 60%; margin: 2em auto }
+.side { float: right; width: 30% } .keep { break-inside: avoid } .gone { display: none } .inl { display: inline }
+blockquote { margin: 1em 40px 20px } ol.roman { list-style-type: upper-roman } .item { display: list-item }
+td, th { padding: 2px 4px } hr { margin: 1em 25%; height: 1px } .mixed { margin: 4% 0 19px } br.b { display: block }
+"""
+
+BLOCKS_DOCUMENT = b"""<html|xml:lang|en
+<body
+"\r\x0c\t 
+<h1
+"The first
+<i
+"heading
+>
+>
+<p|class|first
+"It began,
+<b
+" slowly
+>
+"\t
+<br
+>
+"a line of its own.
+>
+<p
+<span|class|drop
+"T
+>
+"he letter is dropped.
+<span|class|drop
+"Not this.
+>
+>
+<p
+<b
+<span|class|drop
+<span|class|drop
+#
+>
+"A
+>
+>
+"picture and a letter.
+>
+<div
+"Text straight in a division.
+<p
+"Then a paragraph.
+>
+"And text after it.
+<div
+>
+"And more.
+>
+<div|class|verse
+<p
+<span
+"A line of verse,
+>
+"
+<span
+"and another.
+>
+>
+>
+<div|class|note
+<p
+"A note.
+>
+<p|class|pull
+"Pulled.
+>
+>
+<div|class|spacer
+>
+<div|class|spacer
+<span
+"
+>
+>
+<div|class|spacer
+<div|style|height: 3px
+>
+>
+<p|class|centre
+"Centred.
+>
+<div|class|side
+<p|class|mixed
+"To the side.
+>
+>
+<h2
+"Kept with what follows
+>
+<p|class|keep
+"Together.
+>
+<h3
+"A page ends
+>
+<blockquote
+<p
+"Quoted.
+>
+<blockquote
+"In a quotation.
+>
+"And after.
+>
+<ul
+<li
+"One
+>
+<li
+<p
+"Two
+>
+<p
+"Two again
+>
+>
+<li
+<ul
+<li
+"Inside
+>
+>
+"Three
+>
+<li
+<h3
+"A heading in an item
+>
+>
+<li
+<hr
+>
+"After a rule.
+>
+<li|class|gone
+"Gone
+>
+>
+<ol|start|5|class|roman
+<li
+"Five
+>
+<li|value|9
+"Nine
+>
+<li|value|x
+"Ten
+>
+<ol|start|-2
+<li
+"Minus two
+>
+>
+>
+<ol|start|999999999
+<li
+>
+<li|value|+12
+"Twelve
+>
+>
+<p|class|item|value|4
+"An item by its display
+>
+<li
+"An item in no list
+>
+<table
+<caption
+"A table
+>
+<tr
+<th
+"Head
+>
+<td
+"Cell
+<p
+"and a paragraph
+>
+>
+<td|class|inl
+"In line
+>
+<td
+>
+>
+>
+<hr
+>
+<hr|class|gone
+>
+<pre
+"  kept
+"    as written
+>
+<p
+<br
+>
+"After an empty line.
+<br|class|gone
+>
+<br|class|b
+>
+<BR
+>
+>
+<p
+#
+"A picture in a line.
+>
+<div|class|gone
+"Nothing
+<p
+#
+<br
+>
+>
+>
+<div|class|first
+<div|class|first
+>
+"The inner one closed.
+>
+<div|class|first
+<hr
+>
+"After a rule.
+>
+<i
+"Text in no block of its own.
+>
+<H5
+"Capitals
+>
+<h6|class|inl
+"In line
+>
+>
+>
+"After everything.
+"""
+
+# The same things deeper than a few open elements, so that those too deep
+# to keep open and close blocks.
+BLOCKS_DEEP_DOCUMENT = (b"".join(b"<div|class|%s\n\"at %d\n" % (b"note" if n % 3 else b"spacer", n) for n in range(8)) +
+                        b"<p|class|first\n\"text\n<br\n>\n>\n<hr\n>\n<ol\n<li\n\"item\n>\n>\n" + b">\n\"after\n" * 8)
+
+
 def css_rules_seeds() -> None:
     clear("css_rules")
 
@@ -1480,6 +1750,14 @@ def css_rules_seeds() -> None:
     seed("elements-deeper-than-three-kept", 1 << 6, STYLES_SHEET, STYLES_DEEP_DOCUMENT)
     for part, kept in enumerate((0, 0, 2 << 6)):
         seed(f"the-words-the-stack-of-styles-reads-{part + 1}-of-3", kept, *styles_words(part))
+    # The blocks of a document, found with as many open elements kept as
+    # the stack of styles has.
+    seed("the-blocks-of-a-document", 0, BLOCKS_SHEET, BLOCKS_DOCUMENT)
+    seed("the-blocks-of-a-document-with-three-kept", 1 << 6, BLOCKS_SHEET, BLOCKS_DOCUMENT)
+    seed("the-blocks-of-a-document-with-none-kept", 3 << 6, BLOCKS_SHEET, BLOCKS_DOCUMENT)
+    seed("the-blocks-of-a-document-with-no-sheet", 0, BLOCKS_DOCUMENT)
+    seed("blocks-deeper-than-three-kept", 1 << 6, BLOCKS_SHEET, BLOCKS_DEEP_DOCUMENT)
+    seed("blocks-deeper-than-one-kept", 2 << 6, BLOCKS_SHEET, BLOCKS_DEEP_DOCUMENT)
     seed("a-document-and-no-sheet", 0, RULES_DOCUMENT)
     seed("a-sheet-and-no-document", 0, RULES_SHEET, b"")
     seed("nothing", 0)

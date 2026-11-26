@@ -1313,6 +1313,88 @@ TEST(StyleStack, AnElementClosedThatWasNeverOpenedIsNothing) {
   EXPECT_EQ(said.text.bits, bn::epub::kTextItalic);
 }
 
+TEST(StyleStack, SaysWhatAnyOpenElementPassesToThoseInsideIt) {
+  std::vector<std::uint8_t> memory(StyleStack::kLanguagesBytes + (3 * StyleStack::kLevelBytes));
+  StyleStack stack(memory);
+  stack.Begin();
+  const bn::epub::CssStyle nothing;
+  const bn::epub::CssStyle twice = Setting(bn::epub::CssProperty::kFontSize, 2000, bn::epub::CssUnit::kEm);
+  const bn::epub::CssStyle centred = Setting(bn::epub::CssProperty::kTextAlign, bn::epub::CssKeyword::kCenter);
+  const bn::epub::CssStyle indent = Setting(bn::epub::CssProperty::kTextIndent, 1500, bn::epub::CssUnit::kEm);
+  const bn::epub::CssStyle lines = Setting(bn::epub::CssProperty::kLineHeight, 20000, bn::epub::CssUnit::kPx);
+  const std::array<const char*, 5> pairs = {"lang", "en", "dir", "rtl", nullptr};
+  std::array<ElementStyle, 5> said;
+  stack.Open("ol", bn::epub::XmlAttributes(pairs.data()), twice, nothing, said.at(0));
+  stack.Open("pre", bn::epub::XmlAttributes(nullptr), centred, nothing, said.at(1));
+  stack.Open("b", bn::epub::XmlAttributes(nullptr), indent, nothing, said.at(2));
+  // Two that are deeper than is kept.
+  stack.Open("ul", bn::epub::XmlAttributes(nullptr), lines, nothing, said.at(3));
+  stack.Open("i", bn::epub::XmlAttributes(nullptr), nothing, nothing, said.at(4));
+
+  for (std::size_t index = 0; index < 5; ++index) {
+    // What Open() said of a kept element; and for one that is not kept,
+    // what it said of the deepest that is.
+    const ElementStyle& was = said.at(std::min<std::size_t>(index, 2));
+    ElementStyle passes;
+    passes.display = StyleDisplay::kNone;
+    passes.margin.at(0).px = 7;
+    stack.Passes(index, passes);
+    EXPECT_EQ(passes.text, was.text) << index;
+    EXPECT_EQ(passes.align, was.align) << index;
+    EXPECT_EQ(passes.alignFromBook, was.alignFromBook) << index;
+    EXPECT_EQ(passes.hasIndent, was.hasIndent) << index;
+    EXPECT_EQ(passes.indent, was.indent) << index;
+    EXPECT_EQ(passes.indentFromBook, was.indentFromBook) << index;
+    EXPECT_EQ(passes.lineHeight, was.lineHeight) << index;
+    EXPECT_EQ(passes.lineHeightFromBook, was.lineHeightFromBook) << index;
+    EXPECT_EQ(passes.marker, was.marker) << index;
+    EXPECT_EQ(passes.markerFromBook, was.markerFromBook) << index;
+    EXPECT_EQ(passes.rightToLeft, was.rightToLeft) << index;
+    EXPECT_EQ(passes.spacesAsWritten, was.spacesAsWritten) << index;
+    // The rest is left as it was.
+    EXPECT_EQ(passes.display, StyleDisplay::kNone);
+    EXPECT_EQ(passes.margin.at(0).px, 7);
+  }
+  // That is not nothing: each of the three kept differs from the one before.
+  EXPECT_EQ(said.at(0).text.size, 2000);
+  EXPECT_EQ(said.at(0).marker, bn::epub::StyleMarker::kDecimal);
+  EXPECT_TRUE(said.at(0).rightToLeft);
+  EXPECT_EQ(said.at(1).align, bn::epub::StyleAlign::kCenter);
+  EXPECT_TRUE(said.at(1).spacesAsWritten);
+  EXPECT_EQ(said.at(2).text.bits, bn::epub::kTextBold);
+  EXPECT_TRUE(said.at(2).hasIndent);
+  EXPECT_EQ(stack.Lists(0), 1);
+  EXPECT_EQ(stack.Lists(2), 1);
+  EXPECT_EQ(stack.Lists(3), 1) << "the list too deep to keep is not counted";
+
+  // An element that is not open passes what one inside nothing has.
+  ElementStyle passes = said.at(2);
+  stack.Passes(5, passes);
+  EXPECT_EQ(passes.text, TextStyle{});
+  EXPECT_EQ(passes.align, bn::epub::StyleAlign::kUnset);
+  EXPECT_FALSE(passes.hasIndent);
+  EXPECT_FALSE(passes.rightToLeft);
+  EXPECT_FALSE(passes.spacesAsWritten);
+  EXPECT_EQ(passes.marker, bn::epub::StyleMarker::kDisc);
+  EXPECT_EQ(stack.Lists(5), 0);
+  for (int i = 0; i < 5; ++i) {
+    stack.Close();
+  }
+  passes = said.at(2);
+  stack.Passes(0, passes);
+  EXPECT_EQ(passes.text, TextStyle{});
+  EXPECT_EQ(stack.Lists(0), 0);
+
+  // With no memory, every element passes what one inside nothing has.
+  StyleStack none(std::span<std::uint8_t>{});
+  none.Begin();
+  none.Open("b", bn::epub::XmlAttributes(nullptr), nothing, nothing, said.at(0));
+  passes = said.at(2);
+  none.Passes(0, passes);
+  EXPECT_EQ(passes.text, TextStyle{});
+  EXPECT_EQ(none.Lists(0), 0);
+}
+
 TEST(StyleStack, NamesWhatItTellsAndWhatItLeavesOut) {
   EXPECT_STREQ(bn::epub::StyleDisplayName(StyleDisplay::kNone), "none");
   EXPECT_STREQ(bn::epub::StyleDisplayName(StyleDisplay::kInline), "inline");

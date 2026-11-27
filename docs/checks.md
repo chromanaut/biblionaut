@@ -58,9 +58,9 @@ One that has to wait says what it is waiting for, and
 `tools/queued --list` says what is running and what waits:
 
 ```
-heavy: running: tools/fuzz.py --built --time 420 inflate, in ~/biblionaut-two, since 16:22:58, process 17605, 2 cores.
-heavy: waiting: tools/check-tidy.sh, in ~/biblionaut, since 16:23:13, process 26713.
-heavy: waiting: python3 trial.py, in ~/biblionaut-two, since 16:23:23, process 27426, 2 cores.
+heavy: running: tools/fuzz.py --built --time 420 inflate, in ~/biblionaut-two, since 10:33:30, process 86726, 2 cores.
+heavy: waiting: tools/check-tidy.sh, in ~/biblionaut, since 10:33:45, process 95389.
+heavy: waiting: python3 trial.py, in ~/biblionaut-two, since 10:33:55, process 95713, 2 cores.
 ```
 
 `tools/queued --watch` keeps saying it, until it is stopped with Ctrl-C. On
@@ -72,7 +72,7 @@ waited. A long path in a command is cut to its last name, and a line to
 the terminal's width:
 
 ```
-16:23:46  the queues in ~/.cache/biblionaut/queue  (Ctrl-C to stop)
+10:34:18  the queues in ~/.cache/biblionaut/queue  (Ctrl-C to stop)
 
 heavy  running  2 cores    47 s  biblionaut-two  tools/fuzz.py --built --time 420 inflate
        waiting  all cores  33 s  biblionaut      tools/check-tidy.sh
@@ -100,13 +100,19 @@ before it says that it is waiting.
 
 Each turn is written down when it ends, a line in `turns.log` in the same
 folder: when it began, the queue, how many processors it had, the seconds
-it waited and the seconds it ran, where it was started, and the command,
-with a tab between each:
+it waited and the seconds it ran, where it was started, the command, and
+the machine's load as it ended, with a tab between each:
 
 ```
-2026-11-25 16:20:53	heavy	10	0	125	~/biblionaut	tools/linux-check.sh
-2026-11-25 16:22:58	heavy	1	118	35	~/biblionaut	build/host-release/tests/draw_tests
+2026-11-27 10:31:25	heavy	10	0	125	~/biblionaut	tools/linux-check.sh	16.2
+2026-11-27 10:33:31	heavy	1	118	35	~/biblionaut	build/host-release/tests/draw_tests	44.2
 ```
+
+The load is how many processes were running or ready to run, on average
+over the minute before, whatever started them: set beside the processors
+a long turn had, it says whether the turn used them, and it says what
+else the machine was doing. These two were taken while other work had the
+machine busy.
 
 `tools/queued` has become the command by then, so the line is written by a
 process it leaves behind for that, which holds no part of the turn and is

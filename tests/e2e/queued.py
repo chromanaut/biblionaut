@@ -401,12 +401,13 @@ def writes_each_turn_down(queued: Path, work: Path) -> None:
         wait_for(lambda: len(bench.turns()) == 2, "the second to be written down, though it was killed")
         turns = bench.turns()
         if len(turns) == 2:
-            check(all(len(turn) == 7 for turn in turns), f"each has its seven things ({turns})")
+            check(all(len(turn) == 8 for turn in turns), f"each has its eight things ({turns})")
             check(all(re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", turn[0]) for turn in turns), f"when it began ({[turn[0] for turn in turns]})")
             check([turn[1:3] for turn in turns] == [["heavy", "2"], ["heavy", "4"]], f"its queue and its processors, all four where it asked for none ({[turn[1:3] for turn in turns]})")
             check(all(turn[3].isdigit() and turn[4].isdigit() for turn in turns), f"how long it waited and ran ({[turn[3:5] for turn in turns]})")
             check(all(turn[5].endswith(Path.cwd().name) for turn in turns), f"where it was started ({[turn[5] for turn in turns]})")
             check(turns[0][6].endswith(" A " + str(bench.folder / "go-A")) and " B " in turns[1][6], f"and the command ({[turn[6] for turn in turns]})")
+            check(all(re.fullmatch(r"\d+\.\d", turn[7]) for turn in turns), f"and the machine's load as it ended ({[turn[7] for turn in turns]})")
         wait_for(lambda: not any((bench.queue / "heavy.running").iterdir()), "nothing to be left that says a turn is going on")
 
         # What it leaves behind to do the writing holds no turn, and nobody's output.

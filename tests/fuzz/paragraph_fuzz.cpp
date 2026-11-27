@@ -18,8 +18,8 @@
 //                          width at all
 //
 //   then the paragraph's text. A byte of 0 in it is not text: it asks for
-//   the line to end there. Nor is a byte from 1 to 7: what follows it is in
-//   the style of that number.
+//   the line to end there. Nor is a byte from 1 to 7: what follows it is
+//   given in the style of that number.
 //
 // What has to hold, whatever the bytes are:
 //
@@ -38,7 +38,9 @@
 //     with nothing else on it that has any width;
 //   - the measure is never given a soft hyphen or a zero width space, nor
 //     pieces that are out of order; and never a piece that begins inside a
-//     character, where the text of every style is whole characters;
+//     character, where the text between the line ends asked for is whole
+//     characters, in however many styles a character's bytes are given;
+//   - a character is in the style its first byte was given in;
 //   - the lines are the same when all the text is offered at once.
 
 #include <algorithm>
@@ -286,21 +288,31 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   std::string text;
   std::vector<std::uint16_t> styles;
   bool wholeCharacters = true;
+  std::string sinceLineEnd;  // The text since the last line end asked for.
+  bool inWord = false;       // The byte before was of a word, and no line end was asked for after it.
   for (const std::uint8_t byte : input.Rest()) {
     if (byte > 7) {
-      parts.back().text += static_cast<char>(byte);
-      text += static_cast<char>(byte);
-      styles.push_back(parts.back().style);
+      const char ch = static_cast<char>(byte);
+      parts.back().text += ch;
+      text += ch;
+      sinceLineEnd += ch;
+      // A byte that goes on with a character is in the style of the byte
+      // before it, whatever style it is given in.
+      const bool goesOn = (byte & 0xC0U) == 0x80U;
+      styles.push_back(goesOn && inWord ? styles.back() : parts.back().style);
+      inWord = !IsBetweenWords(ch);
       continue;
     }
-    wholeCharacters = wholeCharacters && bn::fuzz::IsWholeCharacters(parts.back().text);
     const std::uint16_t style = byte == 0 ? parts.back().style : static_cast<std::uint16_t>(byte);
     if (byte == 0) {
+      wholeCharacters = wholeCharacters && bn::fuzz::IsWholeCharacters(sinceLineEnd);
+      sinceLineEnd.clear();
+      inWord = false;
       parts.push_back({.text = "", .style = style, .endsLine = true});
     }
     parts.push_back({.text = "", .style = style, .endsLine = false});
   }
-  wholeCharacters = wholeCharacters && bn::fuzz::IsWholeCharacters(parts.back().text);
+  wholeCharacters = wholeCharacters && bn::fuzz::IsWholeCharacters(sinceLineEnd);
 
   const auto measureOf = [face] {
     TestMeasure measure(face == 0 ? 10 : 0);

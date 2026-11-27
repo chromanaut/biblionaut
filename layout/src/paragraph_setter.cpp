@@ -221,18 +221,22 @@ std::size_t ParagraphSetter::Gather(std::string_view text, std::uint16_t style) 
       continue;
     }
 
+    // A byte that goes on with a character is in the style of the byte
+    // before it. So a word changes style only where a character begins, and
+    // one in too many styles is not cut inside a character.
+    const std::uint16_t styleHere = GoesOn(ch) && (wordSize_ != 0 || wordGoesOn_) ? styleBefore_ : style;
     if (wordSize_ == 0) {
       wordAt_ = at_;
       styleCount_ = 1;
       styleFrom_[0] = 0;
-      styles_[0] = style;
-    } else if (styles_[styleCount_ - 1] != style) {
+      styles_[0] = styleHere;
+    } else if (styles_[styleCount_ - 1] != styleHere) {
       if (styleCount_ == kMaxStyles) {
         WordIsWhole(true);
         break;
       }
       styleFrom_[styleCount_] = static_cast<std::uint8_t>(wordSize_);
-      styles_[styleCount_] = style;
+      styles_[styleCount_] = styleHere;
       ++styleCount_;
     }
     if (wordSize_ >= kMaxWordBytes && (!GoesOn(ch) || wordSize_ == kWordBufferBytes)) {
@@ -241,6 +245,7 @@ std::size_t ParagraphSetter::Gather(std::string_view text, std::uint16_t style) 
     }
     word_[wordSize_] = ch;
     ++wordSize_;
+    styleBefore_ = styleHere;
     ++taken;
     ++at_;
   }

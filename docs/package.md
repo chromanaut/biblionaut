@@ -35,8 +35,9 @@ How it does that:
   has an entry for each path. For every file the package lists, 16 bytes
   are kept: a number of 48 bits worked out from its id, another from its
   path (`NameHash`, in `epub/book_path.h`), its kind, and a few notes. A
-  document of the spine is 28 bytes. So a book of 800 files and 400
-  documents is read in 24 KB, whatever the length of its names.
+  document of the spine is 24 bytes, what the ZIP file's directory says
+  of its entry and three notes more. So a book of 800 files and 400
+  documents is read in 22 KB, whatever the length of its names.
 - **The ZIP directory is gone through once.** When the package has been
   read, every entry of the ZIP file is taken in the file's own order, its
   name turned into the same kind of number, and that looked for among
@@ -70,7 +71,7 @@ How it does that:
   (`XmlParser`).
 - **Speed**: on an X4, opening a book and reading its package took 26 to
   301 ms for each of 33 books, 43 ms at the median; the largest lists 745
-  files, and used 22.4 KB of the 24 KB it was given. Nearly half of the
+  files, and uses 20.9 KB of the 24 KB it is given. Nearly half of the
   time is the card, at about 5 ms a read, and most of the rest is parsing
   the package file. Matching the spine to the manifest is a few
   milliseconds at the most. A thirty-fourth book, which lists 2,384
@@ -128,7 +129,7 @@ spine: 4
 - xhtml deep/er/cover.xhtml
 unknown: 2
 checksum: cd21187e
-memory: 248
+memory: 224
 cost: packages_read=1 packages_failed=0 xml_documents=2 xml_failures=0 zip_finds=0 zip_records=16 sd_reads=2 sd_read_bytes=2504 sd_writes=0 sd_write_bytes=0 sd_syncs=0 sd_seeks=0 xml_memory=9536[8752..9536]
 ```
 

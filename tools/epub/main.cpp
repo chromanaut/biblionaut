@@ -177,7 +177,7 @@ int Info(const std::string& path, std::size_t memoryBytes) {
   std::printf("spine: %zu\n", package.Spine().size());
   for (const bn::epub::SpineItem& item : package.Spine()) {
     std::printf("%c %s %s\n", item.linear ? '+' : '-', bn::epub::MediaTypeName(item.type),
-                item.present ? PathOf(entries, item.entry).c_str() : "?");
+                item.present ? PathOf(entries, item.Entry()).c_str() : "?");
   }
   if (package.UnknownSpineItems() != 0) {
     std::printf("unknown: %u\n", static_cast<unsigned>(package.UnknownSpineItems()));

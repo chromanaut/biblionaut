@@ -71,10 +71,11 @@ std::uint32_t PackageChecksum(const Package& package) noexcept {
   lines.Text("\nncx: ").EntryOr(package.Ncx(), "-");
   lines.Text("\nspine: ").Number(static_cast<std::uint32_t>(package.Spine().size())).Text("\n");
   for (const SpineItem& item : package.Spine()) {
+    const ZipEntry entry = item.Entry();
     lines.Text(item.linear ? "+ " : "- ")
         .Text(MediaTypeName(item.type))
         .Text(" ")
-        .EntryOr(item.present ? &item.entry : nullptr, "?")
+        .EntryOr(item.present ? &entry : nullptr, "?")
         .Text("\n");
   }
   lines.Text("unknown: ").Number(package.UnknownSpineItems()).Text("\n");

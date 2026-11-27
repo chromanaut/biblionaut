@@ -1306,7 +1306,7 @@ int Sheets(const std::string& path, bool printDropped, Through through) {
     }
     for (const bn::epub::SpineItem& item : package.Spine()) {
       if (item.present) {
-        places.push_back(item.entry);
+        places.push_back(item.Entry());
       } else {
         ++absent;  // The package names a document the book has not got.
       }

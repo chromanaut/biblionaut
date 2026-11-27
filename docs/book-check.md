@@ -47,7 +47,7 @@ end for all of them, with those kinds again.
 book check: the checksum alone, 262144 bytes in 798 us (320802 KB/s).
 book 1: 1832425 bytes, /books/core/The First Book.epub
 book 1: package: title "The First Book", author "A. Writer", language "en".
-book 1: package: 374 files, 368 documents, cover jpeg, nav, ncx; memory 16288; checksum 7b162ac4.
+book 1: package: 374 files, 368 documents, cover jpeg, nav, ncx; memory 14816; checksum 7b162ac4.
 book 1: package: 1 ms: card 0 ms for 24 reads of 90555 bytes.
 book 1: contents: nav, 385 entries, 1 level; checksum 2eeff666; 0 ms: card 0 ms for 2 reads of 8192 bytes.
 book 1: styles: 368 documents, 1102 sheets given, 3 read, 0 with rules of their own; checksum c31e8f44.
@@ -62,7 +62,7 @@ book check: passed. 34 books, 5152 entries, 63899132 bytes out of 39526769.
 book check: card 22 ms for 10091 reads of 41148789 bytes (1748666 KB/s); inflating 371 ms: 24130522 bytes in (63399 KB/s), 48502885 out (127435 KB/s); all 689 ms.
 book check: XML: 2072 documents, 31585733 bytes, 1059050 events; parsing 241 ms (127717 KB/s); 32821373 bytes of events checksummed.
 book check: XML memory: the most a document used 18952 bytes; documents over 8 KB: 2072, over 12 KB: 24, over 16 KB: 5.
-book check: packages: 33 read; 28 ms: card 18 ms for 258 reads of 901750 bytes; the longest 2 ms; the most memory 22448. Not read: 1.
+book check: packages: 33 read; 28 ms: card 18 ms for 258 reads of 901750 bytes; the longest 2 ms; the most memory 20944. Not read: 1.
 book check: contents: 33 read (25 nav), 2666 entries; 7 ms: card 0 ms for 49 reads of 195690 bytes; the longest 0 ms.
 book check: styles: 1916 documents of 33 books, 3582 sheets given, 76 read, 4 with rules of their own.
 book check: styles: 68 ms: card 23 ms for 1808 reads of 7368383 bytes; the longest 9 ms; the most a table took 19821 bytes, names 117.

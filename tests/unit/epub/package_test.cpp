@@ -134,6 +134,7 @@ struct PackageFixture {
   }
 
   // The path of an entry, read back from the file; "-" for none.
+  std::string PathOf(const bn::epub::ZipEntry& entry) { return PathOf(&entry); }
   std::string PathOf(const bn::epub::ZipEntry* entry) {
     if (entry == nullptr) {
       return "-";
@@ -150,7 +151,7 @@ struct PackageFixture {
     std::vector<std::string> lines;
     for (const bn::epub::SpineItem& item : package->Spine()) {
       lines.push_back(std::string(item.linear ? "+ " : "- ") + bn::epub::MediaTypeName(item.type) + " " +
-                      (item.present ? PathOf(&item.entry) : "?"));
+                      (item.present ? PathOf(item.Entry()) : "?"));
     }
     return lines;
   }
@@ -226,7 +227,7 @@ TEST(Package, ReadsWhatABookSaysOfItself) {
 
   // What the spine holds opens the document itself.
   const bn::epub::SpineItem& second = f.package->Spine()[1];
-  ASSERT_EQ(f.reader.Open(f.entries, second.entry), bn::epub::ZipStatus::kOk);
+  ASSERT_EQ(f.reader.Open(f.entries, second.Entry()), bn::epub::ZipStatus::kOk);
   std::array<std::uint8_t, 64> text{};
   ASSERT_EQ(f.reader.Read(text), 16);
   EXPECT_EQ(std::string(text.begin(), text.begin() + 16), "<html>one</html>");
@@ -343,8 +344,8 @@ TEST(Package, WorksOutWhereEachFileIsFromTheWayThePackageRefersToIt) {
   EXPECT_EQ(f.package->UnknownSpineItems(), 3u);
   const bn::epub::SpineItem& missing = f.package->Spine()[5];
   EXPECT_FALSE(missing.present);
-  EXPECT_EQ(missing.entry.headerOffset, 0u);
-  EXPECT_EQ(missing.entry.size, 0u);
+  EXPECT_EQ(missing.headerOffset, 0u);
+  EXPECT_EQ(missing.size, 0u);
 }
 
 TEST(Package, ClosesUpTheSpineOverDocumentsItLeavesOut) {
@@ -430,7 +431,7 @@ TEST(Package, TakesTheFirstEntryWhenTheZipHasANameTwice) {
   PackageFixture f;
   ASSERT_EQ(f.ReadZip(builder.Finish()), PackageStatus::kOk);
   ASSERT_EQ(f.package->Spine().size(), 2u);
-  EXPECT_EQ(f.package->Spine()[0].entry.size, 9u);
+  EXPECT_EQ(f.package->Spine()[0].size, 9u);
   ASSERT_NE(f.package->Cover(), nullptr);
   EXPECT_EQ(f.package->Cover()->size, 5u);
   EXPECT_TRUE(f.package->Spine()[1].present);
@@ -896,7 +897,7 @@ TEST(Package, TakesTheSpineWhereverInThePackageItComes) {
                       {"a.xhtml", "a"},
                       {"b.xhtml", "b"},
                       {"toc.ncx", "n"}};
-  const std::size_t needed = (2 * 28) + (3 * 16);
+  const std::size_t needed = (2 * 24) + (3 * 16);
   ASSERT_EQ(f.Read(book, needed), PackageStatus::kOk);
   EXPECT_EQ(f.package->MemoryUsed(), needed);
   EXPECT_EQ(f.PathOf(f.package->Ncx()), "toc.ncx");
@@ -922,17 +923,17 @@ Files BigBook(int items, int documents) {
   return files;
 }
 
-TEST(Package, NeedsSixteenBytesAFileAndTwentyEightADocument) {
-  ASSERT_EQ(sizeof(bn::epub::SpineItem), 28u);
+TEST(Package, NeedsSixteenBytesAFileAndTwentyFourADocument) {
+  ASSERT_EQ(sizeof(bn::epub::SpineItem), 24u);
   const Files book = BigBook(100, 40);
-  const std::size_t forFiles = 1'600;           // 100 files at 16 bytes,
-  const std::size_t needed = forFiles + 1'120;  // and 40 documents at 28.
+  const std::size_t forFiles = 1'600;         // 100 files at 16 bytes,
+  const std::size_t needed = forFiles + 960;  // and 40 documents at 24.
   PackageFixture f;
   ASSERT_EQ(f.Read(book, needed), PackageStatus::kOk);
   EXPECT_EQ(f.package->MemoryUsed(), needed);
   EXPECT_EQ(f.package->ManifestItems(), 100u);
   ASSERT_EQ(f.package->Spine().size(), 40u);
-  EXPECT_EQ(f.PathOf(&f.package->Spine()[39].entry), "OEBPS/text/file-39.xhtml");
+  EXPECT_EQ(f.PathOf(f.package->Spine()[39].Entry()), "OEBPS/text/file-39.xhtml");
   for (const bn::epub::SpineItem& item : f.package->Spine()) {
     EXPECT_TRUE(item.present);
   }
@@ -958,12 +959,12 @@ TEST(Package, ReadsABookOfManyFilesInLittleMemory) {
   // them documents.
   const Files book = BigBook(800, 400);
   PackageFixture f;
-  ASSERT_EQ(f.Read(book, 24'000), PackageStatus::kOk);
-  EXPECT_EQ(f.package->MemoryUsed(), 24'000u) << "800 files at 16 bytes and 400 documents at 28";
+  ASSERT_EQ(f.Read(book, 22'400), PackageStatus::kOk);
+  EXPECT_EQ(f.package->MemoryUsed(), 22'400u) << "800 files at 16 bytes and 400 documents at 24";
   ASSERT_EQ(f.package->Spine().size(), 400u);
-  EXPECT_EQ(f.PathOf(&f.package->Spine()[0].entry), "OEBPS/text/file-0.xhtml");
-  EXPECT_EQ(f.PathOf(&f.package->Spine()[399].entry), "OEBPS/text/file-399.xhtml");
-  EXPECT_EQ(f.package->Spine()[217].entry.size, 3u) << "the file that holds \"217\"";
+  EXPECT_EQ(f.PathOf(f.package->Spine()[0].Entry()), "OEBPS/text/file-0.xhtml");
+  EXPECT_EQ(f.PathOf(f.package->Spine()[399].Entry()), "OEBPS/text/file-399.xhtml");
+  EXPECT_EQ(f.package->Spine()[217].size, 3u) << "the file that holds \"217\"";
 }
 
 TEST(Package, ReadsNoMoreOfAPackageFileOnceItHasRunOutOfMemory) {
@@ -1102,7 +1103,7 @@ TEST(Package, CanReadOneBookAfterAnother) {
   EXPECT_EQ(f.Spine(), std::vector<std::string>{"+ xhtml x.xhtml"});
   EXPECT_EQ(package.Cover(), nullptr);
   EXPECT_EQ(package.Ncx(), nullptr);
-  EXPECT_EQ(package.MemoryUsed(), 16u + 28);
+  EXPECT_EQ(package.MemoryUsed(), 16u + 24);
 
   // And the first again: what it names is found as it was the first time.
   f.directory.Close();
@@ -1552,9 +1553,9 @@ TEST(Package, SurvivesDamageAnywhereInAPackageFile) {
       EXPECT_FALSE(f.package->Spine().empty());
       for (const bn::epub::SpineItem& item : f.package->Spine()) {
         if (item.present) {
-          EXPECT_LT(item.entry.headerOffset, f.entries.Size());
+          EXPECT_LT(item.headerOffset, f.entries.Size());
         } else {
-          EXPECT_EQ(item.entry.size, 0u);
+          EXPECT_EQ(item.size, 0u);
         }
       }
     } else {

@@ -51,18 +51,51 @@ MediaType MediaTypeOf(std::string_view name) noexcept;
 const char* MediaTypeName(MediaType type) noexcept;
 
 // One document of the book's text, in its place in the reading order.
+//
+// It is 24 bytes, which is what a ZipEntry is: an entry's numbers take 22
+// of those, and a ZipEntry leaves the last two over. So the numbers are
+// laid out here themselves, and what else there is to say of a document
+// takes those two bytes, where beside a ZipEntry it would make the
+// document 28.
 struct SpineItem {
   // Where the document is in the ZIP file, to give to a ZipEntryReader.
   // Only if `present`.
-  ZipEntry entry;
+  ZipEntry Entry() const noexcept {
+    return {.headerOffset = headerOffset,
+            .compressedSize = compressedSize,
+            .size = size,
+            .crc32 = crc32,
+            .method = method,
+            .flags = flags,
+            .nameLength = nameLength};
+  }
+  void SetEntry(const ZipEntry& entry) noexcept {
+    headerOffset = entry.headerOffset;
+    compressedSize = entry.compressedSize;
+    size = entry.size;
+    crc32 = entry.crc32;
+    method = entry.method;
+    flags = entry.flags;
+    nameLength = entry.nameLength;
+  }
+
+  // What a ZipEntry has, each as it is there.
+  std::uint32_t headerOffset = 0;
+  std::uint32_t compressedSize = 0;
+  std::uint32_t size = 0;
+  std::uint32_t crc32 = 0;
+  std::uint16_t method = 0;
+  std::uint16_t flags = 0;
+  std::uint16_t nameLength = 0;
+  MediaType type = MediaType::kOther;
   // The file is in the book. A package can list a file that is not.
-  bool present = false;
+  bool present : 1 = false;
   // It is part of the run of the book from front to back. A document that
   // is not is one set aside, such as a page of notes that is only reached
   // by a link.
-  bool linear = true;
-  MediaType type = MediaType::kOther;
+  bool linear : 1 = true;
 };
+static_assert(sizeof(SpineItem) == sizeof(ZipEntry));
 
 // Reads a book's package and holds what it said.
 //
@@ -76,11 +109,11 @@ struct SpineItem {
 // ZipEntry. So however the files are ordered in the ZIP file, and however
 // many the book has, finding them costs one reading of the directory.
 //
-// Memory: the caller provides a block. The spine is built at its front, 28
+// Memory: the caller provides a block. The spine is built at its front, 24
 // bytes a document, and the manifest at its back, 16 bytes a file. Both
 // stay: the manifest is what SpineIndexOf() looks a path up in. A book of
 // 80 files and 50 documents needs under 3 KB; the largest seen, 745 files
-// and 394 documents, 23 KB. A book that needs more than the block is
+// and 394 documents, 21 KB. A book that needs more than the block is
 // refused.
 //
 // Since no name is kept, none is checked: two different names that came to

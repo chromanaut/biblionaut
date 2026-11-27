@@ -149,7 +149,8 @@ void CheckWhatWasRead(Reading& reading, bool made) {
   BN_FUZZ_CHECK(!spine.empty(), "a book was read that has no documents");
   BN_FUZZ_CHECK(!package.PackagePath().empty(), "a book was read whose package file has no path");
   BN_FUZZ_CHECK(package.MemoryUsed() <= reading.packageMemory.size() &&
-                    (spine.size() * 28) + (std::size_t{package.ManifestItems()} * 16) <= reading.packageMemory.size(),
+                    (spine.size() * sizeof(SpineItem)) + (std::size_t{package.ManifestItems()} * 16) <=
+                        reading.packageMemory.size(),
                 "a package holds more than the memory it was given");
 
   std::array<char, bn::epub::kMaxBookPath> name{};
@@ -160,7 +161,7 @@ void CheckWhatWasRead(Reading& reading, bool made) {
       continue;
     }
     std::size_t length = 0;
-    const ZipStatus named = bn::epub::ReadZipEntryName(reading.book.entries, item.entry, name, length);
+    const ZipStatus named = bn::epub::ReadZipEntryName(reading.book.entries, item.Entry(), name, length);
     if (!made) {
       continue;  // In a ZIP file of the bytes themselves, the entry's own header may say anything.
     }
@@ -168,7 +169,7 @@ void CheckWhatWasRead(Reading& reading, bool made) {
     // By that name the document is found again: at this place, or at an
     // earlier one that is the same file.
     const std::size_t place = package.SpineIndexOf(std::string_view(name.data(), length));
-    BN_FUZZ_CHECK(place <= i && spine[place].present && spine[place].entry.headerOffset == item.entry.headerOffset,
+    BN_FUZZ_CHECK(place <= i && spine[place].present && spine[place].headerOffset == item.headerOffset,
                   "a document is not found, at its first place, by the name of its own entry");
   }
   for (const bn::epub::ZipEntry* entry : {package.Cover(), package.Nav(), package.Ncx()}) {

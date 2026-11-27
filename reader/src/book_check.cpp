@@ -1112,7 +1112,7 @@ void BookCheck::ReadStyles() noexcept {
       // begins. One that cannot be opened, or whose name is too long to be
       // a path in a book, is counted by as much of its name as there is.
       core::ByteSource* const document =
-          styles.files.OpenAt(spine[styles.next++].entry, styles.path, styles.pathLength);
+          styles.files.OpenAt(spine[styles.next++].Entry(), styles.path, styles.pathLength);
       const std::string_view name(styles.path.data(), styles.pathLength);
       if (document == nullptr) {
         styles.digest.AddUnopened(name);

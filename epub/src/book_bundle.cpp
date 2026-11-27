@@ -193,7 +193,7 @@ void BookBundler::WriteSpine() noexcept {
     file.flags =
         static_cast<std::uint8_t>((item.linear ? kBundleFileInRun : 0U) | (item.present ? kBundleFilePresent : 0U));
     if (item.present) {
-      file.entry = item.entry;
+      file.entry = item.Entry();
     }
     if (!Wrote(maker_.WriteFile(file))) {
       return;

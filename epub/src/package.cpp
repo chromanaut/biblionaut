@@ -450,8 +450,8 @@ bool Package::AddSpine(std::uint64_t idHash, bool linear) noexcept {
   // the spine gave: Resolve() puts the item's place there, and
   // FindFiles() the entry itself.
   SpineItem* item = ::new (static_cast<void*>(spine_ + spineCount_)) SpineItem{};
-  item->entry.headerOffset = static_cast<std::uint32_t>(idHash);
-  item->entry.compressedSize = static_cast<std::uint32_t>(idHash >> 32U);
+  item->headerOffset = static_cast<std::uint32_t>(idHash);
+  item->compressedSize = static_cast<std::uint32_t>(idHash >> 32U);
   item->linear = linear;
   ++spineCount_;
   memoryUsed_ = std::max(memoryUsed_, used + sizeof(SpineItem));
@@ -740,7 +740,7 @@ void Package::ResolveSpine() noexcept {
   for (; resolved_ < spineCount_ && compares < kComparesPerStep; ++resolved_) {
     compares += itemCount_ + 1;
     const SpineItem& in = spine_[resolved_];
-    const std::uint64_t id = in.entry.headerOffset | (std::uint64_t{in.entry.compressedSize} << 32U);
+    const std::uint64_t id = in.headerOffset | (std::uint64_t{in.compressedSize} << 32U);
     const std::uint32_t index = ItemWithId(id);
     if (index == kNoItem) {
       ++unknownSpineItems_;
@@ -754,8 +754,8 @@ void Package::ResolveSpine() noexcept {
     const bool linear = in.linear;
     SpineItem& out = spine_[kept_++];
     out.linear = linear;
-    out.entry = {};
-    out.entry.headerOffset = index;
+    out.SetEntry({});
+    out.headerOffset = index;
     out.present = false;
     out.type = item.type;
   }
@@ -855,8 +855,8 @@ void Package::FindFiles() noexcept {
       item.flags = Without(item.flags, kWanted);
       --wanted_;
       for (std::size_t i = 0; i < spineCount_; ++i) {
-        if (!spine_[i].present && spine_[i].entry.headerOffset == index) {
-          spine_[i].entry = entry;
+        if (!spine_[i].present && spine_[i].headerOffset == index) {
+          spine_[i].SetEntry(entry);
           spine_[i].present = true;
         }
       }
@@ -874,7 +874,7 @@ void Package::FindFiles() noexcept {
   // What was not found has no entry.
   for (std::size_t i = 0; i < spineCount_; ++i) {
     if (!spine_[i].present) {
-      spine_[i].entry = {};
+      spine_[i].SetEntry({});
     }
   }
   (void)End(PackageStatus::kOk);

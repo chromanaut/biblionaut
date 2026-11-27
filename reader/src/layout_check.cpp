@@ -242,13 +242,14 @@ void LayoutCheck::TimeFace() noexcept {
       reinterpret_cast<const char*>(chunk_.data()),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
       chunk_.size());
   std::array<std::uint16_t, 1> widths{};
+  std::array<std::uint16_t, 1> hyphens{};
   const std::uint64_t began = clock_.NowUs();
   std::size_t from = 0;
   while (from < text.size()) {
     std::size_t end = text.find(' ', from);
     end = end == std::string_view::npos ? text.size() : end + 1;
     const std::array<std::uint8_t, 1> ends = {static_cast<std::uint8_t>(end - from)};
-    face.Measure(std::string_view(text.data() + from, end - from), 0, ends, widths);
+    face.Measure(std::string_view(text.data() + from, end - from), 0, ends, widths, hyphens);
     from = end;
   }
   faceUs_ += clock_.NowUs() - began;

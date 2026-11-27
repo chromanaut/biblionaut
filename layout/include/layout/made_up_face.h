@@ -39,9 +39,10 @@ class MadeUpFace final : public TextMeasure {
   static std::uint16_t CharacterWidth(char first, std::uint16_t style) noexcept;
 
   void Measure(std::string_view text, std::uint16_t style, std::span<const std::uint8_t> ends,
-               std::span<std::uint16_t> widths) noexcept override;
+               std::span<std::uint16_t> widths, std::span<std::uint16_t> hyphens) noexcept override;
   std::uint16_t SpaceWidth(std::uint16_t style) noexcept override;
-  std::uint16_t HyphenWidth(std::uint16_t style) noexcept override;
+  // The hyphen shown at a line's end, which is as wide after any piece.
+  static std::uint16_t HyphenWidth(std::uint16_t style) noexcept;
 
   // How many bytes it has been given to measure, over all its calls.
   std::uint64_t BytesMeasured() const noexcept { return bytesMeasured_; }

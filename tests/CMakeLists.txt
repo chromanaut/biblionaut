@@ -470,12 +470,14 @@ if(Python3_Interpreter_FOUND)
     # The text viewer, run by the desktop application with a fonts image
     # bn-font makes of that font, against what must be so of its pages
     # however their lines fall: the ink on the panel is the ink bn-font
-    # gives for each of the text's letters.
+    # gives for each of the text's letters. And with an image of one of the
+    # fonts that join letters: a page has as many glyphs as its words have
+    # when joined.
     add_test(
       NAME e2e.TextViewer
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/text_viewer.py
         $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-font> $<TARGET_FILE:bn-trace> ${BN_COURIER_PRIME_DIR}
-        ${CMAKE_CURRENT_BINARY_DIR}/text_viewer)
+        ${BN_FONTS_DIR}/noto ${CMAKE_CURRENT_BINARY_DIR}/text_viewer)
     set_tests_properties(e2e.TextViewer PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
   endif()
 

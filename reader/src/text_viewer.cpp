@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <new>
 
-#include "core/utf8.h"
 #include "hyphenation/american_english.h"
 #include "log_line.h"
 
@@ -13,7 +12,6 @@ namespace {
 
 constexpr std::uint16_t kRegular = 0;
 constexpr std::uint16_t kItalicStyle = 1;
-constexpr std::uint32_t kReplacement = 0xFFFD;  // What a byte that is not UTF-8 is drawn as.
 // On a panel of two levels, a pixel is black with this much ink of three,
 // or more.
 constexpr std::uint32_t kBlackInk = 2;
@@ -581,13 +579,15 @@ void TextViewer::PageSet(std::uint64_t now) noexcept {
 }
 
 void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) noexcept {
-  // Everything here is in whole pixels, as the measure counted the line:
-  // a glyph is drawn where the pen is, and the pen moves on by the step the
-  // measure gave the glyph, which is kerned with the glyph after it where
-  // the measure kerned the two: one straight after the other in one style,
-  // with no space and nothing that is not drawn between. So two letters are
-  // as far apart here as anywhere else. A glyph is kept until what follows
-  // it is known, and placed then.
+  // Everything here is in whole pixels, as the measure counted the line.
+  // The line's text is gone through a stretch at a time: what lies between
+  // two spaces in one style, which is what the measure was given as one. A
+  // stretch is drawn in the glyphs the measure counted it in, its letters
+  // joined where the face joins them (layout::GlyphRun); a glyph is drawn
+  // where the pen is, and the pen moves on by the step the measure gave the
+  // glyph, kerned with the glyph after it in the stretch. So two letters
+  // are as far apart here as anywhere else. A glyph is kept until what
+  // follows it is known, and placed then.
   const std::int32_t available = pageWidth_ - (2 * kMargin);
   const auto width = static_cast<std::int32_t>(line.width / layout::FaceMeasure::kUnitsToAPixel);
   // What is over, on a line to be spread, goes between its words: the same
@@ -600,6 +600,7 @@ void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) 
     leftOver = (available - width) % line.spaces;
   }
   const std::string_view text = paragraph_.text;
+  const std::size_t end = std::min<std::size_t>(line.end, text.size());
   std::size_t nextStyle = 0;
   std::uint16_t style = kRegular;
   std::int32_t pen = kMargin;
@@ -609,27 +610,23 @@ void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) 
   std::int32_t owed = line.spaces / 2;
   bool inSpace = false;
   draw::Glyph kept;
-  std::uint16_t keptStyle = kRegular;
   bool keeping = false;
   // Places the glyph that is kept, and moves the pen past it: by its step
-  // before `next`, if `next` follows it in the style `nextIn`, and by its
-  // own if nothing does.
-  const auto place = [&](const draw::Glyph* next, std::uint16_t nextIn) {
+  // before `next`, if `next` follows it, and by its own if nothing does.
+  const auto place = [&](const draw::Glyph* next) {
     if (!keeping) {
       return;
     }
     PlaceGlyph(kept, pen, baseline);
-    pen += next != nullptr && nextIn == keptStyle ? measure_.PenStep(keptStyle, kept, *next)
-                                                  : layout::FaceMeasure::PenStep(kept);
+    pen += next != nullptr ? measure_.PenStep(style, kept, *next) : layout::FaceMeasure::PenStep(kept);
     keeping = false;
   };
-  for (std::size_t at = line.begin; at < line.end && at < text.size();) {
+  for (std::size_t at = line.begin; at < end;) {
     while (nextStyle < paragraph_.styles.size() && paragraph_.styles[nextStyle].first <= at) {
       style = paragraph_.styles[nextStyle].second;
       ++nextStyle;
     }
     if (text[at] == ' ') {
-      place(nullptr, style);
       // A run of spaces is one place between words.
       if (!inSpace) {
         // The pixels left over are owed a share at each place, and a place
@@ -647,51 +644,45 @@ void TextViewer::PlaceLine(const layout::TextLine& line, std::int32_t baseline) 
       continue;
     }
     inSpace = false;
-    const core::Character character = core::CharacterAt(text, at);
-    at += character.bytes;
+    // The stretch: as far as the next space, the next change to another
+    // style, or the line's end.
+    std::size_t stretchEnd = at;
+    std::size_t change = nextStyle;
+    std::uint16_t styleThere = style;
+    while (stretchEnd < end && text[stretchEnd] != ' ') {
+      while (change < paragraph_.styles.size() && paragraph_.styles[change].first <= stretchEnd) {
+        styleThere = paragraph_.styles[change].second;
+        ++change;
+      }
+      if (styleThere != style) {
+        break;
+      }
+      ++stretchEnd;
+    }
+    layout::GlyphRun run(measure_, std::string_view(text.data() + at, stretchEnd - at), style);
     draw::Glyph glyph;
-    if (measure_.GlyphFor(style, character.good ? character.codePoint : kReplacement, glyph)) {
-      place(&glyph, style);
-      kept = glyph;
-      keptStyle = style;
-      keeping = true;
-    } else {
+    bool drawn = false;
+    while (run.Next(glyph, drawn)) {
       // What is not drawn comes between two glyphs as a space does.
-      place(nullptr, style);
+      place(drawn ? &glyph : nullptr);
+      if (drawn) {
+        kept = glyph;
+        keeping = true;
+      }
+    }
+    at = stretchEnd;
+    if (at < end) {
+      place(nullptr);
     }
   }
   // The last glyph of a line that ends inside a word, where a hyphen is
-  // shown, was measured before the letter that begins the next line: the
-  // hyphen goes where that puts it, so that the line is as wide as it was
-  // counted.
-  draw::Glyph following;
-  if (line.hyphen && keeping && FollowingGlyph(line.end, keptStyle, following)) {
-    place(&following, keptStyle);
-  } else {
-    place(nullptr, style);
-  }
+  // shown, has the hyphen after it, and is kerned with that.
   draw::Glyph hyphen;
-  if (line.hyphen && measure_.HyphenGlyph(style, hyphen)) {
+  const bool hyphened = line.hyphen && measure_.HyphenGlyph(style, hyphen);
+  place(hyphened ? &hyphen : nullptr);
+  if (hyphened) {
     PlaceGlyph(hyphen, pen, baseline);
   }
-}
-
-bool TextViewer::FollowingGlyph(std::size_t at, std::uint16_t style, draw::Glyph& glyph) const noexcept {
-  const std::string_view text = paragraph_.text;
-  if (at >= text.size() || text[at] == ' ' || text[at] == '\n') {
-    return false;
-  }
-  // The style the paragraph is in at `at`: the last that begins at or
-  // before it.
-  std::uint16_t styleAt = kRegular;
-  for (const auto& [from, which] : paragraph_.styles) {
-    if (from > at) {
-      break;
-    }
-    styleAt = which;
-  }
-  const core::Character character = core::CharacterAt(text, at);
-  return styleAt == style && measure_.GlyphFor(style, character.good ? character.codePoint : kReplacement, glyph);
 }
 
 void TextViewer::PlaceGlyph(const draw::Glyph& glyph, std::int32_t pen, std::int32_t baseline) noexcept {

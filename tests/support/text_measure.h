@@ -12,6 +12,12 @@
 // test can say how wide any text is by adding up. It also keeps count of
 // what it was asked, and of anything it was given that it should not have
 // been.
+//
+// A hyphen shown at a line's end is as wide after any piece, unless the
+// test says otherwise: then it is wider by so much for each byte of the
+// stretch that comes before it, as a measure that sets a line's last
+// letters differently would make it, so that a test can tell which place's
+// hyphen a line was given.
 
 namespace bn::test {
 
@@ -27,6 +33,9 @@ class TestMeasure final : public layout::TextMeasure {
   std::uint16_t widerByStyle = 0;
   // Everything is 0 wide, whatever it is: any amount of it fits on a line.
   bool nothingHasWidth = false;
+  // Added to a hyphen's width for each byte of the stretch measured that
+  // comes before it.
+  std::uint16_t hyphenWiderByPlace = 0;
 
   // What it has been asked: how many times for the widths of pieces, and
   // over how many bytes of text in all.
@@ -79,13 +88,13 @@ class TestMeasure final : public layout::TextMeasure {
   }
 
   void Measure(std::string_view text, std::uint16_t style, std::span<const std::uint8_t> ends,
-               std::span<std::uint16_t> widths) noexcept override {
+               std::span<std::uint16_t> widths, std::span<std::uint16_t> hyphens) noexcept override {
     ++calls;
     bytes += text.size();
     if (text.find("\xC2\xAD") != std::string_view::npos || text.find("\xE2\x80\x8B") != std::string_view::npos) {
       measuredAMark = true;
     }
-    if (ends.empty() || ends.size() != widths.size() || ends.back() != text.size()) {
+    if (ends.empty() || ends.size() != widths.size() || ends.size() != hyphens.size() || ends.back() != text.size()) {
       badPieces = true;
       return;
     }
@@ -100,6 +109,7 @@ class TestMeasure final : public layout::TextMeasure {
         cutInsideACharacter = true;
       }
       widths[i] = static_cast<std::uint16_t>(WidthOf(text.substr(from, end - from), style));
+      hyphens[i] = HyphenAfter(end, style);
       from = end;
     }
   }
@@ -108,8 +118,14 @@ class TestMeasure final : public layout::TextMeasure {
     return nothingHasWidth ? 0 : static_cast<std::uint16_t>((each_ != 0 ? each_ : 18) + (widerByStyle * style));
   }
 
-  std::uint16_t HyphenWidth(std::uint16_t style) noexcept override {
+  // The hyphen shown at a line's end, if its place makes no difference to
+  // it.
+  std::uint16_t HyphenWidth(std::uint16_t style) const noexcept {
     return nothingHasWidth ? 0 : static_cast<std::uint16_t>((each_ != 0 ? each_ : 22) + (widerByStyle * style));
+  }
+  // The hyphen shown after `before` bytes of a stretch that was measured.
+  std::uint16_t HyphenAfter(std::size_t before, std::uint16_t style) const noexcept {
+    return nothingHasWidth ? 0 : static_cast<std::uint16_t>(HyphenWidth(style) + (hyphenWiderByPlace * before));
   }
 
  private:

@@ -253,6 +253,13 @@ std::size_t PlainLigature(const Bytes& image, std::size_t record, std::uint32_t 
 void CheckLigatures(const Bytes& image, const Face& face, std::size_t number, const std::vector<Glyph>& glyphs) {
   const std::size_t record = kHeaderBytes + (number * kFaceBytes);
   BN_FUZZ_CHECK(face.Ligatures() == image[record + 42], "a face's ligatures are not as many as the image says");
+  // The marks of the glyphs that begin one, from the list read the plain
+  // way.
+  std::uint64_t firsts = 0;
+  for (std::size_t i = 0; i < image[record + 42]; ++i) {
+    firsts |= std::uint64_t{1} << (Get16(image, Get32(image, record + 44) + (i * kLigatureBytes)) % 64U);
+  }
+  BN_FUZZ_CHECK(face.LigatureFirsts() == firsts, "the glyphs that begin a ligature are not marked as the image says");
   for (const Glyph& first : glyphs) {
     for (const Glyph& second : glyphs) {
       const std::array<Glyph, 2> two = {first, second};

@@ -488,6 +488,46 @@ TEST(Face, MakesTheFirstOfItsLigaturesThatFits) {
   EXPECT_EQ(ligature.index, a.index);
 }
 
+TEST(Face, MarksTheGlyphsThatBeginALigature) {
+  // The small face's ligatures begin with a c and with an e.
+  const std::vector<std::uint8_t> image = FontImageBytes({SmallFace()});
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  const Face face = fonts.FaceAt(0);
+  Glyph c;
+  Glyph e;
+  ASSERT_TRUE(face.Find('c', c));
+  ASSERT_TRUE(face.Find('e', e));
+  EXPECT_EQ(face.LigatureFirsts(), (std::uint64_t{1} << c.index) | (std::uint64_t{1} << e.index));
+
+  // A glyph numbered past 63 has the mark of what its number leaves over
+  // 64: here the glyph of the 81st of a hundred characters, which is glyph
+  // 81, and the glyph of the 40th, in a ligature that comes last.
+  ImageFace wide = bn::test::EmptyFace(0, 0);
+  for (std::uint32_t code = 0x100; code < 0x164; ++code) {
+    wide.glyphs[code] = Block(40, 4, 4);
+  }
+  wide.ligatures = {{.letters = {0x150, 0x101}, .glyph = 0x102, .extra = -1},
+                    {.letters = {0x150, 0x103}, .glyph = 0x102, .extra = -1},
+                    {.letters = {0x127, 0x101, 0x101}, .glyph = 0x102, .extra = -1}};
+  const std::vector<std::uint8_t> wideImage = FontImageBytes({wide, SmallFace(1)});
+  FontImage wideFonts;
+  ASSERT_EQ(wideFonts.Open(wideImage), FontStatus::kOk);
+  Glyph first;
+  ASSERT_TRUE(wideFonts.FaceAt(0).Find(0x150, first));
+  EXPECT_EQ(first.index, 81U);
+  EXPECT_EQ(wideFonts.FaceAt(0).LigatureFirsts(), (std::uint64_t{1} << 17U) | (std::uint64_t{1} << 40U));
+
+  // A face with no ligatures has no marks, and no face has none.
+  ImageFace plain = SmallFace();
+  plain.ligatures.clear();
+  const std::vector<std::uint8_t> plainImage = FontImageBytes({plain});
+  FontImage plainFonts;
+  ASSERT_EQ(plainFonts.Open(plainImage), FontStatus::kOk);
+  EXPECT_EQ(plainFonts.FaceAt(0).LigatureFirsts(), 0U);
+  EXPECT_EQ(Face().LigatureFirsts(), 0U);
+}
+
 TEST(Face, DrawsALigatureWithAGlyphNoCharacterHas) {
   // A face with two glyphs after its characters' own, and a ligature for
   // each: of a and b, and of a, b and c.
@@ -1405,10 +1445,20 @@ TEST(FontImage, HoldsAFacesLigaturesWhereverTheyLie) {
   EXPECT_EQ(face.Ligature(letters, ligature), 3U);
   EXPECT_EQ(ligature.index, c.index);
   EXPECT_EQ(face.Ligature(GlyphsOf(face, "cde"), ligature), 0U);
-  // A face that is not held makes none, shown its own glyphs or another's.
+  // The glyphs that begin them are marked from there too: an a, a b and a d.
+  Glyph a;
+  Glyph b;
+  Glyph d;
+  ASSERT_TRUE(face.Find('a', a) && face.Find('b', b) && face.Find('d', d));
+  EXPECT_EQ(face.LigatureFirsts(),
+            (std::uint64_t{1} << a.index) | (std::uint64_t{1} << b.index) | (std::uint64_t{1} << d.index));
+  // A face that is not held makes none, shown its own glyphs or another's,
+  // and marks none.
   EXPECT_EQ(fonts.FaceAt(1).Ligature(letters, ligature), 0U);
+  EXPECT_EQ(fonts.FaceAt(1).LigatureFirsts(), 0U);
   fonts.ReleaseFaces();
   EXPECT_EQ(fonts.FaceAt(0).Ligature(letters, ligature), 0U);
+  EXPECT_EQ(fonts.FaceAt(0).LigatureFirsts(), 0U);
 
   // With a byte less of room than that, it is not held at all.
   bn::test::CopyingByteMap small(image, head + stretch - 1);

@@ -191,17 +191,17 @@ const char* SpoolStatusName(SpoolStatus status) noexcept {
 }
 
 bool SpoolWriter::Begin(std::int32_t width, std::int32_t height, std::int32_t bandRows, std::span<std::uint8_t> buffers,
-                        std::span<std::uint16_t> links, SpoolStore& store) noexcept {
+                        std::span<std::uint8_t> chunkBands, SpoolStore& store) noexcept {
   const std::size_t bands = BandsFor(height, bandRows);
   recording_ = false;
   finished_ = false;
-  if (width <= 0 || bands == 0 || bands > kMostBands || buffers.size() < BufferBytesFor(bands) || links.empty() ||
+  if (width <= 0 || bands == 0 || bands > kMostBands || buffers.size() < BufferBytesFor(bands) || chunkBands.empty() ||
       static_cast<std::size_t>(bandRows) > Filler::kMostRows) {
     return false;
   }
   store_ = &store;
   buffers_ = buffers.first(BufferBytesFor(bands));
-  links_ = links.first(std::min(links.size(), kMostChunks));
+  chunkBands_ = chunkBands.first(std::min(chunkBands.size(), kMostChunks));
   width_ = width;
   height_ = height;
   bandHeight_ = bandRows * 256;
@@ -394,7 +394,7 @@ void SpoolWriter::Flush(std::size_t band) noexcept {
   if (kept.used == 0 || status_ != SpoolStatus::kOk) {
     return;
   }
-  if (chunks_ >= links_.size()) {
+  if (chunks_ >= chunkBands_.size()) {
     Fail(SpoolStatus::kNoRoom);
     return;
   }
@@ -405,13 +405,10 @@ void SpoolWriter::Flush(std::size_t band) noexcept {
     return;
   }
   const auto number = static_cast<std::uint16_t>(chunks_);
-  links_[number] = kNone;
-  if (kept.tail == kNone) {
+  chunkBands_[number] = static_cast<std::uint8_t>(band);
+  if (kept.head == kNone) {
     kept.head = number;
-  } else {
-    links_[kept.tail] = number;
   }
-  kept.tail = number;
   kept.used = 0;
   ++chunks_;
 }
@@ -421,6 +418,7 @@ bool SpoolWriter::BeginBand(std::size_t band, std::span<std::uint8_t> chunk) noe
     return false;
   }
   chunk_ = chunk.first(kChunkBytes);
+  replayBand_ = static_cast<std::uint8_t>(band);
   next_ = band_[band].head;
   at_ = 0;
   loaded_ = false;
@@ -441,7 +439,12 @@ bool SpoolWriter::ReplayStep(Filler& filler) noexcept {
       Fail(next_ >= chunks_ ? SpoolStatus::kBadRecord : SpoolStatus::kStoreFailed);
       return false;
     }
-    next_ = links_[next_];
+    // The band's next chunk is the first after this one that is of it.
+    const std::size_t from = std::size_t{next_} + 1;
+    const std::span<const std::uint8_t> after = chunkBands_.first(chunks_).subspan(from);
+    const auto found = std::find(after.begin(), after.end(), replayBand_);
+    next_ = found == after.end() ? kNone
+                                 : static_cast<std::uint16_t>(from + static_cast<std::size_t>(found - after.begin()));
     at_ = 0;
     loaded_ = true;
   }

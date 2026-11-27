@@ -102,8 +102,8 @@ namespace bn::reader {
 // and kept as it is written; a line says what the cache did.
 //
 // The memory for the bands, for the renderer, for what a drawing defines
-// and for the links of what is kept is taken from the heap at Start():
-// about 88 KB for the X4's panel, most of it the filler's cells and the
+// and for which band each chunk kept is of is taken from the heap at Start():
+// about 97 KB for the X4's panel, most of it the filler's cells and the
 // definitions. What a picture needs besides is taken the
 // first time one is shown: about 73 KB, PNG's window and the readers' rows
 // the most of it.
@@ -142,7 +142,7 @@ class DrawingViewer final : public Screen {
   // band at a time (draw/spool.h): a hidden file at the top of the card,
   // made again for each drawing. And how many chunks it may have: 2 MB,
   // which is twice what the largest drawing in the public books keeps, and
-  // 8 KB of links.
+  // 4 KB to say which band each is of.
   static constexpr std::string_view kSpoolPath = "/.drawing-spool";
   static constexpr std::size_t kSpoolChunks = 4096;
   // Where what is shown is kept, to be shown again: a hidden folder at the
@@ -437,7 +437,7 @@ class DrawingViewer final : public Screen {
   static constexpr std::size_t kMostGathered = 8192;
   CardSpool spoolStore_{storage_, clock_};
   std::unique_ptr<draw::SpoolWriter> spool_;
-  std::unique_ptr<std::uint16_t[]> links_;
+  std::unique_ptr<std::uint8_t[]> chunkBands_;
   bool spooling_ = false;               // The drawing in hand is drawn from the spool.
   const char* spoolFailure_ = nullptr;  // Why it is not, if it was tried.
   std::uint64_t replayingUs_ = 0;

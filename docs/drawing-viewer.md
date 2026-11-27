@@ -70,10 +70,10 @@ drawing](drawing-spool.md)). Each band is then drawn from what was kept, its own
 more. If the card will not keep it, or it would be more than 2 MB, which
 is twice what the largest drawing in the public books keeps, the
 drawing is read again for each band instead, as it could always be, and a
-line says why. The viewer takes about 101 KB of the heap when it starts:
+line says why. The viewer takes about 97 KB of the heap when it starts:
 26 KB for the filler's cells, which also hold what each band has in hand
-while the file is read, 24 KB for what a drawing defines, 8 KB for the
-links of what is kept, 13 KB for a band of grays, which also gathers what
+while the file is read, 24 KB for what a drawing defines, 4 KB to say
+which band each chunk of what is kept is of, 13 KB for a band of grays, which also gathers what
 is kept into writes of up to 8 KB while the file is read, since the card
 writes a few kilobytes at once faster than a chunk at a time, 8 KB for the renderer, a
 kilobyte for the recorder, 6 KB for what is carried in dithering and a

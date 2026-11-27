@@ -2982,9 +2982,8 @@ def chapter_pager_seeds() -> None:
         written(f"one-bit-changed-{number}", every, places=places)
     written("a-few-paragraphs", begin() + said(b"One.") + end + begin(before=10) + said(b"Two.") + end
             + begin() + made(8) + end)
-    written("a-block-over-several-pages", begin() + made(255) + made(255) + made(200) + end + begin() + made(40) + end,
-            height=130)
-    written("a-block-that-outgrows-the-breaker", begin() + made(255) + made(255) + end + begin() + made(90) + end,
+    written("a-block-over-several-pages", begin() + made(180) + end + begin() + made(40) + end, height=130)
+    written("a-block-that-outgrows-the-breaker", begin() + made(170) + end + begin() + made(60) + end,
             nodes=0, height=200, width=2000)
     written("lines-kept-together-longer-than-a-page", begin(1, keep_together) + made(200) + end
             + begin(1, keep_with_next) + made(30) + end + begin(1, keep_together) + made(120) + end, height=160)

@@ -29,7 +29,7 @@
 //   lengths it has, each a byte); text, of bytes that follow; text made up
 //   here to a length; a style; a picture; a block ended; a run of small
 //   blocks; and a link begun or ended. What would be out of turn is not
-//   given, nor more than 300 blocks or 20,000 characters.
+//   given, nor more than 300 blocks or 4,000 characters.
 //
 //   and for a chapter that is the input's bytes: 2 bytes, how long its
 //   directory is, which is the segment's last bytes; and the segment.
@@ -51,8 +51,9 @@
 //     first of them has from the block before, whose head is read without
 //     the rest of it and so without its checksum;
 //   - going down from the chapter's first line, each page begins where
-//     the one before ended: for the first 80 pages, which in all but the
-//     longest chapters is every line on one page.
+//     the one before ended: for the first 80 pages, or as many as the
+//     work an input may be allows (`kMostWork`, below), which in all but
+//     the longest chapters is every line on one page.
 //
 // And of any bytes at all: every piece of work ends kOk, or says that the
 // chapter could not be read or has no such block; and a page it gives has
@@ -128,7 +129,23 @@ using Lines = std::vector<ChapterLine>;
 const char* const kPath = "/s";
 // The most a chapter the target writes is given.
 constexpr std::size_t kMostBlocks = 300;
-constexpr std::size_t kMostCharacters = 20000;
+constexpr std::size_t kMostCharacters = 4000;
+// How much work an input may be: a byte of text measured is `kByteIs`, and
+// a read of storage `kReadIs`, which is about what each takes here beside
+// the other. A page that begins far down a long block has the block set
+// from its start, and one filled up through blocks a pixel high finds
+// hundreds of them by the index, at two reads each: so some pages take a
+// hundred times what others do, and an input has to be done with in a few
+// seconds where the engine has the lowest priority the machine gives, and
+// for a while next to nothing of a processor. Of the pages going down, of
+// those up to places and about them, and of those of any bytes, no more
+// are asked once they have come to `kMostWorkOfAKind`; and at `kMostWork`
+// the input is done with where it stands, part of the way through a page
+// if need be.
+constexpr std::uint64_t kByteIs = 3;
+constexpr std::uint64_t kReadIs = 50;
+constexpr std::uint64_t kMostWorkOfAKind = 8000;
+constexpr std::uint64_t kMostWork = 60000;
 
 std::uint32_t Get16(const Bytes& from, std::size_t at) { return from[at] | (std::uint32_t{from[at + 1]} << 8U); }
 std::uint32_t Get32(const Bytes& from, std::size_t at) { return Get16(from, at) | (Get16(from, at + 2) << 16U); }
@@ -412,7 +429,8 @@ struct Desk {
   }
 
   // Does the piece of work that was begun to its end, each step held to
-  // what a step may do.
+  // what a step may do; or as far as the input may be work, and says that
+  // it gave up.
   PagerStatus Run(PagerStatus begun) {
     if (begun != PagerStatus::kOk) {
       BN_FUZZ_CHECK(!pager.Step() && pager.Status() == begun, "work that did not begin went on");
@@ -433,6 +451,10 @@ struct Desk {
       BN_FUZZ_CHECK(work.readerCalls != 0 || storage.reads.size() == mark, "a read with no call of the reader");
       BN_FUZZ_CHECK(work.lines <= nodes.size(), "a step took in more lines than the breaker has nodes");
       BN_FUZZ_CHECK(steps <= mostSteps, "a piece of the pager's work took more steps than the chapter allows");
+      if (more && Work() >= kMostWork) {
+        gaveUp = true;
+        return PagerStatus::kOk;
+      }
     }
     BN_FUZZ_CHECK(!pager.Step(), "a piece of work that was over went on");
     return pager.Status();
@@ -445,6 +467,13 @@ struct Desk {
     got.lines.assign(pager.Lines().begin(), pager.Lines().end());
     return got;
   }
+  // How much work has been done.
+  std::uint64_t Work() const { return (kByteIs * face.BytesMeasured()) + (kReadIs * storage.reads.size()); }
+  // The pages asked from here on may be so much work, and no more are
+  // asked once they have been.
+  void Allow(std::uint64_t work) { allowed = Work() + work; }
+  bool Spent() const { return Work() >= allowed; }
+
   Got Down(ChapterPlace first) { return Result(pager.BeginDown(first, pageHeight)); }
   Got Up(ChapterPlace before) { return Result(pager.BeginUp(before, pageHeight)); }
   Got About(ChapterPlace place) { return Result(pager.BeginAbout(place, pageHeight)); }
@@ -471,6 +500,10 @@ struct Desk {
   ChapterPager pager{reader, setter, face, rules, entries, records};
   std::uint16_t pageHeight;
   std::size_t mostSteps = 0;
+  std::uint64_t allowed = 0;
+  // A piece of work was left where it stood, the input having been as much
+  // work as one may be: nothing it gave is to be looked at.
+  bool gaveUp = false;
 };
 
 // What is true of any page the pager gives, whatever the chapter.
@@ -755,7 +788,11 @@ void Written(bn::fuzz::Input& input, const Choices& choices, const Rules& rules,
   std::size_t at = 0;
   for (std::uint32_t block = 0; block < blocks; ++block) {
     Lines lines;
-    BN_FUZZ_CHECK(desk.LinesOf(block, lines) == PagerStatus::kOk && !lines.empty(), "a block's lines were not given");
+    const PagerStatus status = desk.LinesOf(block, lines);
+    if (desk.gaveUp) {
+      return;
+    }
+    BN_FUZZ_CHECK(status == PagerStatus::kOk && !lines.empty(), "a block's lines were not given");
     for (const ChapterLine& line : lines) {
       BN_FUZZ_CHECK(at < all.size() && SameLine(line, all[at]) && line.top == 0,
                     "a block's line is not the line the setter gives of its text");
@@ -766,17 +803,24 @@ void Written(bn::fuzz::Input& input, const Choices& choices, const Rules& rules,
 
   // Down from the chapter's first line, each page beginning where the one
   // before ended.
+  desk.Allow(kMostWorkOfAKind);
   std::vector<std::size_t> firsts;
-  for (std::size_t first = 0; first < all.size() && firsts.size() < 80;) {
+  for (std::size_t first = 0; first < all.size() && firsts.size() < 80 && (firsts.empty() || !desk.Spent());) {
     bool cutShort = false;
     const std::size_t end = DownByHand(all, first, pageHeight, most, cutShort);
     const Got got = desk.Down(all[first].Place());
+    if (desk.gaveUp) {
+      return;
+    }
     CheckAnyPage(desk, got);
     CheckPage(got, all, first, end, true, cutShort, placeOf(end));
     firsts.push_back(first);
     first = end;
   }
   const Got atEnd = desk.Down(chapterEnd);
+  if (desk.gaveUp) {
+    return;
+  }
   BN_FUZZ_CHECK(atEnd.status == PagerStatus::kOk && !atEnd.page.found, "a page that begins at the chapter's end");
 
   // Up to places, and about places, that the input's numbers choose.
@@ -785,7 +829,8 @@ void Written(bn::fuzz::Input& input, const Choices& choices, const Rules& rules,
     state = (state * 1664525U) + 1013904223U;
     return (state >> 12U) % limit;
   };
-  for (int trial = 0; trial < 6; ++trial) {
+  desk.Allow(kMostWorkOfAKind);
+  for (int trial = 0; trial < 6 && !desk.Spent(); ++trial) {
     const std::uint32_t pick = next(4);
     const std::size_t index = pick == 0 ? firsts[next(static_cast<std::uint32_t>(firsts.size()))]
                                         : next(static_cast<std::uint32_t>(all.size() + 1));
@@ -801,6 +846,9 @@ void Written(bn::fuzz::Input& input, const Choices& choices, const Rules& rules,
       before.into += next(all[index].end - all[index].begin + 2);
     }
     const Got up = desk.Up(before);
+    if (desk.gaveUp) {
+      return;
+    }
     CheckAnyPage(desk, up);
     const std::size_t end = LinesAbove(all, before);
     if (end == 0) {
@@ -836,6 +884,9 @@ void Written(bn::fuzz::Input& input, const Choices& choices, const Rules& rules,
     bool cutShort = false;
     const std::size_t downEnd = DownByHand(all, first, pageHeight, most, cutShort);
     const Got about = desk.About(place);
+    if (desk.gaveUp) {
+      return;
+    }
     CheckAnyPage(desk, about);
     CheckPage(about, all, first, downEnd, true, cutShort, placeOf(downEnd));
   }
@@ -863,6 +914,9 @@ void Written(bn::fuzz::Input& input, const Choices& choices, const Rules& rules,
     }
     Lines lines;
     const PagerStatus status = desk.LinesOf(block, lines);
+    if (desk.gaveUp) {
+      return;
+    }
     BN_FUZZ_CHECK(status == PagerStatus::kOk ||
                       (status == PagerStatus::kReadFailed && desk.pager.ReaderStatus() != SegmentStatus::kOk),
                   "a block of a changed chapter ended in a status it should not");
@@ -947,19 +1001,31 @@ void AnyBytes(bn::fuzz::Input& input, unsigned bits, const Choices& choices, con
     state = (state * 1664525U) + 1013904223U;
     return (state >> 12U) % limit;
   };
-  for (int trial = 0; trial < 4; ++trial) {
+  desk.Allow(kMostWorkOfAKind);
+  for (int trial = 0; trial < 4 && !desk.Spent(); ++trial) {
     // Mostly among the first blocks, where a segment of a few bytes has
     // its blocks; now and then anywhere, and past the end.
     const std::uint32_t block = next(4) == 0 ? next(blocks + 2) : next(8);
     const ChapterPlace place{.block = block, .into = next(4) == 0 ? next(5000) : 0};
     Lines lines;
-    sound(desk.LinesOf(block, lines));
-    for (const Got& got : {desk.Down(place), desk.Up(place), desk.About(place)}) {
+    const PagerStatus status = desk.LinesOf(block, lines);
+    if (desk.gaveUp) {
+      return;
+    }
+    sound(status);
+    for (int way = 0; way < 3 && !desk.Spent(); ++way) {
+      const Got got = way == 0 ? desk.Down(place) : way == 1 ? desk.Up(place) : desk.About(place);
+      if (desk.gaveUp) {
+        return;
+      }
       sound(got.status);
       CheckAnyPage(desk, got);
     }
   }
   const Got last = desk.Up(desk.pager.End());
+  if (desk.gaveUp) {
+    return;
+  }
   sound(last.status);
   CheckAnyPage(desk, last);
 }

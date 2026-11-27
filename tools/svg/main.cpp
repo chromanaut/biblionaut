@@ -453,10 +453,10 @@ int Draw(const Options& options) {
     }
     MemorySpool store;
     std::vector<std::uint8_t> buffers(bn::draw::SpoolWriter::BufferBytesFor(bands));
-    std::vector<std::uint16_t> links(bn::draw::SpoolWriter::kMostChunks);
+    std::vector<std::uint8_t> chunkBands(bn::draw::SpoolWriter::kMostChunks);
     bn::draw::SpoolWriter writer;
     if (!writer.Begin(static_cast<std::int32_t>(width), static_cast<std::int32_t>(height),
-                      static_cast<std::int32_t>(stripRows), buffers, links, store)) {
+                      static_cast<std::int32_t>(stripRows), buffers, chunkBands, store)) {
       std::fprintf(stderr, "error: a picture of %zu by %zu in strips of %zu rows cannot be kept\n", width, height,
                    stripRows);
       return 2;

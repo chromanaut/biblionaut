@@ -34,9 +34,10 @@ is one, and draws into its strip as the lines come. `SpoolWriter`
   into it would.
 - **Where**: each band has a chunk of 512 bytes in hand, in memory the
   caller gives; a full chunk is added to a store, the caller's
-  (`SpoolStore`: a file on a card, or memory), and a table of links, two
-  bytes for each chunk the store may hold, chains each band's chunks in
-  order.
+  (`SpoolStore`: a file on a card, or memory), and the band it is of is
+  written down, in a byte for each chunk the store may hold, also the
+  caller's. A band's chunks are those with its number, in the order they
+  were added: nothing more is needed to find them again.
 - **How long a record is**: nearly all of what a drawing keeps is lines
   that go on from where the band's last ended, and in an engraving most
   are shorter than a pixel. So those have no byte to say what they are:
@@ -53,9 +54,11 @@ is one, and draws into its strip as the lines come. `SpoolWriter`
   tens of kilobytes. About 2.8 bytes a line. On the X4, where the page is
   turned onto the panel, the largest keeps 827 KB, written in 1.0 s and
   read back in 1.3 s.
-- **What a call costs**: `ReplayStep()` reads one chunk at the most, and
-  fills once at the most.
-- **Bad input**: the links given can be too few (`kNoRoom`), the store can
+- **What a call costs**: `ReplayStep()` reads one chunk at the most, looks
+  for the band's next among the chunks' bands, each of which it passes
+  once in giving a band back, and fills once at the most.
+- **Bad input**: the bytes given for the chunks' bands can be too few
+  (`kNoRoom`), the store can
   fail (`kStoreFailed`), and what is read back can be damaged
   (`kBadRecord`); each is a status, and a damaged chunk is never read past
   its end. The object is about a kilobyte.

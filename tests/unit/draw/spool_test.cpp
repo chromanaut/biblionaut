@@ -105,7 +105,7 @@ struct Spooled {
 
 // The file drawn once into a SpoolWriter, and given back into bands of
 // `rows` rows.
-Spooled Spool(std::string_view file, std::size_t width, std::size_t height, std::size_t rows, std::size_t links = 4096,
+Spooled Spool(std::string_view file, std::size_t width, std::size_t height, std::size_t rows, std::size_t chunks = 4096,
               MemoryStore* given = nullptr) {
   Spooled spooled;
   spooled.gray.assign(width * height, kWhite);
@@ -113,10 +113,10 @@ Spooled Spool(std::string_view file, std::size_t width, std::size_t height, std:
   MemoryStore& store = given != nullptr ? *given : own;
   const std::size_t bands = SpoolWriter::BandsFor(static_cast<std::int32_t>(height), static_cast<std::int32_t>(rows));
   std::vector<std::uint8_t> buffers(SpoolWriter::BufferBytesFor(bands));
-  std::vector<std::uint16_t> link(links);
+  std::vector<std::uint8_t> chunkBands(chunks);
   SpoolWriter writer;
   EXPECT_TRUE(writer.Begin(static_cast<std::int32_t>(width), static_cast<std::int32_t>(height),
-                           static_cast<std::int32_t>(rows), buffers, link, store));
+                           static_cast<std::int32_t>(rows), buffers, chunkBands, store));
   std::vector<std::uint8_t> kept(8192);
   SvgRenderer renderer;
   renderer.KeepDefinitionsIn(kept);
@@ -245,7 +245,7 @@ TEST(Spool, DrawingsMadeAtRandomAreGivenBackAsTheyWereDrawn) {
   }
 }
 
-TEST(Spool, SaysWhenTheLinksHaveNoRoomOrTheStoreFails) {
+TEST(Spool, SaysWhenThereIsNoRoomToSayAChunksBandOrTheStoreFails) {
   std::string body;
   for (int i = 0; i < 200; ++i) {
     body += "<circle cx='" + std::to_string(i % 40) + "' cy='" + std::to_string(i % 30) + "' r='5'/>";
@@ -272,9 +272,9 @@ TEST(Spool, WhatIsReadBackDamagedEndsInAStatus) {
                                "<svg x='4' y='4' width='9' height='9'><circle cx='4' cy='4' r='6'/></svg>");
   MemoryStore store;
   std::vector<std::uint8_t> buffers(SpoolWriter::BufferBytesFor(SpoolWriter::BandsFor(30, 10)));
-  std::vector<std::uint16_t> links(64);
+  std::vector<std::uint8_t> chunkBands(64);
   SpoolWriter writer;
-  ASSERT_TRUE(writer.Begin(40, 30, 10, buffers, links, store));
+  ASSERT_TRUE(writer.Begin(40, 30, 10, buffers, chunkBands, store));
   std::vector<std::uint8_t> kept(4096);
   SvgRenderer renderer;
   renderer.KeepDefinitionsIn(kept);
@@ -335,10 +335,10 @@ Kept KeptInOneBand(const Drawn& draw) {
 
   MemoryStore store;
   std::vector<std::uint8_t> buffers(SpoolWriter::BufferBytesFor(1));
-  std::vector<std::uint16_t> links(8);
+  std::vector<std::uint8_t> chunkBands(8);
   SpoolWriter writer;
   EXPECT_TRUE(writer.Begin(static_cast<std::int32_t>(width), static_cast<std::int32_t>(rows),
-                           static_cast<std::int32_t>(rows), buffers, links, store));
+                           static_cast<std::int32_t>(rows), buffers, chunkBands, store));
   draw(writer);
   EXPECT_EQ(writer.Finish(), SpoolStatus::kOk);
   EXPECT_EQ(writer.Chunks(), 1u);
@@ -456,14 +456,14 @@ TEST(Spool, ALineThatBeginsSomewhereElseIsAMoveAsShortAsWillSayIt) {
 TEST(Spool, RefusesWhatItCannotRecord) {
   MemoryStore store;
   std::vector<std::uint8_t> buffers(SpoolWriter::BufferBytesFor(2));
-  std::vector<std::uint16_t> links(8);
+  std::vector<std::uint8_t> chunkBands(8);
   SpoolWriter writer;
-  EXPECT_FALSE(writer.Begin(40, 0, 16, buffers, links, store));
-  EXPECT_FALSE(writer.Begin(0, 30, 16, buffers, links, store));
-  EXPECT_FALSE(writer.Begin(40, 33, 16, buffers, links, store)) << "three bands, room for two";
+  EXPECT_FALSE(writer.Begin(40, 0, 16, buffers, chunkBands, store));
+  EXPECT_FALSE(writer.Begin(0, 30, 16, buffers, chunkBands, store));
+  EXPECT_FALSE(writer.Begin(40, 33, 16, buffers, chunkBands, store)) << "three bands, room for two";
   EXPECT_FALSE(writer.Begin(40, 30, 16, buffers, {}, store));
-  EXPECT_FALSE(writer.Begin(40, 16 * 65, 16, buffers, links, store)) << "more bands than are kept";
-  EXPECT_TRUE(writer.Begin(40, 30, 16, buffers, links, store));
+  EXPECT_FALSE(writer.Begin(40, 16 * 65, 16, buffers, chunkBands, store)) << "more bands than are kept";
+  EXPECT_TRUE(writer.Begin(40, 30, 16, buffers, chunkBands, store));
   std::vector<std::uint8_t> chunk(SpoolWriter::kChunkBytes);
   EXPECT_FALSE(writer.BeginBand(0, chunk)) << "not finished";
   EXPECT_EQ(writer.Finish(), SpoolStatus::kOk);

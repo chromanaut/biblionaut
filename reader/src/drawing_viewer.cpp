@@ -166,7 +166,7 @@ void DrawingViewer::Start() noexcept {
   renderer_->KeepDefinitionsIn({definitions_.get(), kDefinitionBytes});
   renderer_->SetThinnestStroke(kThinnestStroke);
   spool_.reset(new (std::nothrow) draw::SpoolWriter());
-  links_.reset(new (std::nothrow) std::uint16_t[kSpoolChunks]);
+  chunkBands_.reset(new (std::nothrow) std::uint8_t[kSpoolChunks]);
   state_ = State::kReady;
 
   // The drawings: every file in the folder named as one, in the order of
@@ -692,7 +692,7 @@ bool DrawingViewer::FeedSome(std::uint64_t until) noexcept {
 }
 
 bool DrawingViewer::StartRecording() noexcept {
-  if (!spool_ || !links_) {
+  if (!spool_ || !chunkBands_) {
     spoolFailure_ = "no memory";
     return false;
   }
@@ -707,7 +707,7 @@ bool DrawingViewer::StartRecording() noexcept {
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the cells' memory, as bytes.
   const std::span<std::uint8_t> buffers(reinterpret_cast<std::uint8_t*>(cells_.get()), cells * sizeof(std::int16_t));
   if (!spool_->Begin(static_cast<std::int32_t>(size.width), static_cast<std::int32_t>(size.height),
-                     static_cast<std::int32_t>(kBandRows), buffers, {links_.get(), kSpoolChunks}, spoolStore_)) {
+                     static_cast<std::int32_t>(kBandRows), buffers, {chunkBands_.get(), kSpoolChunks}, spoolStore_)) {
     spoolFailure_ = "not a picture it can keep";
     spoolStore_.Close();
     return false;

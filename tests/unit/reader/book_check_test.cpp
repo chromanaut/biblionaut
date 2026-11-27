@@ -473,7 +473,7 @@ TEST(BookCheck, ReadsThePackageOfEveryBookAndSaysWhatItFound) {
   const Opened second = OpenAsAReaderWould(fixture.storage, "/books/b.epub");
   ASSERT_EQ(first.status, bn::epub::PackageStatus::kOk);
   ASSERT_EQ(second.status, bn::epub::PackageStatus::kOk);
-  EXPECT_EQ(first.memory, (5u * 16) + (3u * 28));
+  EXPECT_EQ(first.memory, (5u * 16) + (3u * 24));
   EXPECT_NE(first.checksum, second.checksum);
 
   // Three lines a book: what it calls itself, what its package lists, and
@@ -482,7 +482,7 @@ TEST(BookCheck, ReadsThePackageOfEveryBookAndSaysWhatItFound) {
   EXPECT_NE(all.find("book 1: package: title \"The Book\", author \"A. Writer\", language \"en\".\n"),
             std::string::npos)
       << all;
-  EXPECT_NE(all.find("book 1: package: 5 files, 3 documents, cover jpeg, no nav, ncx; memory 164; checksum " +
+  EXPECT_NE(all.find("book 1: package: 5 files, 3 documents, cover jpeg, no nav, ncx; memory 152; checksum " +
                      Hex8(first.checksum) + ".\n"),
             std::string::npos)
       << all;
@@ -561,7 +561,7 @@ TEST(BookCheck, CountsTheTimeAPackageTakesByItself) {
   const std::string all = slow.AllLines();
   EXPECT_NE(all.find("book 1: package: " + cost + ".\n"), std::string::npos) << all;
   EXPECT_NE(all.find("book check: packages: 1 read; " + cost + "; the longest " +
-                     std::to_string(slowTotals.packageUs / 1000) + " ms; the most memory 164.\n"),
+                     std::to_string(slowTotals.packageUs / 1000) + " ms; the most memory 152.\n"),
             std::string::npos)
       << all;
 }
@@ -1084,8 +1084,8 @@ Found FindSheetsAsAReaderWould(FakeStorage& storage, const std::string& path) {
       continue;
     }
     std::size_t length = 0;
-    EXPECT_EQ(bn::epub::ReadZipEntryName(entries, item.entry, name, length), bn::epub::ZipStatus::kOk);
-    EXPECT_EQ(reader.Open(entries, item.entry), bn::epub::ZipStatus::kOk);
+    EXPECT_EQ(bn::epub::ReadZipEntryName(entries, item.Entry(), name, length), bn::epub::ZipStatus::kOk);
+    EXPECT_EQ(reader.Open(entries, item.Entry()), bn::epub::ZipStatus::kOk);
     (void)sheets.Find(std::string_view(name.data(), length), reader);
     digest.Add(std::string_view(name.data(), length), sheets);
   }

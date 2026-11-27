@@ -285,7 +285,7 @@ void CheckBundle(Making& making, const Bytes& file, bool made) {
         (item.linear ? bn::epub::kBundleFileInRun : 0U) | (item.present ? bn::epub::kBundleFilePresent : 0U);
     BN_FUZZ_CHECK(record.flags == flags && record.kind == static_cast<std::uint8_t>(item.type),
                   "a document's record is not of its kind, or not in the run as it is");
-    BN_FUZZ_CHECK(SameEntry(record.entry, item.present ? item.entry : ZipEntry{}),
+    BN_FUZZ_CHECK(SameEntry(record.entry, item.present ? item.Entry() : ZipEntry{}),
                   "a document's record does not say where the package says its file is");
   }
 

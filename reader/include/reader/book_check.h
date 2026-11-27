@@ -203,7 +203,7 @@ class BookCheck final : public DeviceCheck {
   // want, so that what a document uses is what it wants.
   static constexpr std::size_t kXmlMemoryBytes = 32768;
   // The memory the package reader is given for a book's files and
-  // documents: 16 bytes a file and 28 a document.
+  // documents: 16 bytes a file and 24 a document.
   static constexpr std::size_t kPackageMemoryBytes = 24576;
   // The memory the table of a book's rules is given: more than any book
   // of the library wants (the most is 24 KB).

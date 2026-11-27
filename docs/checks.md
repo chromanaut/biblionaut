@@ -50,9 +50,24 @@ for comes to no more than the machine has; one that says nothing has all
 of it. The order is still the order they came: nothing begins until
 everything that came before it has begun, so a command that wants the
 whole machine is not kept waiting by small ones that come after it, and
-they wait behind it though there are processors free. `tools/fuzz.py`
-takes two turns: the whole machine to build its targets, and then a
-processor for each of the runs that go on at once.
+they wait behind it though there are processors free.
+
+A command that is in no hurry and is not being timed holds the others up
+for nothing: a few minutes of fuzzing on two processors keep whatever
+wants the whole machine waiting, and everything behind that. Such a
+command is run in the background, `tools/queued --background COMMAND`. It
+has its turn in a queue of its own, `background`, which nothing in the
+other waits for, and it is run at the lowest priority the machine has. On
+a Mac that is the one that keeps a process to the efficiency cores
+(`taskpolicy -b`), and the queue has as many processors to share out as
+there are of those; elsewhere it is `nice`'s lowest, and a quarter of the
+processors, one at the least (`BN_QUEUE_BACKGROUND_CORES` says another
+number). `--cores` means there what it means anywhere. The price is that
+the command gets much less done in a minute, about a ninth on a Mac whose
+other cores are busy, and reads and writes files slowly: it is given more
+minutes, or does less. `tools/fuzz.py` takes two turns: the whole machine
+to build its targets, which is soon over, and then one in the background
+for its runs, a processor for each that goes on at once.
 
 There is one exception to the order. Most commands that come this way are
 over in seconds, a build of the file just changed, and left to the order
@@ -72,9 +87,10 @@ One that has to wait says what it is waiting for, and
 `tools/queued --list` says what is running and what waits:
 
 ```
-heavy: running: tools/fuzz.py --built --time 420 inflate, in ~/biblionaut-two, since 10:33:30, process 86726, 2 cores.
-heavy: waiting: tools/check-tidy.sh, in ~/biblionaut, since 10:33:45, process 95389.
-heavy: waiting: python3 trial.py, in ~/biblionaut-two, since 10:33:55, process 95713, 2 cores.
+background: running: tools/fuzz.py --built --time 420 inflate, in ~/biblionaut-two, since 14:38:45, process 9962, 2 cores.
+heavy: running: build/host-release/tests/draw_tests, in ~/biblionaut, since 14:40:45, process 10004, 1 core.
+heavy: waiting: tools/check-tidy.sh, in ~/biblionaut, since 14:41:00, process 12654.
+heavy: waiting: python3 trial.py, in ~/biblionaut-two, since 14:41:10, process 12817, 2 cores.
 ```
 
 `tools/queued --watch` keeps saying it, until it is stopped with Ctrl-C. On
@@ -86,13 +102,14 @@ waited. A long path in a command is cut to its last name, and a line to
 the terminal's width:
 
 ```
-10:34:18  the queues in ~/.cache/biblionaut/queue  (Ctrl-C to stop)
+14:41:33  the queues in ~/.cache/biblionaut/queue  (Ctrl-C to stop)
 
-heavy  running  2 cores    47 s  biblionaut-two  tools/fuzz.py --built --time 420 inflate
-       waiting  all cores  33 s  biblionaut      tools/check-tidy.sh
-       waiting  2 cores    23 s  biblionaut-two  python3 trial.py
+background  running  2 cores    2 min 48 s  biblionaut-two  tools/fuzz.py --built --time 420 inflate
+heavy       running  1 core           47 s  biblionaut      .../draw_tests
+            waiting  all cores        33 s  biblionaut      tools/check-tidy.sh
+            waiting  2 cores          23 s  biblionaut-two  python3 trial.py
 
-today, heavy: 2 turns over, which waited 59 s on average and 1 min 58 s at the most
+today, heavy: 1 turn over, which waited 0 s on average and 0 s at the most
 ```
 
 Written to a file or a pipe and not a terminal, it says the same once each
@@ -118,14 +135,15 @@ it waited and the seconds it ran, where it was started, the command, and
 the machine's load as it ended, with a tab between each:
 
 ```
-2026-11-27 10:31:25	heavy	10	0	125	~/biblionaut	tools/linux-check.sh	16.2
-2026-11-27 10:33:31	heavy	1	118	35	~/biblionaut	build/host-release/tests/draw_tests	44.2
+2026-11-27 14:38:40	heavy	10	0	125	~/biblionaut	tools/linux-check.sh	12.7
+2026-11-27 14:38:45	background	2	0	169	~/biblionaut-two	tools/fuzz.py --built --time 420 inflate	13.9
+2026-11-27 14:40:45	heavy	1	117	50	~/biblionaut	build/host-release/tests/draw_tests	13.9
 ```
 
 The load is how many processes were running or ready to run, on average
 over the minute before, whatever started them: set beside the processors
 a long turn had, it says whether the turn used them, and it says what
-else the machine was doing. These two were taken while other work had the
+else the machine was doing. These were taken while other work had the
 machine busy.
 
 `tools/queued` has become the command by then, so the line is written by a
@@ -135,8 +153,10 @@ given the turn's own file when everything else has let go of it.
 `tools/queued COMMAND` gives any other command a turn in the same queue,
 and `--name` another queue, which a run on a device with one cable can
 use (`tools/queued --help`). Setting `BN_QUEUE_OFF` runs a command at
-once, and `BN_QUEUE_CORES` says how many processors there are to share
-out, where that is not all the machine has. CI is not changed by any of
+once and as it is, and `BN_QUEUE_CORES` says how many processors there
+are to share out, where that is not all the machine has. A command is
+told how many its turn has, in `BN_QUEUE_TURN_CORES`, and can run that
+many things at once, as `tools/fuzz.py` does. CI is not changed by any of
 this: each of its jobs has a machine to itself, where there is nothing to
 wait for.
 

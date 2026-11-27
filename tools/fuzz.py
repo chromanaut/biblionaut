@@ -23,6 +23,21 @@ which the XML parser's memory comes from, is laid out one way with
 AddressSanitizer and another way without, and the firmware has it the
 second way. There the targets' own checks are what there is to go by.
 
+It takes its turns among the heavy checks by itself (tools/queued): one
+with the whole machine to build the targets, which takes every processor
+for a little while, and then one in the background for the runs, which
+are in no hurry and hold nothing else up there. In the background a run
+has the lowest priority the machine gives, and as many go on at once as
+the background has processors, two on a Mac with two efficiency cores:
+so a run tries far fewer inputs in its minute than it would on a
+processor to itself, about a ninth as many on a Mac that is busy, and a
+pass over many targets is long. A pass that is to get further is given
+more time, which costs nobody anything; or it is started in a turn of
+the ordinary kind, where it does all of its work at the ordinary
+priority and holds up what such a turn holds up:
+
+    tools/queued --cores 4 tools/fuzz.py --time 600 svg
+
 What it leaves behind, in .fuzz/ at the top of the repository (which git
 ignores):
 
@@ -244,7 +259,8 @@ def main() -> int:
     parser.add_argument("targets", nargs="*", metavar="TARGET", help="the targets to run (default: all)")
     parser.add_argument("--time", type=int, default=60, metavar="SECONDS", help="how long each run lasts (default 60)")
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2), metavar="N",
-                        help="how many runs go on at once (default: all but two of the processors)")
+                        help="how many runs go on at once (default: all but two of the processors, "
+                             "and no more than the turn it is given has)")
     parser.add_argument("--list", action="store_true", help="print the names of the targets and stop")
     parser.add_argument("--shrink", metavar="FILE", type=Path,
                         help="cut down an input that makes the one TARGET named fail, to FILE.small")
@@ -263,24 +279,31 @@ def main() -> int:
         sys.exit("error: --shrink wants the one target the input is for.")
     targets = arguments.targets or list(TARGETS)
     runs = [(preset, target) for target in targets for preset in BUILDS]
-    at_once = max(1, min(arguments.jobs, len(runs)))
+    # No more at once than the turn this has been given has processors for.
+    turn = os.environ.get("BN_QUEUE_TURN_CORES", "")
+    jobs = min(arguments.jobs, int(turn)) if turn.isdigit() and int(turn) > 0 else arguments.jobs
+    at_once = max(1, min(jobs, len(runs)))
 
     # One heavy check at a time on a machine: this waits for its turn
     # (tools/queued says how), and starts again from the top when it has it.
     # Fuzzing takes two. Building the targets takes every processor, and has
-    # the whole machine; the runs take one each, and have as many as go on
-    # at once, so that other commands which say how many they use can have
-    # the rest.
-    if "heavy" not in os.environ.get("BN_QUEUE_HELD", "").split(":"):
+    # the whole machine. The runs are in no hurry and are not being timed,
+    # so they have theirs in the background, where they hold up nothing that
+    # is: one processor each of those the background has, and no more of
+    # them at once than it gives. Started by a command that is having a
+    # turn already, it does all of it in that turn.
+    if not {"heavy", "background"} & set(os.environ.get("BN_QUEUE_HELD", "").split(":")):
         here = Path(__file__).resolve()
         queued = [sys.executable, str(here.parent / "queued")]
         this = [sys.executable, str(here)]
-        if arguments.shrink:
+        if arguments.shrink or arguments.only_build:
             os.execv(sys.executable, [*queued, *this, *sys.argv[1:]])
-        built = subprocess.run([*queued, *this, "--only-build"], check=False).returncode
-        if built != 0:
-            return built
-        os.execv(sys.executable, [*queued, "--cores", str(at_once), *this, "--built", *sys.argv[1:]])
+        if not arguments.built:
+            built = subprocess.run([*queued, *this, "--only-build"], check=False).returncode
+            if built != 0:
+                return built
+        passed = [argument for argument in sys.argv[1:] if argument != "--built"]
+        os.execv(sys.executable, [*queued, "--background", "--cores", str(at_once), *this, "--built", *passed])
     if arguments.shrink:
         shrink(arguments.targets[0], arguments.shrink, arguments.time)
         return 0
@@ -294,7 +317,7 @@ def main() -> int:
 
     print(f"Fuzzing {len(targets)} targets in {len(BUILDS)} builds, {arguments.time} s each, "
           f"{at_once} at once ...", flush=True)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=arguments.jobs) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=at_once) as pool:
         results = list(pool.map(lambda run: run_one(run[0], run[1], arguments.time), runs))
 
     print()

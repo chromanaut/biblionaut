@@ -74,9 +74,13 @@ and whoever has a turn keeps one in NAME.running, which says what it is.
 
 Each turn is written down when it ends, a line in the file turns.log of
 that folder: when it began, the queue, how many processors it had, how
-many seconds it waited and how many it ran, where it was started, and the
-command, with a tab between each. The line is written by a process left
-behind for it, which holds none of the locks and waits for them to go.
+many seconds it waited and how many it ran, where it was started, the
+command, and the machine's load as it ended, with a tab between each. The
+load is how many processes were running or ready to run, on average over
+the minute before, whatever started them: beside the processors a long
+turn had, it says whether the turn used them. The line is written by a
+process left behind for it, which holds none of the locks and waits for
+them to go.
 
 With BN_QUEUE_OFF set to anything, or if the folder cannot be used, the
 command is run at once.
@@ -431,8 +435,13 @@ def leave_a_witness(folder: Path, name: str, command: list[str], turn: Turn) -> 
         os.closerange(3, 256)
         mark = os.open(turn.mark, os.O_RDWR)
         fcntl.flock(mark, fcntl.LOCK_EX)
+        ran = time.time() - turn.began
+        try:
+            load = f"{os.getloadavg()[0]:.1f}"
+        except OSError:
+            load = ""  # Not to be had on this machine.
         with open(folder / LOG, "a") as log:
-            log.write(f"{before}\t{time.time() - turn.began:.0f}\t{after}\n")
+            log.write(f"{before}\t{ran:.0f}\t{after}\t{load}\n")
         turn.mark.unlink()
     except BaseException:  # noqa: BLE001 - whatever goes wrong here is nobody's to hear of.
         pass

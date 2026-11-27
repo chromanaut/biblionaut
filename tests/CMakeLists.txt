@@ -358,6 +358,17 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-bundle> ${CMAKE_CURRENT_BINARY_DIR}/segment_tool)
   set_tests_properties(e2e.SegmentTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
+  # bn-pages, and through it a chapter read by the reader of its segment
+  # and set in pages by the setter and the page chooser: the lines of each
+  # block against the block as the test has it, and the pages against ones
+  # the test chooses by adding the lines' heights up over the whole
+  # chapter.
+  add_test(
+    NAME e2e.PagesTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/pages_tool.py
+      $<TARGET_FILE:bn-pages> $<TARGET_FILE:bn-bundle> ${CMAKE_CURRENT_BINARY_DIR}/pages_tool)
+  set_tests_properties(e2e.PagesTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
   # bn-css sheets and bn-css document, and through them the finding of the
   # sheets a document asks for, against a second working-out in the test
   # for books it makes: each document's list, what was left out by its

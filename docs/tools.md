@@ -19,6 +19,7 @@ piece it runs.
 | `bn-jpeg` | `tools/jpeg` | Does the same for a JPEG picture | [Pictures](pictures.md#jpeg) |
 | `bn-hyphen` | `tools/hyphen` | Makes a language's hyphenation table, and breaks words with one | [Where a word may be broken](hyphenation.md) |
 | `bn-lines` | `tools/lines` | Sets text in lines as the firmware does | [Setting a paragraph's text in lines](paragraph-setter.md) |
+| `bn-pages` | `tools/pages` | Sets a chapter of a bundle in pages, with the format's reader and the firmware's layout, and prints them as text | [A chapter in pages](pages.md) |
 | `bn-font` | `tools/font` | Makes the fonts image the firmware draws text from | [Fonts](fonts.md) |
 
 And the scripts:

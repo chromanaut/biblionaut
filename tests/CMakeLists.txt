@@ -180,6 +180,7 @@ bn_add_unit_test(reader_tests
     unit/reader/app_test.cpp
     unit/reader/book_check_test.cpp
     unit/reader/drawing_viewer_test.cpp
+    unit/reader/gray_rows_test.cpp
     unit/reader/layout_check_test.cpp
     unit/reader/pattern_viewer_test.cpp
     unit/reader/storage_check_test.cpp

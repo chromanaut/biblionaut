@@ -14,6 +14,8 @@ when the test lets them, and what is checked is what it promises:
   - a tools/queued that knows only of whole turns, as an older checkout
     has, waits for those that share and is waited for by them;
   - each turn is written down when it ends, however it ends;
+  - a command that has been short goes ahead of what waits, while
+    something that is not short is running, and not otherwise;
   - `--list` says what is running and what waits, and `--watch` says it
     again each time it changes;
   - a job that is killed gives up its turn, and one that is killed while
@@ -91,8 +93,9 @@ class Bench:
         self.log.write_text("")
         self.job = self.folder / "job.py"
         self.job.write_text(JOB)
-        # A machine of four processors, whatever this one has.
-        self.environment = {**os.environ, "BN_QUEUE_DIR": str(self.queue), "BN_QUEUE_CORES": "4"}
+        # A machine of four processors, whatever this one has; and nothing
+        # counts as short, so that the order is the order they came in.
+        self.environment = {**os.environ, "BN_QUEUE_DIR": str(self.queue), "BN_QUEUE_CORES": "4", "BN_QUEUE_BRIEF": "0"}
         self.environment.pop("BN_QUEUE_HELD", None)
         self.environment.pop("BN_QUEUE_OFF", None)
         self.started: list[subprocess.Popen] = []
@@ -114,13 +117,33 @@ class Bench:
         self.started.append(process)
         return process
 
-    def start_heard(self, name: str, *options: str) -> Path:
+    def start_heard(self, name: str, *options: str, **more) -> Path:
         """Starts a job through the queue, and returns the file that has
         what the queue says of it, which can be read while it waits."""
         heard = self.folder / f"said-of-{name}"
         with open(heard, "w") as out:
-            self.started.append(subprocess.Popen(self.command(*options, *self.job_command(name)), env=self.environment, stderr=out))
+            self.started.append(
+                subprocess.Popen(
+                    self.command(*options, *self.job_command(name)),
+                    env=more.get("env", self.environment),
+                    cwd=more.get("cwd"),
+                    stderr=out,
+                )
+            )
         return heard
+
+    def begun_times(self, name: str) -> int:
+        return self.said().count(f"begin {name}")
+
+    def run_through(self, name: str, *options: str) -> None:
+        """Runs a job through the queue from its beginning to its end, and
+        waits for the turn to be written down; then it can be run again."""
+        written = len(self.turns())
+        process = self.start(name, *options)
+        self.let_end(name)
+        check(process.wait(timeout=60) == 0, f"the job {name} ends well")
+        wait_for(lambda: len(self.turns()) == written + 1, f"the turn of {name} to be written down")
+        (self.folder / f"go-{name}").unlink()
 
     def let_end(self, name: str) -> None:
         (self.folder / f"go-{name}").write_text("")
@@ -420,6 +443,110 @@ def writes_each_turn_down(queued: Path, work: Path) -> None:
         bench.finish()
 
 
+def what_has_been_short_goes_ahead_while_something_long_runs(queued: Path, work: Path) -> None:
+    bench = Bench(queued, work, "brief")
+    # Short is anything under ten minutes here: a job the test lets end at
+    # once is short however slow the machine is.
+    bench.environment["BN_QUEUE_BRIEF"] = "600"
+    try:
+        # Two commands the queue has seen be short, twice each: one that asks
+        # for nothing, which is the whole machine, and one that asks for a
+        # processor.
+        for _ in range(2):
+            bench.run_through("S")
+            bench.run_through("T", "--cores", "1")
+        # And one it has seen be short once, which is not enough.
+        bench.run_through("U", "--cores", "1")
+        # Something it has not seen before has two of the four processors,
+        # and something that wants all four waits for it.
+        bench.start("L", "--cores", "2")
+        wait_for(lambda: bench.begun("L"), "a job the queue has not seen before to begin")
+        waiter = bench.start_heard("W")
+        wait_for(lambda: "Running now: " in waiter.read_text(), "one that wants the whole machine to wait for it")
+
+        # With no time counted as short, the short one waits its turn.
+        strict = bench.start_heard("S", env={**bench.environment, "BN_QUEUE_BRIEF": "0"})
+        wait_for(lambda: "1 waiting before this" in strict.read_text(), "the short one to wait, where nothing counts as short")
+        check(bench.begun_times("S") == 2, "it has not begun")
+        bench.started[-1].send_signal(signal.SIGKILL)
+        bench.started[-1].wait()
+        # Nor does it go ahead from another folder, where the same words are
+        # another command; nor does the one seen to be short only once.
+        for count, (name, more) in enumerate((("S", {"cwd": bench.folder}), ("U", {}))):
+            other = bench.start_heard(name, *(["--cores", "1"] if name == "U" else []), **more)
+            wait_for(lambda: f"{1 + count} waiting before this" in other.read_text(), f"{name} to wait, not known to be short")
+        check(bench.begun_times("S") == 2 and bench.begun_times("U") == 1, "neither has begun")
+        for process in bench.started[-2:]:
+            process.send_signal(signal.SIGKILL)
+            process.wait()
+
+        # As things are, it goes at once, with the two processors there are.
+        bench.start("S")
+        wait_for(lambda: bench.begun_times("S") == 3, "the short one to begin, ahead of the one that waits")
+        check(not bench.begun("W"), "the one that wants the whole machine has not begun")
+        rows = [row for row in bench.listed() if " S " in row]
+        check(len(rows) == 1 and rows[0].startswith("heavy: running: ") and rows[0].endswith(", brief, 2 cores."), f"it is listed as short, with the two it has ({rows})")
+        # With every processor taken, the other short one has to wait for
+        # one, and goes when there is one, with the one it asked for.
+        other = bench.start_heard("T", "--cores", "1")
+        wait_for(lambda: "Running now: " in other.read_text(), "the other short one to wait, with no processor free")
+        check(bench.begun_times("T") == 2, "it has not begun")
+        bench.let_end("S")
+        wait_for(lambda: len(bench.turns()) == 6, "the first short one's turn to be written down")
+        check(bench.turns()[-1][2] == "2", f"with the two processors it had ({bench.turns()[-1][:5]})")
+        wait_for(lambda: bench.begun_times("T") == 3, "the other short one to begin when there is a processor")
+        rows = [row for row in bench.listed() if " T " in row]
+        check(len(rows) == 1 and rows[0].endswith(", brief, 1 core."), f"with the one processor it asked for, though two are free ({rows})")
+
+        # A command the queue has not seen be short waits, processors or no.
+        unknown = bench.start_heard("N", "--cores", "1")
+        wait_for(lambda: "1 waiting before this" in unknown.read_text(), "one it has not seen before to wait behind")
+        check(not bench.begun("N"), "it has not begun, though a processor is free")
+
+        # The long one ends. Nothing but a short one is running now, so no
+        # other short one may begin before what has waited.
+        bench.let_end("L")
+        wait_for(lambda: bench.ended("L"), "the long one to end")
+        (bench.folder / "go-S").unlink()
+        late = bench.start_heard("S")
+        wait_for(lambda: "2 waiting before this" in late.read_text(), "a short one that comes now to wait")
+        check(bench.begun_times("S") == 3, "it has not begun, though three processors are free")
+        check(not bench.begun("W"), "nor has the one that wants the whole machine, with a short one still running")
+        bench.let_end("T")
+        wait_for(lambda: bench.begun("W"), "the one that wants the whole machine to begin when the short one ends")
+        check(not bench.begun("N") and bench.begun_times("S") == 3, "and before those that came after it")
+        bench.let_end("W")
+        wait_for(lambda: bench.begun("N") and bench.begun_times("S") == 4, "the rest to begin after it")
+        bench.let_end("N")
+        bench.let_end("S")
+        for process in bench.started:
+            if process.returncode is None:
+                check(process.wait(timeout=60) == 0, "each job ends well")
+        wait_for(lambda: len(bench.turns()) == 11, "every turn to be written down")
+
+        # A command whose last turn was long is short no more. The last
+        # turn written down for S, as if it had run for hours:
+        turns = bench.turns()
+        last = next(turn for turn in reversed(turns) if " S " in turn[6])
+        with open(bench.queue / "turns.log", "a") as log:
+            log.write("\t".join([*last[:4], "9999", *last[5:]]) + "\n")
+        (bench.folder / "go-S").unlink()
+        bench.start("M", "--cores", "2")
+        wait_for(lambda: bench.begun("M"), "another job the queue has not seen before to begin")
+        again = bench.start_heard("X")
+        wait_for(lambda: "Running now: " in again.read_text(), "another that wants the whole machine to wait")
+        once_long = bench.start_heard("S")
+        wait_for(lambda: "1 waiting before this" in once_long.read_text(), "the one that was long to wait its turn")
+        check(bench.begun_times("S") == 4, "it has not begun")
+        bench.let_end("M")
+        wait_for(lambda: bench.begun("X"), "what it waited behind to begin")
+        bench.let_end("X")
+        wait_for(lambda: bench.begun_times("S") == 5, "and then it")
+        bench.let_end("S")
+    finally:
+        bench.finish()
+
+
 def a_killed_job_gives_up_its_turn(queued: Path, work: Path) -> None:
     bench = Bench(queued, work, "killed")
     try:
@@ -540,6 +667,7 @@ def main() -> int:
         the_order_holds_for_those_that_share,
         works_beside_one_that_knows_only_whole_turns,
         writes_each_turn_down,
+        what_has_been_short_goes_ahead_while_something_long_runs,
         watching_says_each_change,
         a_killed_job_gives_up_its_turn,
         a_killed_waiter_holds_nobody_up,

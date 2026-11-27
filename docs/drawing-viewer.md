@@ -175,8 +175,14 @@ picture 3 timed: refreshing 1577 ms; gray planes 4 ms, gray pass 209 ms
 That is an illustration from a Project Gutenberg book in `corpus/`, made
 larger to fill the page, on the optimised desktop application, where the
 refresh and the gray pass take as long as on the X4. What a picture needs
-is taken from the heap the first time one is shown, and kept: about 73 KB,
-32 KB of it PNG's window, 16 KB the reader's rows, 9 KB the JPEG reader,
-6 KB the scaler's sums, 4 KB a buffer to read the file through, 3 KB the
-PNG reader, and 2.6 KB for a row at the size shown, the two strips being
-filled and two rows of bits.
+is taken from the heap the first time one is shown, and kept: about 46 KB,
+32 KB of it PNG's window, 9 KB the JPEG reader, 3 KB the PNG reader, and
+2.6 KB for a row at the size shown, the two strips being filled and two
+rows of bits. The rest of what a picture needs it has only while it is
+read, and that lies in memory the drawings have, which a picture leaves
+idle, since one thing is shown at a time and each begins with nothing left
+of the one before: the reader's rows, 16 KB, and the scaler's sums, 6 KB,
+in the 24 KB for what a drawing defines, and the 4 KB buffer its file is
+read through in the 8 KB a drawing's file is read into. (On a panel longer
+than 1,024 pixels the sums would not fit there, and are taken from the
+heap.)

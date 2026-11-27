@@ -105,8 +105,11 @@ namespace bn::reader {
 // and for which band each chunk kept is of is taken from the heap at Start():
 // about 97 KB for the X4's panel, most of it the filler's cells and the
 // definitions. What a picture needs besides is taken the
-// first time one is shown: about 73 KB, PNG's window and the readers' rows
-// the most of it.
+// first time one is shown: about 46 KB, PNG's window the most of it. A
+// picture's rows as they are read, the sums it is scaled with and the
+// buffer its file is read through are not: they lie in the memory for what
+// a drawing defines and for reading a drawing's file, since one thing is
+// shown at a time.
 class DrawingViewer final : public Screen {
  public:
   // Where on storage the drawings are looked for, by the firmware and the
@@ -516,17 +519,18 @@ class DrawingViewer final : public Screen {
   std::uint64_t cacheUs_ = 0;        // Writing to the cache, or reading from it.
   std::uint64_t cacheBytes_ = 0;
 
-  // The memory a picture takes, the first time one is shown.
-  std::unique_ptr<std::uint8_t[]> fileBuffer_;
+  // The memory a picture takes, the first time one is shown. Its rows as
+  // they are read are in definitions_ and its file is read through chunk_,
+  // which a picture leaves idle; the scaler's sums are in definitions_ too,
+  // and in sums_ only on a panel too long for that.
   std::unique_ptr<std::uint8_t[]> window_;
-  std::unique_ptr<std::uint8_t[]> pngRows_;
   std::unique_ptr<std::uint32_t[]> sums_;
   std::unique_ptr<std::uint8_t[]> scaledRow_;
   std::unique_ptr<std::uint8_t[]> stripBits_;  // The strip being filled: two, for the gray pass.
   std::unique_ptr<std::uint8_t[]> rowBits_;    // A row of the picture, a bit a pixel.
   std::unique_ptr<core::BlockFile> pictureFile_;
   std::unique_ptr<draw::PngReader> png_;
-  std::unique_ptr<draw::JpegReader> jpegReader_;  // Its rows in pngRows_ too: one picture is read at a time.
+  std::unique_ptr<draw::JpegReader> jpegReader_;  // Its rows where PNG's are: one picture is read at a time.
   std::unique_ptr<draw::Scaler> scaler_;
   PictureRows pictureRows_{*this};
   Timed timed_{*this};

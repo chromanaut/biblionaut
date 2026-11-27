@@ -169,9 +169,12 @@ command line for another number). On a Mac with ten cores
 time take six. So that tests can run side by side, each writes only files
 no other test writes, in a directory or under names of its own.
 
-Fuzzing itself (`tools/fuzz.py`, [Fuzzing](fuzzing.md)) is not among them: it
-is run on a developer's computer, for minutes or hours, and CI only takes
-the targets through the inputs they have kept.
+Fuzzing itself (`tools/fuzz.py`, [Fuzzing](fuzzing.md)) is not among them:
+these checks only take the targets through the inputs they have kept. It
+has a workflow of its own (`.github/workflows/fuzz.yml`), for a pull
+request that changes a reader and for main every night, which no pull
+request waits for; and it is run on a developer's computer for a minute
+after such a change.
 
 Two clang-tidy runs, because no single build compiles everything. The host
 run sees the portable parts, the desktop port with its window, the tools and the tests, and

@@ -45,6 +45,8 @@ more of them begin until those that came first have.
     tools/queued --name NAME COMMAND...   a queue of its own: what is in
                                           one does not wait for another.
                                           Without it the name is "heavy".
+    tools/queued --background COMMAND...  for what is in no hurry and is
+                                          not being timed: see below
     tools/queued --list                   what is running and what waits
     tools/queued --watch                  the same, kept up to date until
                                           it is stopped with Ctrl-C
@@ -54,6 +56,24 @@ capturing together as one command, can take its turn in a queue named
 for the device:
 
     tools/queued --name x4 sh -c 'tools/idf flash && bn-trace --seconds 60 > run.log'
+
+A command that is in no hurry holds up the others for nothing: a quarter
+of an hour of fuzzing on two processors keeps whatever wants the whole
+machine waiting, and everything behind that. --background is for such a
+command. It has its turn in a queue of its own, named "background", which
+nothing in another queue waits for, and it is run at the lowest priority
+the machine has. On a Mac that is the one that keeps a process to the
+efficiency cores (taskpolicy -b), so the queue has as many processors to
+share out as the machine has of those; elsewhere it is nice's lowest, and
+the queue has a quarter of the processors, one at the least.
+$BN_QUEUE_BACKGROUND_CORES says another number. --cores means there what
+it means anywhere: so many of the queue's processors, and all of them if
+it is not said. What is run this way gets much less done in a minute, on
+a Mac that is busy about a ninth of what it would, and reads and writes
+files slowly; so it is given more minutes, or does less.
+
+A command is told how many processors its turn has, in
+$BN_QUEUE_TURN_CORES, so that it can run that many things at once.
 
 How it works. A turn is locks on files, taken with flock(2), in a folder
 every checkout on the machine shares: ~/.cache/biblionaut/queue, or
@@ -82,8 +102,8 @@ turn had, it says whether the turn used them. The line is written by a
 process left behind for it, which holds none of the locks and waits for
 them to go.
 
-With BN_QUEUE_OFF set to anything, or if the folder cannot be used, the
-command is run at once.
+With BN_QUEUE_OFF set to anything the command is run at once, and as it
+is; if the folder cannot be used it is run at once too.
 
 --watch draws each queue again twice a second: what has a turn, with how
 many processors and for how long, and each that waits, with the checkout's
@@ -102,12 +122,16 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import NamedTuple
 
 HELD = "BN_QUEUE_HELD"  # The queues a command's ancestors are having their turn in.
+TURN_CORES = "BN_QUEUE_TURN_CORES"  # How many processors the command's turn has.
+BACKGROUND = "background"  # The queue of what is run at the lowest priority.
+TASKPOLICY = "/usr/sbin/taskpolicy"
 POLL_SECONDS = 0.5
 LOOK_AGAIN_SECONDS = 0.05
 LOG = "turns.log"
@@ -127,12 +151,45 @@ def queue_folder() -> Path:
     return (Path(cache) if cache else Path.home() / ".cache") / "biblionaut" / "queue"
 
 
-def machine_cores() -> int:
-    """How many processors there are to share out."""
+def efficiency_cores() -> int:
+    """How many of a Mac's processors are the slower, sparing kind, which a
+    process at background priority is kept to. None where the machine has
+    no such kind, or does not say."""
+    if sys.platform != "darwin":
+        return 0
+    try:
+        said = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "hw.perflevel1.physicalcpu"], capture_output=True, text=True, timeout=10, check=False
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    return int(said) if said.isdigit() else 0
+
+
+def machine_cores(name: str) -> int:
+    """How many processors the queue `name` has to share out."""
+    if name == BACKGROUND:
+        said = os.environ.get("BN_QUEUE_BACKGROUND_CORES", "")
+        if said.isdigit() and int(said) > 0:
+            return int(said)
+        return efficiency_cores() or max(1, (os.cpu_count() or 1) // 4)
     said = os.environ.get("BN_QUEUE_CORES", "")
     if said.isdigit() and int(said) > 0:
         return int(said)
     return os.cpu_count() or 1
+
+
+def in_the_background(command: list[str]) -> list[str]:
+    """A command as it is run at the lowest priority the machine has: on a
+    Mac the one that keeps it and whatever it starts to the efficiency
+    cores, elsewhere nice's lowest. One that is not there to be run is left
+    as it is, to be told of in the usual way."""
+    if shutil.which(command[0]) is None:
+        return command
+    if sys.platform == "darwin" and os.access(TASKPOLICY, os.X_OK):
+        return [TASKPOLICY, "-b", *command]
+    nice = shutil.which("nice")
+    return [nice, "-n", "19", *command] if nice else command
 
 
 def try_lock(descriptor: int, shared: bool = False) -> bool:
@@ -301,7 +358,7 @@ def take(folder: Path, name: str, lock: int, cores: int | None) -> list[int] | N
     slots = folder / f"{name}.cores"
     slots.mkdir(exist_ok=True)
     mine: list[int] = []
-    for index in range(machine_cores()):
+    for index in range(machine_cores(name)):
         descriptor = os.open(slots / f"{index:03d}", os.O_RDWR | os.O_CREAT, 0o600)
         if try_lock(descriptor):
             mine.append(descriptor)
@@ -324,7 +381,7 @@ def take_what_is_free(folder: Path, name: str, lock: int, most: int) -> list[int
     slots = folder / f"{name}.cores"
     slots.mkdir(exist_ok=True)
     mine: list[int] = []
-    for index in range(machine_cores()):
+    for index in range(machine_cores(name)):
         descriptor = os.open(slots / f"{index:03d}", os.O_RDWR | os.O_CREAT, 0o600)
         if try_lock(descriptor):
             mine.append(descriptor)
@@ -373,7 +430,7 @@ def take_turn(folder: Path, name: str, command: list[str], cores: int | None) ->
                 # Something that is not short is running, and whatever came
                 # before this is waiting for that. This will be over before
                 # it matters to them: it goes with what is free.
-                mine = take_what_is_free(folder, name, lock, cores or machine_cores())
+                mine = take_what_is_free(folder, name, lock, cores or machine_cores(name))
                 if mine is not None:
                     cores = len(mine)
                     break
@@ -401,7 +458,7 @@ def take_turn(folder: Path, name: str, command: list[str], cores: int | None) ->
     waited = time.monotonic() - began
     if said is not None:
         print(f"queued: its turn came after {duration(waited)}.", file=sys.stderr, flush=True)
-    return Turn([lock, *mine, mark_descriptor], mark, time.time(), waited, cores or machine_cores())
+    return Turn([lock, *mine, mark_descriptor], mark, time.time(), waited, cores or machine_cores(name))
 
 
 def leave_a_witness(folder: Path, name: str, command: list[str], turn: Turn) -> None:
@@ -660,6 +717,9 @@ def main(arguments: list[str]) -> int:
                 print("queued: a queue's name is letters, digits, - and _", file=sys.stderr)
                 return 2
             continue
+        if option == "--background":
+            name = BACKGROUND
+            continue
         if option == "--cores" and arguments:
             wanted = arguments.pop(0)
             if not wanted.isdigit() or int(wanted) < 1:
@@ -671,7 +731,7 @@ def main(arguments: list[str]) -> int:
         return 2
     if not arguments:
         print(
-            "usage: tools/queued [--name NAME] [--cores N] COMMAND [ARGUMENT...]\n"
+            "usage: tools/queued [--name NAME | --background] [--cores N] COMMAND [ARGUMENT...]\n"
             "       tools/queued --list\n       tools/queued --watch",
             file=sys.stderr,
         )
@@ -686,18 +746,25 @@ def main(arguments: list[str]) -> int:
     os.environ[HELD] = ":".join(part for part in [*held, name] if part)
     if os.environ.get("BN_QUEUE_OFF"):
         return become(arguments)
-    if cores is not None and cores >= machine_cores():
+    # What is run in the background is run so whether or not it gets a turn.
+    command = in_the_background(arguments) if name == BACKGROUND else arguments
+    if name == BACKGROUND:
+        # All the background has is so many of its processors, and said so:
+        # it is never the whole machine.
+        cores = min(cores or machine_cores(name), machine_cores(name))
+    elif cores is not None and cores >= machine_cores(name):
         cores = None  # All of it.
     folder = queue_folder()
     try:
         turn = take_turn(folder, name, arguments, cores)
     except OSError as error:
         print(f"queued: {folder}: {error.strerror}. Running without waiting for a turn.", file=sys.stderr)
-        return become(arguments)
+        return become(command)
     leave_a_witness(folder, name, arguments, turn)
     for descriptor in turn.descriptors:
         os.set_inheritable(descriptor, True)  # The command inherits the locks.
-    return become(arguments)
+    os.environ[TURN_CORES] = str(turn.cores)
+    return become(command)
 
 
 if __name__ == "__main__":

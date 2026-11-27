@@ -23,6 +23,10 @@ when the test lets them, and what is checked is what it promises:
   - a turn lasts as long as anything the command started;
   - a command started by one that is having its turn does not wait;
   - queues with different names do not wait for each other;
+  - a command run in the background waits for nothing in another queue
+    and is waited for by nothing there, shares the processors the
+    background has, is run at the lowest priority, and, like any other,
+    is told how many processors its turn has;
   - with BN_QUEUE_OFF, or a folder that cannot be used, the command runs.
 
 Nothing here goes by how long anything takes. A job waits for a file the
@@ -639,6 +643,107 @@ def what_a_job_starts_does_not_wait(queued: Path, work: Path) -> None:
         bench.finish()
 
 
+# Says how it is being run: 1 or 19 if at the lowest priority, as a Mac or
+# as anything else has it, and how many processors it was told it has.
+SAYS_HOW = """\
+import os, sys
+low = os.getpriority(4, 0) if sys.platform == "darwin" else os.nice(0)
+print(low, os.environ.get("BN_QUEUE_TURN_CORES", "-"))
+"""
+
+
+def the_background_holds_nothing_up(queued: Path, work: Path) -> None:
+    bench = Bench(queued, work, "background")
+    environment = {**bench.environment, "BN_QUEUE_BACKGROUND_CORES": "2"}
+    lowest = "1" if sys.platform == "darwin" else "19"
+
+    def how(*options: str, **more) -> str:
+        result = subprocess.run(
+            bench.command(*options, sys.executable, "-c", SAYS_HOW),
+            env=more.get("env", environment),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return result.stdout.strip()
+
+    try:
+        # Something has the whole machine. What is run in the background
+        # does not wait for it,
+        bench.start("W", env=environment)
+        wait_for(lambda: bench.begun("W"), "one with the whole machine to begin")
+        bench.start("B1", "--background", "--cores", "1", env=environment)
+        wait_for(lambda: bench.begun("B1"), "one in the background to begin beside it")
+        # and what waits for the whole machine does not wait for that.
+        bench.start_heard("H", env=environment)
+        wait_for(lambda: bench.waiting() == 1, "another that wants the whole machine to wait")
+        bench.let_end("W")
+        wait_for(lambda: bench.begun("H"), "it to begin when the first ends, with the background still at work")
+        check(not bench.ended("B1"), "the one in the background is still running")
+
+        # The background has processors of its own, two here: a second
+        # command has the other, and a third waits for one.
+        bench.start("B2", "--background", "--cores", "1", env=environment)
+        wait_for(lambda: bench.begun("B2"), "a second in the background to begin")
+        third = bench.start_heard("B3", "--background", "--cores", "1", env=environment)
+        wait_for(lambda: "waiting for a turn (background)" in third.read_text(), "a third to wait for a processor")
+        check(not bench.begun("B3"), "the third has not begun")
+        listed = bench.listed()
+        check(
+            sum(1 for row in listed if row.startswith("background: running: ")) == 2
+            and sum(1 for row in listed if row.startswith("background: waiting: ")) == 1
+            and sum(1 for row in listed if row.startswith("heavy: running: ")) == 1,
+            f"--list says what each queue has ({listed})",
+        )
+        # One that does not say how many has all of them, and waits for
+        # those before it, as anywhere.
+        bench.start_heard("B4", "--background", env=environment)
+        wait_for(lambda: bench.waiting("background") == 2, "one that wants all of the background to wait")
+        bench.let_end("B1")
+        wait_for(lambda: bench.begun("B3"), "the third to begin when a processor is free")
+        check(not bench.begun("B4"), "the one that wants all of it has not begun")
+        bench.let_end("B2")
+        bench.let_end("B3")
+        wait_for(lambda: bench.begun("B4"), "it to begin when the background is empty")
+        check(not bench.ended("H"), "all the while the other queue's command ran on")
+        rows = [row for row in bench.listed() if row.startswith("background: running: ")]
+        check(len(rows) == 1 and rows[0].endswith(", 2 cores."), f"all the background has is said as so many processors ({rows})")
+        bench.let_end("B4")
+        bench.let_end("H")
+        wait_for(lambda: len(bench.turns()) == 6, "the six turns to be written down")
+        written = {turn[6].split()[-2]: turn for turn in bench.turns()}
+        check(
+            all(written[name][1] == "background" for name in ("B1", "B2", "B3", "B4"))
+            and written["H"][1] == "heavy"
+            and written["B1"][2] == "1"
+            and written["B4"][2] == "2",
+            f"each written down in its queue, with the processors it had ({[turn[:3] for turn in bench.turns()]})",
+        )
+
+        # It is run at the lowest priority, and told what its turn has: as
+        # many as it asked for, or all the background has.
+        check(how("--background", "--cores", "1") == f"{lowest} 1", f"one in the background ({how('--background', '--cores', '1')})")
+        check(how("--background") == f"{lowest} 2", f"one with all of the background ({how('--background')})")
+        check(how("--background", "--cores", "7") == f"{lowest} 2", "one that asks for more than the background has")
+        check(how("--name", "background") == f"{lowest} 2", "the queue named so is the background")
+        # Anything else is run as it is, and told the same.
+        check(how("--cores", "3") == "0 3", f"one that shares the machine ({how('--cores', '3')})")
+        check(how() == "0 4", f"one with the whole machine ({how()})")
+        # One that is not there is told of as anywhere.
+        missing = subprocess.run(
+            bench.command("--background", "no-such-command-anywhere"), env=environment, capture_output=True, text=True, timeout=60
+        )
+        check(
+            missing.returncode == 127 and "queued: no-such-command-anywhere" in missing.stderr,
+            f"a command that is not there, asked for in the background ({missing.returncode}, {missing.stderr!r})",
+        )
+        # With the queue switched off a command is run as it is, and told nothing.
+        off = {**environment, "BN_QUEUE_OFF": "1"}
+        check(how("--background", env=off) == "0 -", f"with the queue off ({how('--background', env=off)})")
+    finally:
+        bench.finish()
+
+
 def runs_without_a_folder(queued: Path, work: Path) -> None:
     bench = Bench(queued, work, "nofolder")
     # A folder that cannot be made: a file is in the way.
@@ -674,6 +779,7 @@ def main() -> int:
         a_killed_waiter_holds_nobody_up,
         a_turn_lasts_as_long_as_what_the_command_started,
         what_a_job_starts_does_not_wait,
+        the_background_holds_nothing_up,
         runs_without_a_folder,
     ):
         before = failures

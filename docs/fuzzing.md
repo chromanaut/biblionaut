@@ -95,6 +95,18 @@ A target is built two ways.
   It ends with a line for each target in each build: how many inputs it
   tried, how many of those it kept, and whether anything was found.
 
+  It takes its own turns among the heavy checks ([the queue](checks.md)):
+  one with the whole machine to build the targets, and then one in the
+  background for the runs, which are in no hurry and hold nothing up
+  there. In the background a run has the lowest priority the machine
+  gives, and as many go on at once as the background has processors, two
+  on a Mac with two efficiency cores. So a run tries far fewer inputs in
+  its minute than it would on a processor to itself, about a ninth as
+  many on a Mac that is busy, and a pass over many targets is long: one
+  that is to get further is given more time, or is started in a turn of
+  the ordinary kind (`tools/queued --cores 4 tools/fuzz.py --time 600
+  svg`), where it does all of its work at the ordinary priority.
+
   It runs each target in two builds at once: one with AddressSanitizer,
   and one without, because the heap inside a block is laid out one way
   with it and another way without, and the firmware has it the second

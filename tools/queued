@@ -29,6 +29,19 @@ for every one before it to have begun, so one that wants the whole machine
 is not kept waiting by small ones that came after it. The machine is taken
 to have the processors Python counts, or $BN_QUEUE_CORES of them.
 
+With one exception to the order. Most commands that come this way are
+over in seconds, a build of the file just changed, and most of the waiting
+there is is theirs, behind something that takes a quarter of an hour and
+whatever is waiting for that to end. So a command that has been short
+does not wait behind them: while something that is not short is running,
+it goes as soon as there is a processor free, with as many as are free up
+to what it asked for. A command has been short if the last three turns
+written down for it, the same words in the same folder, of which there
+have to be two, each ran less than half a minute ($BN_QUEUE_BRIEF seconds,
+if that is set; 0 for none to count). What was waiting is held up by
+this no longer than that: once nothing but short commands is running, no
+more of them begin until those that came first have.
+
     tools/queued --name NAME COMMAND...   a queue of its own: what is in
                                           one does not wait for another.
                                           Without it the name is "heavy".
@@ -94,6 +107,8 @@ HELD = "BN_QUEUE_HELD"  # The queues a command's ancestors are having their turn
 POLL_SECONDS = 0.5
 LOOK_AGAIN_SECONDS = 0.05
 LOG = "turns.log"
+BRIEF_SECONDS = 30  # A turn that ran less than this was short.
+BRIEF_TURNS = 3  # How many of a command's last turns have to have been, and two of them there have to be.
 # What those that share the machine leave where one that has all of it says
 # what it is: for a tools/queued that knows only of whole turns to show.
 SHARED = "commands that share the machine, which tools/queued --list in a checkout that is up to date names"
@@ -134,12 +149,51 @@ def from_home(where: str) -> str:
     return where
 
 
-def describe(command: list[str], cores: int | None) -> str:
-    """One line saying what a command is, where, and since when; and how
-    many processors it asked for, if not all."""
+def describe(command: list[str], cores: int | None, brief: bool = False) -> str:
+    """One line saying what a command is, where, and since when; whether
+    it has been short; and how many processors it asked for, if not all."""
     now = datetime.datetime.now().strftime("%H:%M:%S")
     share = "" if cores is None else f", {cores} core{'' if cores == 1 else 's'}"
-    return f"{shlex.join(command)}, in {from_home(os.getcwd())}, since {now}, process {os.getpid()}{share}"
+    short = ", brief" if brief else ""
+    return f"{shlex.join(command)}, in {from_home(os.getcwd())}, since {now}, process {os.getpid()}{short}{share}"
+
+
+def is_brief(line: str) -> bool:
+    """Whether a line of describe() is of a command that has been short."""
+    return ", brief" in line.rpartition(", process ")[2]
+
+
+def brief_seconds() -> int:
+    said = os.environ.get("BN_QUEUE_BRIEF", "")
+    return int(said) if said.isdigit() else BRIEF_SECONDS
+
+
+def has_been_brief(folder: Path, name: str, command: list[str]) -> bool:
+    """Whether the turns written down for this command, the same words in
+    the same folder and queue, say it is short: the last few of them, of
+    which there are at least two, each under brief_seconds()."""
+    limit = brief_seconds()
+    if limit <= 0:
+        return False
+    # As leave_a_witness() writes them.
+    where = re.sub(r"\s", " ", from_home(os.getcwd()))
+    words = re.sub(r"\s", " ", shlex.join(command))
+    ran: list[int] = []
+    try:
+        with open(folder / LOG, "rb") as log:
+            # The end of it is enough: a command's last few turns. What it
+            # begins with is then the end of a line, and is left out.
+            skipped = max(0, os.fstat(log.fileno()).st_size - 262144)
+            log.seek(skipped)
+            lines = log.read().decode(errors="replace").splitlines()[1 if skipped else 0 :]
+    except OSError:
+        return False
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) >= 7 and fields[1] == name and fields[5] == where and fields[6] == words and fields[4].isdigit():
+            ran.append(int(fields[4]))
+    last = ran[-BRIEF_TURNS:]
+    return len(last) >= 2 and all(seconds < limit for seconds in last)
 
 
 def cores_of(line: str) -> int | None:
@@ -257,6 +311,29 @@ def take(folder: Path, name: str, lock: int, cores: int | None) -> list[int] | N
     return None
 
 
+def take_what_is_free(folder: Path, name: str, lock: int, most: int) -> list[int] | None:
+    """Takes a turn with whatever processors are free, up to `most` of
+    them: the descriptors that hold it beside the lock's own, or nothing if
+    none is free or something has the whole machine."""
+    if not try_lock(lock, shared=True):
+        return None
+    slots = folder / f"{name}.cores"
+    slots.mkdir(exist_ok=True)
+    mine: list[int] = []
+    for index in range(machine_cores()):
+        descriptor = os.open(slots / f"{index:03d}", os.O_RDWR | os.O_CREAT, 0o600)
+        if try_lock(descriptor):
+            mine.append(descriptor)
+            if len(mine) == most:
+                break
+        else:
+            os.close(descriptor)
+    if not mine:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        return None
+    return mine
+
+
 class Turn(NamedTuple):
     descriptors: list[int]  # Open, and locked: the turn lasts as long as any process has them.
     mark: Path  # The file in NAME.running that says what has the turn.
@@ -270,7 +347,8 @@ def take_turn(folder: Path, name: str, command: list[str], cores: int | None) ->
     `cores` of its processors."""
     folder.mkdir(parents=True, exist_ok=True)
     lock = os.open(folder / f"{name}.lock", os.O_RDWR | os.O_CREAT, 0o600)
-    ticket, ticket_descriptor = locked_file(folder / f"{name}.waiting", describe(command, cores))
+    brief = has_been_brief(folder, name, command)
+    ticket, ticket_descriptor = locked_file(folder / f"{name}.waiting", describe(command, cores, brief))
 
     began = time.monotonic()
     said = None
@@ -286,7 +364,16 @@ def take_turn(folder: Path, name: str, command: list[str], cores: int | None) ->
                 mine = take(folder, name, lock, cores)
             if mine is not None:
                 break
-            now = [line or UNSAID for line, _ in running(folder, name)]
+            going_now = running(folder, name)
+            if brief and any(not is_brief(line) for line, _ in going_now):
+                # Something that is not short is running, and whatever came
+                # before this is waiting for that. This will be over before
+                # it matters to them: it goes with what is free.
+                mine = take_what_is_free(folder, name, lock, cores or machine_cores())
+                if mine is not None:
+                    cores = len(mine)
+                    break
+            now = [line or UNSAID for line, _ in going_now]
             going = f" Running now: {'; '.join(now)}." if now else ""
             others = f" {len(ahead)} waiting before this." if ahead else ""
             saying = f"queued: waiting for a turn ({name}).{going}{others}"
@@ -303,7 +390,7 @@ def take_turn(folder: Path, name: str, command: list[str], cores: int | None) ->
 
     # What is running, for the others to say: with the time its turn began,
     # where the line in the queue had the time it came.
-    line = describe(command, cores)
+    line = describe(command, cores, brief)
     os.ftruncate(lock, 0)
     os.pwrite(lock, ((line if cores is None else SHARED) + "\n").encode(), 0)
     mark, mark_descriptor = locked_file(folder / f"{name}.running", line)
@@ -413,6 +500,8 @@ def row_of(queue: str, doing: str, since: float | None, line: str) -> Row:
         return Row(queue, doing, since, "", "", line)
     cores = cores_of(line)
     share = "all cores" if cores is None else f"{cores} core{'' if cores == 1 else 's'}"
+    if is_brief(line):
+        share += ", brief"
     return Row(queue, doing, since, share, where.rstrip("/").rsplit("/", 1)[-1], command)
 
 

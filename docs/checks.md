@@ -54,6 +54,20 @@ they wait behind it though there are processors free. `tools/fuzz.py`
 takes two turns: the whole machine to build its targets, and then a
 processor for each of the runs that go on at once.
 
+There is one exception to the order. Most commands that come this way are
+over in seconds, a build of the file just changed, and left to the order
+most of the waiting there is would be theirs, behind something that takes
+a quarter of an hour and whatever is waiting for that to end. So a command
+that has been short does not wait behind them: while something that is not
+short is running, it goes as soon as a processor is free, with as many as
+are free up to what it asked for, and `--list` and `--watch` say `brief`
+of it. A command has been short if the last three turns written down for
+it, the same words in the same folder, of which there have to be two, each
+ran under half a minute (`BN_QUEUE_BRIEF` seconds where that is set, and
+with 0 none counts). What came first is held up by this no longer than
+that: once nothing but short commands is running, no more of them begin
+until those that came first have.
+
 One that has to wait says what it is waiting for, and
 `tools/queued --list` says what is running and what waits:
 

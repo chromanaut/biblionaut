@@ -2913,6 +2913,144 @@ def segment_seeds() -> None:
 # that are not nothing ----
 
 
+# ---- chapter_pager: byte 0 (written here or the input's bytes, and how
+# much memory the pager has), the page's height and width, two bytes the
+# places asked about come from; then things to give the writer, or a
+# segment ----
+
+def chapter_pager_seeds() -> None:
+    clear("chapter_pager")
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "e2e"))
+    sys.dont_write_bytecode = True
+    import segment_tool
+
+    # Byte 0: which of four counts of records a page's lines have (8, 16,
+    # 64, one for every line a page could hold), whether the chooser has
+    # the fewest entries, which of three counts of nodes (32, 64, 256), and
+    # whether a line whose block says nothing of its height has none.
+    def head(records: int = 2, few: bool = False, nodes: int = 2, flat: bool = False, height: int = 400,
+             width: int = 1200, places: int = 0x1234, given: bool = False, mend: bool = False,
+             record: bool = False) -> bytes:
+        bits = (1 if given else 0) | (records << 1) | (8 if few else 0) | (nodes << 4)
+        bits |= (0x40 if (mend if given else flat) else 0) | (0x80 if record else 0)
+        return bytes([bits, (height - 1) // 3, (width - 200) // 8]) + struct.pack("<H", places)
+
+    # Things given to the writer: a byte that says what, in its low three
+    # bits, and what that kind needs.
+    def begin(kind: int = 1, breaking: int = 0, line: int | None = None, before: int | None = None,
+              after: int | None = None, indent: int | None = None, left: int | None = None,
+              right: int | None = None) -> bytes:
+        lengths = [line, before, after, indent, left, right]
+        has = sum(1 << bit for bit, length in enumerate(lengths) if length is not None)
+        return bytes([0, (kind - 1) | (breaking << 3), has]) + bytes(length for length in lengths if length is not None)
+
+    def said(data: bytes) -> bytes:
+        return bytes([1, len(data)]) + data
+
+    def made(sixteens: int) -> bytes:
+        return bytes([2, sixteens])
+
+    def style(bits: int) -> bytes:
+        return bytes([3, bits])
+
+    def picture(number: int, height: int = 0) -> bytes:
+        return bytes([4, number, height])
+
+    def run(count: int) -> bytes:
+        return bytes([6, count])
+
+    end, link = bytes([5]), bytes([7])
+    page_before, keep_with_next, keep_together = 1, 2, 4
+
+    def written(name: str, things: bytes, **choices) -> None:
+        write("chapter_pager", name, head(**choices) + things)
+
+    every = (begin(2, keep_with_next, before=30, after=8) + said(b"A heading") + end
+             + begin(1, indent=40, after=6) + said("Text, caf\u00e9 and more of it. ".encode()) + style(1) + made(20)
+             + link + said(b"a link") + link + picture(2) + style(2) + said(b" and on.") + end
+             + begin(3, left=60, right=30) + made(12) + end
+             + begin(4, before=10) + picture(3) + end + begin(4) + picture(4, 90) + end + begin(4) + picture(255) + end
+             + begin(4) + said(b"A caption first: ") + picture(5) + end
+             + begin(5, line=6, before=12, after=12) + end
+             + begin(6, keep_together) + made(30) + end
+             + begin(1, page_before, before=50) + said(b"After a break.") + end
+             + begin(1) + said(b"   ") + end + begin(1) + made(60) + end)
+    written("every-kind-of-thing", every)
+    written("every-kind-of-thing-on-short-pages", every, height=91, width=600, places=0x0BAD)
+    # The same, with one bit of the chapter changed once it has been set.
+    for number, places in enumerate((0x8001, 0x9234, 0xA777, 0xC0DE, 0xFFFF)):
+        written(f"one-bit-changed-{number}", every, places=places)
+    written("a-few-paragraphs", begin() + said(b"One.") + end + begin(before=10) + said(b"Two.") + end
+            + begin() + made(8) + end)
+    written("a-block-over-several-pages", begin() + made(255) + made(255) + made(200) + end + begin() + made(40) + end,
+            height=130)
+    written("a-block-that-outgrows-the-breaker", begin() + made(255) + made(255) + end + begin() + made(90) + end,
+            nodes=0, height=200, width=2000)
+    written("lines-kept-together-longer-than-a-page", begin(1, keep_together) + made(200) + end
+            + begin(1, keep_with_next) + made(30) + end + begin(1, keep_together) + made(120) + end, height=160)
+    written("headings-kept-with-what-follows", b"".join(begin(2, keep_with_next) + said(b"Heading %d" % number) + end
+                                                         + begin() + made(18 + number) + end for number in range(9)),
+            height=100, places=0x4411)
+    written("a-page-for-every-block", b"".join(begin(1, page_before, before=number) + made(3) + end
+                                                 for number in range(12)), height=250)
+    written("a-run-of-small-blocks", run(200), height=97, places=0x0777)
+    written("blocks-enough-for-two-index-pages", run(255) + run(60) + begin() + made(40) + end, height=400)
+    written("records-for-eight-lines", begin() + made(120) + end + begin(1, keep_together) + made(60) + end, records=0)
+    written("records-for-sixteen-lines", run(40) + begin() + made(100) + end, records=1)
+    written("a-record-for-every-line", begin(line=3) + made(200) + end + run(30), records=3, height=300)
+    written("the-fewest-entries", begin() + made(160) + end + run(20) + begin() + made(50) + end, few=True)
+    written("the-fewest-of-both", begin(line=5) + made(200) + end + run(30), few=True, records=0, height=200)
+    written("lines-of-no-height", run(60) + begin() + made(40) + end + begin(line=9) + made(10) + end, flat=True,
+            height=40, records=1)
+    written("a-page-one-pixel-high", begin() + made(12) + end + run(5), height=1)
+    written("lines-as-narrow-as-they-go", begin(left=250, right=250) + made(30)
+            + said(b"immeasurablyandindivisiblylongwordswithnowheretobreak") + end, width=200)
+    written("a-first-line-far-in", begin(indent=200) + made(40) + end + begin(indent=1) + made(40) + end)
+    written("pictures-taller-than-the-page", begin(4) + picture(7) + end + begin(4) + picture(4, 255) + end
+            + begin() + said(b"between") + end + begin(4) + picture(5) + end, height=100)
+    written("pictures-among-words", begin() + b"".join(said(b"word ") + picture(number) for number in range(20)) + end
+            + begin() + picture(1) + picture(2) + picture(3) + end)
+    written("text-that-is-not-characters", begin() + said(b"\xff\xfe \xc3 \xe2\x82 caf\xc3") + said(b"\xa9 on \x00 and")
+            + said(b"\tsoft\xc2\xadhy\xc2") + said(b"\xadphen\nline\r\nfeeds\n\n\nand \xe2\x80\x8b zero") + end)
+    written("styles-in-the-middle-of-words", begin() + b"".join(said(b"ab") + style(number % 4) + said(b"cd ")
+                                                                 for number in range(40)) + end, width=400)
+    written("nothing-at-all", b"")
+    written("a-block-of-nothing", begin() + end)
+    written("blocks-of-nothing-but-space", begin() + said(b" ") + end + begin() + said(b"\n\n") + end + begin(5) + end
+            + begin() + said(b"  \t ") + end)
+    written("things-out-of-turn", said(b"no block") + style(1) + picture(1) + end + link + begin() + link + link + link
+            + begin(2) + said(b"a link left open") + link)
+
+    # Segments as bytes, written by the end-to-end test's own writer.
+    def given(name: str, segment: bytes, directory: int, mend: bool = True, record: bool = True, **choices) -> None:
+        write("chapter_pager", name,
+              head(given=True, mend=mend, record=record, **choices) + struct.pack("<H", directory) + segment)
+
+    def changed(segment: bytes, at: int, value: bytes) -> bytes:
+        return segment[:at] + value + segment[at + len(value):]
+
+    small = segment_tool.make_chapter(7, 6, [b"fr"], False)
+    segment, record = segment_tool.write_segment(small, 1)
+    directory = record["directory_bytes"]
+    given("a-chapter-as-it-is-written", segment, directory)
+    given("a-chapter-on-short-pages", segment, directory, height=61, width=520, records=0, few=True)
+    given("a-record-that-does-not-agree", segment, directory, record=False)
+    given("a-directory-of-another-length", segment, directory + 12)
+    given("text-with-a-byte-changed", changed(segment, 40, b"\x7e"), directory)
+    given("an-item-longer-than-may-be", changed(segment, 2 + segment.index(b"\x01\x00", 4), b"\xff\x7f"), directory)
+    at = record["directory_offset"]
+    given("a-directory-with-a-page-more", changed(segment, at, b"\x02\x00"), directory)
+    given("blocks-that-end-early", changed(segment, at + 8, struct.pack("<I", record["blocks"] + 1)), directory)
+    given("more-blocks-than-the-index-has", changed(segment, at + 8, struct.pack("<I", 70000)), directory)
+    given("nothing-but-a-directory", struct.pack("<HHHHIII", 0, 0, 0, 0, 0, 0, 0), 20)
+    given("nothing", b"", 0)
+    longer = segment_tool.make_chapter(11, 9, [], True)
+    segment, record = segment_tool.write_segment(longer, 1)
+    given("a-chapter-of-long-blocks", segment, record["directory_bytes"], height=301, places=0x2468)
+    given("a-chapter-of-long-blocks-with-a-byte-changed", changed(segment, len(segment) // 3, b"\x00"),
+          record["directory_bytes"], height=301, places=0x2468)
+
+
 def bundle_input(choices: int, file: bytes) -> bytes:
     """What the target is given for a file: its length in fours of bytes,
     and then each run of it that is not zeros, as where it goes (in fours),
@@ -3433,6 +3571,7 @@ def main() -> None:
     bundle_seeds()
     book_bundle_seeds()
     segment_seeds()
+    chapter_pager_seeds()
     for directory in sorted(INPUTS.iterdir()):
         seeds = sorted(directory.glob("seed-*"))
         print(f"{directory.name}: {len(seeds)} seeds, {sum(seed.stat().st_size for seed in seeds)} bytes")

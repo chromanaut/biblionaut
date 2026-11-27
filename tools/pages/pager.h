@@ -6,22 +6,25 @@
 #include <vector>
 
 #include "epub/segment.h"
+#include "layout/chapter_pager.h"
 #include "layout/hyphenator.h"
+#include "layout/line_breaker.h"
 #include "layout/made_up_face.h"
 #include "layout/page_chooser.h"
+#include "layout/paragraph_setter.h"
 
 // A chapter of a bundle set in pages, for bn-pages.
 //
-// The chapter is read through the reader of its segment (epub/segment.h)
-// and in the ways a device has: a block found by the index and read from
-// its head, the next read on from there. Each block is set in lines by the
-// paragraph setter in the made-up face (layout/made_up_face.h), and pages
-// are chosen among the lines by the page chooser (layout/page_chooser.h):
-// down from a line, up to a line, or about a place the chapter is entered
-// at.
+// The pages are the firmware's own: layout::ChapterPager reads the chapter
+// through the reader of its segment, sets each block with the paragraph
+// setter and chooses pages with the page chooser. What is here is the rest
+// of what a tool needs: what a block's record comes to on a page, which is
+// the pager's to ask and this tool's to answer until something sets real
+// text in a real face; the text of each line, which the pager does not
+// give; and a line known by its number in its block, as a tool that prints
+// lines would have it.
 //
-// How a block's record becomes a page's measures, which is this tool's own
-// until something sets real text in a real face:
+// How a block's record becomes a page's measures (MadeUpSetting):
 //
 //   - Widths are in quarters of a pixel, as the made-up face has them, and
 //     heights in pixels. The reader's text size is 16 pixels.
@@ -32,23 +35,19 @@
 //     wider than the page's text, and never narrower than a tenth of it.
 //   - A line is as high as the block's line height says: a multiple of its
 //     text size, or a length, or one and a quarter times the size where the
-//     block says nothing. A block that is a picture is one line as high as
-//     the picture, made to fit the page's width and at the most its height;
-//     as high as it is declared where its size is not known; and 100
-//     pixels where neither is said.
-//   - Above a block's first line is the block's space before and the space
-//     after of the block before it.
-//   - A block's first line starts a page if the block asks for a page to
-//     end before it, and so does the chapter's first line. It is kept with
-//     the line before if the block before asks to be kept with the next.
-//     Every other line of a block that asks to be kept together is kept
-//     with the line before it.
+//     block says nothing. In a block that is a picture, where the picture
+//     comes before any text, a line is as high as the picture, made to fit
+//     the page's width and at the most its height; as high as it is
+//     declared where its size is not known; and 100 pixels where neither is
+//     said.
+//   - The space above a block and the space after it are the lengths the
+//     block gives, and never less than nothing.
 //   - A run's style, to the made-up face, is 1 if it is bold, 2 if it is
-//     italic and 3 if both.
-//   - A picture among the words is one character, as the format counts it.
+//     italic and 3 if both; and its words are broken by the one table the
+//     tool was given, whatever its language.
 //
 // A place in a chapter is a block and how many characters into it. A line
-// is known by its block and where in the block it begins.
+// is known here by its block and which of the block's lines it is.
 
 namespace bn::tools {
 
@@ -73,7 +72,7 @@ struct ChapterLine {
 };
 
 // The byte that stands for a picture among a block's characters.
-inline constexpr char kPictureByte = 0x1A;
+inline constexpr char kPictureByte = layout::ChapterPager::kPictureByte;
 
 // A line of a chapter: which block, and which of the block's lines. One
 // past a chapter's last block, with line 0, is the chapter's end.
@@ -92,20 +91,34 @@ struct SetBlock {
   std::uint32_t characters = 0;
   std::uint32_t charactersBefore = 0;
   std::vector<ChapterLine> lines;
-  // What the block after it needs of it.
-  bool keepWithNext = false;
-  std::uint16_t spaceAfter = 0;
 };
 
 // A page.
 struct Page {
   bool found = false;      // There is such a page: false for the page above a chapter's first line.
   bool filledDown = true;  // It was filled down from its first line; false, up from its last.
-  bool cutShort = false;   // Filled up, the chooser ran out of room to remember lines in.
+  bool cutShort = false;   // It holds fewer lines than it might, for want of room to remember them in.
   LineRef first;
   LineRef next;  // The line after its last.
   std::uint32_t height = 0;
   std::vector<LineRef> lines;
+};
+
+// What a block's record comes to, by this tool's rules.
+class MadeUpSetting final : public layout::BlockSetting {
+ public:
+  MadeUpSetting(const PageGeometry& geometry, layout::Hyphenator* hyphenator)
+      : geometry_(geometry), hyphenator_(hyphenator) {}
+
+  void MeasureBlock(const epub::SegmentBlock& block, layout::BlockMeasures& measures) noexcept override;
+  void MeasureRun(const epub::SegmentBlock& block, const epub::RunStyle& run,
+                  layout::RunMeasures& measures) noexcept override;
+  std::uint16_t PictureHeight(const epub::SegmentBlock& block, const epub::SegmentLength& width,
+                              const epub::SegmentLength& height, const epub::SegmentPicture* picture) noexcept override;
+
+ private:
+  PageGeometry geometry_;
+  layout::Hyphenator* hyphenator_;
 };
 
 class Pager {
@@ -135,30 +148,37 @@ class Pager {
   // The line after the chapter's last.
   LineRef End() const { return {.block = reader_.Blocks(), .line = 0}; }
   const std::string& Error() const { return error_; }
-  // How many blocks have been set, counting each time one was.
-  std::uint64_t BlocksSet() const { return blocksSet_; }
+  // How many blocks the pager has given the setter.
+  std::uint64_t BlocksSet() const { return pager_.BlocksSet(); }
 
  private:
   bool Fail(const std::string& what, epub::SegmentStatus status);
-  // Goes to a block, by the index or by reading on to it.
-  bool GoTo(std::uint32_t block);
-  bool ReadAndSet(std::uint32_t block, SetBlock& set);
-  layout::PageLine PageLineOf(const ChapterLine& line, LineRef ref);
+  // Does the work the pager was begun on, to its end.
+  bool Run(layout::PagerStatus begun, const std::string& what);
+  // Reads a block's head and its characters.
+  bool Read(std::uint32_t block, SetBlock& set, std::string& characters);
+  // Where a line begins, as the pager knows a place; and the line that
+  // begins at a place.
+  bool PlaceOf(LineRef line, layout::ChapterPlace& place);
+  bool RefOf(layout::ChapterPlace place, LineRef& line);
+  // The page the pager has made, with each of its lines found among its
+  // block's.
+  bool Take(Page& page);
 
   epub::SegmentReader& reader_;
   PageGeometry geometry_;
-  layout::Hyphenator* hyphenator_;
+  MadeUpSetting setting_;
   layout::MadeUpFace face_;
+  std::vector<layout::LineBreaker::Node> nodes_;
+  std::vector<layout::ParagraphSetter::Record> records_;
+  layout::ParagraphSetter setter_;
+  std::vector<layout::PageFromBottom::Entry> entries_;
+  std::vector<layout::ChapterLine> lines_;
+  layout::ChapterPager pager_;
   std::string error_;
-  std::uint64_t blocksSet_ = 0;
   // The blocks that have been set, and which was set least lately.
   std::map<std::uint32_t, SetBlock> blocks_;
   std::vector<std::uint32_t> order_;
-  // The lines given to a chooser, by the number each was given as.
-  std::vector<LineRef> tags_;
-  // Which block the reader will read next, if it is known.
-  bool placed_ = false;
-  std::uint32_t nextBlock_ = 0;
 };
 
 }  // namespace bn::tools

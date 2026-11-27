@@ -63,6 +63,8 @@ class Input {
 
   // Everything that is left.
   std::span<const std::uint8_t> Rest() noexcept { return Take(bytes_.size()); }
+  // Nothing is left.
+  bool Empty() const noexcept { return bytes_.empty(); }
 
  private:
   std::span<const std::uint8_t> bytes_;

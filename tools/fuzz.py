@@ -104,6 +104,7 @@ TARGETS = {
     "hyphenator": 4096,
     "paragraph": 4096,
     "face_measure": 512,
+    "chapter_pager": 16384,
     "svg_tags": 4096,
     "svg_sheet": 4096,
     "svg_values": 256,

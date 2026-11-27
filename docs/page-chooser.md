@@ -24,6 +24,10 @@ There are three ways to come to a page, and something for each:
   line if a page may, and otherwise with the nearest line above it that
   one may begin with (`PageHolding`).
 
+The two that are given blocks say which of the blocks given the page's
+first line is in (`FirstBlock()`), as well as the tag the line was given
+with: a tag is 32 bits, which is a place in a block and no more.
+
 The rules are the same whichever way a page is come to:
 
 - **Gaps.** The gap before a line is there while the line before is on the
@@ -49,7 +53,7 @@ The rules are the same whichever way a page is come to:
 - **One call's work**: a call to `PageFromTop` or `PageHolding` does a
   fixed amount, and a call to `PageFromBottom` goes over no more entries
   than it was given.
-- **Flash**: 1.7 KB, as compiled for the device.
+- **Flash**: 1.8 KB, as compiled for the device.
 
 Its tests fill pages written out by hand for each rule, and compare all
 three with adding the heights up over the whole run: 300 made-up runs of

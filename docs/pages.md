@@ -1,22 +1,27 @@
 # A chapter in pages
 
 `bn-pages` (`tools/pages`) sets a chapter of a bundle in pages and prints
-them as text. It is the first thing that reads a chapter to show it: the
-chapter comes through the reader of its segment ([A chapter's
-bytes](segment.md)), each block is set in lines by the paragraph setter
-([Setting a paragraph's text in lines](paragraph-setter.md)) in the
-made-up face, and pages are chosen among the lines by the page chooser
-([Choosing the lines of a page](page-chooser.md)). Nothing of it is in
-the firmware: it is how the format, its reader and the layout are tried
-together on the desktop before there is a reader on a device.
+them as text. The pages are the pager's ([A chapter in pages, on a
+device](chapter-pager.md)): the chapter comes through the reader of its
+segment ([A chapter's bytes](segment.md)), each block is set in lines by
+the paragraph setter ([Setting a paragraph's text in
+lines](paragraph-setter.md)), and pages are chosen among the lines by the
+page chooser ([Choosing the lines of a
+page](page-chooser.md)). What the tool adds is what a block's
+record comes to on a page, which the pager asks and the tool answers
+with rules of its own in the made-up face; the text of each line, which
+the pager does not give and the tool reads again; and the printing. It
+is how the format, its reader and the layout are tried together on the
+desktop before there is a reader on a device.
 
 ## What it does
 
-- **It reads a chapter only in the ways a device has.** A block is found
-  by the index and read from its head, and the next is read on from
-  there. To set a block it needs two things of the block before, whether
-  that one is kept with the next and the space it asks for after it,
-  which it reads from that block's head alone if it has not set it.
+- **It reads a chapter only in the ways a device has**, since what reads
+  it is what a device will read it with.
+- **It checks the pager against itself as it goes**: every line of a
+  page has to be a line of its block as the pager gives the block's lines
+  when asked for those alone, with the same width, height, space above
+  and marks.
 - **A page is known by its first line**, and a line by its block and the
   character of the block it begins with. So a place in a chapter is a
   block and how many characters into it, however the place was given:
@@ -54,10 +59,11 @@ This is the tool's own, until something sets real text in a real face:
   text and never narrower than a tenth of it.
 - A line is as high as the block's line height says (a multiple of its
   text size, or a length), and one and a quarter times its text size
-  where the block says nothing. A block that is a picture is one line,
-  as high as the picture made to fit the page's width and at the most
-  its height; as high as it is declared, where its size is not known;
-  and 100 pixels where neither is said.
+  where the block says nothing. In a block that is a picture, where the
+  picture comes before any text, a line is as high as the picture made to
+  fit the page's width and at the most its height; as high as it is
+  declared, where its size is not known; and 100 pixels where neither is
+  said.
 - Above a block's first line is the block's space before and the space
   after of the block before it.
 - A block's first line starts a page if the block asks for a page to end

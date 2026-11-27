@@ -168,7 +168,8 @@ class LineBreaker final {
   // after them, each place looking back over the nodes before it: half the
   // square of the nodes at the most. Everything else it does goes over the
   // nodes a few times, twenty at the outside. A call gives out fewer lines
-  // than there are nodes.
+  // than there are nodes; the one that ends a paragraph, as many at the
+  // most.
   static constexpr std::uint32_t MostWorkFor(std::size_t nodes) noexcept {
     const std::uint64_t used = nodes < kMaxNodes ? nodes : kMaxNodes;
     return static_cast<std::uint32_t>((used * (used + 40)) / 2);

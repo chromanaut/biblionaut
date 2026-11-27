@@ -5,6 +5,7 @@
 # Depends on core, on draw (font metrics and display-list types only) and on
 # epub (intermediate-format reader only).
 add_library(bn_layout STATIC
+  src/chapter_pager.cpp
   src/face_measure.cpp
   src/hyphenator.cpp
   src/line_breaker.cpp

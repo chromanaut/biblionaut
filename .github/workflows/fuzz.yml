@@ -1,0 +1,179 @@
+name: Fuzz
+
+# The fuzz targets, run with the fuzzing engine (tools/fuzz.py; the document
+# is docs/fuzzing.md). The other workflow only takes them through the inputs
+# kept for them, which finds nothing new. This one looks for new inputs:
+#
+#   - for a pull request that changes anything a target is built from, five
+#     minutes a target in each of its two builds;
+#   - for main, every night, half an hour;
+#   - started by hand, for as long as is asked, on the targets that are named:
+#       gh workflow run fuzz.yml -f seconds=3600 -f targets='svg png'
+#
+# It is no part of what a pull request has to pass, and nothing waits for it.
+# What it finds it says, the run fails, and the input is among the run's
+# files.
+
+on:
+  pull_request:
+    paths:
+      - "core/**"
+      - "epub/**"
+      - "draw/**"
+      - "layout/**"
+      - "third_party/**"
+      - "tests/fuzz/**"
+      - "tests/support/**"
+      - "tests/CMakeLists.txt"
+      - "cmake/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "tools/fuzz.py"
+      - "tools/queued"
+      - "tools/llvm-version"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    # Every night, at 08:17 by the clock GitHub keeps (UTC).
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: How long each target runs in each build, in seconds
+        default: "300"
+      targets:
+        description: The targets to run, with spaces between them (all of them, if none is named)
+        default: ""
+
+# A run for a pull request gives way to the run for its next push.
+concurrency:
+  group: fuzz-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The targets are whatever tools/fuzz.py has, so a new one is fuzzed here
+  # without being named here. They are shared out four to a job.
+  plan:
+    name: Which targets, and for how long
+    runs-on: ubuntu-24.04
+    outputs:
+      seconds: ${{ steps.plan.outputs.seconds }}
+      jobs: ${{ steps.plan.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          ASKED_SECONDS: ${{ inputs.seconds }}
+          ASKED_TARGETS: ${{ inputs.targets }}
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PLAN'
+          import json, os, subprocess, sys
+
+          there_are = subprocess.run(
+              [sys.executable, "tools/fuzz.py", "--list"], capture_output=True, text=True, check=True
+          ).stdout.split()
+          asked = os.environ.get("ASKED_TARGETS", "").split()
+          unknown = [target for target in asked if target not in there_are]
+          if unknown:
+              sys.exit(f"error: no such target: {' '.join(unknown)}. There are: {' '.join(there_are)}.")
+          targets = asked or there_are
+
+          event = os.environ["EVENT"]
+          seconds = {"schedule": "1800", "pull_request": "300"}.get(event) or os.environ.get("ASKED_SECONDS", "")
+          if not seconds.isdigit() or int(seconds) < 1:
+              sys.exit(f"error: seconds is a whole number, 1 or more, not {seconds!r}.")
+
+          # Four targets are eight runs, which a runner's four processors do
+          # four at a time: a job fuzzes for twice the seconds asked.
+          jobs = [{"number": at // 4 + 1, "targets": " ".join(targets[at : at + 4])} for at in range(0, len(targets), 4)]
+          print(f"seconds={seconds}")
+          print(f"jobs={json.dumps(jobs)}")
+          PLAN
+
+  fuzz:
+    name: Fuzz ${{ matrix.targets }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    # A job may run for six hours: that is two and a half hours a target.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.jobs) }}
+    env:
+      # A runner is nobody else's machine: there is nothing to take turns
+      # with, and nothing to keep out of the way of.
+      BN_QUEUE_OFF: 1
+      SECONDS_EACH: ${{ needs.plan.outputs.seconds }}
+      TARGETS: ${{ matrix.targets }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # LLVM of the version the other checks use, from where the firmware
+      # job has its clang-tidy, with the fuzzing engine and the sanitizers'
+      # libraries; and GCC 14 for its standard library, which is the one the
+      # Linux builds are made with.
+      - name: Install LLVM and the build tools
+        run: |
+          version="$(cat tools/llvm-version)"
+          sudo wget -qO /etc/apt/trusted.gpg.d/apt.llvm.org.asc https://apt.llvm.org/llvm-snapshot.gpg.key
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$version main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-toolchain.list
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-14 zlib1g-dev \
+            "clang-$version" "libclang-rt-$version-dev" "llvm-$version"
+          # A sanitizer's report has functions and lines in place of
+          # addresses if it finds llvm-symbolizer, by that name.
+          sudo ln -sf "/usr/bin/llvm-symbolizer-$version" /usr/local/bin/llvm-symbolizer
+
+      # What the engine kept the last time these targets were fuzzed on
+      # main, which this run goes on from: the further for it. The key is
+      # never one that is there, so the newest that begins like it is taken.
+      - name: Bring back what the engine has kept
+        uses: actions/cache/restore@v6
+        with:
+          path: .fuzz/corpus
+          key: fuzz-kept-${{ matrix.number }}-${{ github.run_id }}
+          restore-keys: fuzz-kept-${{ matrix.number }}-
+
+      - name: Fuzz
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2086 # The targets are several words.
+          tools/fuzz.py --jobs "$(getconf _NPROCESSORS_ONLN)" --time "$SECONDS_EACH" $TARGETS | tee fuzz.txt
+
+      - name: Say what it came to
+        if: always()
+        run: |
+          {
+            echo "### Fuzzing $TARGETS, $SECONDS_EACH s each"
+            echo '```'
+            sed -n '/^target /,$p' fuzz.txt 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A run for main keeps what it has for the next. A pull request's run
+      # goes on from main's and leaves nothing behind.
+      - name: Keep what the engine has kept
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/cache/save@v6
+        with:
+          path: .fuzz/corpus
+          key: fuzz-kept-${{ matrix.number }}-${{ github.run_id }}
+
+      # An input that made a target fail, and what each run printed: to be
+      # had from the run's page, or with `gh run download`.
+      - name: Keep what was found
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-found-${{ matrix.number }}
+          path: |
+            .fuzz/found
+            .fuzz/logs
+          if-no-files-found: ignore

@@ -102,11 +102,34 @@ A target is built two ways.
   (`tools/fuzz.py --shrink FILE TARGET`). It needs the LLVM named in
   `tools/llvm-version`: Apple's compiler has no fuzzing engine.
 
-Fuzzing is not one of CI's checks. A minute a target finds only what lies
-near the seeds, and it is hours, from a set of inputs kept between runs,
-that find the rest. It is run on a developer's computer: for a few minutes
-after a change to any of the readers, and for an hour a target before a
-set of them is called finished.
+Fuzzing is not one of the checks a pull request has to pass. A minute a
+target finds only what lies near the seeds, and it is hours, from a set of
+inputs kept between runs, that find the rest. So it has a workflow of its
+own, `.github/workflows/fuzz.yml`, which runs `tools/fuzz.py` on GitHub's
+Linux machines, with the targets shared out four to a job and the jobs all
+running at once:
+
+- for a pull request that changes anything a target is built from (the
+  portable parts, `tests/fuzz`, `third_party`, the build's own files),
+  five minutes a target in each build;
+- for main, every night, half an hour;
+- started by hand, for as long as is asked, on the targets that are
+  named, as for an hour a target before a set of readers is called
+  finished: `gh workflow run fuzz.yml -f seconds=3600 -f targets='svg png'`.
+
+A run for main keeps what the engine has kept, and the next run, a pull
+request's too, goes on from that. A run that finds something fails. Its
+summary says which target and which input, in the lines `tools/fuzz.py`
+ends with, and the input is among the run's files, with what each run
+printed: `gh run download` fetches them, and the summary's own lines say
+how to see the input fail on a developer's computer and how to cut it
+down. Nothing waits for these runs, so a pull request's is looked at
+before the pull request is merged. The targets are whatever `tools/fuzz.py`
+lists: a new one is fuzzed there without being named there.
+
+On a developer's computer it is run for a minute on the targets of what
+was changed, which finds what lies near; and for as long as anyone likes,
+from what that computer has kept.
 
 What it does not find:
 

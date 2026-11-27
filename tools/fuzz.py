@@ -43,9 +43,12 @@ It needs the LLVM whose major version is in tools/llvm-version, which the
 format and tidy checks need too: Apple's compiler has no fuzzing engine.
 Set CLANG to use a specific clang.
 
-When to run it: after a change to any of the readers, for a few minutes;
-and for an hour a target before the work on a set of readers is called
-finished.
+When to run it: after a change to any of the readers, for its minute on
+their targets. The longer runs are a workflow's (.github/workflows/fuzz.yml,
+which runs this): five minutes a target for a pull request that changes a
+reader, half an hour every night for main, and an hour or more a target
+when it is started by hand, as before the work on a set of readers is
+called finished.
 """
 
 from __future__ import annotations

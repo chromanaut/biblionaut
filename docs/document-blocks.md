@@ -9,8 +9,8 @@ to](element-styles.md)), told of each element as it opens and closes and
 of where text or a picture comes, and says where a block begins and ends,
 of what kind it is and with what record, and how the text at any place
 is set. It keeps nothing of the text and writes nothing: that is for
-what gives a chapter's blocks to the writer of its segment ([A chapter's
-bytes](segment.md)), which is not built.
+what gives a chapter's blocks to the writer of its segment ([Importing a
+chapter](chapter-import.md)).
 
 **The rules it goes by.**
 

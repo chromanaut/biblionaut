@@ -175,6 +175,11 @@ inline constexpr std::uint16_t kBreakSpaceAsWritten = 1U << 3U;  // `pre`.
 inline constexpr std::uint16_t kBreakFloated = 1U << 4U;
 inline constexpr std::uint16_t kBreakNote = 1U << 5U;     // It is a note's text.
 inline constexpr std::uint16_t kBreakCentred = 1U << 6U;  // By margins that are `auto`.
+// How many of the block's first characters are a capital that is dropped,
+// none to three, in two bits. The characters are in the block's text, set
+// as the style item they stand under says; a picture is one character.
+inline constexpr unsigned kBreakDroppedShift = 8;
+inline constexpr std::uint16_t kBreakDropped = 3U << kBreakDroppedShift;
 
 // What a block's style record says. Only the fields whose bits are in
 // `has` are in the record, and the others here are as nothing said; a bit

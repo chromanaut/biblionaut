@@ -384,6 +384,7 @@ BlockChange DocumentBlocks::Open(std::string_view name, const XmlAttributes& att
   const bool rule = Is(name, "hr");
   const bool block = said.display != StyleDisplay::kInline || rule;
   if (block) {
+    change.boundary = true;
     if (open_) {
       EndBlock(change);
     }
@@ -495,6 +496,7 @@ BlockChange DocumentBlocks::Close() noexcept {
   if (index < levels_) {
     const Level level = Load(index);
     if ((level.flags & kBlock) != 0) {
+      change.boundary = true;
       if (open_) {
         EndBlock(change);
       }
@@ -513,6 +515,7 @@ BlockChange DocumentBlocks::Close() noexcept {
     }
   } else if (index - levels_ < 64 && ((deepBlocks_ >> (index - levels_)) & 1U) != 0) {
     deepBlocks_ &= ~(std::uint64_t{1} << (index - levels_));
+    change.boundary = true;
     if (open_) {
       EndBlock(change);
     }
@@ -560,6 +563,14 @@ BlockChange DocumentBlocks::Picture() noexcept {
     change.shown = true;
   }
   return change;
+}
+
+bool DocumentBlocks::SpacesAsWrittenNow() const noexcept {
+  ElementStyle said;
+  if (stack_.Depth() != 0) {
+    stack_.Passes(stack_.Depth() - 1, said);
+  }
+  return said.spacesAsWritten;
 }
 
 TextStyle DocumentBlocks::TextNow() const noexcept {

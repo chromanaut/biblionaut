@@ -52,13 +52,15 @@ It reads EPUB and nothing else, and it has no wireless.
 
 No book is shown yet. There are the readers of a book's own files (ZIP,
 XML, its package, its table of contents, its style sheets and what their
-rules come to); the pieces that set text (hyphenation, the lines of a
-paragraph, the lines of a page, the fonts); and the pieces that draw (SVG
-drawings, PNG and JPEG pictures, scaled and dithered to the panel's grays,
-and what was drawn kept on the card). The X4's panel, buttons and card
-are driven. The application shows a test pattern; it can be built to show
-in its place the drawings and pictures on a card, or the card's text set in
-the faces of a fonts image, which a device has in a partition of its flash.
+rules come to); the importing of a book into one file on the card, its
+chapters as blocks of text with how each is set; the pieces that set text
+(hyphenation, the lines of a paragraph, the lines of a page, the fonts);
+and the pieces that draw (SVG drawings, PNG and JPEG pictures, scaled and
+dithered to the panel's grays, and what was drawn kept on the card). The
+X4's panel, buttons and card are driven. The application shows a test
+pattern; it can be built to show in its place the drawings and pictures on
+a card, or the card's text set in the faces of a fonts image, which a
+device has in a partition of its flash.
 
 ## Layout
 
@@ -137,6 +139,8 @@ Reading a book:
   a book.
 - [A chapter's bytes](docs/segment.md): what a chapter is in a bundle,
   with what writes one and what reads one.
+- [Importing a chapter](docs/chapter-import.md): a document made into a
+  chapter of the bundle, and what becomes of its text.
 - [Reading the books on a card](docs/book-check.md): the book check.
 
 Setting text:

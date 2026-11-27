@@ -20,9 +20,11 @@
 #include "core/storage.h"
 #include "epub/book_bundle.h"
 #include "epub/bundle.h"
+#include "epub/chapter_import.h"
 #include "epub/package.h"
 #include "epub/xml.h"
 #include "epub/zip.h"
+#include "import.h"
 #include "support/one_file.h"
 
 namespace {
@@ -45,13 +47,14 @@ constexpr std::size_t kPackageMemoryBytes = 1024UL * 1024UL;
 constexpr std::size_t kXmlMemoryBytes = 24UL * 1024UL;
 
 // The versions of the importer's rules that a bundle made here says it was
-// made under. Nothing is imported yet, so there are no rules.
-constexpr std::uint16_t kTextRules = 0;
-constexpr std::uint16_t kImporter = 0;
+// made under.
+constexpr std::uint16_t kTextRules = bn::epub::kImportTextRules;
+constexpr std::uint16_t kImporter = bn::epub::kImportVersion;
 
 void PrintUsage(const char* program) {
   std::fprintf(stderr,
                "usage: %s make BOOK BUNDLE [--written SECONDS]\n"
+               "       %s import BOOK BUNDLE NUMBER|all\n"
                "       %s info BUNDLE\n"
                "       %s chapter BUNDLE NUMBER\n"
                "       %s write-chapter BUNDLE NUMBER TEXT\n"
@@ -64,6 +67,15 @@ void PrintUsage(const char* program) {
                "\n"
                "  --written SECONDS   when the EPUB was last written, to put in the bundle,\n"
                "                      where the file's own time is not the one wanted\n"
+               "\n"
+               "import reads the chapter NUMBER of the EPUB BOOK, from 0, or every chapter, the\n"
+               "way the firmware does, and writes each into BUNDLE, which make made of the book,\n"
+               "committing it. It prints a line for each: what became of it (whole, cut-short,\n"
+               "refused, not-a-document), why if it was cut short or refused, its blocks and\n"
+               "characters, the bytes of its segment, how many things were left out of it, how\n"
+               "many of its blocks begin with a dropped capital, and how many steps it took.\n"
+               "And then a line for the memory importing was given, and how much of the\n"
+               "parser's and of the table of rules' it used at the most.\n"
                "\n"
                "info reads a bundle and prints what it holds:\n"
                "\n"
@@ -112,7 +124,7 @@ void PrintUsage(const char* program) {
                "\n"
                "In a name, a backslash and any byte below a space are printed as \\xNN. Ends\n"
                "with 0 if what was asked for was done, 1 if not.\n",
-               program, program, program, program, program);
+               program, program, program, program, program, program);
 }
 
 std::string Said(std::string_view text) { return text.empty() ? std::string("-") : Printable(text); }
@@ -367,6 +379,9 @@ int main(int argc, char** argv) {
       return bn::tools::WriteChapter(argv[2], number, argv[4]);
     }
     return bn::tools::FindInChapter(argv[2], number, argv[4], argv[5]);
+  }
+  if (command == "import" && argc == 5) {
+    return bn::tools::ImportChapters(argv[2], argv[3], argv[4]);
   }
   if (command == "make" && (argc == 4 || argc == 6)) {
     std::uint32_t written = 0;

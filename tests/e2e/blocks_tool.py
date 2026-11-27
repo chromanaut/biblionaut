@@ -117,8 +117,10 @@ class Space:
 class Blocks:
     """The blocks of a document, as the lines the tool prints."""
 
-    def __init__(self, sheets: list[bytes], document: bytes, known: list) -> None:
-        self.styles = styles_tool.Styles(sheets, document, known)
+    def __init__(self, sheets: list[bytes], document: bytes, known: list, entity=None) -> None:
+        self.styles = styles_tool.Styles(sheets, document, known, entity)
+        # Each block's record as values, for whoever works on from them, in the blocks' order.
+        self.facts: list[dict] = []
         # Every place of the document, in order: (what it is, the element or None, the elements open there from
         # the outermost in, the text or None). What is nothing, and all inside it, is not there.
         self.places: list[tuple] = []
@@ -288,20 +290,23 @@ class Blocks:
                 out.append(f"R indent: {length_text(lines.indent)}{book(lines.indent_from_book)}")
 
         # To its sides, the margins and the padding of every block it is inside.
+        sides = {}
         for side, word in ((3, "left"), (1, "right")):
             total, from_book = NOTHING, False
             for element in blocks_around:
                 came = element.came
                 total = plus(plus(total, came["space"]["margin"][side]), came["space"]["padding"][side])
                 from_book = from_book or came["from_book"]["margin"][side] or came["from_book"]["padding"][side]
+            sides[word] = (total, from_book)
             if any(total) or from_book:
                 out.append(f"R margin-{word}: {length_text(total)}{book(from_book)}")
 
         space = self.space_between(last_begun, first)
         if any(space.total) or space.from_book:
             out.append(f"R space-before: {length_text(space.total)}{book(space.from_book)}")
-        if any(blockish(element) and element.came["break_before" if opening == "open" else "break_after"]
-               for opening, element, _, _ in places[last_begun + 1:first] if opening in ("open", "close")):
+        breaks = any(blockish(element) and element.came["break_before" if opening == "open" else "break_after"]
+                     for opening, element, _, _ in places[last_begun + 1:first] if opening in ("open", "close"))
+        if breaks:
             out.append("R break-before")
         if container is not None:
             came = container.came
@@ -310,11 +315,13 @@ class Blocks:
                            book(came["keep_from_book"]))
             if came["keep_together"]:
                 out.append("R keep-together")
-        if any(element.came["floated"] for element in blocks_around):
+        floated = any(element.came["floated"] for element in blocks_around)
+        if floated:
             out.append("R floated")
             counts["floated"] += 1
-        if container is not None and "width" in container.came["sizes"] and container.came["auto"][1] and \
-                container.came["auto"][3]:
+        centred = container is not None and "width" in container.came["sizes"] and container.came["auto"][1] and \
+            container.came["auto"][3]
+        if centred:
             out.append("R centred: " + length_text(container.came["sizes"]["width"]))
             counts["centred"] += 1
         quotes = min(255, sum(1 for element in blocks_around if name_of(element) == "blockquote"))
@@ -328,6 +335,7 @@ class Blocks:
             counts["markers"] += 1
 
         holder = None
+        letter = None
         if not rule:
             # The first letter's style of the last element that has one and opened since a block of text began,
             # if this block is inside it.
@@ -335,6 +343,7 @@ class Blocks:
                            if opening == "open" and blockish(element) and element.came["letter"] is not None]
             if with_letter and self.closes_at[id(with_letter[-1])] > first:
                 came = with_letter[-1].came
+                letter = (came["letter"], came["letter_floated"])
                 out.append(("R first-letter floated: " if came["letter_floated"] else "R first-letter: ") +
                            style_text(came["letter"], self.styles.languages))
                 counts["first_letters"] += 1
@@ -348,6 +357,11 @@ class Blocks:
                 out.append("R begins-floated")
                 counts["begin_floated"] += 1
                 holder = floats[0]
+        self.facts.append({"kind": kind, "level": level, "container": container, "sides": sides, "space": space,
+                           "breaks": breaks, "floated": floated, "centred": centred, "quotes": quotes,
+                           "lists": around[-1].came["lines"].lists if around else 0, "item": item,
+                           "number": self.numbers[id(item)] if item is not None else 0, "letter": letter,
+                           "holder": holder})
         return out, holder
 
     def tell(self) -> list[str]:
@@ -366,6 +380,9 @@ class Blocks:
             if at < len(self.bounds):
                 ends.add(self.bounds[at])
         float_ends = set()
+        # Where each block begins, where one ends, and where the floated text one began with ends: for whoever
+        # works on from them.
+        self.begins, self.ends, self.float_ends = begins, ends, float_ends
         out: list[str] = []
         last_begun = last_of_text = -1
         style = None

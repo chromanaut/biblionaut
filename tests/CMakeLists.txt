@@ -124,6 +124,7 @@ bn_add_unit_test(epub_tests
     unit/epub/book_files_test.cpp
     unit/epub/book_path_test.cpp
     unit/epub/bundle_test.cpp
+    unit/epub/chapter_import_test.cpp
     unit/epub/css_families_test.cpp
     unit/epub/css_rules_test.cpp
     unit/epub/css_test.cpp
@@ -359,6 +360,16 @@ if(Python3_Interpreter_FOUND)
       $<TARGET_FILE:bn-bundle> ${CMAKE_CURRENT_BINARY_DIR}/segment_tool)
   set_tests_properties(e2e.SegmentTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
+  # bn-bundle import, and through it the importing of a chapter, against a
+  # second working-out that keeps the whole document and gathers what lies
+  # in each block into one list: for a book the test makes, of documents
+  # written for it and made at random.
+  add_test(
+    NAME e2e.ImportTool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/import_tool.py
+      $<TARGET_FILE:bn-bundle> $<TARGET_FILE:bn-css> ${CMAKE_CURRENT_BINARY_DIR}/import_tool)
+  set_tests_properties(e2e.ImportTool PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
   # bn-pages, and through it a chapter read by the reader of its segment
   # and set in pages by the setter and the page chooser: the lines of each
   # block against the block as the test has it, and the pages against ones
@@ -459,12 +470,14 @@ if(Python3_Interpreter_FOUND)
     # The text viewer, run by the desktop application with a fonts image
     # bn-font makes of that font, against what must be so of its pages
     # however their lines fall: the ink on the panel is the ink bn-font
-    # gives for each of the text's letters.
+    # gives for each of the text's letters. And with an image of one of the
+    # fonts that join letters: a page has as many glyphs as its words have
+    # when joined.
     add_test(
       NAME e2e.TextViewer
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/text_viewer.py
         $<TARGET_FILE:biblionaut-desktop> $<TARGET_FILE:bn-font> $<TARGET_FILE:bn-trace> ${BN_COURIER_PRIME_DIR}
-        ${CMAKE_CURRENT_BINARY_DIR}/text_viewer)
+        ${BN_FONTS_DIR}/noto ${CMAKE_CURRENT_BINARY_DIR}/text_viewer)
     set_tests_properties(e2e.TextViewer PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
   endif()
 

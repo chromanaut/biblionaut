@@ -25,7 +25,7 @@ class SpoolStore {
 // How a recording went, or its giving back.
 enum class SpoolStatus : std::uint8_t {
   kOk,
-  kNoRoom,       // More chunks than the links given have room for: what came after is not kept.
+  kNoRoom,       // More chunks than the caller gave bytes to say the bands of: what came after is not kept.
   kStoreFailed,  // The store did not take a chunk, or give one back.
   kBadRecord,    // What was read back is not what was written.
 };
@@ -48,8 +48,10 @@ const char* SpoolStatusName(SpoolStatus status) noexcept;
 // same, byte for byte, as if the drawing had been drawn into it.
 //
 // What a band keeps goes into a chunk of kChunkBytes in `buffers`, and
-// each chunk, once full, is added to the store; the band's chunks are
-// chained by `links`, two bytes for each chunk the store may hold. A line
+// each chunk, once full, is added to the store, and the band it is of
+// written in `chunkBands`, a byte for each chunk the store may hold: a
+// band's chunks are those with its number, in the order they were added,
+// which is the order they are given back in. A line
 // that goes on from where the band's last ended takes 2 bytes if it goes
 // less than a quarter of a pixel across and half a pixel down, 3 if less
 // than four pixels each way, and 5 or 9 beyond that; one that does not is
@@ -57,11 +59,13 @@ const char* SpoolStatusName(SpoolStatus status) noexcept;
 // pixels of where the last ended and 7 or 9 if not; a filling is 4 to 94.
 //
 // Used by one task. The object is about a kilobyte; the memory for chunks
-// and links is the caller's. ReplayStep() reads one chunk at the most and
-// fills once at the most.
+// and for their bands is the caller's. ReplayStep() reads one chunk at the
+// most, looks for the band's next among the chunks' bands, a byte each and
+// each looked at once in giving a band back, and fills once at the most.
 class SpoolWriter final : public Canvas {
  public:
   static constexpr std::size_t kChunkBytes = 512;
+  // A band's number is kept in a byte.
   static constexpr std::size_t kMostBands = 64;
   // Chunks are numbered in two bytes, of which one number means none.
   static constexpr std::size_t kMostChunks = 65535;
@@ -75,9 +79,11 @@ class SpoolWriter final : public Canvas {
 
   // Begins a recording of a picture `width` by `height` pixels, in bands of
   // `bandRows` rows. False, and nothing is kept, if there are no bands or
-  // more than kMostBands, or `buffers` is too small, or there are no links.
+  // more than kMostBands, or `buffers` is too small, or `chunkBands` is
+  // empty.
   [[nodiscard]] bool Begin(std::int32_t width, std::int32_t height, std::int32_t bandRows,
-                           std::span<std::uint8_t> buffers, std::span<std::uint16_t> links, SpoolStore& store) noexcept;
+                           std::span<std::uint8_t> buffers, std::span<std::uint8_t> chunkBands,
+                           SpoolStore& store) noexcept;
   // Adds what each band has in hand to the store. Then the recording can be
   // given back.
   SpoolStatus Finish() noexcept;
@@ -119,8 +125,7 @@ class SpoolWriter final : public Canvas {
 
   // What each band has in hand.
   struct Band {
-    std::uint16_t head = kNone;  // Its first chunk in the store,
-    std::uint16_t tail = kNone;  // and its last.
+    std::uint16_t head = kNone;  // Its first chunk in the store.
     std::uint16_t used = 0;      // Bytes of its chunk in hand.
     bool pending = false;        // Lines kept since its last filling.
     bool hasEnd = false;         // Where its last line ended:
@@ -137,7 +142,7 @@ class SpoolWriter final : public Canvas {
 
   SpoolStore* store_ = nullptr;
   std::span<std::uint8_t> buffers_;
-  std::span<std::uint16_t> links_;
+  std::span<std::uint8_t> chunkBands_;
   std::int32_t width_ = 0;
   std::int32_t height_ = 0;
   std::int32_t bandHeight_ = 0;  // In 256ths of a pixel.
@@ -152,9 +157,10 @@ class SpoolWriter final : public Canvas {
   Place start_;
   Place current_;
 
-  // Giving a band back: its chunk in hand, how far into it, the next chunk,
-  // and where the last line given back ended.
+  // Giving a band back: which it is, its chunk in hand, how far into it,
+  // the next chunk, and where the last line given back ended.
   std::span<std::uint8_t> chunk_;
+  std::uint8_t replayBand_ = 0;
   std::uint16_t next_ = kNone;
   std::size_t at_ = 0;
   bool loaded_ = false;

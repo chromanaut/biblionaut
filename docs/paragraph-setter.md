@@ -17,7 +17,12 @@ that the caller provides, in whatever unit the lines' widths are in.
 - **Where a line may end inside a word**: where the hyphenator says, at a
   price the caller sets, with a hyphen shown. At a soft hyphen, the same
   way; and a word that has one is broken at those and nowhere the
-  hyphenator would have chosen. After a hyphen or a dash that is written in
+  hyphenator would have chosen. A hyphen is as wide as the measure says
+  one is at that place: the measure gives, with each piece's width, what a
+  hyphen shown after the piece comes to, so that one which draws a word's
+  letters otherwise where a line ends among them (kerned with the hyphen,
+  or not joined across the line's end) can have the line counted as it
+  will be drawn. After a hyphen or a dash that is written in
   the word, at no price and with nothing more shown: but not after one the
   word begins with, between two of them, or between a minus and a figure.
   And at a zero width space.

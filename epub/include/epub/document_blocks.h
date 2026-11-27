@@ -154,6 +154,10 @@ struct BlockChange {
   bool begins = false;     // A block begins: Record() is its record.
   bool lineEnds = false;   // A line of the open block ends (`br`).
   bool floatEnds = false;  // The floated text the open block began with ends.
+  // An element that is a block opened or closed, whether or not a block
+  // was open: what was met since the last block cannot be part of the
+  // next.
+  bool boundary = false;
   // For text and a picture: it is part of the block that is open. False
   // for what is inside something that is nothing, and for white space
   // where no block is open.
@@ -211,8 +215,12 @@ class DocumentBlocks final {
   // Whether a block is open, and its record: good until the next begins.
   bool HasBlock() const noexcept { return open_; }
   const BlockRecord& Record() const noexcept { return record_; }
-  // How text standing where the document now is, is set.
+  // How text standing where the document now is, is set; whether its
+  // white space is as written; and whether it is inside something that is
+  // nothing.
   TextStyle TextNow() const noexcept;
+  bool SpacesAsWrittenNow() const noexcept;
+  bool InNothing() const noexcept { return hiddenFrom_ != kNone; }
 
   // The StyleStack it goes through the document with: for the languages'
   // tags, and what was not taken as written.

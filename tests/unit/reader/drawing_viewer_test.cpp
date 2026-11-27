@@ -1338,4 +1338,122 @@ TEST(DrawingViewer, HasNoGrayPassForADrawingInBlackAndWhite) {
   EXPECT_EQ(fixture.display.LevelAt(25, 12), 3);
 }
 
+// ---- Drawings and pictures in the same memory ----
+
+TEST(DrawingViewer, ADrawingAndAPictureShownInTurnEachComeOutAsItDoesAlone) {
+  // A picture's rows, and the sums it is scaled with, lie in the memory for
+  // what a drawing defines, and its file is read through the memory a
+  // drawing's is read into. So each is shown after the other and round
+  // again, with nothing kept on the card to show them from: the panel
+  // shows what it shows of each alone.
+  const std::string defined =
+      Svg(40, 24,
+          "<defs><linearGradient id='g'><stop offset='0' stop-color='#000'/><stop offset='1' stop-color='#fff'/>"
+          "</linearGradient><circle id='c' cx='6' cy='6' r='5'/></defs>"
+          "<rect width='40' height='24' fill='url(#g)'/><use href='#c' x='4' y='3'/><use href='#c' x='24' y='10'/>");
+  const std::string plain = Svg(40, 24, "<path d='M2 2L38 4L20 22Z'/><circle cx='30' cy='16' r='5' fill='#888'/>");
+  const std::vector<std::uint8_t> png = GrayPng(
+      80, 48, [](std::uint32_t x, std::uint32_t y) { return static_cast<std::uint8_t>(((x * 3) + (y * 5)) % 256); });
+  const std::vector<std::uint8_t> jpeg =
+      GrayJpeg(160, 96, [](std::uint32_t x, std::uint32_t y) { return ((x / 3) + (y / 2)) % 2 == 0; });
+  const auto put = [&](Fixture& fixture, const std::string& name) {
+    if (name == "a.svg") {
+      fixture.Put(name, defined);
+    } else if (name == "c.svg") {
+      fixture.Put(name, plain);
+    } else {
+      fixture.storage.Put("/drawings/" + name, name == "b.png" ? png : jpeg);
+    }
+  };
+  const std::vector<std::string> names = {"a.svg", "b.png", "c.svg", "d.jpg"};
+  std::vector<std::vector<std::uint8_t>> alone;
+  for (const std::string& name : names) {
+    Fixture fixture;
+    fixture.storage.failWrites = bn::core::StorageStatus::kNoSpace;
+    put(fixture, name);
+    fixture.Start();
+    fixture.Settle();
+    ASSERT_EQ(fixture.viewer->Shown(), 1U) << name;
+    alone.push_back(fixture.display.shown);
+  }
+  // No two of them the same, or showing the wrong one would pass.
+  for (std::size_t i = 0; i < alone.size(); ++i) {
+    for (std::size_t j = i + 1; j < alone.size(); ++j) {
+      ASSERT_NE(alone[i], alone[j]) << names[i] << " and " << names[j];
+    }
+  }
+
+  Fixture fixture;
+  fixture.storage.failWrites = bn::core::StorageStatus::kNoSpace;
+  for (const std::string& name : names) {
+    put(fixture, name);
+  }
+  fixture.Start();
+  ASSERT_EQ(fixture.viewer->Drawings(), names.size());
+  // Twice round, and then back the other way: a picture after a drawing,
+  // a drawing after a picture, and each after itself was shown before.
+  const std::vector<std::size_t> order = {0, 1, 2, 3, 0, 1, 2, 3, 0, 3, 2, 1, 0};
+  std::size_t at = 0;
+  for (std::size_t step = 0; step < order.size(); ++step) {
+    if (step != 0) {
+      const bool down = order[step] == (at + 1) % names.size();
+      fixture.Press(down ? bn::core::Button::kDown : bn::core::Button::kUp);
+    }
+    at = order[step];
+    fixture.Settle();
+    EXPECT_EQ(fixture.display.shown, alone[at]) << "step " << step << ", " << names[at];
+  }
+  for (const std::string& line : fixture.CacheLines()) {
+    EXPECT_NE(line.find("not kept"), std::string::npos) << line;
+  }
+}
+
+TEST(DrawingViewer, APictureWhoseRowsFillTheirMemoryLeavesTheSumsAfterThemAlone) {
+  // 8,000 pixels across: its two rows are all but the whole of what a
+  // picture's rows are given, and the sums it is scaled with lie just
+  // after them.
+  Fixture fixture;
+  fixture.storage.Put("/drawings/p.png", GrayPng(8000, 1600, [](std::uint32_t x, auto) {
+                        return static_cast<std::uint8_t>(x < 4000 ? 0 : 255);
+                      }));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U) << (fixture.Lines().empty() ? "" : fixture.Lines().back());
+  const std::string line = fixture.Lines().back();
+  EXPECT_NE(line.find(", 8000x1600 gray shown 40x8: "), std::string::npos) << line;
+  for (std::size_t y = 0; y < 24; ++y) {
+    for (std::size_t x = 0; x < 40; ++x) {
+      EXPECT_EQ(fixture.Black(x, y), x < 20 && y >= 8 && y < 16) << x << "," << y;
+    }
+  }
+}
+
+TEST(DrawingViewer, ShowsAPictureOnAPanelTooLongForItsSumsToLieWithWhatADrawingDefines) {
+  // Longer than 1,024 pixels, the scaler's sums have no room after a
+  // picture's rows in the memory for what a drawing defines, and are taken
+  // from the heap: the picture is shown the same, and a drawing after it.
+  Fixture fixture;
+  fixture.display.Resize({.width = 1100, .height = 16});
+  fixture.storage.Put("/drawings/a.png", GrayPng(550, 8, [](std::uint32_t x, auto) {
+                        return static_cast<std::uint8_t>(x < 275 ? 0 : 255);
+                      }));
+  fixture.Put("b.svg", Svg(1100, 16, "<rect x='100' width='900' height='16'/>"));
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_EQ(fixture.viewer->Shown(), 1U) << (fixture.Lines().empty() ? "" : fixture.Lines().back());
+  for (const std::size_t x : {0U, 300U, 549U, 550U, 800U, 1099U}) {
+    EXPECT_EQ(fixture.Black(x, 0), x < 550) << x;
+    EXPECT_EQ(fixture.Black(x, 15), x < 550) << x;
+  }
+  fixture.Press(bn::core::Button::kDown);
+  fixture.Settle();
+  for (const std::size_t x : {0U, 99U, 100U, 600U, 999U, 1000U, 1099U}) {
+    EXPECT_EQ(fixture.Black(x, 8), x >= 100 && x < 1000) << x;
+  }
+  fixture.Press(bn::core::Button::kDown);
+  fixture.Settle();
+  EXPECT_TRUE(fixture.Black(300, 8));
+  EXPECT_FALSE(fixture.Black(800, 8));
+}
+
 }  // namespace

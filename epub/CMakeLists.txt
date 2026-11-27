@@ -7,11 +7,13 @@ add_library(bn_epub STATIC
   src/book_files.cpp
   src/book_path.cpp
   src/bundle.cpp
+  src/chapter_import.cpp
   src/css.cpp
   src/css_families.cpp
   src/css_rules.cpp
   src/document_blocks.cpp
   src/document_sheets.cpp
+  src/html_entities.cpp
   src/package.cpp
   src/package_digest.cpp
   src/segment.cpp

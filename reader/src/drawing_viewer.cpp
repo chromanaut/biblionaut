@@ -42,7 +42,8 @@ bool IsDrawing(std::string_view name) noexcept { return EndsWith(name, ".svg"); 
 bool IsJpeg(std::string_view name) noexcept { return EndsWith(name, ".jpg") || EndsWith(name, ".jpeg"); }
 bool IsPicture(std::string_view name) noexcept { return EndsWith(name, ".png") || IsJpeg(name); }
 
-// The buffer a picture's file is read through.
+// The buffer a picture's file is read through: a part of the memory a
+// drawing's file is read into.
 constexpr std::size_t kFileBufferBytes = 4096;
 
 // Where pixel (x, y) of a page `pageWidth` by `pageHeight`, the way the
@@ -166,7 +167,7 @@ void DrawingViewer::Start() noexcept {
   renderer_->KeepDefinitionsIn({definitions_.get(), kDefinitionBytes});
   renderer_->SetThinnestStroke(kThinnestStroke);
   spool_.reset(new (std::nothrow) draw::SpoolWriter());
-  links_.reset(new (std::nothrow) std::uint16_t[kSpoolChunks]);
+  chunkBands_.reset(new (std::nothrow) std::uint8_t[kSpoolChunks]);
   state_ = State::kReady;
 
   // The drawings: every file in the folder named as one, in the order of
@@ -692,7 +693,7 @@ bool DrawingViewer::FeedSome(std::uint64_t until) noexcept {
 }
 
 bool DrawingViewer::StartRecording() noexcept {
-  if (!spool_ || !links_) {
+  if (!spool_ || !chunkBands_) {
     spoolFailure_ = "no memory";
     return false;
   }
@@ -707,7 +708,7 @@ bool DrawingViewer::StartRecording() noexcept {
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the cells' memory, as bytes.
   const std::span<std::uint8_t> buffers(reinterpret_cast<std::uint8_t*>(cells_.get()), cells * sizeof(std::int16_t));
   if (!spool_->Begin(static_cast<std::int32_t>(size.width), static_cast<std::int32_t>(size.height),
-                     static_cast<std::int32_t>(kBandRows), buffers, {links_.get(), kSpoolChunks}, spoolStore_)) {
+                     static_cast<std::int32_t>(kBandRows), buffers, {chunkBands_.get(), kSpoolChunks}, spoolStore_)) {
     spoolFailure_ = "not a picture it can keep";
     spoolStore_.Close();
     return false;
@@ -1010,23 +1011,39 @@ bool DrawingViewer::PictureMemory() noexcept {
   }
   const core::DisplaySize size = display_.Size();
   const auto widest = static_cast<std::uint32_t>(std::max<std::size_t>(size.width, size.height));
+  // One thing is shown at a time, and each begins with nothing left of
+  // the one before. So what a picture needs only while it is read lies in
+  // memory the drawings have and a picture leaves idle: its file is read
+  // through the memory a drawing's file is read into, and its rows are in
+  // the memory for what a drawing defines, with the scaler's sums after
+  // them where there is room, as there is for a panel up to 1,024 pixels
+  // on its longer side.
+  static_assert(kFileBufferBytes <= kReadBytes && kPictureRowBytes <= kDefinitionBytes);
+  const std::span<std::uint8_t> fileBuffer(chunk_.get(), kFileBufferBytes);
+  const std::span<std::uint8_t> rows(definitions_.get(), kPictureRowBytes);
+  const std::size_t sumCount = draw::Scaler::SumsFor(widest);
+  std::span<std::uint32_t> sums;
+  if (sumCount <= (kDefinitionBytes - kPictureRowBytes) / sizeof(std::uint32_t)) {
+    // An array of bytes from the heap can hold other things, and where
+    // these begin is as far along it as a whole number of them.
+    static_assert(kPictureRowBytes % alignof(std::uint32_t) == 0);
+    sums = {::new (static_cast<void*>(definitions_.get() + kPictureRowBytes)) std::uint32_t[sumCount], sumCount};
+  } else {
+    sums_.reset(new (std::nothrow) std::uint32_t[sumCount]);
+    sums = {sums_.get(), sums_ ? sumCount : 0};
+  }
   // The largest first, while the heap has the most room in one piece.
   window_.reset(new (std::nothrow) std::uint8_t[draw::PngReader::kWindowBytes]);
-  pngRows_.reset(new (std::nothrow) std::uint8_t[kPictureRowBytes]);
-  fileBuffer_.reset(new (std::nothrow) std::uint8_t[kFileBufferBytes]);
-  sums_.reset(new (std::nothrow) std::uint32_t[draw::Scaler::SumsFor(widest)]);
   scaledRow_.reset(new (std::nothrow) std::uint8_t[widest]);
   // A strip: one byte of each of the panel's rows, or eight of its rows;
   // two, for the gray pass's two planes. And two rows of a bit a pixel.
   stripBits_.reset(new (std::nothrow) std::uint8_t[2 * std::max<std::size_t>(size.height, 8 * size.RowBytes())]);
   rowBits_.reset(new (std::nothrow) std::uint8_t[(static_cast<std::size_t>(widest) + 7) / 8]);
-  if (fileBuffer_ && window_ && pngRows_ && sums_ && scaledRow_ && stripBits_ && rowBits_) {
-    pictureFile_.reset(new (std::nothrow) core::BlockFile({fileBuffer_.get(), kFileBufferBytes}));
-    png_.reset(new (std::nothrow)
-                   draw::PngReader({window_.get(), draw::PngReader::kWindowBytes}, {pngRows_.get(), kPictureRowBytes}));
-    jpegReader_.reset(new (std::nothrow) draw::JpegReader({pngRows_.get(), kPictureRowBytes}));
-    scaler_.reset(new (std::nothrow)
-                      draw::Scaler({sums_.get(), draw::Scaler::SumsFor(widest)}, {scaledRow_.get(), widest}));
+  if (window_ && !sums.empty() && scaledRow_ && stripBits_ && rowBits_) {
+    pictureFile_.reset(new (std::nothrow) core::BlockFile(fileBuffer));
+    png_.reset(new (std::nothrow) draw::PngReader({window_.get(), draw::PngReader::kWindowBytes}, rows));
+    jpegReader_.reset(new (std::nothrow) draw::JpegReader(rows));
+    scaler_.reset(new (std::nothrow) draw::Scaler(sums, {scaledRow_.get(), widest}));
   }
   if (!pictureFile_ || !png_ || !jpegReader_ || !scaler_) {
     // All of it, or none: what was had is given back.
@@ -1034,9 +1051,7 @@ bool DrawingViewer::PictureMemory() noexcept {
     jpegReader_.reset();
     scaler_.reset();
     pictureFile_.reset();
-    fileBuffer_.reset();
     window_.reset();
-    pngRows_.reset();
     sums_.reset();
     scaledRow_.reset();
     stripBits_.reset();

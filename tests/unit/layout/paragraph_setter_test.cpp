@@ -383,6 +383,55 @@ TEST(ParagraphSetter, BreaksAWordWhereTheHyphenatorSaysAndShowsAHyphen) {
   EXPECT_EQ(set.wordsAsked, 2U);
 }
 
+TEST(ParagraphSetter, GivesALineThatEndsInsideAWordTheHyphenThatPlaceHas) {
+  // A hyphen that is 10 wide and one more for each byte of the stretch
+  // measured that comes before it: 13 after "aaa".
+  TestMeasure measure = Tens();
+  measure.hyphenWiderByPlace = 1;
+  BetweenAAndB language;
+  const Set set = SetText("xx aaabbb", measure, {.width = 73, .hyphenator = language.Get()});
+  EXPECT_EQ(set.shown, (Shown{"xx aaa-", "bbb"}));
+  ASSERT_EQ(set.lines.size(), 2U);
+  EXPECT_EQ(set.lines[0].width, 73U);
+  // A line one narrower has no room for it.
+  EXPECT_EQ(SetText("xx aaabbb", measure, {.width = 72, .hyphenator = language.Get()}).shown, (Shown{"xx", "aaabbb"}));
+
+  // A word that is longer before its break: 16 after "aaaaaa".
+  const Set longer = SetText("xx aaaaaabbb", measure, {.width = 110, .hyphenator = language.Get()});
+  EXPECT_EQ(longer.shown, (Shown{"xx aaaaaa-", "bbb"}));
+  ASSERT_EQ(longer.lines.size(), 2U);
+  EXPECT_EQ(longer.lines[0].width, 106U);
+
+  // The place is counted in the stretch that was measured. A word in two
+  // styles is measured as two stretches, and its break is two bytes into
+  // the second: 12.
+  const Set styled = SetRuns({{"xx a", 0}, {"aabbb", 1}}, measure, {.width = 73, .hyphenator = language.Get()});
+  EXPECT_EQ(styled.shown, (Shown{"xx aaa-", "bbb"}));
+  ASSERT_EQ(styled.lines.size(), 2U);
+  EXPECT_EQ(styled.lines[0].width, 72U);
+
+  // And at a soft hyphen, what is before it was measured by itself: 13
+  // after "aaa" again.
+  const Set soft = SetText(
+      "xx aaa\xC2\xAD"
+      "bbb",
+      measure, {.width = 73});
+  EXPECT_EQ(soft.shown, (Shown{"xx aaa-", "bbb"}));
+  ASSERT_EQ(soft.lines.size(), 2U);
+  EXPECT_EQ(soft.lines[0].width, 73U);
+
+  // Each place has its own: 11 after the "a" of a word with two soft
+  // hyphens, and 15 after its "bbbbb", where the line ends.
+  const Set two = SetText(
+      "a\xC2\xAD"
+      "bbbbb\xC2\xAD"
+      "cccc",
+      measure, {.width = 75});
+  EXPECT_EQ(two.shown, (Shown{"abbbbb-", "cccc"}));
+  ASSERT_EQ(two.lines.size(), 2U);
+  EXPECT_EQ(two.lines[0].width, 75U);
+}
+
 TEST(ParagraphSetter, LeavesAWordWholeWhereBreakingItIsDearerThanTheGap) {
   // Without the break the first line has 50 left on it, which costs 2,500.
   TestMeasure measure = Tens();

@@ -5,8 +5,8 @@ bundle ([The file a book is imported into](bundle.md)): a *segment*.
 `epub/segment.h` says what those bytes are, and has what writes a segment
 (`SegmentWriter`) and what reads one (`SegmentReader`). A document's
 blocks are found by `DocumentBlocks` ([A document's blocks](document-blocks.md)),
-and nothing gives them to the writer yet: it is given blocks by the tests
-and by `bn-bundle`, which make them up.
+and given to the writer, with their text, by what imports a chapter
+([Importing a chapter](chapter-import.md)).
 
 ## What a chapter is
 
@@ -34,12 +34,13 @@ aside without importing again. The fields are the alignment, the
 direction, the size, the height of a line, the indent of the first line,
 the margins to left and right, the space before and after, bits for
 breaking (a page break before, keep with the next, keep together, white
-space as written, floated, a note's text, centred), how deep in
-quotations and in lists, what stands before an item of a list, where a
-cell is in its table, and a declared width and height. A **length** is
-three amounts that are added together: so much of the reader's text size,
-so many CSS pixels, and so much of the page's width. A record with every
-field is 77 bytes, and one with none is not written.
+space as written, floated, a note's text, centred, and in two bits how
+many of the block's first characters are a capital that is dropped), how
+deep in quotations and in lists, what stands before an item of a list,
+where a cell is in its table, and a declared width and height. A
+**length** is three amounts that are added together: so much of the
+reader's text size, so many CSS pixels, and so much of the page's width. A
+record with every field is 77 bytes, and one with none is not written.
 
 **Characters** are what a place in a chapter is counted in: the bytes of
 its text, one for each picture, and one for a block that has neither. A

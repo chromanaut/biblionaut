@@ -182,21 +182,24 @@ const char* CssFamilyClassName(CssFamilyClass familyClass) noexcept;
 struct CssValue {
   enum class Kind : std::uint8_t { kKeyword, kLength, kFamilies };
 
-  Kind kind = Kind::kKeyword;
-  CssKeyword keyword = CssKeyword::kNone;  // For kKeyword.
-  // For kLength: so many thousandths of `unit`. 1.5em is 1500 of kEm.
-  // Never more than kCssMaxNumber either way.
-  std::int32_t number = 0;
-  CssUnit unit = CssUnit::kNumber;
-  // For kFamilies: the kind of face the names come to, which is never
-  // kUnset.
-  CssFamilyClass familyClass = CssFamilyClass::kUnset;
   // For kFamilies, from the reader of a sheet: the names, as written,
   // commas and quotes and all. Only good while the handler that was given
   // it is running. Empty in what a cascade gives, which keeps the kind of
   // face and not the names.
   std::string_view families;
+  // For kLength: so many thousandths of `unit`. 1.5em is 1500 of kEm.
+  // Never more than kCssMaxNumber either way.
+  std::int32_t number = 0;
+  Kind kind = Kind::kKeyword;
+  CssKeyword keyword = CssKeyword::kNone;  // For kKeyword.
+  CssUnit unit = CssUnit::kNumber;
+  // For kFamilies: the kind of face the names come to, which is never
+  // kUnset.
+  CssFamilyClass familyClass = CssFamilyClass::kUnset;
 };
+// The widest first and the four of a byte together, so that nothing is
+// left empty between them: 16 bytes where a pointer is four.
+static_assert(sizeof(CssValue) == sizeof(std::string_view) + 8);
 
 // The most a number in a value can be, in thousandths: a number further
 // from zero than this is held to it.

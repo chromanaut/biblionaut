@@ -164,6 +164,20 @@ std::int8_t Face::Kern(const Glyph& first, const Glyph& second) const noexcept {
   return static_cast<std::int8_t>(From(at)[0]);
 }
 
+std::uint64_t Face::LigatureFirsts() const noexcept {
+  const std::size_t count = Ligatures();
+  if (!held_ || count == 0) {
+    return 0;
+  }
+  // Opening the image saw that the whole list is inside it.
+  const std::span<const std::uint8_t> list = From(Read32(record_, 44));
+  std::uint64_t firsts = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    firsts |= std::uint64_t{1} << (Read16(list, i * kLigatureBytes) & 63U);
+  }
+  return firsts;
+}
+
 std::size_t Face::Ligature(std::span<const Glyph> glyphs, Glyph& ligature) const noexcept {
   const std::size_t count = Ligatures();
   if (!held_ || count == 0 || glyphs.size() < 2 || glyphs[0].face != index_ || glyphs[1].face != index_) {

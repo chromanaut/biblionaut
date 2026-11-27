@@ -2258,6 +2258,58 @@ def paragraph_seeds() -> None:
     write("paragraph", "nothing", b"")
 
 
+# ---- face_measure: byte 0 (the style, the fallback face), then text with a byte of 0 at each cut ----
+
+
+def face_measure_seeds() -> None:
+    clear("face_measure")
+
+    def seed(name: str, written: bytes, *, style: int = 0, fallback: bool = True) -> None:
+        """`style` is which of the target's four styles the text is in."""
+        write("face_measure", name, bytes([style | (0 if fallback else 4)]) + written)
+
+    seed("a-word", b"hyphenation")
+    seed("a-word-cut-in-pieces", b"hy\0phen\0ation")
+    # Letters the serif joins: two f's and an i, an f and an i, two f's, an
+    # f and an l.
+    seed("letters-joined", b"office\0waffle\0fish\0offline\0fffi")
+    seed("cut-inside-a-ligature", b"of\0fice")
+    seed("cut-twice-inside-a-ligature", b"of\0f\0ice")
+    seed("cut-after-two-letters-of-three", b"off\0ice")
+    seed("glyphs-that-fall-in-a-letter-later", b"of\0fline")
+    # Letters whose glyphs after a cut never fall in with the whole's: the
+    # serif joins an a and a b, and a b and an a.
+    seed("glyphs-that-never-fall-in", b"a\0" + b"ba" * 20)
+    seed("glyphs-that-fall-in-at-the-end", b"a\0baba")
+    seed("nothing-but-f", b"f\0" + b"f" * 29)
+    seed("nine-f", b"f\0ffffffff")
+    seed("ten-f", b"f\0fffffffff")
+    seed("letters-before-a-cut-that-is-given-up", b"of\0" + b"f" * 29)
+    # A ligature narrower than its last letter, so that the text before a
+    # later cut comes to less than the text before an earlier one; and one
+    # wider than its letters with a hyphen between them.
+    seed("a-ligature-narrower-than-its-last-letter", b"x\0a\0b\0x")
+    seed("a-ligature-wider-than-its-letters-and-a-hyphen", b"b\0a\0b\0ab")
+    seed("three-a-and-fewer", b"aa\0aa\0a\0aaa\0ab\0a")
+    seed("kerned", b"kz\0k\0zk\0q\0u\0kk\0k")
+    seed("kerned-with-the-hyphen", b"af\0b\0f\0ab\0c")
+    seed("a-ligature-kerned", b"c\0fi\0c\0f\0ic")
+    seed("italic", b"of\0f\0ice\0kz\0k\0f", style=1)
+    seed("a-style-with-no-face", b"of\0fice", style=2)
+    seed("a-style-past-the-last", b"of\0fice", style=3)
+    seed("from-the-fallback", "αγ\0δε\0f\0δ\0ε\0a".encode())
+    seed("without-the-fallback", "αγ\0δ\0ε".encode(), fallback=False)
+    seed("from-the-fallback-in-italic", "fi\0δ\0εf\0i".encode(), style=1)
+    seed("not-drawn", "f\u00ad\0i\0f\u200bf\0\u00ad\0\u200b\0f\u00ad".encode())
+    seed("the-ligatures-own-characters", "\ufb01\0c\0c\0\ufb01\ufb02\0f".encode())
+    seed("not-utf-8", b"f\xff\0i\0\xc3\0\xa9\0\xe2\x80\0of\xf0\0fice\xed\xa0\x80")
+    seed("cut-inside-a-character", b"\xc3\0\xa9ffi\xe2\0\x80\0\x8bf")
+    seed("a-cut-after-every-letter", b"\0".join(bytes([letter]) for letter in b"offafficabababaaaakzkfi" * 3))
+    seed("a-long-stretch", b"office" * 60)
+    seed("only-cuts", b"\0\0\0")
+    write("face_measure", "nothing", b"")
+
+
 # ---- png: bytes 0 and 1 (how the file is given and how its data is cut up), then a PNG file ----
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -3231,6 +3283,113 @@ def font_seeds() -> None:
     seed("nothing", b"")
 
 
+# ---- chapter_import: byte 0 (how a file is read, and how much memory the
+# ---- parser and the table of rules have, and the book's own language),
+# ---- byte 1 (where the document fails, and at which write storage does),
+# ---- then the book's files, a byte of zero between them: a path, a line
+# ---- end, and what the file holds.
+
+def import_page(body: str, html: str = "") -> str:
+    return (f"<!DOCTYPE html PUBLIC '-//W3C//DTD XHTML 1.1//EN' 'xhtml11.dtd'>\n<html{html}><head><title>A page</title>"
+            f"<link rel='stylesheet' href='book.css'/></head><body>{body}</body></html>")
+
+
+def chapter_import_seeds() -> None:
+    clear("chapter_import")
+    sheet = ("p { margin: 0; text-indent: 1em } .f::first-letter { float: left; font-size: 3em; font-weight: bold }\n"
+             ".r::first-letter { font-size: 2em } .d { float: left; font-size: 3em } .gone { display: none }\n"
+             ".in { display: inline } .sc { font-variant: small-caps } .big { font-size: 1.5em }\n"
+             "code { font-family: monospace } .c { text-align: center; width: 60%; margin: 1em auto }\n"
+             ".pb { page-break-before: always }\n")
+
+    def seed(name: str, body: str, choices: int = 0, failing: int = 0, html: str = " xml:lang='en'",
+             sheets: str = sheet, document: str | None = None) -> None:
+        files = {"text/chapter.xhtml": import_page(body, html) if document is None else document,
+                 "text/book.css": sheets}
+        book = b"\0".join(path.encode() + b"\n" + contents.encode() for path, contents in files.items())
+        write("chapter_import", name, bytes([choices, failing]) + book)
+
+    space = ("<p>  Runs  of \t white\n   space are <b>  one </b> space,<i> </i>set as <u>the first </u> <b>of them</b> "
+             "is. </p><p>None<span> </span>at a line's end <br/>  or its start, <b> </b> nor at the block's <i>end </i> "
+             "</p><p><br/>After an empty line.<br/><br/>Two line ends.<br/></p><div><br/></div><div> <br/> </div>"
+             "<p>A soft hy&#173;phen, a no-break&#160;space and&nbsp;a named one, and&#32;a numbered space.</p>"
+             "<p>&nbsp;</p><p>caf&eacute; &mdash; &ldquo;quoted&rdquo; &hellip; &amp; &lt;tag&gt; &nosuchname; &Eacute;</p>")
+    written = ("<pre>\n  first line, indented\n    second\tline\n\n  after an empty one\n</pre><pre>one line</pre>"
+               "<pre>  </pre><pre>\n\n</pre><pre>   <b>bold after held white space</b>  <i>and</i>\n</pre>"
+               "<div><pre class='in'>  inline, as written  </pre> then  combined  <pre class='in'>  and  again</pre></div>"
+               "<p>Before <pre class='in'>   x   </pre>   after, <pre class='in'>y</pre>   <pre class='in'>  z</pre></p>"
+               "<pre>" + " " * 70 + "more than is held</pre><pre><br/>  after a line end</pre>"
+               "<pre>  <img src='a.png' alt='p'/>  </pre><pre>a<span id='in-pre'>  </span>b</pre>"
+               "<pre>   <div>in a block</div>   </pre>")
+    ids = ("<h2 id='one'>Ids</h2><p id='p2'>An id <a id='a1'/>in a line, <span id='s1'>on a span</span>, "
+           "<a name='named'>by a name</a>, <a id='both' name='not-this'>both</a>, <a id=''>none</a>, at the end"
+           "<a id='at-end'/></p><a id='between'/><p class='gone' id='hidden'>Not shown <span id='in-hidden'>at all"
+           "</span></p><p>After white space <b id='after-space'>here</b> and <span id='x1'/><span id='x2'/>two together."
+           "</p><p id='" + "i" * 255 + "'>A long id.</p><p id='" + "j" * 256 + "'>One too long.</p>"
+           "<p>A picture <img src='a.png' alt='a small picture'/> in a line, <img src='b.png'/> one with nothing said, "
+           "<img class='gone' src='d.png' alt='hidden'/> one hidden.</p><div><img src='e.png' alt='ab" + "é" * 127 +
+           "'/></div><div> <img src='f.png' alt='alone'/> </div><hr id='rule'/><i>Text in no block</i><a id='last'/>")
+    set_as = ("<p>English, <span xml:lang='fr'>fran&ccedil;ais, <i xml:lang='la'>lingua latina</i>, encore</span>, "
+              "<span lang='EN'>the book's own</span>, <span xml:lang='de'> </span>and "
+              "<span xml:lang='el'>&epsilon;&lambda;&lambda;&eta;&nu;&iota;&kappa;&#940;</span>.</p>"
+              "<p xml:lang='fr'>Tout en fran&ccedil;ais.</p><p>Plain, <b>bold, <i>bold italic,</i></b> "
+              "<span class='sc'>small capitals</span>, x<sup>2</sup>, H<sub>2</sub>O, <span class='big'>bigger</span>, "
+              "<code>code</code>, <u>under<b>lined</b></u>.</p><h2 class='big'>A <small>heading</small></h2>")
+    capitals = ("<p class='f'>The first letter.</p><p class='f'>&ldquo;Quoted.</p><p class='f'>&ldquo;&lsquo;Two marks.</p>"
+                "<p class='f'>&ldquo;&lsquo;&rsquo;Three.</p><p class='f'>1900.</p><p class='f'>&hellip;neither.</p>"
+                "<p class='f'> <b> W</b>hite space.</p><p class='f'>&ldquo;<b>M</b>ark apart.</p>"
+                "<p class='f'><img src='i.png' alt='I'/>A picture.</p><p class='f'><br/>A line end.</p>"
+                "<p class='f' id='l'><a id='il'/>&ldquo;<a id='am'/>An id.</p><p class='f'>&Eacute;cole, &Omega;.</p>"
+                "<p class='f'>&#1046;ivago.</p><p class='f'>&times; no.</p><p class='f'>I</p><p class='r'>Raised.</p>"
+                "<div class='f'><p>The first block inside.</p><p>Not the second.</p></div>"
+                "<p><span class='d'>T</span>he letter.</p><p><span class='d'>&ldquo;T</span>he mark.</p>"
+                "<p><span class='d'>T </span>he space.</p><p><span class='d'>Th</span>e two.</p>"
+                "<p><span class='d'>7</span> no.</p><p><span class='d'>&ldquo;</span>A mark.</p>"
+                "<p><span class='d'></span>Nothing.</p><p><span class='d'><img src='j.png' alt='J'/></span>ust.</p>"
+                "<p><img class='d' src='k.png' alt='K'/>Itself.</p><p><span class='d'><img src='l.png' alt='L'/>x</span>"
+                "More.</p><p><span class='d'><img alt='" + "a" * 70 + "'/></span>Long.</p>"
+                "<p><span class='d' id='od'>D<a id='id'/></span>ropped.</p><p><span class='d'>E<br/></span>Line end.</p>"
+                "<p><span class='d'><b>&ldquo;</b>G</span>Apart.</p><div><span class='d'>H<p>A block inside.</p></span>"
+                "</div><p><span class='d'>&#7842;</span> and <span class='d'>&#7944;</span>.</p>")
+    blocks = ("<h1>Heading</h1><p class='c'>Centred</p><ol start='4'><li>Four</li><li><p>Five</p><p>Again</p></li></ol>"
+              "<ul><li>One<ul><li>Inside</li></ul></li></ul><blockquote><p>Quoted</p></blockquote><hr/>"
+              "<table><tr><th>Head</th><td>Cell <p>and a paragraph</p></td></tr></table><p dir='rtl'>Right to left</p>"
+              "<div class='pb'><p>On a new page</p></div><div style='float: right'>Floated</div>"
+              "<h3>Kept with the next</h3><p class='gone'>Nothing</p><p hidden=''>Nor this</p>"
+              "<p>Before <span class='gone'> hidden </span> after.</p>"
+              "<hr>Inside <b id='in-rule'>a rule</b><br/><img alt='r'/> </hr>")
+
+    seed("white-space-and-names", space)
+    seed("as-written", written)
+    seed("ids-and-pictures", ids)
+    seed("how-text-is-set", set_as, choices=1 << 6)
+    seed("capitals", capitals)
+    seed("blocks", blocks)
+    seed("a-byte-at-a-time", space + capitals[:1200], choices=3)
+    seed("seven-bytes-at-a-time", written + set_as, choices=2 | (2 << 6))
+    seed("three-hundred-bytes-at-a-time", ids, choices=1 | (3 << 6))
+    seed("a-parser-with-little-memory", ids, choices=3 << 2)
+    seed("a-table-with-room-for-little", capitals, choices=2 << 4)
+    seed("a-table-with-room-for-next-to-nothing", capitals, choices=3 << 4)
+    seed("a-document-that-fails-in-its-head", space, failing=4)
+    seed("a-document-that-fails-part-way", space, failing=30)
+    seed("storage-that-fails-at-once", blocks, failing=1 << 6)
+    seed("storage-that-fails-at-its-third-write", "<p>Words of a paragraph, and more of them.</p>" * 200, failing=2 << 6)
+    seed("storage-that-fails-at-its-ninth-write", "<hr/>a" * 1500, failing=3 << 6)
+    seed("blocks-as-close-as-they-come", "<div class='c pb'>" + "<hr/>a" * 1200 + "</div>")
+    seed("a-long-paragraph", "<p>" + "words and more words — " * 300 + "</p><pre>" + "as written  \n" * 300 + "</pre>")
+    seed("deeper-than-is-kept", "<p>" + "<span>" * 40 + "deep" + "</span>" * 40 + "</p>")
+    seed("many-languages", "".join(f"<p xml:lang='l{n}'>Language {n}.</p>" for n in range(20)))
+    seed("not-xml-part-way", "<p id='a'>The first.</p><p>The second, <b>and  <<< no more")
+    seed("not-xml-at-all", "", document="This is not XML at all. <")
+    seed("nothing-in-it", " <div> <p></p> </div> ")
+    seed("no-sheet", "", document="<html><body><p>Text <b>here</b>.</p></body></html>")
+    seed("its-own-style", "", document="<html><head><style>p { text-align: center } b { display: block }</style></head>"
+                                       "<body><p>One <b>two</b> three</p></body></html>")
+    write("chapter_import", "nothing", b"")
+    write("chapter_import", "no-document", bytes([0, 0]) + b"book.css\np { margin: 0 }")
+
+
 def main() -> None:
     font_seeds()
     inflate_seeds()
@@ -3244,11 +3403,13 @@ def main() -> None:
     svg_sheet_seeds()
     css_rules_seeds()
     document_sheets_seeds()
+    chapter_import_seeds()
     svg_tags_seeds()
     svg_values_seeds()
     svg_path_seeds()
     svg_seeds()
     paragraph_seeds()
+    face_measure_seeds()
     png_seeds()
     jpeg_seeds()
     scale_seeds()

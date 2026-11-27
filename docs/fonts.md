@@ -44,8 +44,8 @@ own, which is seldom what its letters' come to, and classes for kerning.
 It may be a character's own, as Noto's ligature of an f and an i is its
 glyph for U+FB01; or one no character has, as Source Serif 4's of an f
 and a j is, and then its number is after those of all the characters'
-glyphs. Nothing sets text with them yet: the measure below draws each
-character with its own glyph.
+glyphs. The measure that sets text (below) draws a ligature in its
+letters' place.
 
 ## Making the image
 
@@ -388,11 +388,15 @@ partition can hold anything.
   table has no row or no place for is not kerned.
 - **Finding a ligature** goes through the face's list, which opening the
   image saw to be inside it, once: 255 ligatures at the most. One whose
-  glyph the face cannot give is not made.
+  glyph the face cannot give is not made. So that not every glyph of a
+  text has the list gone through for it, a face gives a mark for the
+  glyphs that begin a ligature (`Face::LigatureFirsts()`: 64 bits, one for
+  each of what a glyph's number can leave over 64), and a glyph whose mark
+  is not set begins none.
 - **RAM**: none but the objects themselves: under 300 bytes for an image,
   most of it the list of the faces it holds (below), and 0.6 KB in the
   device's hardware layer for the list of what it has mapped. **Flash**:
-  3.3 KB for the reader, 1.2 KB for the measure below and 0.7 KB for the
+  3.4 KB for the reader, 4.9 KB for the measure below and 0.7 KB for the
   partition's mapping, as compiled for the device, besides the image
   itself.
 
@@ -442,25 +446,63 @@ would be a whole pixel or none. So a kerning of less than half a pixel
 moves a letter a whole pixel or not at all, by what the advance before it
 has over a pixel, and the same for that pair everywhere.
 
-Two glyphs are kerned when one follows the other in a stretch the
-paragraph setter has measured as one, which is as much of a word as is in
-one style, and one face gave both. So nothing is kerned across a space,
-across a change of style, or between a letter and a glyph the fallback
-face lent; nor across a soft hyphen or a zero width space, since the
-setter measures what is before one apart from what is after. Where the
-hyphenator would let a word be broken makes no difference: the letter
-before such a place is kerned with the one after it, and is as wide as
-that whether or not a line ends there, so the hyphen of a broken word
-stands where its letter was measured. A piece of a word is as wide as its
-glyphs' steps added up, and a space and a hyphen are rounded as a letter
-is, so what is drawn from the same glyphs by the same steps lines up with
-what was measured; widths are still counted four to the pixel, as the
-paragraph setter is given them, each a whole number of pixels. (A stretch
-of letters too wide for a line, or too long for the setter to take as one
-word, is measured a letter at a time and so without kerning; whoever draws
-it kerned draws it a little narrower than it was counted.) The
-hyphen shown at a line's end is
-the style's U+2010, or its hyphen-minus. Reading UTF-8 a character at a
+Letters a face joins are drawn as its ligature. A stretch of text is gone
+through from its start, and at each place the first of the face's
+ligatures that is made of the two or three glyphs there is drawn in their
+place (`layout::GlyphRun`, which the measure counts by, and whoever draws
+the text goes by as well). A ligature moves the pen by its own step, and
+is kerned with the glyphs beside it as any glyph is.
+
+Two glyphs are kerned, and letters are joined, when one follows the other
+in a stretch the paragraph setter has measured as one, which is as much of
+a word as is in one style, and one face gave them. So nothing is kerned or
+joined across a space, across a change of style, or between a letter and a
+glyph the fallback face lent; nor across a soft hyphen or a zero width
+space, since the setter measures what is before one apart from what is
+after.
+
+A line's text is drawn as it would be by itself, and counted so. Where a
+line ends at a place the hyphenator found, the letters before the place
+are joined with one another and not with those after it, the last of them
+is kerned with the hyphen and not with the letter that begins the next
+line, and the next line's letters are joined from its first. "office" is
+an o, one glyph for its two f's and its i, a c and an e where it is whole;
+and where a line ends between its f's it is an o, an f and a hyphen, and
+then the glyph for an f and an i, a c and an e. So the same letters are
+the same distance apart on every line, a hyphen is as far from an f at
+every line's end, and nothing is left unjoined for being where a word
+might have been broken and was not.
+
+The measure gives the paragraph setter two numbers for each piece of a
+word to count that by. One is the piece's width, such that the pieces from
+any cut on come to what the text from there on is as wide as, set by
+itself. The other is what a hyphen after the piece comes to: what a line
+that ends there is wider by than its pieces, which is the hyphen itself,
+what the letters before it gain by being drawn apart from those after
+it, and what the last of them moves by for having a hyphen beside it. With
+those a line is as wide as it was counted whether a word on it is whole,
+begins there or ends there; and one that has only the middle of a word,
+broken at both ends, wherever a glyph of it is the same glyph as in the
+whole word. To know what the letters after a cut inside a ligature come
+to, the glyphs after the cut are found afresh until they fall in with
+those of the whole word, which with the ligatures fonts have is at once or
+a glyph later. That is given up after eight glyphs, so that no text makes
+a call long, and the text after the cut is then counted with the ligature
+whole, which is wider than it is drawn: it takes a word of nothing but
+f's.
+
+A piece of a word is as wide as its glyphs' steps added up, and a space is
+rounded as a letter is, so what is drawn from the same glyphs by the same
+steps lines up with what was measured; widths are still counted four to
+the pixel, as the paragraph setter is given them, each a whole number of
+pixels. (A stretch of letters too wide for a line, or too long for the
+setter to take as one word, is measured a letter at a time and so without
+kerning or ligatures; whoever draws it kerned and joined draws it a
+little narrower than it was counted.) The hyphen shown at a line's end is
+the style's U+2010, or its hyphen-minus. It is found once for a style, as
+are the marks of the glyphs that begin a ligature, and kept until the
+measure is given a face: so it is given its faces once they are held, and
+again when they have been given up and held anew. Reading UTF-8 a character at a
 time, strictly, is `core/utf8.h`, which the hyphenator shares.
 
 The reader's tests write their images by hand from the description of the
@@ -490,6 +532,14 @@ tables written for it, cut short and changed as the kerning's are; and
 holds an image's lists to them, once with the ligatures' own characters
 among those drawn and once without, when their glyphs are no
 character's, and `bn-font info --ligatures` to saying the same. The
+measure's tests give it faces written by hand that kern and join, and
+hold what it says of a word to figures worked out in the test; and then
+3,000 words made at random of the letters those faces join and kern, cut
+at random, where every line a word could be broken into has to be as wide
+as a plain second setting of that line's text, by itself, makes it; and a
+paragraph of words the hyphenator breaks between two f's, set by the
+paragraph setter at many widths, every line of it held to the same. The
+measure has a fuzz target of its own (`face_measure`). The
 builder's tests,
 and `e2e.FontTool`, try `bn-font` on a real font, Courier Prime, which the
 build downloads for them (`third_party/courier-prime`): the test takes the
@@ -519,9 +569,9 @@ tools/idf -DBN_FONTS_IMAGE=$PWD/build/host-release/fonts/fonts.bnfn fonts-flash
 ```
 
 ```
--- The fonts image: 10143222 bytes of the partition's 12582912.
+-- The fonts image: 10144822 bytes of the partition's 12582912.
 ...
-Wrote 10143224 bytes (3665717 compressed) at 0x00400000 in 56.6 seconds (1433.4 kbit/s).
+Wrote 10144824 bytes (3666908 compressed) at 0x00400000 in 56.5 seconds (1435.5 kbit/s).
 Hash of data verified.
 ```
 

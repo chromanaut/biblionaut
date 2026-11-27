@@ -34,8 +34,13 @@ image's faces for its measure and the built-in table of American English,
 its lines spread to the full width but the last, with 24 pixels left round
 the text and a third of a line between paragraphs. Every glyph is on a
 whole pixel, and as many pixels after the one before it wherever the two
-come, kerned as their face kerns them ([the
-measure](fonts.md#reading-the-image) says how, and why). What a spread
+come, kerned as their face kerns them; and letters the face joins are
+drawn as its ligature, each line's by themselves, so that a word broken
+between two f's has an f and the hyphen on one line and its other letters
+joined afresh on the next ([the measure](fonts.md#reading-the-image) says
+how, and why). A line is drawn by going through each of its words with the
+measure's own `GlyphRun`, so what is on the page is what was counted. What
+a spread
 line has over goes between its words in whole pixels: the same to each
 place, and one more to as many places as there are pixels still left,
 taken evenly along the line.
@@ -93,32 +98,33 @@ preset in its partition and a file of text on its card:
 
 ```
 text: serif 22 px: 2 faces held, 288 KB of the image; 448 KB mapped
-text: page 1, serif 22 px, 22 lines, 610 glyphs: set 23 ms, planes 74 ms, refresh 3580 ms, gray planes 71 ms, gray pass 207 ms
-text: page 2, serif 22 px, 22 lines, 456 glyphs: set 18 ms, planes 66 ms, refresh 1574 ms, gray planes 64 ms, gray pass 204 ms
+text: page 1, serif 22 px, 22 lines, 610 glyphs: set 29 ms, planes 74 ms, refresh 4697 ms, gray planes 72 ms, gray pass 204 ms
+text: page 2, serif 22 px, 22 lines, 456 glyphs: set 23 ms, planes 66 ms, refresh 1578 ms, gray planes 64 ms, gray pass 204 ms
 text: sans 22 px: 2 faces held, 266 KB of the image; 448 KB mapped
-text: page 1, sans 22 px, 22 lines, 458 glyphs: set 19 ms, planes 63 ms, refresh 1574 ms, gray planes 61 ms, gray pass 207 ms
+text: page 1, sans 22 px, 22 lines, 458 glyphs: set 25 ms, planes 64 ms, refresh 1577 ms, gray planes 62 ms, gray pass 206 ms
 ```
 
 (and so on through 26, 30 and 34 px)
 
 ```
 text: serif 38 px: 2 faces held, 691 KB of the image; 896 KB mapped
-text: page 1, serif 38 px, 14 lines, 211 glyphs: set 18 ms, planes 67 ms, refresh 1571 ms, gray planes 65 ms, gray pass 203 ms
-text: page 2, serif 38 px, 14 lines, 219 glyphs: set 1 ms, planes 69 ms, refresh 1575 ms, gray planes 67 ms, gray pass 201 ms
+text: page 1, serif 38 px, 14 lines, 209 glyphs: set 23 ms, planes 68 ms, refresh 1575 ms, gray planes 66 ms, gray pass 202 ms
+text: page 2, serif 38 px, 14 lines, 219 glyphs: set 1 ms, planes 69 ms, refresh 1576 ms, gray planes 67 ms, gray pass 201 ms
 text: sans 38 px: 2 faces held, 640 KB of the image; 832 KB mapped
-text: page 1, sans 38 px, 14 lines, 201 glyphs: set 19 ms, planes 64 ms, refresh 1572 ms, gray planes 62 ms, gray pass 206 ms
-text: page 2, sans 38 px, 13 lines, 194 glyphs: set 6 ms, planes 62 ms, refresh 1578 ms, gray planes 61 ms, gray pass 207 ms
+text: page 1, sans 38 px, 14 lines, 201 glyphs: set 23 ms, planes 65 ms, refresh 1577 ms, gray planes 63 ms, gray pass 205 ms
+text: page 2, sans 38 px, 13 lines, 194 glyphs: set 8 ms, planes 63 ms, refresh 1576 ms, gray planes 61 ms, gray pass 207 ms
 text: the tour is done.
 ```
 
-Over the twenty pages, setting one took 36 ms at the most, kerning and
-all, of which reading its paragraphs off the card is a part; making its
-rows from the list of glyphs and writing them to the panel took 60 to 74
+Over the twenty pages, setting one took 47 ms at the most, kerning and
+ligatures and all, of which reading its paragraphs off the card is a
+part; making its
+rows from the list of glyphs and writing them to the panel took 61 to 74
 ms, and as long again for the marks of its grays; the rest of the 1.9
-seconds a page takes is the panel's own: a half refresh of 1.57 seconds
+seconds a page takes is the panel's own: a half refresh of 1.58 seconds
 and a gray pass of 0.2. Ten times two faces were held, 22 stretches of the
 image mapped in all and none refused, 896 KB mapped at the most, of an
-image of 10.1 MB; and 233,692 bytes of the heap stayed free. Whether the letters are good to
+image of 10.1 MB; and 241,052 bytes of the heap stayed free. Whether the letters are good to
 read at each size is for whoever looks at the panel.
 
 Its tests give it images written by hand, on panels turned each of the
@@ -127,4 +133,9 @@ worked out in the test; and `e2e.TextViewer` runs the desktop application
 on an image `bn-font` makes of Courier Prime and adds up the ink in the
 pictures the simulated panel saves: two pages of text hold the ink that
 `bn-font info` gives for each of its letters, and a hyphen's for each word
-broken, and nothing else.
+broken, and nothing else. It then gives the application an image of a font
+that joins letters, Noto Sans, and a page of words with f's in them, which
+has to have as many glyphs as the words come to when joined by what
+`bn-font info --ligatures` says the image joins. In the unit tests a face
+that joins letters has each of its lines end on the margin to the pixel,
+whole words, joined words and words broken inside a ligature alike.

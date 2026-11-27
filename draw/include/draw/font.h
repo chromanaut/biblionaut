@@ -232,6 +232,13 @@ class Face {
   std::size_t Ligature(std::span<const Glyph> glyphs, Glyph& ligature) const noexcept;
   // How many ligatures it has.
   std::uint8_t Ligatures() const noexcept;
+  // A mark for the glyphs that begin a ligature, for whoever goes through
+  // many glyphs and would not go through the list for each: bit n is set if
+  // a glyph whose number is n more than a multiple of 64 begins one. So a
+  // glyph whose bit is not set begins none, and one whose bit is set may.
+  // It goes through the list once. Nothing is set for a face that is not
+  // held.
+  std::uint64_t LigatureFirsts() const noexcept;
 
   // How many steps the last Find() took.
   std::uint32_t LastSteps() const noexcept { return steps_; }

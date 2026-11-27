@@ -234,10 +234,6 @@ class TextViewer final : public Screen {
   void PageSet(std::uint64_t now) noexcept;
   // Places `line` of the paragraph with its baseline `baseline` pixels down.
   void PlaceLine(const layout::TextLine& line, std::int32_t baseline) noexcept;
-  // The glyph of the character at byte `at` of the paragraph, if there is
-  // one there that is drawn, in `style`, and not a space or a line's end:
-  // what a glyph just before it was measured with.
-  bool FollowingGlyph(std::size_t at, std::uint16_t style, draw::Glyph& glyph) const noexcept;
   // Places `glyph` with the pen `pen` pixels from the page's left edge.
   void PlaceGlyph(const draw::Glyph& glyph, std::int32_t pen, std::int32_t baseline) noexcept;
   // Makes the band of the panel's rows from `top`: the ink of each of its

@@ -959,11 +959,140 @@ TEST(TextViewer, DrawsTheSamePairTheSameDistanceApartOnEveryLineAndEndsEachLineO
   EXPECT_EQ(further, 40);
 }
 
-TEST(TextViewer, PutsTheHyphenOfABrokenWordWhereItsLastLetterWasMeasured) {
+// The faces, with the serif at 30 joining letters: two f's and an i as a
+// glyph 40 pixels on and 37 wide, an f and an i as one 26 on and 23 wide,
+// and two f's as one 25 on and 22 wide, each as tall as a letter and with
+// full ink. A letter there is 15 on and 12 wide, so each of these is three
+// pixels short of its step, as a letter is.
+std::vector<ImageFace> FacesThatJoin() {
+  std::vector<ImageFace> faces = TestFaces();
+  ImageFace& serif = faces[3];
+  EXPECT_EQ(serif.size, 30);
+  EXPECT_EQ(serif.role, 0);
+  serif.extras = {bn::test::Block(160, 37, 15), bn::test::Block(104, 23, 15), bn::test::Block(100, 22, 15)};
+  serif.ligatures = {{.letters = {'f', 'f', 'i'}, .extra = 0},
+                     {.letters = {'f', 'i'}, .extra = 1},
+                     {.letters = {'f', 'f'}, .extra = 2}};
+  return faces;
+}
+
+TEST(TextViewer, DrawsTheLettersItsFaceJoinsAsOneGlyph) {
+  Fixture fixture(FacesThatJoin());
+  fixture.display.Resize({.width = 400, .height = 600});
+  fixture.Text("office fi off f*i* f\xC2\xADi f**i\n");
+  fixture.Start();
+  fixture.Settle();
+  const auto glyphs = fixture.viewer->Glyphs();
+  // An o, the glyph for two f's and an i, a c and an e; the glyph for an f
+  // and an i; an o and the glyph for two f's; and then an f and an i with a
+  // change of style between them, and with a soft hyphen, which are not
+  // joined; and with two asterisks between them, which change nothing, and
+  // they are.
+  std::vector<int> widths;
+  std::vector<int> gaps;
+  widths.reserve(glyphs.size());
+  for (std::size_t i = 0; i < glyphs.size(); ++i) {
+    widths.push_back(glyphs[i].width);
+    if (i > 0) {
+      gaps.push_back(glyphs[i].x - glyphs[i - 1].x);
+    }
+  }
+  EXPECT_EQ(widths, (std::vector<int>{12, 37, 12, 12, 23, 12, 22, 12, 13, 12, 12, 23}));
+  // A ligature moves the pen by its own step, and a space is 8.
+  EXPECT_EQ(gaps, (std::vector<int>{15, 40, 15, 15 + 8, 26 + 8, 15, 25 + 8, 15, 15 + 8, 15, 15 + 8}));
+  EXPECT_EQ(glyphs[0].x, kMargin);
+}
+
+TEST(TextViewer, JoinsTheLettersOfEachLineOfABrokenWordByThemselves) {
+  Fixture fixture(FacesThatJoin());
+  // Room for 60 pixels across. "office" is 85: an o, the glyph for two f's
+  // and an i, a c and an e. It may be broken between its f's, and is: an o,
+  // an f and the hyphen, 38 pixels; and then the glyph for an f and an i, a
+  // c and an e, 56.
+  fixture.display.Resize({.width = 108, .height = 200});
+  fixture.Text("office\n");
+  fixture.Start();
+  fixture.Settle();
+  const auto lines = fixture.ByLine(36);
+  ASSERT_EQ(lines.size(), 2U);
+  const auto& first = lines.begin()->second;
+  ASSERT_EQ(first.size(), 3U);
+  EXPECT_EQ(first[0].x, kMargin);
+  EXPECT_EQ(first[1].x, kMargin + 15);
+  EXPECT_EQ(first[1].width, 12);
+  EXPECT_EQ(first[2].x, kMargin + 30);
+  EXPECT_EQ(first[2].width, 5);
+  EXPECT_EQ(first[2].height, 2);
+  const auto& second = lines.rbegin()->second;
+  ASSERT_EQ(second.size(), 3U);
+  EXPECT_EQ(second[0].x, kMargin);
+  EXPECT_EQ(second[0].width, 23);
+  EXPECT_EQ(second[1].x, kMargin + 26);
+  EXPECT_EQ(second[2].x, kMargin + 41);
+}
+
+TEST(TextViewer, EndsEveryLineOfJoinedAndBrokenWordsOnTheMargin) {
+  Fixture fixture(FacesThatJoin());
+  fixture.display.Resize({.width = 168, .height = 4000});
+  // Words with f's in them, two of them too long for a line of 120 pixels,
+  // which the hyphenator breaks between two f's and elsewhere. Every letter
+  // here, every ligature and the hyphen has a picture three pixels short of
+  // its step: so a line of more than one word that is drawn as wide as it
+  // was counted, joined and broken as the measure took it to be, ends three
+  // pixels short of the margin.
+  std::string text;
+  for (int times = 0; times < 12; ++times) {
+    text += "office suffix differs coffee offer stiff effect in ";
+    text += times % 2 == 0 ? "the " : "";
+    text += times % 3 == 0 ? "efficient " : "difficult ";
+  }
+  text.pop_back();
+  fixture.Text(text + "\n");
+  fixture.Start();
+  fixture.Settle();
+  ASSERT_TRUE(fixture.viewer->AtEnd());
+  const auto lines = fixture.ByLine(36);
+  ASSERT_GT(lines.size(), 10U);
+  std::size_t number = 0;
+  int hyphens = 0;
+  int begunInsideALigature = 0;
+  int joined = 0;
+  int spread = 0;
+  bool afterHyphen = false;
+  for (const auto& [line, glyphs] : lines) {
+    int right = 0;
+    for (const TextViewer::Placed& glyph : glyphs) {
+      right = std::max<int>(right, glyph.x + glyph.width);
+      joined += glyph.width > 20 ? 1 : 0;
+    }
+    EXPECT_EQ(glyphs.front().x, kMargin) << line;
+    // A line that follows a hyphen and begins with the glyph for an f and
+    // an i: the word was broken between the f's of two f's and an i.
+    begunInsideALigature += afterHyphen && glyphs.front().width == 23 ? 1 : 0;
+    afterHyphen = glyphs.back().width == 5 && glyphs.back().height == 2;
+    hyphens += afterHyphen ? 1 : 0;
+    // A line of one word is not spread: it has nowhere to be spread at.
+    bool words = false;
+    for (std::size_t i = 1; i < glyphs.size(); ++i) {
+      words = words || glyphs[i].x - glyphs[i - 1].x >= glyphs[i - 1].width + 3 + 8;
+    }
+    spread += words ? 1 : 0;
+    if (++number < lines.size() && words) {
+      EXPECT_EQ(right, 168 - kMargin - 3) << line;
+    }
+  }
+  EXPECT_GT(spread, 20);
+  EXPECT_GT(hyphens, 10);
+  EXPECT_GT(begunInsideALigature, 5);
+  EXPECT_GT(joined, 60);
+}
+
+TEST(TextViewer, KernsTheLastLetterOfABrokenWordWithItsHyphen) {
   Fixture fixture;
   // Room for 112 pixels across and for four lines. "hyphen" and its hyphen
-  // are 96 of them: five letters of 15, an n of 13 since it was measured
-  // before the a that follows it, and a hyphen of 8.
+  // are 98 of them: six letters of 15 and a hyphen of 8. The n is 13 before
+  // the a that follows it in the word, which is on the next line, and has
+  // its own 15 before the hyphen.
   fixture.display.Resize({.width = 160, .height = 200});
   fixture.Text("hyphenation hyphenation\n");
   fixture.Start();
@@ -981,13 +1110,31 @@ TEST(TextViewer, PutsTheHyphenOfABrokenWordWhereItsLastLetterWasMeasured) {
     ++hyphens;
     ASSERT_EQ(glyphs.size(), 7U) << line;  // "hyphen" and the hyphen.
     EXPECT_EQ(glyphs[5].x - glyphs[4].x, 15) << line;
-    EXPECT_EQ(last.x - glyphs[5].x, 13) << line;
-    EXPECT_EQ(last.x, kMargin + (5 * 15) + 13) << line;
+    EXPECT_EQ(last.x - glyphs[5].x, 15) << line;
+    EXPECT_EQ(last.x, kMargin + (6 * 15)) << line;
   }
   EXPECT_EQ(hyphens, 2);
 
-  // A word that changes style where it is broken: the n was measured with
-  // nothing after it, and its hyphen is a letter's 15 pixels on.
+  // In a face that kerns the hyphen a pixel nearer an n, it is a pixel
+  // nearer.
+  std::vector<ImageFace> faces = TestFaces();
+  for (ImageFace& face : faces) {
+    face.kerning[{'n', '-'}] = -4;
+  }
+  Fixture kerned(faces);
+  kerned.display.Resize({.width = 160, .height = 200});
+  kerned.Text("hyphenation\n");
+  kerned.Start();
+  kerned.Settle();
+  const auto nearer = kerned.ByLine(36);
+  ASSERT_EQ(nearer.size(), 2U);
+  const auto& top = nearer.begin()->second;
+  ASSERT_EQ(top.size(), 7U);
+  EXPECT_EQ(top[6].width, 5);
+  EXPECT_EQ(top[6].x - top[5].x, 14);
+
+  // A word that changes style where it is broken: the n has nothing after
+  // it in its style but the hyphen, which is a letter's 15 pixels on.
   Fixture other;
   other.display.Resize({.width = 160, .height = 200});
   other.Text("hyphen*ation*\n");

@@ -234,12 +234,16 @@ class Element:
         self.first_letter: dict[str, str] = {}
         # What it came to, by name, for whoever works on from it; "display" alone for what is nothing.
         self.came: dict = {}
+        # Where its opening tag and its closing tag began in the document, in bytes.
+        self.at = self.end_at = 0
 
 
 class Styles:
     """What every element of a document comes to, as the lines the tool prints."""
 
-    def __init__(self, sheets: list[bytes], document: bytes, known: list) -> None:
+    def __init__(self, sheets: list[bytes], document: bytes, known: list, entity=None) -> None:
+        # `entity` says what text a reference to an entity the document does not declare is, by its name: "&"
+        # for any, unless it is given.
         # What the rules set for each element, by the second working-out of the cascade, in the elements' order.
         cascade, _ = css_cascade_tool.cascade_lines(sheets, document, known)
         said: list[tuple[dict, dict]] = []
@@ -260,21 +264,29 @@ class Styles:
             nonlocal count
             element = Element(name, attributes)
             element.said, element.first_letter = said[count]
+            element.at = parser.CurrentByteIndex
             count += 1
             (open_elements[-1].children if open_elements else root).append(element)
             if open_elements:
                 open_elements[-1].content.append(element)
             open_elements.append(element)
 
+        def end(_name: str) -> None:
+            open_elements.pop().end_at = parser.CurrentByteIndex
+
         def text(piece: str) -> None:
-            if open_elements:
+            if open_elements and piece:
                 open_elements[-1].content.append(piece)
+
+        def skipped(name: str, is_parameter: bool) -> None:
+            if not is_parameter:
+                text("&" if entity is None else entity(name))
 
         parser = xml.parsers.expat.ParserCreate()
         parser.StartElementHandler = start
-        parser.EndElementHandler = lambda _name: open_elements.pop()
+        parser.EndElementHandler = end
         parser.CharacterDataHandler = text
-        parser.SkippedEntityHandler = lambda _name, is_parameter: None if is_parameter else text("&")
+        parser.SkippedEntityHandler = skipped
         parser.Parse(document, True)
         self.root = root
 

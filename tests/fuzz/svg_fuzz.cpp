@@ -375,10 +375,10 @@ std::vector<std::uint8_t> Spooled(std::string_view file, PictureSize page, unsig
   std::vector<std::uint8_t> picture(size.width * size.height, 255);
   MemorySpool store;
   std::vector<std::uint8_t> buffers(SpoolWriter::BufferBytesFor(bands));
-  std::vector<std::uint16_t> links(SpoolWriter::kMostChunks);
+  std::vector<std::uint8_t> chunkBands(SpoolWriter::kMostChunks);
   SpoolWriter writer;
   BN_FUZZ_CHECK(writer.Begin(static_cast<std::int32_t>(size.width), static_cast<std::int32_t>(size.height),
-                             static_cast<std::int32_t>(rows), buffers, links, store),
+                             static_cast<std::int32_t>(rows), buffers, chunkBands, store),
                 "a picture could not be kept");
   Room room(roomSize);
   SvgRenderer renderer;
@@ -392,7 +392,8 @@ std::vector<std::uint8_t> Spooled(std::string_view file, PictureSize page, unsig
     bytes.remove_prefix(renderer.Step(bytes));
   }
   static_cast<void>(renderer.Finish());
-  BN_FUZZ_CHECK(writer.Finish() == SpoolStatus::kOk, "a recording in memory with links enough did not go right");
+  BN_FUZZ_CHECK(writer.Finish() == SpoolStatus::kOk,
+                "a recording in memory with room for every chunk did not go right");
   std::vector<std::uint8_t> chunk(SpoolWriter::kChunkBytes);
   for (std::size_t band = 0; band < bands; ++band) {
     const std::size_t top = band * rows;

@@ -90,8 +90,16 @@ at the same time, it is read from there a band at a time and written to
 the panel, and nothing is drawn. What the cache does not have is drawn,
 and kept as its bands are written; what it has damaged, or half written
 by a press that gave it up, is drawn and kept again. A drawing whose file
-could not all be read, or a picture not read whole, is not kept. A line
-says what the cache did:
+could not all be read, or a picture not read whole, is not kept.
+
+A row that has been dithered goes to the panel as a bit a pixel and to
+the cache as its levels, and a row of the cache comes back as bits
+(`reader/gray_rows.h`). Most of a page is white, and much of the rest
+black, so each of those takes four or eight pixels at once and passes over
+those that are all white or all black without looking at them one by one;
+what comes out is what looking at each pixel gives.
+
+A line says what the cache did:
 
 ```
 drawing 2 cache: kept, 45 KB in 1 ms

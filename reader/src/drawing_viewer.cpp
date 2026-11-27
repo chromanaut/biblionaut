@@ -12,6 +12,7 @@
 #include "core/trace.h"
 #include "draw/fixed.h"
 #include "log_line.h"
+#include "reader/gray_rows.h"
 #include "reader/trace_ids.h"
 
 namespace bn::reader {
@@ -66,22 +67,6 @@ PanelPixel OnPanel(core::PanelTurn turn, std::size_t pageWidth, std::size_t page
   return {.x = x, .y = y};
 }
 
-// The level of a pixel made one of `top` + 1 levels: its gray is that
-// level's, from 0 for black to 255 for white.
-unsigned LevelOf(std::uint8_t gray, unsigned top) noexcept { return ((gray * top) + 127U) / 255U; }
-
-// Packs the levels of `grays`, each the gray of one of `top` + 1 levels,
-// into `kept` at `bits` bits a pixel, the leftmost in the top bits of the
-// first byte.
-void PackLevels(std::span<const std::uint8_t> grays, unsigned bits, unsigned top,
-                std::span<std::uint8_t> kept) noexcept {
-  std::fill(kept.begin(), kept.end(), std::uint8_t{0});
-  for (std::size_t x = 0; x < grays.size(); ++x) {
-    const std::size_t bit = x * bits;
-    kept[bit / 8] = static_cast<std::uint8_t>(kept[bit / 8] | (LevelOf(grays[x], top) << (8U - bits - (bit % 8))));
-  }
-}
-
 // The level of pixel `x` of a kept row of `bits` bits a pixel.
 unsigned KeptLevel(std::span<const std::uint8_t> kept, std::size_t x, unsigned bits) noexcept {
   const std::size_t bit = x * bits;
@@ -95,23 +80,22 @@ bool HasGray(std::uint8_t byte) noexcept {
   return ((bits ^ (bits >> 1U)) & 0x55U) != 0;
 }
 
-// A row kept in the cache, `width` pixels of `bits` bits, the leftmost in
-// the top bits of the first byte: as a row of a bit a pixel, set where
-// `keep` says yes to the pixel's level.
-template <typename Keep>
-void Unpack(std::span<const std::uint8_t> kept, std::size_t width, unsigned bits, std::span<std::uint8_t> row,
-            Keep keep) noexcept {
-  const unsigned mask = (1U << bits) - 1U;
-  for (std::size_t at = 0; at < (width + 7) / 8; ++at) {
-    const std::size_t first = at * 8;
-    const std::size_t end = std::min(first + 8, width);
-    unsigned byte = 0;
-    for (std::size_t x = first; x < end; ++x) {
-      const std::size_t bit = x * bits;
-      const unsigned level = (static_cast<unsigned>(kept[bit / 8]) >> (8U - bits - (bit % 8))) & mask;
-      byte |= keep(level) ? 0x80U >> (x - first) : 0U;
+// Tells `dark` of each of the first `width` pixels of a row of a bit a
+// pixel whose bit is clear, by its place in the row. Eight white pixels
+// are a byte, and passed over as one.
+template <typename Dark>
+void ForEachDark(std::span<const std::uint8_t> bits, std::size_t width, Dark dark) noexcept {
+  for (std::size_t first = 0; first < width; first += 8) {
+    const unsigned byte = bits[first / 8];
+    if (byte == 0xFF) {
+      continue;
     }
-    row[at] = static_cast<std::uint8_t>(byte);
+    const std::size_t end = std::min(first + 8, width);
+    for (std::size_t x = first; x < end; ++x) {
+      if ((byte & (0x80U >> (x - first))) == 0) {
+        dark(x);
+      }
+    }
   }
 }
 
@@ -901,18 +885,9 @@ bool DrawingViewer::WriteBand() noexcept {
       return false;
     }
     // In black and white, each gray black: a set bit is white, the
-    // leftmost pixel the top bit of the first byte.
-    const std::span<std::uint8_t> out(bits_.get() + (row * rowBytes), rowBytes);
-    std::fill(out.begin(), out.end(), std::uint8_t{0});
-    bool seen = false;
-    for (std::size_t x = 0; x < width; ++x) {
-      if (grays[x] == 255) {
-        out[x / 8] = static_cast<std::uint8_t>(out[x / 8] | (0x80U >> (x % 8)));
-      } else {
-        seen = seen || grays[x] != 0;
-      }
-    }
-    // Only the drawing's own part counts: the page around it is white.
+    // leftmost pixel the top bit of the first byte. Only the drawing's own
+    // part can have a gray: the page around it is white.
+    const bool seen = PackWhite(grays, std::span(bits_.get() + (row * rowBytes), rowBytes));
     graysSeen_ = graysSeen_ || seen;
   }
   const std::uint64_t writing = clock_.NowUs();
@@ -1266,18 +1241,8 @@ void DrawingViewer::TakeRow(std::uint32_t y, std::span<const std::uint8_t> gray)
     // In black and white, each gray black: a set bit is white, the leftmost
     // pixel the top bit of the first byte.
     const std::span<std::uint8_t> bits(rowBits_.get(), (row.size() + 7) / 8);
-    unsigned grays = 0;
-    for (std::size_t at = 0; at < bits.size(); ++at) {
-      const std::size_t first = at * 8;
-      const std::size_t end = std::min(first + 8, row.size());
-      unsigned byte = 0;
-      for (std::size_t x = first; x < end; ++x) {
-        byte |= row[x] == 255 ? 0x80U >> (x - first) : 0U;
-        grays |= row[x] != 0 && row[x] != 255 ? 1U : 0U;
-      }
-      bits[at] = static_cast<std::uint8_t>(byte);
-    }
-    graysSeen_ = graysSeen_ || grays != 0;
+    const bool grays = PackWhite(row, bits);
+    graysSeen_ = graysSeen_ || grays;
     CachePictureRow(row);
     PutRow(top_ + y, bits);
   }
@@ -1388,23 +1353,19 @@ void DrawingViewer::PutRow(std::size_t pageRow, std::span<const std::uint8_t> bi
     // all the same bit of it.
     const auto keep = static_cast<std::uint8_t>(~(0x80U >> (first.x % 8)));
     const bool down = turn == core::PanelTurn::kAnticlockwise;
-    for (std::size_t x = 0; x < shownWidth_; ++x) {
-      if ((bits[x / 8] & (0x80U >> (x % 8))) == 0) {
-        std::uint8_t& byte = strip[down ? first.y + x : first.y - x];
-        byte = static_cast<std::uint8_t>(byte & keep);
-      }
-    }
+    ForEachDark(bits, shownWidth_, [strip, first, keep, down](std::size_t x) {
+      std::uint8_t& byte = strip[down ? first.y + x : first.y - x];
+      byte = static_cast<std::uint8_t>(byte & keep);
+    });
     return;
   }
   const std::span<std::uint8_t> row =
       strip.subspan((first.y - stripWindow_.firstRow) * stripWindow_.bytes, stripWindow_.bytes);
   const bool right = turn == core::PanelTurn::kNone;
-  for (std::size_t x = 0; x < shownWidth_; ++x) {
-    if ((bits[x / 8] & (0x80U >> (x % 8))) == 0) {
-      const std::size_t at = right ? first.x + x : first.x - x;
-      row[at / 8] = static_cast<std::uint8_t>(row[at / 8] & ~(0x80U >> (at % 8)));
-    }
-  }
+  ForEachDark(bits, shownWidth_, [row, first, right](std::size_t x) {
+    const std::size_t at = right ? first.x + x : first.x - x;
+    row[at / 8] = static_cast<std::uint8_t>(row[at / 8] & ~(0x80U >> (at % 8)));
+  });
 }
 
 void DrawingViewer::PutGrayRow(std::size_t pageRow, std::span<const std::uint8_t> kept) noexcept {
@@ -1583,15 +1544,26 @@ bool DrawingViewer::FromCache(std::uint64_t until) noexcept {
       // In black and white, each gray black.
       const unsigned bits = draw::PictureCache::BitsFor(key_.levels);
       const unsigned top = key_.levels - 1U;
+      // The pixels a kept byte holds, and such a byte of white ones.
+      const std::size_t each = bits == 0 ? 0 : 8 / bits;
+      const std::uint8_t white = KeptWhite(bits, top);
       for (std::size_t row = first; row < last; ++row) {
         const std::span<const std::uint8_t> one = kept.subspan((row - first) * keptBytes, keptBytes);
         const std::span<std::uint8_t> out = band.subspan((row - bandTop_) * rowBytes, rowBytes);
-        for (std::size_t x = 0; x < key_.width; ++x) {
-          const unsigned level = KeptLevel(one, x, bits);
-          graysSeen_ = graysSeen_ || (level != 0 && level != top);
-          if (level != top) {
-            const std::size_t at = cacheX_ + x;
-            out[at / 8] = static_cast<std::uint8_t>(out[at / 8] & ~(0x80U >> (at % 8)));
+        // The band is white, and so are most bytes of a kept row, each
+        // passed over as one.
+        for (std::size_t at = 0; at < one.size(); ++at) {
+          if (one[at] == white) {
+            continue;
+          }
+          const std::size_t end = std::min<std::size_t>((at + 1) * each, key_.width);
+          for (std::size_t x = at * each; x < end; ++x) {
+            const unsigned level = KeptLevel(one, x, bits);
+            graysSeen_ = graysSeen_ || (level != 0 && level != top);
+            if (level != top) {
+              const std::size_t place = cacheX_ + x;
+              out[place / 8] = static_cast<std::uint8_t>(out[place / 8] & ~(0x80U >> (place % 8)));
+            }
           }
         }
       }
@@ -1643,11 +1615,7 @@ bool DrawingViewer::PictureFromCache(std::uint64_t until) noexcept {
     const unsigned top = key_.levels - 1U;
     const std::span<std::uint8_t> white(rowBits_.get(), (key_.width + 7) / 8);
     for (std::size_t row = 0; row < rows; ++row) {
-      bool grays = false;
-      Unpack(kept.subspan(row * keptBytes, keptBytes), key_.width, bits, white, [&grays, top](unsigned level) {
-        grays = grays || (level != 0 && level != top);
-        return level == top;
-      });
+      const bool grays = UnpackWhite(kept.subspan(row * keptBytes, keptBytes), key_.width, bits, top, white);
       graysSeen_ = graysSeen_ || grays;
       PutRow(top_ + bandTop_ + row, white);
     }

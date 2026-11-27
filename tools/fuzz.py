@@ -84,6 +84,7 @@ TARGETS = {
     "region_heap": 3072,
     "hyphenator": 4096,
     "paragraph": 4096,
+    "face_measure": 512,
     "svg_tags": 4096,
     "svg_sheet": 4096,
     "svg_values": 256,

@@ -28,12 +28,17 @@ however the lines fall:
     faces it holds of the image, which it reads a face at a time as a
     device does: the one face text is set in, mapped in whole pages;
   - with BN_TEXT_TOUR it goes through both sizes in both faces by itself,
-    and says when it is done; and an image that cannot be read is said.
+    and says when it is done; and an image that cannot be read is said;
+  - in an image of a font that joins letters, Noto Sans, which the build
+    downloads as well, a page of words with f's in them has as many glyphs
+    as the words come to when their letters are joined here, by the list
+    `bn-font info --ligatures` gives for the image, and that is fewer than
+    they have letters.
 
 The presses are timed by the clock, not by the application's turns, and a
 run that has not shown everything in time is run again with more.
 
-usage: text_viewer.py APP BN_FONT BN_TRACE FONT_DIR WORK_DIR
+usage: text_viewer.py APP BN_FONT BN_TRACE FONT_DIR NOTO_DIR WORK_DIR
 """
 
 from __future__ import annotations
@@ -76,6 +81,21 @@ By nine the road lay still and the lantern burned on, as it had every night for 
 
 The first frost of the year settled on the roofs before light, and in the kitchen the fire had to be laid afresh. Outside, a single track of prints led across the yard to the stable door and did not return. The horses breathed in the dark, and the girl stood listening, a basket on one hip, until the cold put an end to that and the door shut.
 """
+
+
+# Words a font joins letters of, each paragraph a line too short to be
+# broken.
+JOINED_TEXT = """office
+
+waffle fish
+
+fi fl ff ffi ffl
+
+a stiff offer
+
+difficult fjord
+"""
+LIGATURE = re.compile(r"^  ((?:U\+[0-9A-F]{4,6} ?){2,3}): glyph \d+, advance \d+$")
 
 
 def run(command: list, **more) -> subprocess.CompletedProcess:
@@ -142,6 +162,63 @@ def log_lines(bn_trace: str, capture: Path) -> list[str]:
             if " log  text: " in line]
 
 
+def glyphs_joined(word: str, ligatures: list[str]) -> int:
+    """How many glyphs a word is drawn with. `ligatures` is what `bn-font info --ligatures` says a face makes of
+    every three of some characters and of every two: at each place, three letters it joins are one glyph, and
+    otherwise two that it joins."""
+    longest_first = sorted(ligatures, key=len, reverse=True)
+    count, at = 0, 0
+    while at < len(word):
+        at += next((len(letters) for letters in longest_first if word.startswith(letters, at)), 1)
+        count += 1
+    return count
+
+
+def check_joined(app: str, bn_font: str, bn_trace: str, noto: Path, work: Path) -> tuple[int, int]:
+    """A page of JOINED_TEXT in Noto Sans: how many letters it has, and how many glyphs the viewer placed."""
+    card = work / "joined-card"
+    (card / "layout").mkdir(parents=True)
+    (card / "layout" / "paragraphs.txt").write_text(JOINED_TEXT)
+    preset = work / "noto.preset"
+    preset.write_text(f"sizes 30\nsans regular {noto / 'NotoSans-Regular.ttf'}\ncharacters U+0020-U+007E\n")
+    image = work / "noto.bnfn"
+    done = run([bn_font, "build", preset, "--out", image])
+    expect(done.returncode == 0, f"bn-font build of Noto Sans ended with {done.returncode}: {done.stderr!r}")
+    done = run([bn_font, "info", image, "--ligatures", "U+0066", "U+0069", "U+006A", "U+006C"])
+    expect(done.returncode == 0, f"bn-font info --ligatures ended with {done.returncode}: {done.stderr!r}")
+    ligatures = []
+    for line in done.stdout.decode("utf-8").splitlines():
+        match = LIGATURE.match(line)
+        if match:
+            ligatures.append("".join(chr(int(code[2:], 16)) for code in match.group(1).split()))
+    expect("fi" in ligatures and "ff" in ligatures, f"the ligatures of the image of Noto Sans: {ligatures}")
+    words = JOINED_TEXT.split()
+    letters = sum(len(word) for word in words)
+    wanted = sum(glyphs_joined(word, ligatures) for word in words)
+    expect(wanted < letters - 8, f"{wanted} glyphs for {letters} letters: the words here were to be joined")
+    lines: list[str] = []
+    for seconds in (5, 10, 20):
+        environment = {**os.environ, "BN_STORAGE": str(card), "BN_TEXT": str(image),
+                       "BN_SERIAL_OUT": str(work / "joined.bin")}
+        environment.pop("BN_DISPLAY_OUT", None)
+        environment.pop("BN_INPUT", None)
+        done = run([app, "--run-ms", str(seconds * 1000)], env=environment)
+        expect(done.returncode == 0, f"the application ended with {done.returncode}: {done.stderr!r}")
+        lines = [line for line in log_lines(bn_trace, work / "joined.bin") if line.startswith("text: page ")]
+        if lines:
+            break
+    expect(len(lines) == 1, f"the page of joined letters: {lines}")
+    match = LINE.match(lines[0])
+    expect(match is not None and match.group(6) is not None, f"a line of the viewer's: {lines[0]!r}")
+    expect((match.group(2), int(match.group(3)), int(match.group(4))) == ("sans", 30, len(JOINED_TEXT.split("\n\n"))),
+           f"the page of joined letters: {lines[0]!r}")
+    placed = int(match.group(5))
+    expect(placed == wanted,
+           f"the viewer placed {placed} glyphs for words of {letters} letters that the image's ligatures "
+           f"({', '.join(ligatures)}) make {wanted} of")
+    return letters, placed
+
+
 LINE = re.compile(r"^text: page (\d+), (serif|sans) (\d+) px, (\d+) lines?, (\d+) glyphs?: set \d+ ms, planes \d+ ms, "
                   r"refresh \d+ ms, gray planes \d+ ms, gray pass \d+ ms(; the end of the text)?$")
 # What the viewer says when the faces text is set in change.
@@ -151,11 +228,11 @@ PAGE_KB = 64
 
 
 def main() -> int:
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 7:
         print(__doc__, file=sys.stderr)
         return 2
     app, bn_font, bn_trace = sys.argv[1:4]
-    fonts, work = Path(sys.argv[4]).resolve(), Path(sys.argv[5]).resolve()
+    fonts, noto, work = (Path(argument).resolve() for argument in sys.argv[4:7])
     shutil.rmtree(work, ignore_errors=True)
     (work / "card" / "layout").mkdir(parents=True)
     (work / "card" / "layout" / "paragraphs.txt").write_text(TEXT)
@@ -310,11 +387,14 @@ def main() -> int:
         done = run([app, "--run-ms", "100"], env=environment)
         expect(done.returncode == 2 and b"BN_TEXT: cannot read" in done.stderr,
                f"an image that is not there: {done.returncode}, {done.stderr!r}")
+
+        joined_letters, joined_glyphs = check_joined(app, bn_font, bn_trace, noto, work)
     except Failure as failure:
         print(f"FAILED: {failure}", file=sys.stderr)
         return 1
     print(f"{shown} pages shown, each in black and white and then in grays: {len(letters)} letters and {hyphens} hyphens "
-          f"on two pages, their ink {total} as bn-font has it for each glyph")
+          f"on two pages, their ink {total} as bn-font has it for each glyph; and in a font that joins letters, "
+          f"{joined_letters} letters as {joined_glyphs} glyphs")
     return 0
 
 

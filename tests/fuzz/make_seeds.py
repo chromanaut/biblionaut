@@ -2258,6 +2258,58 @@ def paragraph_seeds() -> None:
     write("paragraph", "nothing", b"")
 
 
+# ---- face_measure: byte 0 (the style, the fallback face), then text with a byte of 0 at each cut ----
+
+
+def face_measure_seeds() -> None:
+    clear("face_measure")
+
+    def seed(name: str, written: bytes, *, style: int = 0, fallback: bool = True) -> None:
+        """`style` is which of the target's four styles the text is in."""
+        write("face_measure", name, bytes([style | (0 if fallback else 4)]) + written)
+
+    seed("a-word", b"hyphenation")
+    seed("a-word-cut-in-pieces", b"hy\0phen\0ation")
+    # Letters the serif joins: two f's and an i, an f and an i, two f's, an
+    # f and an l.
+    seed("letters-joined", b"office\0waffle\0fish\0offline\0fffi")
+    seed("cut-inside-a-ligature", b"of\0fice")
+    seed("cut-twice-inside-a-ligature", b"of\0f\0ice")
+    seed("cut-after-two-letters-of-three", b"off\0ice")
+    seed("glyphs-that-fall-in-a-letter-later", b"of\0fline")
+    # Letters whose glyphs after a cut never fall in with the whole's: the
+    # serif joins an a and a b, and a b and an a.
+    seed("glyphs-that-never-fall-in", b"a\0" + b"ba" * 20)
+    seed("glyphs-that-fall-in-at-the-end", b"a\0baba")
+    seed("nothing-but-f", b"f\0" + b"f" * 29)
+    seed("nine-f", b"f\0ffffffff")
+    seed("ten-f", b"f\0fffffffff")
+    seed("letters-before-a-cut-that-is-given-up", b"of\0" + b"f" * 29)
+    # A ligature narrower than its last letter, so that the text before a
+    # later cut comes to less than the text before an earlier one; and one
+    # wider than its letters with a hyphen between them.
+    seed("a-ligature-narrower-than-its-last-letter", b"x\0a\0b\0x")
+    seed("a-ligature-wider-than-its-letters-and-a-hyphen", b"b\0a\0b\0ab")
+    seed("three-a-and-fewer", b"aa\0aa\0a\0aaa\0ab\0a")
+    seed("kerned", b"kz\0k\0zk\0q\0u\0kk\0k")
+    seed("kerned-with-the-hyphen", b"af\0b\0f\0ab\0c")
+    seed("a-ligature-kerned", b"c\0fi\0c\0f\0ic")
+    seed("italic", b"of\0f\0ice\0kz\0k\0f", style=1)
+    seed("a-style-with-no-face", b"of\0fice", style=2)
+    seed("a-style-past-the-last", b"of\0fice", style=3)
+    seed("from-the-fallback", "αγ\0δε\0f\0δ\0ε\0a".encode())
+    seed("without-the-fallback", "αγ\0δ\0ε".encode(), fallback=False)
+    seed("from-the-fallback-in-italic", "fi\0δ\0εf\0i".encode(), style=1)
+    seed("not-drawn", "f\u00ad\0i\0f\u200bf\0\u00ad\0\u200b\0f\u00ad".encode())
+    seed("the-ligatures-own-characters", "\ufb01\0c\0c\0\ufb01\ufb02\0f".encode())
+    seed("not-utf-8", b"f\xff\0i\0\xc3\0\xa9\0\xe2\x80\0of\xf0\0fice\xed\xa0\x80")
+    seed("cut-inside-a-character", b"\xc3\0\xa9ffi\xe2\0\x80\0\x8bf")
+    seed("a-cut-after-every-letter", b"\0".join(bytes([letter]) for letter in b"offafficabababaaaakzkfi" * 3))
+    seed("a-long-stretch", b"office" * 60)
+    seed("only-cuts", b"\0\0\0")
+    write("face_measure", "nothing", b"")
+
+
 # ---- png: bytes 0 and 1 (how the file is given and how its data is cut up), then a PNG file ----
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -3249,6 +3301,7 @@ def main() -> None:
     svg_path_seeds()
     svg_seeds()
     paragraph_seeds()
+    face_measure_seeds()
     png_seeds()
     jpeg_seeds()
     scale_seeds()

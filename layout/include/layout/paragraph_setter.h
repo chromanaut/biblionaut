@@ -86,19 +86,25 @@ class TextMeasure {
   // in that style. `ends` is where the stretch is cut into pieces: how many
   // bytes of it come before the end of each piece, in order, the last being
   // all of it. `widths`, which is as long as `ends`, is to be given the
-  // width of each piece.
+  // width of each piece, and `hyphens`, as long again, what a hyphen shown
+  // after each comes to.
   //
-  // The widths of pieces that are put on one line are added up, so a piece's
-  // width is what it adds to the line when the pieces before it are there:
-  // a measure that rounds, or that moves two letters together, does so here.
-  // Every cut comes before the first byte of a character, if the text is
-  // UTF-8.
+  // The widths of pieces that are put on one line are added up. A stretch
+  // need not be as wide in two parts on two lines as it is whole: a measure
+  // may move two letters together, or draw two as one glyph, and can do
+  // neither with a line's end between them. So the widths are to be those
+  // of the text on from a cut: the pieces from any one to the last add up to
+  // how wide the stretch is from that piece on, set by itself, which from
+  // the first piece is all of it. And a piece's number in `hyphens` is what
+  // a line that ends after the piece with a hyphen shown is wider by than
+  // the widths of the pieces on it: the hyphen, and whatever the text before
+  // the cut gains or loses by being set with a hyphen after it and not with
+  // the text that follows. Every cut comes before the first byte of a
+  // character, if the text is UTF-8.
   virtual void Measure(std::string_view text, std::uint16_t style, std::span<const std::uint8_t> ends,
-                       std::span<std::uint16_t> widths) noexcept = 0;
-  // How wide a space between two words is, and the hyphen that is shown
-  // where a line ends inside a word.
+                       std::span<std::uint16_t> widths, std::span<std::uint16_t> hyphens) noexcept = 0;
+  // How wide a space between two words is.
   virtual std::uint16_t SpaceWidth(std::uint16_t style) noexcept = 0;
-  virtual std::uint16_t HyphenWidth(std::uint16_t style) noexcept = 0;
 
  protected:
   ~TextMeasure() = default;  // Never destroyed through the interface.
@@ -116,7 +122,8 @@ struct TextLine {
   std::uint32_t begin = 0;
   std::uint32_t end = 0;
   // How wide what is on the line is, as the measure has it: its words, the
-  // spaces between them, and the hyphen if one is to be shown.
+  // spaces between them, and the hyphen if one is to be shown, as wide as
+  // the measure said a hyphen there is.
   std::uint32_t width = 0;
   // Which line of the paragraph: 0 for the first.
   std::uint32_t number = 0;
@@ -300,6 +307,7 @@ class ParagraphSetter final : private LineSink {
     std::uint8_t end = 0;
     After after = After::kNothing;
     std::uint16_t width = 0;
+    std::uint16_t hyphen = 0;  // What a hyphen shown after it comes to.
   };
 
   void OnLine(const Line& line) noexcept override;
@@ -339,7 +347,9 @@ class ParagraphSetter final : private LineSink {
 
   void GiveBox(std::uint16_t width, std::uint32_t at, std::uint32_t endAt) noexcept;
   void GiveSpace() noexcept;
-  void GiveBreak(After after, std::uint16_t style, std::uint32_t at) noexcept;
+  // `hyphen` is what a hyphen shown there comes to, for a place that shows
+  // one.
+  void GiveBreak(After after, std::uint16_t hyphen, std::uint32_t at) noexcept;
   void GiveLineEnd(std::uint32_t at) noexcept;
   void Remember(Kind kind, std::uint32_t at) noexcept;
   std::uint32_t PlaceOf(std::uint32_t item) const noexcept;

@@ -403,6 +403,7 @@ void ParagraphSetter::PreparePieces() noexcept {
       piece.end = static_cast<std::uint8_t>(end);
       piece.after = after;
       piece.width = 0;
+      piece.hyphen = 0;
       ++pieceCount_;
     } else if (pieceCount_ != 0 && pieces_[pieceCount_ - 1].after == After::kNothing) {
       // A mark straight after a change of style: it follows the piece
@@ -430,6 +431,7 @@ void ParagraphSetter::PreparePieces() noexcept {
 void ParagraphSetter::MeasurePieces(std::size_t first, std::size_t end) noexcept {
   std::array<std::uint8_t, kMaxPieces> ends{};
   std::array<std::uint16_t, kMaxPieces> widths{};
+  std::array<std::uint16_t, kMaxPieces> hyphens{};
   const std::size_t count = end - first;
   const std::size_t base = pieces_[first].begin;
   for (std::size_t i = 0; i < count; ++i) {
@@ -438,9 +440,10 @@ void ParagraphSetter::MeasurePieces(std::size_t first, std::size_t end) noexcept
   const std::string_view text = Part({word_.data(), wordSize_}, base, pieces_[end - 1].end);
   work_ += static_cast<std::uint32_t>(text.size());
   measure_->Measure(text, StyleAt(base), std::span<const std::uint8_t>(ends).first(count),
-                    std::span<std::uint16_t>(widths).first(count));
+                    std::span<std::uint16_t>(widths).first(count), std::span<std::uint16_t>(hyphens).first(count));
   for (std::size_t i = 0; i < count; ++i) {
     pieces_[first + i].width = widths[i];
+    pieces_[first + i].hyphen = hyphens[i];
   }
 }
 
@@ -467,7 +470,7 @@ void ParagraphSetter::FeedWord() noexcept {
         if (!Ready()) {
           return;
         }
-        GiveBreak(piece.after, StyleAt(piece.end - 1U), wordAt_ + piece.end);
+        GiveBreak(piece.after, piece.hyphen, wordAt_ + piece.end);
       }
       const bool gave = piece.after != After::kNothing;
       pieceBoxed_ = false;
@@ -525,8 +528,9 @@ void ParagraphSetter::FeedCharacterOf(Piece& piece, std::uint32_t room) noexcept
   }
   const std::array<std::uint8_t, 1> ends = {static_cast<std::uint8_t>(to - piece.begin)};
   std::array<std::uint16_t, 1> widths{};
+  std::array<std::uint16_t, 1> hyphens{};  // No hyphen is shown between characters.
   work_ += static_cast<std::uint32_t>(2 * (to - piece.begin));
-  measure_->Measure(Part(word, piece.begin, to), StyleAt(piece.begin), ends, widths);
+  measure_->Measure(Part(word, piece.begin, to), StyleAt(piece.begin), ends, widths, hyphens);
 
   const std::uint32_t begins = wordAt_ + piece.begin;
   if (run_ != 0 && widths[0] > room) {
@@ -616,20 +620,16 @@ void ParagraphSetter::GiveSpace() noexcept {
   afterBox_ = false;
 }
 
-void ParagraphSetter::GiveBreak(After after, std::uint16_t style, std::uint32_t at) noexcept {
+void ParagraphSetter::GiveBreak(After after, std::uint16_t hyphen, std::uint32_t at) noexcept {
   // A place to end a line that no box comes before is none.
   if (!afterBox_) {
     return;
   }
-  std::uint16_t hyphen = 0;
-  if (after == After::kHyphen) {
-    hyphen = measure_->HyphenWidth(style);
-    if (run_ + hyphen > narrowest_) {
-      // With the hyphen after it, what has come since the latest place is
-      // too wide for the narrowest line. A line may end here without one,
-      // if it must.
-      after = After::kLastResort;
-    }
+  if (after == After::kHyphen && run_ + hyphen > narrowest_) {
+    // With the hyphen after it, what has come since the latest place is
+    // too wide for the narrowest line. A line may end here without one, if
+    // it must.
+    after = After::kLastResort;
   }
   switch (after) {
     case After::kNothing:

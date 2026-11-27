@@ -32,8 +32,8 @@ TEST(MadeUpFace, MakesEachStyleFourWiderThanTheOneBefore) {
   MadeUpFace face;
   EXPECT_EQ(face.SpaceWidth(0), 18);
   EXPECT_EQ(face.SpaceWidth(2), 26);
-  EXPECT_EQ(face.HyphenWidth(0), 22);
-  EXPECT_EQ(face.HyphenWidth(1), 26);
+  EXPECT_EQ(MadeUpFace::HyphenWidth(0), 22);
+  EXPECT_EQ(MadeUpFace::HyphenWidth(1), 26);
 }
 
 TEST(MadeUpFace, MeasuresEachPieceOfAWordAndCountsTheBytes) {
@@ -41,15 +41,20 @@ TEST(MadeUpFace, MeasuresEachPieceOfAWordAndCountsTheBytes) {
   // "hyph" "en" "ation": 4 + 2 + 5 bytes.
   const std::array<std::uint8_t, 3> ends = {4, 6, 11};
   std::array<std::uint16_t, 3> widths{};
-  face.Measure("hyphenation", 0, ends, widths);
+  std::array<std::uint16_t, 3> hyphens{};
+  face.Measure("hyphenation", 0, ends, widths, hyphens);
   EXPECT_EQ(widths, (std::array<std::uint16_t, 3>{36 + 36 + 36 + 36, 36 + 36, 36 + 18 + 18 + 36 + 36}));
+  // A hyphen is as wide after any piece.
+  EXPECT_EQ(hyphens, (std::array<std::uint16_t, 3>{22, 22, 22}));
   EXPECT_EQ(face.BytesMeasured(), 11U);
 
   // A character of two bytes is one width, in the piece it begins.
   const std::array<std::uint8_t, 2> accented = {3, 4};
   std::array<std::uint16_t, 2> two{};
-  face.Measure("\x63\xC3\xA9s", 1, accented, two);
+  std::array<std::uint16_t, 2> twoHyphens{};
+  face.Measure("\x63\xC3\xA9s", 1, accented, two, twoHyphens);
   EXPECT_EQ(two, (std::array<std::uint16_t, 2>{40 + 44, 40}));
+  EXPECT_EQ(twoHyphens, (std::array<std::uint16_t, 2>{26, 26}));
   EXPECT_EQ(face.BytesMeasured(), 15U);
 }
 

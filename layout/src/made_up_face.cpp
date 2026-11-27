@@ -27,7 +27,8 @@ std::uint16_t MadeUpFace::CharacterWidth(char first, std::uint16_t style) noexce
 }
 
 void MadeUpFace::Measure(std::string_view text, std::uint16_t style, std::span<const std::uint8_t> ends,
-                         std::span<std::uint16_t> widths) noexcept {
+                         std::span<std::uint16_t> widths, std::span<std::uint16_t> hyphens) noexcept {
+  std::fill(hyphens.begin(), hyphens.end(), HyphenWidth(style));
   bytesMeasured_ += text.size();
   std::size_t from = 0;
   const std::size_t count = std::min(ends.size(), widths.size());

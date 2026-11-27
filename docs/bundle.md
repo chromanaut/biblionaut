@@ -9,8 +9,9 @@ own bytes are a run of bytes, a *segment*, of which a record says where it
 is; what they are is in [A chapter's bytes](segment.md).
 `epub/book_bundle.h` makes a book's bundle from its EPUB, with every
 chapter not imported ([A bundle made from a book](#a-bundle-made-from-a-book),
-below). Nothing imports a chapter from a book yet, and nothing reads a
-bundle to show it.
+below). A chapter is imported from a book by `epub/chapter_import.h`
+([Importing a chapter](chapter-import.md)). Nothing reads a bundle to show
+it yet.
 
 ```
 0          the header page                4,096 bytes
@@ -191,8 +192,8 @@ each state, and whether each table is what its checksum says:
 
 ```
 format: 1
-text rules: 0
-importer: 0
+text rules: 1
+importer: 1
 made by: bn-bundle
 epub: 2562 bytes, written 1795000000, directory cca5fb72
 package: 0b438ebd

@@ -19,8 +19,11 @@
 //
 // The text is UTF-8, given in runs, each in a style: a number that means
 // something to whoever measures text and nothing here. A word may change
-// style part way through. Places in the text are counted in bytes from the
-// start of the paragraph, over all its runs.
+// style part way through. A character is in one style, the one its first
+// byte came in: where a run ends part way through a character, the bytes
+// that go on with it are taken in that style, whatever the next run's is.
+// Places in the text are counted in bytes from the start of the paragraph,
+// over all its runs.
 //
 // How wide text is, is asked of a TextMeasure, in whatever unit the lines'
 // widths are given in. Nothing here knows of fonts or pixels.
@@ -398,6 +401,9 @@ class ParagraphSetter final : private LineSink {
   std::array<std::uint8_t, kMaxStyles> styleFrom_{};
   std::array<std::uint16_t, kMaxStyles> styles_{};
   std::size_t styleCount_ = 0;
+  // The style the last byte of a word was taken in, which a byte that goes
+  // on with its character is taken in too.
+  std::uint16_t styleBefore_ = 0;
   // Where the hyphenator would break it, as bytes before each break.
   std::array<std::uint8_t, Hyphenator::kMaxLetters> breaks_{};
   std::size_t breakCount_ = 0;

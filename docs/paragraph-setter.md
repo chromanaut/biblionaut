@@ -14,6 +14,11 @@ that the caller provides, in whatever unit the lines' widths are in.
 - **Words** are everything else, a no-break space among it. A word may
   change style part way through and is one word still: the hyphenator is
   asked about the whole of it, and each part is measured in its own style.
+  A character is in the style its first byte came in: if a run ends part
+  way through a character, the bytes that go on with it are taken in that
+  style. So a word changes style only where a character begins; and a word
+  in more than eight styles, which is taken in parts as a run too long for
+  a word is, is cut only there.
 - **Where a line may end inside a word**: where the hyphenator says, at a
   price the caller sets, with a hyphen shown. At a soft hyphen, the same
   way; and a word that has one is broken at those and nowhere the
@@ -45,7 +50,7 @@ that the caller provides, in whatever unit the lines' widths are in.
   for each item that is not yet on a line given out: 768 of them (3 KB) go
   with 256 nodes. When the records run out, lines are given out early. The
   setter itself is about 1 KB, most of it the word it has in hand.
-- **Flash**: 5.5 KB, as compiled for the device.
+- **Flash**: 5.6 KB, as compiled for the device.
 - **One call's work**: a paragraph takes many calls, and a call need not
   take all the text it is offered. Each looks at no more than a word's
   worth of bytes (255), asks the hyphenator about one word at the most,

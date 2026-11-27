@@ -645,6 +645,94 @@ TEST(ParagraphSetter, TakesAWordInMoreStylesThanItHoldsAtOnceInParts) {
   EXPECT_EQ(set.wordsAsked, 0U);
 }
 
+TEST(ParagraphSetter, KeepsACharacterInTheStyleItsFirstByteCameIn) {
+  // An e with an accent whose second byte comes in a run of style 3, in
+  // which everything is 15 wider; then a soft hyphen and two letters in
+  // style 0. The hyphen shown after the e is in the e's style, which is
+  // the style of its first byte: 10 wide and not 25, so the line of 30 holds
+  // it.
+  TestMeasure measure = Tens();
+  measure.widerByStyle = 5;
+  const Runs runs = {{.text = "x\xC3", .style = 0},
+                     {.text = "\xA9", .style = 3},
+                     {.text = std::string(kSoftHyphen) + "yy", .style = 0}};
+  const Set set = SetRuns(runs, measure, {.width = 30});
+
+  EXPECT_EQ(set.shown, (Shown{"x\xC3\xA9-", "yy"}));
+  ASSERT_EQ(set.lines.size(), 2U);
+  EXPECT_EQ(set.lines[0].width, 30U);
+  EXPECT_FALSE(set.lines[0].overfull);
+  EXPECT_FALSE(measure.cutInsideACharacter);
+
+  // And the same a byte at a time.
+  TestMeasure again = Tens();
+  again.widerByStyle = 5;
+  const Set slowly = SetRuns(runs, again, {.width = 30, .atATime = 1});
+  EXPECT_EQ(slowly.shown, set.shown);
+  EXPECT_FALSE(again.cutInsideACharacter);
+}
+
+TEST(ParagraphSetter, GivesAByteThatGoesOnWithNothingTheStyleItComesIn) {
+  // After a space, a byte that would go on with a character begins a word
+  // with no character before it to go on with: it is in the style it was
+  // given in, 0, and not that of the word before, in which everything is 15
+  // wider. So the hyphen shown after it is 10 wide, and the line of 85 holds
+  // two letters and a space of 25 each, and it.
+  TestMeasure measure = Tens();
+  measure.widerByStyle = 5;
+  const Runs runs = {{.text = "ab ", .style = 3}, {.text = "\xA9" + std::string(kSoftHyphen) + "yy", .style = 0}};
+  const Set set = SetRuns(runs, measure, {.width = 85});
+
+  EXPECT_EQ(set.shown, (Shown{"ab \xA9-", "yy"}));
+  ASSERT_EQ(set.lines.size(), 2U);
+  EXPECT_EQ(set.lines[0].width, 85U);
+}
+
+TEST(ParagraphSetter, CutsAWordInTooManyStylesOnlyWhereACharacterBegins) {
+  // Seven styles of "ab", and then a soft hyphen whose first byte comes in
+  // an eighth style and whose second in a ninth, where a word can hold no
+  // more. The soft hyphen is all in the eighth, and the word is cut after
+  // it, where the next "ab" brings the ninth: it is not cut in two, to be
+  // measured as a character.
+  TestMeasure measure = Tens();
+  measure.widerByStyle = 1;
+  Runs runs;
+  for (std::uint16_t style = 0; style < 7; ++style) {
+    runs.push_back({.text = "ab", .style = style});
+  }
+  runs.push_back({.text = "\xC2", .style = 7});
+  runs.push_back({.text = "\xAD", .style = 8});
+  runs.push_back({.text = "ab", .style = 9});
+  const Set set = SetRuns(runs, measure, {.width = 400});
+
+  EXPECT_EQ(set.shown, (Shown{"abababababababab"}));
+  ASSERT_EQ(set.lines.size(), 1U);
+  // Two characters in each of styles 0 to 6, and two in style 9.
+  EXPECT_EQ(set.lines[0].width, 182U + 38U);
+  EXPECT_FALSE(measure.cutInsideACharacter);
+  EXPECT_FALSE(measure.measuredAMark);
+  EXPECT_FALSE(measure.badPieces);
+}
+
+TEST(ParagraphSetter, KeepsABytesStyleAcrossACutOfARunTooLongForAWord) {
+  // 252 letters, and then four bytes that each go on with a character and
+  // begin none, given in style 1: the fourth is past what a word holds, and
+  // begins the next part of the run. It is in the letters' style still, as
+  // the three before it are, and so is the hyphen shown after it at the
+  // soft hyphen: 10 wide and not 15, which the line has just room for.
+  TestMeasure measure = Tens();
+  measure.widerByStyle = 5;
+  const Runs runs = {{.text = std::string(ParagraphSetter::kMaxWordBytes, 'x'), .style = 0},
+                     {.text = "\x80\x80\x80\x80" + std::string(kSoftHyphen) + "yy", .style = 1}};
+  const Set set = SetRuns(runs, measure, {.width = 2530});
+
+  ASSERT_EQ(set.lines.size(), 2U);
+  EXPECT_TRUE(set.lines[0].hyphen);
+  EXPECT_EQ(set.lines[0].width, 2530U);
+  EXPECT_EQ(set.lines[0].end, ParagraphSetter::kMaxWordBytes + 4);
+  EXPECT_EQ(set.lines[1].width, 30U);
+}
+
 TEST(ParagraphSetter, EndsALineWithoutAHyphenWhereThereIsNoRoomForOne) {
   // "aaa-" is wider than the line, and "aaa" is not: sooner than have the
   // line too wide, the word is broken there with no hyphen shown.

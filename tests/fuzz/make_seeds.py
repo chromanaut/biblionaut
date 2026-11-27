@@ -2221,6 +2221,22 @@ def paragraph_seeds() -> None:
         face=2,
     )
     seed("a-word-in-many-styles", 3, b"".join(bytes([1 + n % 7]) + b"ab" for n in range(60)) + b" and on", face=2)
+    # Characters whose bytes are given in two styles, a soft hyphen among
+    # them: each is in the style of its first byte. The second seed has a
+    # word in which the second byte of a soft hyphen would be a ninth style.
+    seed(
+        "characters-in-two-styles",
+        3,
+        b"a caf\xc3\x03\xa9 r\x01\xc3\x04\xa9sum\xc3\x02\xa9, the lamp\xc2\x05\xadlighter\xe2\x06\x80\x8b "
+        b"na\xc3\x07\xafve",
+        face=2,
+    )
+    seed(
+        "a-soft-hyphen-in-a-words-eighth-style-and-a-ninth",
+        4,
+        b"a\x01b\x02a\x03b\x04a\x05b\x06a\x07\xc2\x01\xad\x03ab\x04ab and on",
+        face=2,
+    )
     seed("line-ends", 4, b"The lamp was lit\nbefore anyone  \n  had asked\n\nfor it,\x00and the har\x00bour went\n", cost=1)
 
     # Places a line may end that are written in the text: hyphens and

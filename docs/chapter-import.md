@@ -59,6 +59,15 @@ language is the book's own where its tag is the one the caller gives as
 the book's, in letters of either case; any other is one of the chapter's
 languages, which are numbered in the order text in them is first written.
 
+A style item says of each bit that is set whether a sheet of the book set
+it, and of a bit that is not set it says nothing. So what a sheet says
+text is not (`font-weight: normal`, `font-style: normal`) is not kept.
+Where a sheet says that of every paragraph, which changes nothing, each
+block would otherwise begin with a style item that set its text as it was
+set already. What it costs: text that an element made bold and the book
+made plain, a heading's among it, is plain text in the chapter, and
+nothing says that it was the book that made it so.
+
 ## Ids
 
 An `id` of any element, and the `name` of an `a` that has no `id`, is an

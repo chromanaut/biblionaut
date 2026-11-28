@@ -36,8 +36,9 @@
 //   - text is whole characters of UTF-8, with no byte below a space but a
 //     tab, a line feed and a return;
 //   - a style item is followed by text, says something other than the one
-//     before it did (the first, than plain text), and names bits, a family
-//     and a language that there are;
+//     before it did (the first, than plain text), names bits, a family
+//     and a language that there are, and calls no bit the book's that is
+//     not set;
 //   - a picture is one the book does not have, in a line, with text of no
 //     more than kSegmentMostName bytes standing for it;
 //   - a block that says its first characters are a dropped capital has

@@ -99,6 +99,8 @@ class Chapter:
         self.styles = self.blocks.styles
         self.own = css_tool.lower(css_cascade_tool.bytes_as_text(language.decode("utf-8")))
         self.held_left_out = self.ids_left_out = self.dropped = self.characters = 0
+        # How many times text was set of which the book said what it is not.
+        self.said_not = 0
 
         # Everything of the document in its order, what is nothing among it for its ids and its tags.
         self.events: list[tuple] = []
@@ -230,7 +232,10 @@ class Chapter:
         language = text.language
         if language and css_tool.lower(self.styles.languages[language - 1]) == self.own:
             language = 0
-        return (sum(1 << BITS.index(bit) for bit in text.bits), sum(1 << BITS.index(bit) for bit in text.from_book),
+        # A bit is the book's only where it is set: of what the book said text is not, nothing is kept.
+        self.said_not += 1 if set(text.from_book) - set(text.bits) else 0
+        return (sum(1 << BITS.index(bit) for bit in text.bits),
+                sum(1 << BITS.index(bit) for bit in text.from_book if bit in text.bits),
                 FAMILIES.index(text.family), text.family_from_book, language,
                 min(65535, (text.size * 1000 + size // 2) // size) if size else 1000)
 
@@ -448,6 +453,7 @@ SHEET = b"""p { margin: 0; text-indent: 1em } .first::first-letter { float: left
 .raised::first-letter { font-size: 2em; font-style: italic } .drop { float: left; font-size: 3em }
 .gone { display: none } .inl { display: inline } .sc { font-variant: small-caps } .big { font-size: 1.5em }
 code { font-family: monospace } h2 { font-size: 2em } .u { text-decoration: underline }
+.not { font-weight: normal; font-style: normal; font-variant: normal } .level { vertical-align: baseline }
 """
 
 LONG_ID = "i" * 255
@@ -511,6 +517,8 @@ and&#32;a numbered space is, a&#13;return &#13;&#13; and&#9;a tab.</p><p>&nbsp;<
 <p>Plain, <b>bold, <i>bold italic,</i></b> <span class="sc">small capitals</span>, x<sup>2</sup>, H<sub>2</sub>O,
 <span class="big">bigger</span>, <code>code</code>, <span class="u">under<b>lined</b></span>.</p>
 <h2 class="big">A <small>heading</small></h2>
+<p class="not">What a sheet says text is not: <b class="not">bold</b>, <i class="not">italic</i>,
+x<sup class="level">2</sup>, <b>and bold all the same</b>.</p><h2 class="not">Nor a heading</h2>
 <h2>Capitals</h2>
 <p class="first">The first letter is dropped by its rule.</p>
 <p class="first">&ldquo;Quoted,&rdquo; with the mark before it.</p>
@@ -752,8 +760,10 @@ def main() -> int:
             left_out += chapter.figures["left_out"]
             if name == b"text/written.xhtml":
                 expect(chapter.figures["dropped"] >= 24 and chapter.figures["entities_left_out"] == 3 and
-                       chapter.figures["held_left_out"] == 6 and chapter.figures["languages"] >= 6,
-                       f"the document written for it has too little of something: {chapter.figures}")
+                       chapter.figures["held_left_out"] == 6 and chapter.figures["languages"] >= 6 and
+                       chapter.said_not >= 6,
+                       f"the document written for it has too little of something: {chapter.figures}, "
+                       f"{chapter.said_not} times text of which a sheet said what it is not")
         expect(states.get("whole") == len(whole) and states.get("cut-short", 0) > len(wrong) // 2 and
                states.get("not-a-document") == 1 and sum(states.values()) == len(spine),
                f"what became of the chapters: {states}")

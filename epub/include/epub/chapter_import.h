@@ -56,7 +56,11 @@
 //     much of its block's, and its language as the book's own where its
 //     tag is the one the caller gives as the book's, in letters of either
 //     case. The chapter's languages are in the order text in them is
-//     first written.
+//     first written. A bit of a run is the book's where it is set and a
+//     sheet of the book set it: of a sheet saying what text is not (a
+//     paragraph not bold, a heading not bold) nothing is kept, so text
+//     that an element made bold and the book made plain is plain text,
+//     and no more is known of it.
 //   - An `id` of any element, and the `name` of an `a` that has no `id`,
 //     is an anchor where the element opens: before white space that has
 //     not yet become a space, or that is held; and at the start of a block

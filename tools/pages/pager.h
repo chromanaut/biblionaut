@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -130,8 +131,10 @@ class Pager {
   // Each of these says false if the chapter could not be read or set, and
   // Error() then says why.
 
-  // A block, read and set.
-  bool Block(std::uint32_t block, const SetBlock*& set);
+  // A block, read and set. What is given lasts as long as it is held,
+  // whatever other blocks are asked for meanwhile: only so many are kept
+  // here, and the one set least lately is let go for another.
+  bool Block(std::uint32_t block, std::shared_ptr<const SetBlock>& set);
   // The line of a block that holds the character so far into it.
   bool LineHolding(std::uint32_t block, std::uint32_t into, LineRef& line);
   // The page that begins with a line.
@@ -177,7 +180,7 @@ class Pager {
   layout::ChapterPager pager_;
   std::string error_;
   // The blocks that have been set, and which was set least lately.
-  std::map<std::uint32_t, SetBlock> blocks_;
+  std::map<std::uint32_t, std::shared_ptr<const SetBlock>> blocks_;
   std::vector<std::uint32_t> order_;
 };
 

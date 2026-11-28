@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Checks what the book tools make of real books against a reading of each by Python.
 
-bn-zip, bn-xml, bn-epub, bn-css, bn-png, bn-jpeg and bn-bundle run the firmware's own
-code on one file. This runs them over every EPUB under the folders it is given and
+bn-zip, bn-xml, bn-epub, bn-css, bn-png, bn-jpeg, bn-bundle and bn-pages run the
+firmware's own code on one file. This runs them over every EPUB under the folders it is given and
 compares, book by book:
 
   - bn-zip with Python's zipfile: every entry of the directory, every
@@ -40,11 +40,20 @@ compares, book by book:
     says of the EPUB, its strings, a record for every document of the
     spine and every picture, and every entry of its contents, each set
     beside the book as zipfile and ElementTree read it; and bn-bundle
-    info with what that reading comes to.
+    info with what that reading comes to;
+  - bn-bundle import with a second reading of how each document of the
+    spine ends as a chapter: whole where Python's expat reads the
+    document to its end, cut short or refused as no XML where it does
+    not, refused where the book has no such file, and no document where
+    the item is not XHTML by its media type;
+  - bn-pages walk with itself, on the first few chapters of each book
+    that are not long (every chapter with --walk-all): each page going
+    down from the chapter's first line, the page above each, and the
+    page a place in each line is entered at have to agree, and the
+    chapter has to have the blocks and the characters importing it said.
 
-It also counts, and compares with nothing, since no tool reads a
-document's text yet: the paragraphs and the ids of every document of each
-book's spine. A paragraph is where tools/layout-text.py has one, the text
+It also counts, and compares with nothing: the paragraphs and the ids of
+every document of each book's spine. A paragraph is where tools/layout-text.py has one, the text
 between the starts and ends of block elements, and its size is that text
 in UTF-8 with white space in a row made one space and a br made a line
 end; what is in head, script, style, svg or math is no part of it. An id
@@ -78,13 +87,17 @@ A folder with a file named SHA256SUMS in it is also checked against that
 file: every file it lists has to be there and unchanged, and every EPUB
 beside or below it has to be listed.
 
+With --walk-all every chapter of every book is walked, and not the first
+few short ones: with the optimised tools a matter of seconds a book, and
+of minutes with the others.
+
 usage: tools/check-books.py [--tools BUILD] [--zip BN_ZIP] [--xml BN_XML] [--epub BN_EPUB] [--css BN_CSS]
-                            [--png BN_PNG] [--jpeg BN_JPEG] [--bundle BN_BUNDLE] [--css-report]
-                            [--document-report] [--jobs N]
+                            [--png BN_PNG] [--jpeg BN_JPEG] [--bundle BN_BUNDLE] [--pages BN_PAGES]
+                            [--css-report] [--document-report] [--walk-all] [--jobs N]
                             FOLDER_OR_FILE...
 
 BUILD is a build folder to take the tools from: build/host-release if it
-has them, or else build/host. Each of the seven can be named by itself.
+has them, or else build/host. Each of the eight can be named by itself.
 
 It ends with 0 if everything agreed, 1 if anything did not, 2 if it could
 not start.
@@ -139,6 +152,11 @@ MAX_CASCADE_LOOKED_AT = 40
 # The report names so many documents for each thing it has the most of, and
 # counts the documents with a paragraph over each of these sizes.
 MOST_NAMED = 5
+# How many of a book's chapters are walked, and how many characters one of
+# them has at the most: a walk sets a chapter several times over, and the
+# tools built with sanitizers take a second for a few thousand characters.
+MAX_WALKED_CHAPTERS = 3
+MAX_WALKED_CHARACTERS = 12000
 PARAGRAPH_SIZES = (4096, 8192, 16384, 32768, 65536)
 
 
@@ -963,8 +981,108 @@ def count_documents(path: Path, figures: dict) -> None:
         figures[f"most {key}"] = [(value, path.name, name)]
 
 
-def check_bundle(tool: str, path: Path, figures: dict) -> list[str]:
-    """The book's bundle: what `bn-bundle make` writes, read a second way, beside the book as Python reads it."""
+def expected_chapters(path: Path) -> list[tuple[str, tuple[str, ...], str]]:
+    """How each item of the book's spine should end as a chapter, by Python's reading of the book: the state, the
+    reasons it may give, and the document's name."""
+    lines = epub_tool.reference(path)
+    # The package's reading has a line for each item of the spine after the
+    # line that counts them, as count_documents() has it.
+    spine = [line.split(" ", 2) for line in lines[9:9 + int(lines[8].split()[1])]]
+    expected = []
+    read: dict[str, tuple[str, tuple[str, ...]]] = {}
+    with zipfile.ZipFile(path) as archive:
+        entries: dict[str, zipfile.ZipInfo] = {}
+        for info in archive.infolist():
+            entries.setdefault(epub_tool.entry_name(info), info)
+        for _, kind, name in spine:
+            if name not in entries:
+                expected.append(("refused", ("no-file",), name))
+            elif kind != "xhtml":
+                expected.append(("not-a-document", ("none",), name))
+            else:
+                if name not in read:
+                    try:
+                        whole = xml_tool.reference_events(archive.read(entries[name]))[0]
+                        read[name] = ("whole", ("none",)) if whole else ("cut-short or refused", ("not-XML",))
+                    except Exception:  # The entry cannot be read out of the ZIP file.
+                        read[name] = ("cut-short or refused", ("unreadable", "no-file"))
+                expected.append((*read[name], name))
+    return expected
+
+
+def check_chapters(bundle: str, pages: str, walk_all: bool, path: Path, made: Path, figures: dict) -> list[str]:
+    """The book's chapters: how `bn-bundle import` says each document of the spine ended, beside what Python's
+    reading of the book says it should; and `bn-pages walk` over the chapters, or the first short ones."""
+    try:
+        expected = expected_chapters(path)
+    except Exception:  # Whatever a book can do to a parser: check_package has said so.
+        figures["chapters not compared"] = 1
+        return []
+    result = run(bundle, "import", str(path), str(made), "all")
+    lines = result.stdout.decode("utf-8", "replace").splitlines()
+    if result.returncode != 0 or not lines or not lines[-1].startswith("memory "):
+        return [f"bn-bundle import: ended with {result.returncode}: {(result.stderr or result.stdout)[-160:]!r}"]
+    chapters = []
+    for line in lines[:-1]:
+        words = line.split(" path=", 1)[0].split(" ")
+        if len(words) < 6 or words[0] != "chapter" or " path=" not in line:
+            return [f"bn-bundle import: a line that is no chapter's: {line[:120]!r}"]
+        said = dict(word.split("=", 1) for word in words[3:])
+        chapters.append((words[2], said["reason"], int(said["blocks"]), int(said["characters"]), line.split(" path=", 1)[1]))
+    if len(chapters) != len(expected):
+        return [f"bn-bundle import: {len(chapters)} chapters, and the book's spine has {len(expected)} items"]
+    problems = []
+    for number, ((state, reason, _, _, said_path), (want, reasons, name)) in enumerate(zip(chapters, expected)):
+        # A document Python reads whole may still be too much for the
+        # memory the tool gives the parser: that is said, and counted.
+        if want == "whole" and state in ("cut-short", "refused") and reason == "no-memory":
+            figures["chapters short of memory"] = figures.get("chapters short of memory", 0) + 1
+        elif state not in want.split(" or ") or reason not in reasons:
+            problems.append(f"bn-bundle import: chapter {number} ({name}) is {state}, reason {reason}; by Python's "
+                            f"reading it is {want}, reason {' or '.join(reasons)}")
+        plain = name.isascii() and name.isprintable() and " " not in name and "\\" not in name
+        if state in ("whole", "cut-short") and plain and said_path != name:
+            problems.append(f"bn-bundle import: chapter {number} is of {said_path!r}, and the spine names {name!r}")
+        figures[f"chapters {state}"] = figures.get(f"chapters {state}", 0) + 1
+    imported = [(number, blocks, characters) for number, (state, _, blocks, characters, _) in enumerate(chapters)
+                if state in ("whole", "cut-short")]
+    figures["chapter blocks"] = sum(blocks for _, blocks, _ in imported)
+    figures["chapter characters"] = sum(characters for _, _, characters in imported)
+    if problems:
+        return problems[:4]
+
+    # The walk: of the whole book as one, or of each of the first chapters
+    # that have something in them and are not long.
+    if walk_all:
+        walks = [((), len(imported), sum(blocks for _, blocks, _ in imported),
+                  sum(characters for _, _, characters in imported))] if imported else []
+    else:
+        short = [chapter for chapter in imported if 0 < chapter[2] <= MAX_WALKED_CHARACTERS][:MAX_WALKED_CHAPTERS]
+        walks = [((str(number),), 1, blocks, characters) for number, blocks, characters in short]
+    for which, count, blocks, characters in walks:
+        result = run(pages, "walk", str(made), *which)
+        said = result.stdout.decode("utf-8", "replace").splitlines()
+        what = f"bn-pages walk{''.join(' ' + word for word in which)}"
+        if result.returncode != 0 or len(said) < 3:
+            problems.append(f"{what}: ended with {result.returncode}: {(result.stdout + result.stderr)[-200:]!r}")
+            continue
+        match = re.fullmatch(r"chapters (\d+), pages (\d+), lines (\d+), blocks (\d+), characters (\d+)", said[-3])
+        if match is None or not said[-2].endswith(": all agree with the pages"):
+            problems.append(f"{what}: its last lines are {said[-3:]!r}")
+            continue
+        walked = [int(figure) for figure in match.groups()]
+        if (walked[0], walked[3], walked[4]) != (count, blocks, characters):
+            problems.append(f"{what}: {walked[0]} chapters of {walked[3]} blocks and {walked[4]} characters; importing "
+                            f"said {count} of {blocks} blocks and {characters} characters")
+        figures["chapters walked"] = figures.get("chapters walked", 0) + walked[0]
+        figures["pages walked"] = figures.get("pages walked", 0) + walked[1]
+        figures["lines walked"] = figures.get("lines walked", 0) + walked[2]
+    return problems[:4]
+
+
+def check_bundle(tool: str, pages: str, walk_all: bool, path: Path, figures: dict) -> list[str]:
+    """The book's bundle: what `bn-bundle make` writes, read a second way, beside the book as Python reads it; and
+    then its chapters."""
     # The table of contents the book is read by, as the reading above has
     # it: none, one that is no table, or its entries.
     entries: list[tuple] | None = []
@@ -995,12 +1113,13 @@ def check_bundle(tool: str, path: Path, figures: dict) -> list[str]:
                 figures["bundle contents not whole"] = 1
             if entries is None:
                 figures["bundle contents not compared"] = 1
+            problems = check_chapters(tool, pages, walk_all, path, made, figures)
     return problems
 
 
-def check_book(arguments: tuple[str, str, str, str, str, str, str, str]) -> tuple[str, list[str], dict]:
+def check_book(arguments: tuple[str, str, str, str, str, str, str, str, bool, str]) -> tuple[str, list[str], dict]:
     (zip_tool_path, xml_tool_path, epub_tool_path, css_tool_path, png_tool_path, jpeg_tool_path, bundle_tool_path,
-     name) = arguments
+     pages_tool_path, walk_all, name) = arguments
     path = Path(name)
     # A number is added up over the books; a list is kept, a book to an item.
     figures: dict = {}
@@ -1015,7 +1134,7 @@ def check_book(arguments: tuple[str, str, str, str, str, str, str, str]) -> tupl
         problems += check_cascade(css_tool_path, path, figures)
         problems += check_png(png_tool_path, path, figures)
         problems += check_jpeg(jpeg_tool_path, path, figures)
-        problems += check_bundle(bundle_tool_path, path, figures)
+        problems += check_bundle(bundle_tool_path, pages_tool_path, walk_all, path, figures)
         count_documents(path, figures)
     except Exception as error:  # A book that the comparison itself trips over is a finding, not a crash.
         problems.append(f"the comparison failed: {error!r}")
@@ -1209,8 +1328,10 @@ def main() -> int:
     parser.add_argument("--png")
     parser.add_argument("--jpeg")
     parser.add_argument("--bundle")
+    parser.add_argument("--pages")
     parser.add_argument("--css-report", action="store_true")
     parser.add_argument("--document-report", action="store_true")
+    parser.add_argument("--walk-all", action="store_true")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     parser.add_argument("places", nargs="+")
     options = parser.parse_args()
@@ -1218,9 +1339,10 @@ def main() -> int:
              find_tool(options.epub, options.tools, "epub", "bn-epub"), find_tool(options.css, options.tools, "css", "bn-css"),
              find_tool(options.png, options.tools, "png", "bn-png"),
              find_tool(options.jpeg, options.tools, "jpeg", "bn-jpeg"),
-             find_tool(options.bundle, options.tools, "bundle", "bn-bundle")]
+             find_tool(options.bundle, options.tools, "bundle", "bn-bundle"),
+             find_tool(options.pages, options.tools, "pages", "bn-pages")]
     if None in tools:
-        print("check-books: bn-zip, bn-xml, bn-epub, bn-css, bn-png, bn-jpeg and bn-bundle are not all built: "
+        print("check-books: bn-zip, bn-xml, bn-epub, bn-css, bn-png, bn-jpeg, bn-bundle and bn-pages are not all built: "
               "cmake --build --preset host-release", file=sys.stderr)
         return 2
     places = [Path(place) for place in options.places]
@@ -1249,7 +1371,8 @@ def main() -> int:
     totals: dict = {}
     different = 0
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, options.jobs)) as pool:
-        for name, problems, figures in pool.map(check_book, [(*tools, str(book)) for book in books], chunksize=2):
+        for name, problems, figures in pool.map(check_book, [(*tools, options.walk_all, str(book)) for book in books],
+                                                chunksize=2):
             for key, value in figures.items():
                 totals[key] = totals.get(key, [] if isinstance(value, list) else 0) + value
             if problems:
@@ -1288,6 +1411,19 @@ def main() -> int:
     if totals.get("bundle contents not compared"):
         print(f"{totals['bundle contents not compared']} bundles' contents were not compared: Python could not read "
               "the book's tables of contents.")
+    states = [(key, totals.get(f"chapters {key}", 0)) for key in ("whole", "cut-short", "refused", "not-a-document")]
+    if any(count for _, count in states):
+        print("The documents of their spines, imported: " + ", ".join(f"{count} {key}" for key, count in states) +
+              ", by the tool and by Python alike; the chapters have "
+              f"{totals.get('chapter blocks', 0)} blocks and {totals.get('chapter characters', 0)} characters.")
+        print(f"{totals.get('chapters walked', 0)} of the chapters walked, in {totals.get('pages walked', 0)} pages of "
+              f"{totals.get('lines walked', 0)} lines: every page come to three ways, and all agree.")
+    if totals.get("chapters short of memory"):
+        print(f"{totals['chapters short of memory']} chapters are cut short or refused for want of memory for the "
+              "parser, which Python's reading does not foresee.")
+    if totals.get("chapters not compared"):
+        print(f"{totals['chapters not compared']} books' chapters were not imported: Python could not read the "
+              "book's package.")
     if totals.get("most largest"):
         print(f"Of the {len(totals['document bytes'])} documents of their spines, a book's largest paragraph, in bytes: "
               f"{spread([value for value, _, _ in totals['most largest']])}; the most paragraphs in one of its "

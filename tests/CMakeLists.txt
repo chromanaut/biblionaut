@@ -529,7 +529,7 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check-books.py
       --zip $<TARGET_FILE:bn-zip> --xml $<TARGET_FILE:bn-xml> --epub $<TARGET_FILE:bn-epub>
       --css $<TARGET_FILE:bn-css> --png $<TARGET_FILE:bn-png> --jpeg $<TARGET_FILE:bn-jpeg>
-      --bundle $<TARGET_FILE:bn-bundle> ${PROJECT_SOURCE_DIR}/corpus)
+      --bundle $<TARGET_FILE:bn-bundle> --pages $<TARGET_FILE:bn-pages> ${PROJECT_SOURCE_DIR}/corpus)
   set_tests_properties(e2e.Corpus PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 
   # What the same script counts in the documents of a spine, their
@@ -540,6 +540,18 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/document_count.py
       ${PROJECT_SOURCE_DIR}/tools/check-books.py $<TARGET_FILE:bn-zip> $<TARGET_FILE:bn-xml> $<TARGET_FILE:bn-epub>
       $<TARGET_FILE:bn-css> $<TARGET_FILE:bn-png> $<TARGET_FILE:bn-jpeg> $<TARGET_FILE:bn-bundle>
-      ${CMAKE_CURRENT_BINARY_DIR}/document_count)
+      $<TARGET_FILE:bn-pages> ${CMAKE_CURRENT_BINARY_DIR}/document_count)
   set_tests_properties(e2e.DocumentCount PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
+
+  # What the same script makes of a book's chapters, how each document of
+  # the spine ends when it is imported and a walk of the pages of the
+  # first: on a book made by the test whose documents end in each way one
+  # can, and with tools that say something wrong, which it has to notice.
+  add_test(
+    NAME e2e.BookChapters
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/book_chapters.py
+      ${PROJECT_SOURCE_DIR}/tools/check-books.py $<TARGET_FILE:bn-zip> $<TARGET_FILE:bn-xml> $<TARGET_FILE:bn-epub>
+      $<TARGET_FILE:bn-css> $<TARGET_FILE:bn-png> $<TARGET_FILE:bn-jpeg> $<TARGET_FILE:bn-bundle>
+      $<TARGET_FILE:bn-pages> ${CMAKE_CURRENT_BINARY_DIR}/book_chapters)
+  set_tests_properties(e2e.BookChapters PROPERTIES ENVIRONMENT "ASAN_OPTIONS=${bn_test_asan_options}")
 endif()

@@ -425,10 +425,25 @@ faces than there is room for.
 sets text in such faces. Each of the paragraph setter's styles is given a
 face. A character is drawn with its style's face if that has a glyph for
 it, with the fallback face if that has, and otherwise with its style's
-face's glyph 0; a soft hyphen and a zero width space are not drawn and take
-no room; a byte that is not UTF-8 is drawn as U+FFFD, which is found as
-any other character is (of the presets' typefaces Noto and IBM Plex have a
-glyph for it, and Source and Courier Prime have not).
+face's glyph 0; a byte that is not UTF-8 is drawn as U+FFFD, which is found
+as any other character is (of the presets' typefaces Noto and IBM Plex have
+a glyph for it, and Source and Courier Prime have not).
+
+Some characters are never drawn and take no room, whatever glyph a face has
+for them: the 4,174 that Unicode says are shown as nothing where there is
+no glyph for them (its property `Default_Ignorable_Code_Point`;
+`FaceMeasure::Drawn()`). A soft hyphen and a zero width space are two of
+them. A book has others: a word joiner (U+2060) or U+FEFF before a dash or
+an ellipsis, where no line is to end; a selector (U+FE0E) after an arrow or
+another symbol, which says the plain form of it is meant and not the
+coloured one; a zero width non-joiner between letters that are not to be
+joined; and the marks that say which way text runs. Left to be looked up as
+other characters are, each would be the glyph for what a face lacks, in
+the middle of a line. Nothing is kerned or joined across one: the glyph
+before it is followed by the next as the last glyph of a word is, by its
+own advance. So an `f` and an `i` with a non-joiner between them are two
+glyphs, which is what it is for; and so are two with a word joiner between
+them, which a shaping engine would join.
 
 Every glyph is drawn on a whole pixel, and a glyph is always the same
 number of pixels after the one before it, whichever two they are: the

@@ -15,8 +15,14 @@
 // Each of the setter's style numbers is given a face. A character is drawn
 // with its style's face if the face has a glyph for it, with the fallback
 // face if that has one, and otherwise with its style's face's glyph for
-// what it lacks. A soft hyphen and a zero width space are not drawn and
-// take no room.
+// what it lacks.
+//
+// Some characters are never drawn and take no room, whatever glyph a face
+// has for them: those Unicode says are shown as nothing where there is no
+// glyph for them (its property Default_Ignorable_Code_Point). A soft hyphen
+// and a zero width space are two. So are the word joiner and U+FEFF that a
+// book puts where no line is to end, the selector after a symbol that says
+// which form of it is meant, and the marks that say which way text runs.
 //
 // Letters a face joins are drawn as one glyph, a ligature: an f and an i as
 // the face's fi. A stretch of text is gone through from its start, and at
@@ -39,9 +45,11 @@
 // Two glyphs are kerned, and letters are joined, when one follows the other
 // in a stretch of text that is measured as one, which is as much of a word
 // as is in one style. So nothing is kerned or joined across a space or
-// across a change of style. Nor across a soft hyphen or a zero width space,
-// which are not drawn: the setter measures what is before one apart from
-// what is after.
+// across a change of style. Nor across a character that is not drawn: the
+// glyph before one is followed by the next as the last glyph of a stretch
+// is, by its own advance. (The setter measures what is before a soft hyphen
+// or a zero width space apart from what is after. The others come to the
+// measure inside their word.)
 //
 // A line's text is drawn as it would be by itself. Where a line ends inside
 // a word, at a place the hyphenator found, the letters before the place are
@@ -143,8 +151,9 @@ class FaceMeasure final : public TextMeasure {
                std::span<std::uint16_t> widths, std::span<std::uint16_t> hyphens) noexcept override;
   std::uint16_t SpaceWidth(std::uint16_t style) noexcept override;
 
-  // Whether `codePoint` is drawn at all.
-  static bool Drawn(std::uint32_t codePoint) noexcept { return codePoint != 0x00AD && codePoint != 0x200B; }
+  // Whether `codePoint` is drawn at all: every character is but those with
+  // Unicode's property Default_Ignorable_Code_Point.
+  static bool Drawn(std::uint32_t codePoint) noexcept;
 
   // How many bytes it has been given to measure, over all its calls.
   std::uint64_t BytesMeasured() const noexcept { return bytesMeasured_; }

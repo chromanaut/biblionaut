@@ -2317,6 +2317,15 @@ def face_measure_seeds() -> None:
     seed("without-the-fallback", "αγ\0δ\0ε".encode(), fallback=False)
     seed("from-the-fallback-in-italic", "fi\0δ\0εf\0i".encode(), style=1)
     seed("not-drawn", "f\u00ad\0i\0f\u200bf\0\u00ad\0\u200b\0f\u00ad".encode())
+    # The others that are never drawn: a word joiner and U+FEFF between
+    # letters that are kerned and letters that are joined, a zero width
+    # non-joiner, a selector, the first and the last of the runs of them,
+    # and the characters to either side of a run, which are drawn.
+    seed("a-word-joiner-between-letters", "z\u2060k\0f\ufeffi\0f\u2060\0fi\0k\ufeff\0k\u200cz".encode())
+    seed("never-drawn",
+         "a\ufe0e\0\u034f\u061c\0b\u200e\u200f\u202a\u202e\0\u2064\u206f\ufff8\0\U0001bca0\U0001d17a\0\U000e0001\U000e0fffc"
+         .encode())
+    seed("beside-the-never-drawn", "\u200a\u2010\0\u2029\u202f\0\u205f\u2070\0\ufdff\ufe10\0\ufffd\U000e1000".encode())
     seed("the-ligatures-own-characters", "\ufb01\0c\0c\0\ufb01\ufb02\0f".encode())
     seed("not-utf-8", b"f\xff\0i\0\xc3\0\xa9\0\xe2\x80\0of\xf0\0fice\xed\xa0\x80")
     seed("cut-inside-a-character", b"\xc3\0\xa9ffi\xe2\0\x80\0\x8bf")

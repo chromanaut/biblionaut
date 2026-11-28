@@ -103,12 +103,12 @@ using bn::epub::SegmentAnchor;
 using bn::epub::SegmentBlock;
 using bn::epub::SegmentBlockKind;
 using bn::epub::SegmentItem;
-using bn::epub::SegmentLength;
 using bn::epub::SegmentPicture;
 using bn::epub::SegmentPlace;
 using bn::epub::SegmentReader;
 using bn::epub::SegmentStatus;
 using bn::epub::SegmentWriter;
+using bn::epub::StyleLength;
 using bn::test::FakeStorage;
 using Bytes = std::vector<std::uint8_t>;
 
@@ -137,8 +137,8 @@ struct Item {
   std::uint16_t chapter = 0;
   std::uint16_t picture = 0;
   std::uint16_t bits = 0;
-  SegmentLength width;
-  SegmentLength height;
+  StyleLength width;
+  StyleLength height;
 
   bool operator==(const Item&) const = default;
 };
@@ -311,7 +311,7 @@ constexpr std::size_t kStepsToFindBlock = 2;
 constexpr std::size_t kStepsToFindSource = 20;
 std::size_t StepsToFindAnchor(const SegmentReader& reader) { return (2 * reader.AnchorPages()) + 2; }
 
-SegmentLength LengthFrom(std::uint32_t seed) {
+StyleLength LengthFrom(std::uint32_t seed) {
   return {.em = static_cast<std::int16_t>(seed * 7U),
           .px = static_cast<std::int16_t>(seed * 13U),
           .percent = static_cast<std::int16_t>(seed * 29U)};
@@ -330,11 +330,11 @@ BlockStyle StyleFrom(std::uint32_t mask, std::uint32_t seed) {
     style.lineMultiple = static_cast<std::uint16_t>(seed * 5U);
     style.lineHeight = LengthFrom(seed + 1);
   }
-  style.indent = has(bn::epub::kBlockIndent) ? LengthFrom(seed + 2) : SegmentLength{};
-  style.marginLeft = has(bn::epub::kBlockMarginLeft) ? LengthFrom(seed + 3) : SegmentLength{};
-  style.marginRight = has(bn::epub::kBlockMarginRight) ? LengthFrom(seed + 4) : SegmentLength{};
-  style.spaceBefore = has(bn::epub::kBlockSpaceBefore) ? LengthFrom(seed + 5) : SegmentLength{};
-  style.spaceAfter = has(bn::epub::kBlockSpaceAfter) ? LengthFrom(seed + 6) : SegmentLength{};
+  style.indent = has(bn::epub::kBlockIndent) ? LengthFrom(seed + 2) : StyleLength{};
+  style.marginLeft = has(bn::epub::kBlockMarginLeft) ? LengthFrom(seed + 3) : StyleLength{};
+  style.marginRight = has(bn::epub::kBlockMarginRight) ? LengthFrom(seed + 4) : StyleLength{};
+  style.spaceBefore = has(bn::epub::kBlockSpaceBefore) ? LengthFrom(seed + 5) : StyleLength{};
+  style.spaceAfter = has(bn::epub::kBlockSpaceAfter) ? LengthFrom(seed + 6) : StyleLength{};
   style.breaking = has(bn::epub::kBlockBreaking) ? static_cast<std::uint16_t>(seed * 11U) : std::uint16_t{0};
   if (has(bn::epub::kBlockDepths)) {
     style.quoteDepth = static_cast<std::uint8_t>(seed);
@@ -353,8 +353,8 @@ BlockStyle StyleFrom(std::uint32_t mask, std::uint32_t seed) {
     style.tableBits = static_cast<std::uint8_t>(seed & 1U);
     style.tableDepth = static_cast<std::uint8_t>(seed >> 5U);
   }
-  style.width = has(bn::epub::kBlockWidth) ? LengthFrom(seed + 7) : SegmentLength{};
-  style.height = has(bn::epub::kBlockHeight) ? LengthFrom(seed + 8) : SegmentLength{};
+  style.width = has(bn::epub::kBlockWidth) ? LengthFrom(seed + 7) : StyleLength{};
+  style.height = has(bn::epub::kBlockHeight) ? LengthFrom(seed + 8) : StyleLength{};
   return style;
 }
 

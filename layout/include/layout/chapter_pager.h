@@ -180,8 +180,8 @@ class BlockSetting {
   // `height` are the picture's size as the document declares it, and
   // `picture` what the chapter says of the file, or null if it says
   // nothing.
-  virtual std::uint16_t PictureHeight(const epub::SegmentBlock& block, const epub::SegmentLength& width,
-                                      const epub::SegmentLength& height,
+  virtual std::uint16_t PictureHeight(const epub::SegmentBlock& block, const epub::StyleLength& width,
+                                      const epub::StyleLength& height,
                                       const epub::SegmentPicture* picture) noexcept = 0;
 
  protected:
@@ -387,8 +387,8 @@ class ChapterPager final : private TextLineSink {
   std::string_view picture_;    // What is left of the byte that stands for a picture.
   bool somethingSeen_ = false;  // Text or a picture has come in the block.
   std::uint16_t pictureNumber_ = 0;
-  epub::SegmentLength pictureWidth_;
-  epub::SegmentLength pictureHeight_;
+  epub::StyleLength pictureWidth_;
+  epub::StyleLength pictureHeight_;
   std::uint32_t blockLines_ = 0;
   bool stop_ = false;  // A line said that no more of the block is wanted.
 

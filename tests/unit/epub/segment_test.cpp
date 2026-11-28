@@ -40,12 +40,12 @@ using bn::epub::RunStyle;
 using bn::epub::SegmentBlock;
 using bn::epub::SegmentBlockKind;
 using bn::epub::SegmentItem;
-using bn::epub::SegmentLength;
 using bn::epub::SegmentPicture;
 using bn::epub::SegmentPlace;
 using bn::epub::SegmentReader;
 using bn::epub::SegmentStatus;
 using bn::epub::SegmentWriter;
+using bn::epub::StyleLength;
 using bn::test::FakeStorage;
 using Bytes = FakeStorage::Bytes;
 
@@ -112,8 +112,8 @@ struct Op {
   std::uint16_t chapter = 0;
   std::uint16_t picture = 0;
   std::uint16_t bits = 0;
-  SegmentLength width;
-  SegmentLength height;
+  StyleLength width;
+  StyleLength height;
 };
 
 Op Begin(SegmentBlockKind kind, std::uint32_t source, const BlockStyle& style = {}, std::uint8_t level = 0) {
@@ -150,7 +150,7 @@ Op Simple(Op::What what) {
   op.what = what;
   return op;
 }
-Op PictureOp(std::uint16_t number, std::uint16_t bits, SegmentLength width, SegmentLength height, std::string alt) {
+Op PictureOp(std::uint16_t number, std::uint16_t bits, StyleLength width, StyleLength height, std::string alt) {
   Op op;
   op.what = Op::What::kPicture;
   op.picture = number;
@@ -177,8 +177,8 @@ struct WantItem {
   std::uint16_t chapter = 0;
   std::uint16_t picture = 0;
   std::uint16_t bits = 0;
-  SegmentLength width;
-  SegmentLength height;
+  StyleLength width;
+  StyleLength height;
 
   bool operator==(const WantItem&) const = default;
 };
@@ -306,7 +306,7 @@ Want Expected(const std::vector<Op>& ops) {
   return want;
 }
 
-SegmentLength Length(Random& random) {
+StyleLength Length(Random& random) {
   return {.em = static_cast<std::int16_t>(static_cast<int>(random.Below(400)) - 100),
           .px = static_cast<std::int16_t>(random.Below(300)),
           .percent = static_cast<std::int16_t>(random.Below(6400))};
@@ -329,11 +329,11 @@ BlockStyle SomeStyle(Random& random) {
     style.lineMultiple = static_cast<std::uint16_t>(random.Below(3) * 600);
     style.lineHeight = Length(random);
   }
-  style.indent = has(bn::epub::kBlockIndent) ? Length(random) : SegmentLength{};
-  style.marginLeft = has(bn::epub::kBlockMarginLeft) ? Length(random) : SegmentLength{};
-  style.marginRight = has(bn::epub::kBlockMarginRight) ? Length(random) : SegmentLength{};
-  style.spaceBefore = has(bn::epub::kBlockSpaceBefore) ? Length(random) : SegmentLength{};
-  style.spaceAfter = has(bn::epub::kBlockSpaceAfter) ? Length(random) : SegmentLength{};
+  style.indent = has(bn::epub::kBlockIndent) ? Length(random) : StyleLength{};
+  style.marginLeft = has(bn::epub::kBlockMarginLeft) ? Length(random) : StyleLength{};
+  style.marginRight = has(bn::epub::kBlockMarginRight) ? Length(random) : StyleLength{};
+  style.spaceBefore = has(bn::epub::kBlockSpaceBefore) ? Length(random) : StyleLength{};
+  style.spaceAfter = has(bn::epub::kBlockSpaceAfter) ? Length(random) : StyleLength{};
   style.breaking = has(bn::epub::kBlockBreaking) ? static_cast<std::uint16_t>(random.Below(512)) : std::uint16_t{0};
   if (has(bn::epub::kBlockDepths)) {
     style.quoteDepth = static_cast<std::uint8_t>(random.Below(4));
@@ -352,8 +352,8 @@ BlockStyle SomeStyle(Random& random) {
     style.tableBits = static_cast<std::uint8_t>(random.Below(2));
     style.tableDepth = static_cast<std::uint8_t>(1 + random.Below(3));
   }
-  style.width = has(bn::epub::kBlockWidth) ? Length(random) : SegmentLength{};
-  style.height = has(bn::epub::kBlockHeight) ? Length(random) : SegmentLength{};
+  style.width = has(bn::epub::kBlockWidth) ? Length(random) : StyleLength{};
+  style.height = has(bn::epub::kBlockHeight) ? Length(random) : StyleLength{};
   return style;
 }
 
@@ -408,8 +408,8 @@ std::vector<Op> MakeChapter(std::uint32_t seed, std::size_t blocks, std::uint8_t
     ops.push_back(Begin(kind, source, blockStyle, level));
     if (kind == SegmentBlockKind::kPicture) {
       const auto number = static_cast<std::uint16_t>(random.Below(40));
-      const SegmentLength width = Length(random);
-      const SegmentLength height = Length(random);
+      const StyleLength width = Length(random);
+      const StyleLength height = Length(random);
       const std::uint32_t altBytes = random.OneIn(2) ? random.Below(200) : 0;
       ops.push_back(PictureOp(number, 0, width, height, altBytes == 0 ? std::string() : Words(random, altBytes)));
     } else if (kind != SegmentBlockKind::kRule) {
@@ -444,8 +444,8 @@ std::vector<Op> MakeChapter(std::uint32_t seed, std::size_t blocks, std::uint8_t
         if (random.OneIn(9)) {
           const std::uint16_t number =
               random.OneIn(8) ? bn::epub::kSegmentNoPicture : static_cast<std::uint16_t>(random.Below(40));
-          const SegmentLength width = Length(random);
-          const SegmentLength height = Length(random);
+          const StyleLength width = Length(random);
+          const StyleLength height = Length(random);
           ops.push_back(PictureOp(number, bn::epub::kPictureInLine, width, height, "a picture"));
         }
         if (link) {
@@ -488,8 +488,8 @@ std::vector<Op> MakeSmallChapter(std::uint32_t seed, std::size_t blocks) {
     }
     if (random.OneIn(12)) {
       const auto number = static_cast<std::uint16_t>(random.Below(9));
-      const SegmentLength width = Length(random);
-      const SegmentLength height = Length(random);
+      const StyleLength width = Length(random);
+      const StyleLength height = Length(random);
       ops.push_back(PictureOp(number, bn::epub::kPictureInLine, width, height, "alt"));
     }
     ops.push_back(Simple(Op::What::kEnd));
@@ -515,7 +515,7 @@ struct Walked {
   std::vector<std::string> wrong;  // Everything that is not as the format has it.
 };
 
-SegmentLength LengthIn(const Bytes& bytes, std::size_t at) {
+StyleLength LengthIn(const Bytes& bytes, std::size_t at) {
   return {.em = static_cast<std::int16_t>(U16(bytes, at)),
           .px = static_cast<std::int16_t>(U16(bytes, at + 2)),
           .percent = static_cast<std::int16_t>(U16(bytes, at + 4))};
@@ -642,11 +642,11 @@ Walked Walk(const Bytes& file, const BundleChapter& record) {
           in += 2;
           style.lineHeight = length6();
         }
-        style.indent = has(1U << 4U) ? length6() : SegmentLength{};
-        style.marginLeft = has(1U << 5U) ? length6() : SegmentLength{};
-        style.marginRight = has(1U << 6U) ? length6() : SegmentLength{};
-        style.spaceBefore = has(1U << 7U) ? length6() : SegmentLength{};
-        style.spaceAfter = has(1U << 8U) ? length6() : SegmentLength{};
+        style.indent = has(1U << 4U) ? length6() : StyleLength{};
+        style.marginLeft = has(1U << 5U) ? length6() : StyleLength{};
+        style.marginRight = has(1U << 6U) ? length6() : StyleLength{};
+        style.spaceBefore = has(1U << 7U) ? length6() : StyleLength{};
+        style.spaceAfter = has(1U << 8U) ? length6() : StyleLength{};
         if (has(1U << 9U)) {
           style.breaking = static_cast<std::uint16_t>(U16(bytes, in));
           in += 2;
@@ -670,8 +670,8 @@ Walked Walk(const Bytes& file, const BundleChapter& record) {
           style.tableDepth = bytes.at(in + 9);
           in += 10;
         }
-        style.width = has(1U << 13U) ? length6() : SegmentLength{};
-        style.height = has(1U << 14U) ? length6() : SegmentLength{};
+        style.width = has(1U << 13U) ? length6() : StyleLength{};
+        style.height = has(1U << 14U) ? length6() : StyleLength{};
       }
       if (in != at + 4 + length) {
         wrong("a style record is not as long as its fields");
@@ -1178,8 +1178,8 @@ TEST(Segment, IsLaidOutAsTheFormatSays) {
   style.align = 3;
   style.breaking = bn::epub::kBreakKeepWithNext | 0x0100U;
   RunStyle run;
-  run.bits = bn::epub::kRunItalic;
-  run.fromBook = bn::epub::kRunItalic;
+  run.bits = bn::epub::kTextItalic;
+  run.fromBook = bn::epub::kTextItalic;
   run.familyClass = 2;
   run.familyFromBook = true;
   run.size = 900;

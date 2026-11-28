@@ -113,8 +113,8 @@ class MadeUpSetting final : public layout::BlockSetting {
   void MeasureBlock(const epub::SegmentBlock& block, layout::BlockMeasures& measures) noexcept override;
   void MeasureRun(const epub::SegmentBlock& block, const epub::RunStyle& run,
                   layout::RunMeasures& measures) noexcept override;
-  std::uint16_t PictureHeight(const epub::SegmentBlock& block, const epub::SegmentLength& width,
-                              const epub::SegmentLength& height, const epub::SegmentPicture* picture) noexcept override;
+  std::uint16_t PictureHeight(const epub::SegmentBlock& block, const epub::StyleLength& width,
+                              const epub::StyleLength& height, const epub::SegmentPicture* picture) noexcept override;
 
  private:
   PageGeometry geometry_;

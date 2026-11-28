@@ -49,9 +49,9 @@ using bn::epub::SegmentAnchor;
 using bn::epub::SegmentBlock;
 using bn::epub::SegmentBlockKind;
 using bn::epub::SegmentItem;
-using bn::epub::SegmentLength;
 using bn::epub::SegmentReader;
 using bn::epub::SegmentStatus;
+using bn::epub::StyleLength;
 using bn::test::FakeBook;
 using bn::test::FakeStorage;
 
@@ -602,7 +602,7 @@ TEST(ChapterImport, GivesEachBlockItsKindAndItsRecord) {
   EXPECT_TRUE(book(1, bn::epub::kBlockSize));
   EXPECT_EQ(f.blocks[1].style.lineMultiple, 1500);
   // One and a half em of text a fifth larger than the reader's: 1.8 of the reader's, in 64ths.
-  EXPECT_TRUE(f.blocks[1].style.indent == (SegmentLength{.em = 115, .px = 0, .percent = 0}));
+  EXPECT_TRUE(f.blocks[1].style.indent == (StyleLength{.em = 115, .px = 0, .percent = 0}));
   EXPECT_TRUE(book(1, bn::epub::kBlockIndent));
   EXPECT_TRUE(has(1, bn::epub::kBlockSpaceBefore));
 
@@ -625,7 +625,7 @@ TEST(ChapterImport, GivesEachBlockItsKindAndItsRecord) {
   EXPECT_EQ(f.blocks[6].kind, SegmentBlockKind::kTableCell);
 
   EXPECT_TRUE(Has(f.blocks[7].style.breaking, bn::epub::kBreakCentred));
-  EXPECT_TRUE(f.blocks[7].style.width == (SegmentLength{.em = 0, .px = 0, .percent = 3200}));
+  EXPECT_TRUE(f.blocks[7].style.width == (StyleLength{.em = 0, .px = 0, .percent = 3200}));
   EXPECT_TRUE(book(7, bn::epub::kBlockWidth));
 
   EXPECT_EQ(f.blocks[8].style.direction, 1);
@@ -638,7 +638,7 @@ TEST(ChapterImport, GivesEachBlockItsKindAndItsRecord) {
 
   EXPECT_EQ(f.blocks[10].style.breaking, bn::epub::kBreakPageBefore);
   EXPECT_TRUE(book(10, bn::epub::kBlockBreaking));
-  EXPECT_TRUE(f.blocks[10].style.marginLeft == (SegmentLength{.em = 128, .px = 0, .percent = 0}));
+  EXPECT_TRUE(f.blocks[10].style.marginLeft == (StyleLength{.em = 128, .px = 0, .percent = 0}));
   EXPECT_TRUE(book(10, bn::epub::kBlockMarginLeft));
 
   EXPECT_EQ(f.blocks[11].style.breaking, std::uint32_t{bn::epub::kBreakFloated} | bn::epub::kBreakKeepTogether);
@@ -684,7 +684,7 @@ TEST(ChapterImport, WritesWhatTheBookSaidEvenWhereItSaidNothingNew) {
   EXPECT_TRUE(Has(f.blocks[1].style.has, bn::epub::kBlockLineHeight));
   EXPECT_TRUE(Has(f.blocks[1].style.fromBook, bn::epub::kBlockLineHeight));
   EXPECT_EQ(f.blocks[1].style.lineMultiple, 0);
-  EXPECT_TRUE(f.blocks[1].style.lineHeight == SegmentLength{});
+  EXPECT_TRUE(f.blocks[1].style.lineHeight == StyleLength{});
   // A heading the book lets go of is not kept, and that is the book's.
   EXPECT_EQ(f.blocks[2].style.breaking, bn::epub::kBreakKeepWithNext);
   EXPECT_FALSE(Has(f.blocks[2].style.fromBook, bn::epub::kBlockBreaking));
@@ -934,7 +934,7 @@ TEST(ChapterImport, UsesTheSheetsTheDocumentLinksAndItsOwnStyle) {
                      "p { text-indent: 2em }"),
             ImportStatus::kOk);
   EXPECT_EQ(f.blocks.at(0).style.align, 1);
-  EXPECT_TRUE(f.blocks.at(0).style.indent == (SegmentLength{.em = 128, .px = 0, .percent = 0}));
+  EXPECT_TRUE(f.blocks.at(0).style.indent == (StyleLength{.em = 128, .px = 0, .percent = 0}));
   EXPECT_EQ(f.Texts(), Strings({"One {3/1/0/0/1000}two"}));
   EXPECT_EQ(f.importer.Path(), kChapter);
 }

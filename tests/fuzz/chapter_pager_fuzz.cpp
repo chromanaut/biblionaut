@@ -100,11 +100,11 @@ using bn::epub::LinkKind;
 using bn::epub::RunStyle;
 using bn::epub::SegmentBlock;
 using bn::epub::SegmentBlockKind;
-using bn::epub::SegmentLength;
 using bn::epub::SegmentPicture;
 using bn::epub::SegmentReader;
 using bn::epub::SegmentStatus;
 using bn::epub::SegmentWriter;
+using bn::epub::StyleLength;
 using bn::layout::BlockMeasures;
 using bn::layout::BlockSetting;
 using bn::layout::ChapterLine;
@@ -162,7 +162,7 @@ void Put32(Bytes& to, std::size_t at, std::uint32_t value) {
 // or as it is declared, or 100.
 class Rules final : public BlockSetting {
  public:
-  static std::uint16_t Pixels(const SegmentLength& length) {
+  static std::uint16_t Pixels(const StyleLength& length) {
     return static_cast<std::uint16_t>(std::clamp<int>(length.px, 0, 30000));
   }
 
@@ -182,8 +182,8 @@ class Rules final : public BlockSetting {
     measures.hyphenator = nullptr;
   }
 
-  std::uint16_t PictureHeight(const SegmentBlock& /*block*/, const SegmentLength& /*width*/,
-                              const SegmentLength& height, const SegmentPicture* picture) noexcept override {
+  std::uint16_t PictureHeight(const SegmentBlock& /*block*/, const StyleLength& /*width*/, const StyleLength& height,
+                              const SegmentPicture* picture) noexcept override {
     if (picture != nullptr && picture->sized) {
       return picture->height;
     }
@@ -206,7 +206,7 @@ struct Block {
   // The picture that comes before any text, in a block that is a picture.
   bool pictureFirst = false;
   std::uint16_t picture = 0;
-  SegmentLength pictureHeight;
+  StyleLength pictureHeight;
 };
 
 using Sizes = std::map<std::uint16_t, std::pair<std::uint16_t, std::uint16_t>>;
@@ -246,7 +246,7 @@ Lines LinesByHand(const std::vector<Block>& chapter, const Sizes& sizes, Rules& 
         sized = {.number = block.picture, .width = found->second.first, .height = found->second.second, .sized = true};
       }
       lineHeight =
-          rules.PictureHeight(head, SegmentLength{}, block.pictureHeight, found != sizes.end() ? &sized : nullptr);
+          rules.PictureHeight(head, StyleLength{}, block.pictureHeight, found != sizes.end() ? &sized : nullptr);
     }
     const std::array<std::uint16_t, 1> first = {measures.firstWidth};
     const ParagraphSettings settings{
@@ -530,8 +530,8 @@ void CheckAnyPage(const Desk& desk, const Got& got) {
 
 // ---- A chapter the target writes ----
 
-SegmentLength InPixels(std::uint8_t pixels) {
-  SegmentLength length;
+StyleLength InPixels(std::uint8_t pixels) {
+  StyleLength length;
   length.px = pixels;
   return length;
 }
@@ -607,7 +607,7 @@ class Giver {
     const std::uint32_t kind = input.Byte();
     const std::uint32_t has = input.Byte();
     BlockStyle style;
-    const auto set = [&style, &input, has](std::uint32_t bit, std::uint16_t field, SegmentLength& length) {
+    const auto set = [&style, &input, has](std::uint32_t bit, std::uint16_t field, StyleLength& length) {
       if ((has & bit) != 0) {
         style.has = static_cast<std::uint16_t>(style.has | field);
         length = InPixels(input.Byte());
@@ -675,7 +675,7 @@ class Giver {
     if (!inBlock_) {
       return;
     }
-    Ok(writer_.Picture(number, 0, SegmentLength{}, InPixels(height), "alt"));
+    Ok(writer_.Picture(number, 0, StyleLength{}, InPixels(height), "alt"));
     Block& block = chapter_.back();
     if (block.kind == SegmentBlockKind::kPicture && block.characters.empty()) {
       block.pictureFirst = true;

@@ -19,15 +19,15 @@ constexpr std::uint8_t kMostAlign = 5;
 constexpr std::uint8_t kMostDirection = 1;
 constexpr std::size_t kMasks = 4;
 
-void PutLength(std::span<std::uint8_t> bytes, std::size_t& at, const SegmentLength& length) noexcept {
+void PutLength(std::span<std::uint8_t> bytes, std::size_t& at, const StyleLength& length) noexcept {
   Put16(bytes, at, static_cast<std::uint16_t>(length.em));
   Put16(bytes, at + 2, static_cast<std::uint16_t>(length.px));
   Put16(bytes, at + 4, static_cast<std::uint16_t>(length.percent));
   at += 6;
 }
 
-SegmentLength GetLength(std::span<const std::uint8_t> bytes, std::size_t& at) noexcept {
-  SegmentLength length;
+StyleLength GetLength(std::span<const std::uint8_t> bytes, std::size_t& at) noexcept {
+  StyleLength length;
   length.em = static_cast<std::int16_t>(Get16(bytes, at));
   length.px = static_cast<std::int16_t>(Get16(bytes, at + 2));
   length.percent = static_cast<std::int16_t>(Get16(bytes, at + 4));

@@ -38,12 +38,12 @@ using epub::SegmentAnchor;
 using epub::SegmentBlock;
 using epub::SegmentBlockKind;
 using epub::SegmentItem;
-using epub::SegmentLength;
 using epub::SegmentPicture;
 using epub::SegmentPlace;
 using epub::SegmentReader;
 using epub::SegmentStatus;
 using epub::SegmentWriter;
+using epub::StyleLength;
 
 // A bundle's file, open, with the bundle it is.
 class OpenBundle {
@@ -111,9 +111,7 @@ void AddNumbers(std::string& out, std::initializer_list<long long> numbers) {
   }
 }
 
-void AddLength(std::string& out, const SegmentLength& length) {
-  AddNumbers(out, {length.em, length.px, length.percent});
-}
+void AddLength(std::string& out, const StyleLength& length) { AddNumbers(out, {length.em, length.px, length.percent}); }
 
 // A block's style as the fields of its line.
 std::string Fields(const BlockStyle& style) {
@@ -273,7 +271,7 @@ bool Numbers(std::string_view value, std::vector<long long>& numbers) {
   return true;
 }
 
-SegmentLength LengthOf(const std::vector<long long>& numbers, std::size_t from) {
+StyleLength LengthOf(const std::vector<long long>& numbers, std::size_t from) {
   return {.em = static_cast<std::int16_t>(numbers.at(from)),
           .px = static_cast<std::int16_t>(numbers.at(from + 1)),
           .percent = static_cast<std::int16_t>(numbers.at(from + 2))};

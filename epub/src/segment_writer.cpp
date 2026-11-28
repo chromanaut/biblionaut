@@ -347,8 +347,8 @@ void SegmentWriter::NotePicture(std::uint16_t number) noexcept {
   ++pictureCount_;
 }
 
-SegmentStatus SegmentWriter::Picture(std::uint16_t number, std::uint16_t bits, const SegmentLength& width,
-                                     const SegmentLength& height, std::string_view alt) noexcept {
+SegmentStatus SegmentWriter::Picture(std::uint16_t number, std::uint16_t bits, const StyleLength& width,
+                                     const StyleLength& height, std::string_view alt) noexcept {
   if (status_ != SegmentStatus::kOk) {
     return status_;
   }

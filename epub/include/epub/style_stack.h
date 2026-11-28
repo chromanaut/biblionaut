@@ -8,6 +8,7 @@
 
 #include "epub/css.h"
 #include "epub/css_rules.h"
+#include "epub/style_values.h"
 #include "epub/xml.h"
 
 // What each element of a document comes to.
@@ -70,18 +71,6 @@
 
 namespace bn::epub {
 
-// A length as a bundle keeps one: three amounts, added together, so that
-// what is in ems, in pixels and in percentages can be added up. Each is
-// held to what 16 bits take.
-struct StyleLength {
-  std::int16_t em = 0;       // 64ths of the reader's text size.
-  std::int16_t px = 0;       // 8ths of a CSS pixel.
-  std::int16_t percent = 0;  // 64ths of a hundredth of the page's text width.
-
-  bool IsZero() const noexcept { return em == 0 && px == 0 && percent == 0; }
-  friend bool operator==(const StyleLength&, const StyleLength&) = default;
-};
-
 // What an element is to the lines of a page.
 enum class StyleDisplay : std::uint8_t {
   kNone,      // Nothing: it and all inside it are left out.
@@ -110,17 +99,11 @@ enum class StyleMarker : std::uint8_t {
 // To which side an element is floated.
 enum class StyleFloat : std::uint8_t { kNone, kLeft, kRight };
 
-// The bits of TextStyle::bits.
-inline constexpr std::uint16_t kTextBold = 1U << 0U;
-inline constexpr std::uint16_t kTextItalic = 1U << 1U;
-inline constexpr std::uint16_t kTextUnderline = 1U << 2U;
-inline constexpr std::uint16_t kTextLineThrough = 1U << 3U;
-inline constexpr std::uint16_t kTextSmallCaps = 1U << 4U;
-inline constexpr std::uint16_t kTextRaised = 1U << 5U;
-inline constexpr std::uint16_t kTextLowered = 1U << 6U;
-inline constexpr std::uint16_t kTextBits = 0x7FU;
-
-// How text is set.
+// How text is set, as the styles of a document say it of an element. A
+// run of a chapter's segment has a style of its own (RunStyle,
+// epub/segment.h): its size is of its block's and not of the reader's,
+// its language is one of the chapter's by number, and it keeps less of
+// what the book said.
 struct TextStyle {
   std::uint16_t bits = 0;      // kTextBold and the rest.
   std::uint16_t fromBook = 0;  // The same bits: for each, whether the book said whether it is so.

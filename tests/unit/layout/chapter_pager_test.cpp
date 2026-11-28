@@ -43,11 +43,11 @@ using bn::epub::LinkKind;
 using bn::epub::RunStyle;
 using bn::epub::SegmentBlock;
 using bn::epub::SegmentBlockKind;
-using bn::epub::SegmentLength;
 using bn::epub::SegmentPicture;
 using bn::epub::SegmentReader;
 using bn::epub::SegmentStatus;
 using bn::epub::SegmentWriter;
+using bn::epub::StyleLength;
 using bn::layout::BlockMeasures;
 using bn::layout::BlockSetting;
 using bn::layout::ChapterLine;
@@ -78,8 +78,8 @@ struct Piece {
   std::string text;
   RunStyle run;
   std::uint16_t picture = 0;
-  SegmentLength width;
-  SegmentLength height;
+  StyleLength width;
+  StyleLength height;
 };
 
 struct TestBlock {
@@ -135,7 +135,7 @@ struct Says {
 
 BlockStyle StyleThat(const Says& says) {
   BlockStyle style;
-  const auto set = [&style](std::uint16_t field, SegmentLength& length, std::int16_t value) {
+  const auto set = [&style](std::uint16_t field, StyleLength& length, std::int16_t value) {
     if (value != 0) {
       style.has = static_cast<std::uint16_t>(style.has | field);
       length.px = value;
@@ -161,7 +161,7 @@ BlockStyle StyleThat(const Says& says) {
 // language of the chapter's has its words broken by `hyphenator`.
 class Rules final : public BlockSetting {
  public:
-  static std::uint16_t Pixels(const SegmentLength& length) {
+  static std::uint16_t Pixels(const StyleLength& length) {
     return static_cast<std::uint16_t>(std::clamp<int>(length.px, 0, 30000));
   }
 
@@ -187,8 +187,8 @@ class Rules final : public BlockSetting {
     measures.hyphenator = run.language != 0 ? hyphenator : nullptr;
   }
 
-  std::uint16_t PictureHeight(const SegmentBlock& /*block*/, const SegmentLength& /*width*/,
-                              const SegmentLength& height, const SegmentPicture* picture) noexcept override {
+  std::uint16_t PictureHeight(const SegmentBlock& /*block*/, const StyleLength& /*width*/, const StyleLength& height,
+                              const SegmentPicture* picture) noexcept override {
     ++picturesAsked;
     if (picture != nullptr && picture->sized) {
       return picture->height;

@@ -8,6 +8,7 @@
 
 #include "core/block_file.h"
 #include "epub/bundle.h"
+#include "epub/style_values.h"
 
 // A chapter's segment: what a chapter of a book is, once imported, as bytes
 // in the book's bundle (epub/bundle.h), with what writes one and what reads
@@ -136,17 +137,6 @@ enum class SegmentBlockKind : std::uint8_t {
 // "?" for a number that is no kind.
 const char* SegmentBlockKindName(std::uint8_t kind) noexcept;
 
-// A length: three amounts that are added together. An amount in em is
-// turned into the first when a block is written, so that nothing kept
-// depends on the reader's font or on the page.
-struct SegmentLength {
-  std::int16_t em = 0;       // 64ths of the reader's text size.
-  std::int16_t px = 0;       // 8ths of a CSS pixel.
-  std::int16_t percent = 0;  // 64ths of a hundredth of the page's text width.
-
-  bool operator==(const SegmentLength& other) const noexcept = default;
-};
-
 // The fields a block's style record may have, as the bits of its masks.
 inline constexpr std::uint16_t kBlockAlign = 1U << 0U;
 inline constexpr std::uint16_t kBlockDirection = 1U << 1U;
@@ -194,13 +184,13 @@ struct BlockStyle {
   // The height of a line: a multiple of the text's size in thousandths,
   // or, where that is 0, a length.
   std::uint16_t lineMultiple = 0;
-  SegmentLength lineHeight;
-  SegmentLength indent;  // Of the first line.
+  StyleLength lineHeight;
+  StyleLength indent;  // Of the first line.
   // Every enclosing element's margin and padding on that side, added up.
-  SegmentLength marginLeft;
-  SegmentLength marginRight;
-  SegmentLength spaceBefore;
-  SegmentLength spaceAfter;
+  StyleLength marginLeft;
+  StyleLength marginRight;
+  StyleLength spaceBefore;
+  StyleLength spaceAfter;
   std::uint16_t breaking = 0;  // kBreakPageBefore and the rest.
   std::uint8_t quoteDepth = 0;
   std::uint8_t listDepth = 0;
@@ -216,8 +206,8 @@ struct BlockStyle {
   std::uint8_t tableBits = 0;
   std::uint8_t tableDepth = 0;
   // As declared, for a picture.
-  SegmentLength width;
-  SegmentLength height;
+  StyleLength width;
+  StyleLength height;
 
   bool operator==(const BlockStyle& other) const noexcept = default;
 };
@@ -234,19 +224,15 @@ std::size_t StoreBlockStyle(const BlockStyle& style, std::span<std::uint8_t, kBl
 // alignment or a direction there is none of.
 [[nodiscard]] bool LoadBlockStyle(std::span<const std::uint8_t> in, BlockStyle& style) noexcept;
 
-// How a run of text is set: the bits of a style item.
-inline constexpr std::uint16_t kRunBold = 1U << 0U;
-inline constexpr std::uint16_t kRunItalic = 1U << 1U;
-inline constexpr std::uint16_t kRunUnderline = 1U << 2U;
-inline constexpr std::uint16_t kRunLineThrough = 1U << 3U;
-inline constexpr std::uint16_t kRunSmallCaps = 1U << 4U;
-inline constexpr std::uint16_t kRunRaised = 1U << 5U;
-inline constexpr std::uint16_t kRunLowered = 1U << 6U;
-
 // A style item: how the text after it is set, until the next style item
 // or the block's end. A block begins as one of these is made.
+//
+// It is not the TextStyle a document's styles come to (epub/style_stack.h),
+// though it has the same bits: its size is of the block's size, where
+// that one's is of the reader's; its language is a number the chapter
+// gives; and whether the size is the book's is not kept.
 struct RunStyle {
-  std::uint16_t bits = 0;      // kRunBold and the rest.
+  std::uint16_t bits = 0;      // kTextBold and the rest (epub/style_values.h).
   std::uint16_t fromBook = 0;  // The same bits: for each, whether the book said so.
   // The class of the font family, 0 to 7 (CssFamilyClass has the six there
   // are), and whether the book named it.
@@ -345,8 +331,8 @@ class SegmentWriter {
   // book does not have), kPictureInLine or not, its width and height as
   // the document declares them, and the text that stands for it, of
   // kSegmentMostName bytes at the most.
-  [[nodiscard]] SegmentStatus Picture(std::uint16_t number, std::uint16_t bits, const SegmentLength& width,
-                                      const SegmentLength& height, std::string_view alt) noexcept;
+  [[nodiscard]] SegmentStatus Picture(std::uint16_t number, std::uint16_t bits, const StyleLength& width,
+                                      const StyleLength& height, std::string_view alt) noexcept;
   [[nodiscard]] SegmentStatus EndBlock() noexcept;
 
   // An id of the document: here, in the block in hand; or, between blocks,
@@ -509,8 +495,8 @@ struct SegmentItem {
   std::uint16_t chapter = 0;          // and the chapter.
   std::uint16_t picture = 0;          // kPicture: its number, its bits,
   std::uint16_t pictureBits = 0;      // and its size as declared.
-  SegmentLength width;
-  SegmentLength height;
+  StyleLength width;
+  StyleLength height;
   std::uint32_t characters = 0;  // kEnd: how many characters the block is.
 };
 

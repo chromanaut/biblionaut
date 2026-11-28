@@ -115,10 +115,6 @@ std::size_t Encode(std::uint32_t character, std::array<char, 3>& out) noexcept {
   return 3;
 }
 
-SegmentLength AsSegment(const StyleLength& length) noexcept {
-  return {.em = length.em, .px = length.px, .percent = length.percent};
-}
-
 SegmentBlockKind KindOf(BlockKind kind) noexcept {
   switch (kind) {
     case BlockKind::kHeading:
@@ -421,15 +417,15 @@ BlockStyle ChapterImporter::StyleOf(const BlockRecord& record, unsigned dropped)
   field(kBlockLineHeight, record.lineHeight.kind != StyleLineHeight::Kind::kUnset || record.lineHeightFromBook,
         record.lineHeightFromBook);
   style.lineMultiple = record.lineHeight.multiple;
-  style.lineHeight = AsSegment(record.lineHeight.length);
+  style.lineHeight = record.lineHeight.length;
   field(kBlockIndent, record.hasIndent, record.indentFromBook);
-  style.indent = AsSegment(record.indent);
+  style.indent = record.indent;
   field(kBlockMarginLeft, !record.marginLeft.IsZero() || record.marginLeftFromBook, record.marginLeftFromBook);
-  style.marginLeft = AsSegment(record.marginLeft);
+  style.marginLeft = record.marginLeft;
   field(kBlockMarginRight, !record.marginRight.IsZero() || record.marginRightFromBook, record.marginRightFromBook);
-  style.marginRight = AsSegment(record.marginRight);
+  style.marginRight = record.marginRight;
   field(kBlockSpaceBefore, !record.spaceBefore.IsZero() || record.spaceBeforeFromBook, record.spaceBeforeFromBook);
-  style.spaceBefore = AsSegment(record.spaceBefore);
+  style.spaceBefore = record.spaceBefore;
 
   // The bits are the book's as one thing, so they are said to be only if
   // none of them is the element's own: a heading kept with what follows,
@@ -453,7 +449,7 @@ BlockStyle ChapterImporter::StyleOf(const BlockRecord& record, unsigned dropped)
   style.marker = static_cast<std::uint8_t>(record.marker);
   style.markerNumber = static_cast<std::uint32_t>(record.number);
   field(kBlockWidth, record.centred, true);
-  style.width = AsSegment(record.width);
+  style.width = record.width;
   style.has = static_cast<std::uint16_t>(has);
   style.fromBook = static_cast<std::uint16_t>(fromBook);
   return style;

@@ -39,8 +39,12 @@ many of the block's first characters are a capital that is dropped), how
 deep in quotations and in lists, what stands before an item of a list,
 where a cell is in its table, and a declared width and height. A
 **length** is three amounts that are added together: so much of the
-reader's text size, so many CSS pixels, and so much of the page's width. A
-record with every field is 77 bytes, and one with none is not written.
+reader's text size, so many CSS pixels, and so much of the page's width.
+It is the length a document's styles come to ([What each element comes
+to](element-styles.md)), and the bits of how text is set are the same
+ones too (`epub/style_values.h` has both), so what imports a chapter
+hands them over as they are. A record with every field is 77 bytes, and
+one with none is not written.
 
 **Characters** are what a place in a chapter is counted in: the bytes of
 its text, one for each picture, and one for a block that has neither. A

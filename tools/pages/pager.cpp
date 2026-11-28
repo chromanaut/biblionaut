@@ -15,9 +15,9 @@ using epub::BlockStyle;
 using epub::ItemKind;
 using epub::SegmentBlock;
 using epub::SegmentItem;
-using epub::SegmentLength;
 using epub::SegmentPlace;
 using epub::SegmentStatus;
+using epub::StyleLength;
 using layout::ChapterPlace;
 using layout::PagerStatus;
 
@@ -33,11 +33,11 @@ constexpr std::size_t kBlocksKept = 256;
 // A length in quarters of a pixel, for a block whose text is `size`
 // thousandths of the reader's on a page whose text is `pageWidth` wide.
 // Each of its three amounts is taken whole, what is left over dropped.
-std::int64_t Quarters(const SegmentLength& length, std::int64_t size, std::int64_t pageWidth) {
+std::int64_t Quarters(const StyleLength& length, std::int64_t size, std::int64_t pageWidth) {
   return ((length.em * size) / 1000) + (length.px / 2) + ((length.percent * pageWidth) / 6400);
 }
 
-std::int64_t Pixels(const SegmentLength& length, std::int64_t size, std::int64_t pageWidth) {
+std::int64_t Pixels(const StyleLength& length, std::int64_t size, std::int64_t pageWidth) {
   return Quarters(length, size, pageWidth) / 4;
 }
 
@@ -85,13 +85,13 @@ void MadeUpSetting::MeasureBlock(const SegmentBlock& block, layout::BlockMeasure
 
 void MadeUpSetting::MeasureRun(const SegmentBlock& /*block*/, const epub::RunStyle& run,
                                layout::RunMeasures& measures) noexcept {
-  measures.style = static_cast<std::uint16_t>(((run.bits & epub::kRunBold) != 0 ? 1U : 0U) |
-                                              ((run.bits & epub::kRunItalic) != 0 ? 2U : 0U));
+  measures.style = static_cast<std::uint16_t>(((run.bits & epub::kTextBold) != 0 ? 1U : 0U) |
+                                              ((run.bits & epub::kTextItalic) != 0 ? 2U : 0U));
   measures.hyphenator = hyphenator_;
 }
 
-std::uint16_t MadeUpSetting::PictureHeight(const SegmentBlock& block, const SegmentLength& /*width*/,
-                                           const SegmentLength& height, const epub::SegmentPicture* picture) noexcept {
+std::uint16_t MadeUpSetting::PictureHeight(const SegmentBlock& block, const StyleLength& /*width*/,
+                                           const StyleLength& height, const epub::SegmentPicture* picture) noexcept {
   // As high as the picture is, made to fit the page's width; or as it is
   // declared; or as high as a picture of which nothing is known.
   const std::int64_t pageWidth = geometry_.width;

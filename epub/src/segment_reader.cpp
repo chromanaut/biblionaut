@@ -40,8 +40,8 @@ std::string_view TextOf(std::span<const std::uint8_t> bytes) noexcept {
 
 bool IsPage(std::uint8_t kind) noexcept { return kind == kSegmentIndexPage || kind == kSegmentAnchorPage; }
 
-SegmentLength LengthAt(std::span<const std::uint8_t> bytes, std::size_t at) noexcept {
-  SegmentLength length;
+StyleLength LengthAt(std::span<const std::uint8_t> bytes, std::size_t at) noexcept {
+  StyleLength length;
   length.em = static_cast<std::int16_t>(Get16(bytes, at));
   length.px = static_cast<std::int16_t>(Get16(bytes, at + 2));
   length.percent = static_cast<std::int16_t>(Get16(bytes, at + 4));

@@ -2,8 +2,8 @@
 """End-to-end check of what tools/check-books.py counts in the documents of a spine, run by CTest.
 
 The script counts the paragraphs and the ids of every document of each
-book's spine, and compares them with nothing: no tool reads a document's
-text yet. So this is where the counting itself is checked: it is run over
+book's spine, and compares them with nothing a tool says. So this is
+where the counting itself is checked: it is run over
 two books made here, whose paragraphs and ids were counted by hand as
 they were written, and what it prints is set beside that.
 
@@ -14,7 +14,7 @@ references, an id given twice, an anchor named and not given an id, a
 document the spine names twice, an item of the spine that is a picture,
 and one that is no file of the book.
 
-usage: document_count.py CHECK_BOOKS BN_ZIP BN_XML BN_EPUB BN_CSS BN_PNG BN_JPEG BN_BUNDLE WORK_DIR
+usage: document_count.py CHECK_BOOKS BN_ZIP BN_XML BN_EPUB BN_CSS BN_PNG BN_JPEG BN_BUNDLE BN_PAGES WORK_DIR
 """
 
 from __future__ import annotations
@@ -117,11 +117,11 @@ The tools and Python agree about every book.
 
 
 def main() -> int:
-    if len(sys.argv) != 10:
+    if len(sys.argv) != 11:
         print(__doc__, file=sys.stderr)
         return 2
-    script, zip_tool, xml_tool, epub, css, png, jpeg, bundle = sys.argv[1:9]
-    work = Path(sys.argv[9])
+    script, zip_tool, xml_tool, epub, css, png, jpeg, bundle, pages = sys.argv[1:10]
+    work = Path(sys.argv[10])
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     try:
@@ -138,11 +138,17 @@ def main() -> int:
                    [("third", "third.xhtml", page), ("fourth", "fourth.xhtml", page)], ["third", "fourth"],
                    {"third.xhtml": THIRD, "fourth.xhtml": FOURTH})
         ran = subprocess.run([sys.executable, "-I", script, "--zip", zip_tool, "--xml", xml_tool, "--epub", epub, "--css",
-                              css, "--png", png, "--jpeg", jpeg, "--bundle", bundle, "--document-report", str(work)],
+                              css, "--png", png, "--jpeg", jpeg, "--bundle", bundle, "--pages", pages,
+                              "--document-report", str(work)],
                              capture_output=True, check=False)
         said = ran.stdout.decode("utf-8", "replace")
         expect(ran.returncode == 0, f"check-books.py ended with {ran.returncode}:\n{said}{ran.stderr.decode()}")
-        # The first line counts what the tools read, which is not this test's.
+        # The first line counts what the tools read, which is not this
+        # test's; nor are the two lines about the books' chapters, which
+        # book_chapters.py has.
+        said = "".join(line for line in said.splitlines(keepends=True)
+                       if not line.startswith("The documents of their spines, imported") and
+                       " of the chapters walked, " not in line)
         expect(said.split("\n", 1)[1] == EXPECTED,
                f"what check-books.py said of the two books:\n{said}\nand what it should say after its first line:\n"
                f"{EXPECTED}")

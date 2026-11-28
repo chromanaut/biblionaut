@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -230,21 +231,22 @@ bool IsImported(Bundle& bundle, std::size_t number) {
          (record.state == ChapterState::kWhole || record.state == ChapterState::kCutShort);
 }
 
-std::string Where(const Pager& pager, LineRef line, const ChapterLine* at) {
-  if (line == pager.End() || at == nullptr) {
+std::string Where(const Pager& pager, LineRef line, const std::optional<ChapterLine>& at) {
+  if (line == pager.End() || !at) {
     return "end";
   }
   return std::to_string(line.block) + "+" + std::to_string(at->begin);
 }
 
-// The line a reference is to. Null for the chapter's end, and where the
-// chapter could not be read.
-const ChapterLine* LineAt(Pager& pager, LineRef line) {
-  const SetBlock* set = nullptr;
+// The line a reference is to: a copy of it, since the pager keeps only so
+// many blocks set and lets one go for another. None for the chapter's
+// end, and where the chapter could not be read.
+std::optional<ChapterLine> LineAt(Pager& pager, LineRef line) {
+  std::shared_ptr<const SetBlock> set;
   if (line == pager.End() || !pager.Block(line.block, set) || line.line >= set->lines.size()) {
-    return nullptr;
+    return std::nullopt;
   }
-  return &set->lines[line.line];
+  return set->lines[line.line];
 }
 
 void PrintLine(std::uint32_t block, const ChapterLine& line) {
@@ -268,17 +270,17 @@ int PrintPage(std::size_t chapter, Pager& pager, const Page& page) {
     std::printf("no page\n");
     return 0;
   }
-  const ChapterLine* first = LineAt(pager, page.first);
-  const ChapterLine* next = LineAt(pager, page.next);
-  if (first == nullptr) {
+  const std::optional<ChapterLine> first = LineAt(pager, page.first);
+  const std::optional<ChapterLine> next = LineAt(pager, page.next);
+  if (!first) {
     return Failed(pager);
   }
   std::printf("page chapter %zu from %s to %s lines %zu height %u %s%s\n", chapter,
               Where(pager, page.first, first).c_str(), Where(pager, page.next, next).c_str(), page.lines.size(),
               static_cast<unsigned>(page.height), page.filledDown ? "down" : "up", page.cutShort ? " cut-short" : "");
   for (const LineRef line : page.lines) {
-    const ChapterLine* at = LineAt(pager, line);
-    if (at == nullptr) {
+    const std::optional<ChapterLine> at = LineAt(pager, line);
+    if (!at) {
       return Failed(pager);
     }
     PrintLine(line.block, *at);
@@ -289,7 +291,7 @@ int PrintPage(std::size_t chapter, Pager& pager, const Page& page) {
 int Lines(OpenChapter& chapter, std::uint32_t first, std::uint32_t count) {
   const std::uint32_t blocks = chapter.reader.Blocks();
   for (std::uint32_t block = first; block < blocks && block - first < count; ++block) {
-    const SetBlock* set = nullptr;
+    std::shared_ptr<const SetBlock> set;
     if (!chapter.pager.Block(block, set)) {
       return Failed(chapter.pager);
     }
@@ -430,7 +432,7 @@ bool Walk(std::size_t number, OpenChapter& chapter, bool printPages, Walked& wal
   }
   std::uint64_t all = 0;
   for (std::uint32_t block = 0; block < chapter.reader.Blocks(); ++block) {
-    const SetBlock* set = nullptr;
+    std::shared_ptr<const SetBlock> set;
     if (!pager.Block(block, set)) {
       return wrong(pager.Error());
     }
@@ -457,13 +459,13 @@ bool Walk(std::size_t number, OpenChapter& chapter, bool printPages, Walked& wal
       return wrong(pager.Error());
     }
     ++walked.backs;
-    const ChapterLine* began = LineAt(pager, pages[i - 1].first);
-    if (!above.found || began == nullptr) {
+    const std::optional<ChapterLine> began = LineAt(pager, pages[i - 1].first);
+    if (!above.found || !began) {
       return wrong("there is no page above " + name(before));
     }
     if (above.filledDown) {
-      const ChapterLine* first = LineAt(pager, above.first);
-      if (first == nullptr || !first->starts || !firsts.contains(above.first)) {
+      const std::optional<ChapterLine> first = LineAt(pager, above.first);
+      if (!first || !first->starts || !firsts.contains(above.first)) {
         return wrong("the page above " + name(before) + " was filled down from " + name(above.first) +
                      ", which starts no page");
       }
@@ -482,7 +484,7 @@ bool Walk(std::size_t number, OpenChapter& chapter, bool printPages, Walked& wal
   // The page each place a reader might enter at is shown: it holds the
   // line the place is on, and begins with it if a page may.
   for (std::uint32_t block = 0; block < chapter.reader.Blocks(); ++block) {
-    const SetBlock* set = nullptr;
+    std::shared_ptr<const SetBlock> set;
     if (!pager.Block(block, set)) {
       return wrong(pager.Error());
     }

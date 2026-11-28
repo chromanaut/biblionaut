@@ -197,7 +197,7 @@ bool Pager::Read(std::uint32_t block, SetBlock& set, std::string& characters) {
   return true;
 }
 
-bool Pager::Block(std::uint32_t block, const SetBlock*& set) {
+bool Pager::Block(std::uint32_t block, std::shared_ptr<const SetBlock>& set) {
   auto found = blocks_.find(block);
   if (found == blocks_.end()) {
     SetBlock made;
@@ -232,14 +232,14 @@ bool Pager::Block(std::uint32_t block, const SetBlock*& set) {
       order_.erase(order_.begin());
     }
     order_.push_back(block);
-    found = blocks_.emplace(block, std::move(made)).first;
+    found = blocks_.emplace(block, std::make_shared<const SetBlock>(std::move(made))).first;
   }
-  set = &found->second;
+  set = found->second;
   return true;
 }
 
 bool Pager::LineHolding(std::uint32_t block, std::uint32_t into, LineRef& line) {
-  const SetBlock* set = nullptr;
+  std::shared_ptr<const SetBlock> set;
   if (!Block(block, set)) {
     return false;
   }
@@ -261,7 +261,7 @@ bool Pager::PlaceOf(LineRef line, ChapterPlace& place) {
       place = pager_.End();
       return true;
     }
-    const SetBlock* set = nullptr;
+    std::shared_ptr<const SetBlock> set;
     if (!Block(line.block, set)) {
       return false;
     }
@@ -278,7 +278,7 @@ bool Pager::RefOf(ChapterPlace place, LineRef& line) {
     line = End();
     return true;
   }
-  const SetBlock* set = nullptr;
+  std::shared_ptr<const SetBlock> set;
   if (!Block(place.block, set)) {
     return false;
   }
@@ -311,7 +311,7 @@ bool Pager::Take(Page& page) {
   }
   for (const layout::ChapterLine& on : lines) {
     LineRef line;
-    const SetBlock* set = nullptr;
+    std::shared_ptr<const SetBlock> set;
     if (!RefOf(on.Place(), line) || !Block(line.block, set)) {
       return false;
     }

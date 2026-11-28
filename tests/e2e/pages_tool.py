@@ -539,8 +539,10 @@ def main() -> int:
         entry, (document, fragment) = next((number, found) for number, found in enumerate(entries)
                                            if found[1] and found[0] not in (0, 1, 2, 3, 0xFFFF))
 
+        # The last has one block more than bn-pages keeps set at a time, so
+        # that a walk of it lets blocks go while their lines are in use.
         chapters = {0: segment_tool.make_chapter(11, 40, [b"fr"], True), 1: particular_chapter(),
-                    3: segment_tool.make_chapter(12, 150, [], False)}
+                    3: segment_tool.make_chapter(12, 257, [], False)}
         # The chapter the entry leads to has a block with the id it names.
         led_to = segment_tool.make_chapter(13, 30, [], False)
         ends = [index for index, thing in enumerate(led_to["things"]) if thing[0] == "end"]

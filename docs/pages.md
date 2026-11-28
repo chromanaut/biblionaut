@@ -182,3 +182,7 @@ working-out in Python:
 
 Whether a paragraph's lines are the best there are is not checked there:
 that is `e2e.LinesTool`'s, on the setter itself.
+
+`tools/check-books.py` has `walk` go through chapters imported from real
+books, the first short ones of each or with `--walk-all` every one
+([Real books](real-books.md)).

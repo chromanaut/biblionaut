@@ -290,3 +290,7 @@ face, which the book's sheet named for the whole body.
 - The fuzz target `chapter_import` imports whatever document and sheets
   it is given, with storage and the book failing where the input says,
   and reads the chapter back ([Fuzzing](fuzzing.md)).
+- `tools/check-books.py` imports every document of the spine of each
+  real book it is given, and sets how each ended (whole, cut short,
+  refused, no document) beside what Python's reading of the book says
+  it should ([Real books](real-books.md)).

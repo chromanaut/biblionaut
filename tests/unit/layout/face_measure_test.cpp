@@ -374,6 +374,119 @@ TEST_F(FaceMeasureTest, GivesNoRoomToASoftHyphenOrAZeroWidthSpace) {
             4 * (10 + 10 + 11));
 }
 
+TEST(FaceMeasure, DrawsEveryCharacterButThoseUnicodeSaysAreShownAsNothing) {
+  // The first and the last of each run of them, written out a second time.
+  const std::vector<std::pair<std::uint32_t, std::uint32_t>> runs = {
+      {0x00AD, 0x00AD}, {0x034F, 0x034F}, {0x061C, 0x061C},   {0x115F, 0x1160},   {0x17B4, 0x17B5},   {0x180B, 0x180F},
+      {0x200B, 0x200F}, {0x202A, 0x202E}, {0x2060, 0x206F},   {0x3164, 0x3164},   {0xFE00, 0xFE0F},   {0xFEFF, 0xFEFF},
+      {0xFFA0, 0xFFA0}, {0xFFF0, 0xFFF8}, {0x1BCA0, 0x1BCA3}, {0x1D173, 0x1D17A}, {0xE0000, 0xE0FFF},
+  };
+  for (const auto& [first, last] : runs) {
+    EXPECT_FALSE(FaceMeasure::Drawn(first)) << std::hex << first;
+    EXPECT_FALSE(FaceMeasure::Drawn(last)) << std::hex << last;
+    EXPECT_FALSE(FaceMeasure::Drawn((first + last) / 2)) << std::hex << first;
+    EXPECT_TRUE(FaceMeasure::Drawn(first - 1)) << std::hex << first;
+    EXPECT_TRUE(FaceMeasure::Drawn(last + 1)) << std::hex << last;
+  }
+  // 4,174 of them among all the characters there can be, and no more.
+  std::size_t notDrawn = 0;
+  for (std::uint32_t codePoint = 0; codePoint <= 0x10FFFF; ++codePoint) {
+    if (!FaceMeasure::Drawn(codePoint)) {
+      ++notDrawn;
+    }
+  }
+  EXPECT_EQ(notDrawn, 4174U);
+  // What is beside them in a book is drawn: a no-break space, a dash, the
+  // marks of quotation, an ellipsis, an arrow and the replacement character.
+  for (const std::uint32_t codePoint : {0x00A0U, 0x2014U, 0x2019U, 0x201CU, 0x2026U, 0x202FU, 0x21A9U, 0xFFFDU}) {
+    EXPECT_TRUE(FaceMeasure::Drawn(codePoint)) << std::hex << codePoint;
+  }
+}
+
+TEST_F(FaceMeasureTest, GivesNoRoomToACharacterThatIsNotDrawn) {
+  // A word joiner, U+FEFF, a selector of a symbol's form, a zero width
+  // non-joiner, a mark of direction, and a tag, which is four bytes.
+  Glyph glyph;
+  for (const std::uint32_t codePoint : {0x2060U, 0xFEFFU, 0xFE0EU, 0x200CU, 0x200EU, 0xE0001U}) {
+    EXPECT_FALSE(measure_.GlyphFor(0, codePoint, glyph)) << std::hex << codePoint;
+    EXPECT_FALSE(measure_.GlyphFor(1, codePoint, glyph)) << std::hex << codePoint;
+  }
+  // "a", a word joiner, "b", U+FEFF, "c", a selector and a tag.
+  const std::string_view text =
+      "a\xE2\x81\xA0"
+      "b\xEF\xBB\xBF"
+      "c\xEF\xB8\x8E\xF3\xA0\x80\x81";
+  EXPECT_EQ(Width(text), 4 * (10 + 10 + 11));
+  EXPECT_EQ(Glyphs(text), (std::vector<std::pair<std::uint16_t, std::size_t>>{
+                              {40, 1}, {0, 4}, {41, 5}, {0, 8}, {42, 9}, {0, 12}, {0, 16}}));
+  // One by itself is no width at all, and nor are several.
+  EXPECT_EQ(Width("\xE2\x81\xA0"), 0);
+  EXPECT_EQ(Width("\xEF\xBB\xBF\xE2\x81\xA0\xEF\xB8\x8E"), 0);
+  // A piece that ends before one or after one is as wide as its letters.
+  EXPECT_EQ(Pieces("a\xE2\x81\xA0"
+                   "b",
+                   {1})
+                .widths,
+            (std::vector<std::uint32_t>{10, 10}));
+  EXPECT_EQ(Pieces("a\xE2\x81\xA0"
+                   "b",
+                   {4})
+                .widths,
+            (std::vector<std::uint32_t>{10, 10}));
+}
+
+TEST_F(FaceMeasureTest, KernsAndJoinsNothingAcrossACharacterThatIsNotDrawn) {
+  // A k after a z is a pixel and a half further: 18 pixels and 13, where
+  // the z by itself is 16.
+  EXPECT_EQ(Width("zk"), 4 * (18 + 13));
+  EXPECT_EQ(Width("z\xE2\x81\xA0k"), 4 * (16 + 13));
+  EXPECT_EQ(Width("z\xEF\xBB\xBFk"), 4 * (16 + 13));
+  // An f and an i are one glyph of 20 pixels, and 11 and 12 with a zero
+  // width non-joiner between them, or a word joiner.
+  EXPECT_EQ(Width("fi"), 4 * 20);
+  EXPECT_EQ(Width("f\xE2\x80\x8Ci"), 4 * (11 + 12));
+  EXPECT_EQ(Glyphs("f\xE2\x80\x8Ci"), (std::vector<std::pair<std::uint16_t, std::size_t>>{{45, 1}, {0, 4}, {48, 5}}));
+  EXPECT_EQ(Width("f\xE2\x81\xA0i"), 4 * (11 + 12));
+  // The letters after one are joined from there: an f, and the glyph for
+  // fi.
+  EXPECT_EQ(Glyphs("f\xE2\x81\xA0"
+                   "fi"),
+            (std::vector<std::pair<std::uint16_t, std::size_t>>{{45, 1}, {0, 4}, {80, 6}}));
+}
+
+TEST(FaceMeasure, DoesNotDrawSuchACharacterThoughAFaceHasAGlyphForIt) {
+  // A serif with a glyph for the word joiner and one for U+FEFF, as some
+  // fonts have, and a fallback with one for a selector.
+  ImageFace serif = bn::test::EmptyFace(0, 0);
+  serif.glyphs['a'] = Block(40, 8, 10);
+  serif.glyphs[0x2060] = Block(33, 4, 4);
+  serif.glyphs[0xFEFF] = Block(35, 4, 4);
+  ImageFace fallback = bn::test::EmptyFace(3, 0);
+  fallback.glyphs[0xFE0E] = Block(37, 4, 4);
+  const std::vector<std::uint8_t> image = FontImageBytes({serif, fallback});
+  FontImage fonts;
+  ASSERT_EQ(fonts.Open(image), FontStatus::kOk);
+  FaceMeasure measure;
+  measure.SetFace(0, fonts.Find(FaceRole::kSerif, 0, 20));
+  measure.SetFallback(fonts.Find(FaceRole::kFallback, 0, 20));
+
+  Glyph glyph;
+  ASSERT_TRUE(measure.FaceOf(0).Find(0x2060, glyph));
+  EXPECT_EQ(glyph.advance, 33);
+  EXPECT_FALSE(measure.GlyphFor(0, 0x2060, glyph));
+  EXPECT_FALSE(measure.GlyphFor(0, 0xFEFF, glyph));
+  EXPECT_FALSE(measure.GlyphFor(0, 0xFE0E, glyph));
+  // "a", a word joiner, U+FEFF, "a", a selector.
+  const std::string_view text =
+      "a\xE2\x81\xA0\xEF\xBB\xBF"
+      "a\xEF\xB8\x8E";
+  const std::array<std::uint8_t, 1> ends = {static_cast<std::uint8_t>(text.size())};
+  std::array<std::uint16_t, 1> widths{};
+  std::array<std::uint16_t, 1> hyphens{};
+  measure.Measure(text, 0, ends, widths, hyphens);
+  EXPECT_EQ(widths[0], 4 * (10 + 10));
+}
+
 TEST_F(FaceMeasureTest, MeasuresAByteThatIsNotUtf8AsTheReplacementCharacter) {
   // A byte that goes on with a character and begins none, a character cut
   // short, and one written the long way round: each byte is one.

@@ -17,15 +17,17 @@
 // joins letters, among them two pairs that are each other's letters the
 // other way round, so that the glyphs after a cut need never fall in with
 // those of the whole; an italic that joins less; and a fallback face with
-// letters neither has.
+// letters neither has. The serif and the fallback each have a glyph for a
+// character that is never drawn.
 //
 // What has to hold, whatever the bytes are:
 //
 //   - going through the text a glyph at a time gives the glyphs a plain
 //     second setting of it gives, written here from the faces as they were
 //     described and from what the header says: each standing for the same
-//     bytes, every byte stood for once, and nothing joined across what is
-//     not drawn or across two faces;
+//     bytes, every byte stood for once, nothing joined across what is not
+//     drawn or across two faces, and no glyph for a character that is never
+//     drawn, though a face has one for it;
 //   - each piece is as wide, and each piece's hyphen comes to as much, as
 //     the plain setting makes them: the text from a cut on set by itself,
 //     the text up to a cut with a hyphen after it, and the glyphs after a
@@ -77,6 +79,9 @@ std::vector<ImageFace> Faces() {
   serif.glyphs[0xFB01] = Block(80, 16, 10);
   serif.glyphs[0xFB02] = Block(84, 16, 10);
   serif.missing = Block(36, 8, 12);
+  // A glyph for the word joiner, as some fonts have, and one in the
+  // fallback for a selector: neither is ever drawn.
+  serif.glyphs[0x2060] = Block(33, 4, 4);
   // Two f's and an i, two f's, an a and a b (narrower than a b), a b and
   // an a (wider than a b, a hyphen and an a), three a's.
   serif.extras = {Block(110, 24, 10), Block(78, 16, 10), Block(30, 6, 10), Block(160, 20, 10), Block(50, 10, 10)};
@@ -105,10 +110,37 @@ std::vector<ImageFace> Faces() {
   fallback.glyphs[0x3B3] = Block(48, 8, 10);
   fallback.glyphs[0x3B4] = Block(44, 8, 10);
   fallback.glyphs[0x3B5] = Block(44, 8, 10);
+  fallback.glyphs[0xFE0E] = Block(37, 4, 4);
   fallback.extras = {Block(70, 14, 10)};
   fallback.ligatures = {{.letters = {0x3B4, 0x3B5}, .extra = 0}};
   fallback.kerning[{0x3B1, 0x3B3}] = -8;
   return {serif, italic, fallback};
+}
+
+// Whether a character is one of those that are never drawn: the ones with
+// Unicode's property Default_Ignorable_Code_Point, written out here a second
+// time, those that stand alone and then the runs.
+bool NeverDrawn(std::uint32_t codePoint) {
+  switch (codePoint) {
+    case 0x00AD:
+    case 0x034F:
+    case 0x061C:
+    case 0x115F:
+    case 0x1160:
+    case 0x17B4:
+    case 0x17B5:
+    case 0x3164:
+    case 0xFEFF:
+    case 0xFFA0:
+      return true;
+    default:
+      break;
+  }
+  const auto within = [codePoint](std::uint32_t first, std::uint32_t count) {
+    return codePoint >= first && codePoint - first < count;
+  };
+  return within(0x180B, 5) || within(0x200B, 5) || within(0x202A, 5) || within(0x2060, 16) || within(0xFE00, 16) ||
+         within(0xFFF0, 9) || within(0x1BCA0, 4) || within(0x1D173, 8) || within(0xE0000, 4096);
 }
 
 // One glyph of the plain setting: which face's, and which of its glyphs: a
@@ -141,7 +173,7 @@ struct Setting {
   // style's face's glyph for what it lacks.
   Plain GlyphOf(std::uint32_t codePoint) const {
     Plain glyph;
-    if (codePoint == 0x00AD || codePoint == 0x200B) {
+    if (NeverDrawn(codePoint)) {
       return glyph;
     }
     glyph.code = codePoint;

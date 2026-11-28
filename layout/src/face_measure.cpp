@@ -13,6 +13,33 @@ constexpr std::uint32_t kHyphenMinus = 0x002D;
 constexpr std::uint32_t kSpace = 0x0020;
 constexpr std::uint32_t kReplacement = 0xFFFD;  // What a byte that is not UTF-8 is drawn as.
 
+// The characters that are never drawn, as runs from a first to a last, in
+// order: those with the property Default_Ignorable_Code_Point in version
+// 17.0.0 of the Unicode Character Database (its DerivedCoreProperties.txt).
+struct Run {
+  std::uint32_t first;
+  std::uint32_t last;
+};
+constexpr std::array<Run, 17> kNeverDrawn = {{
+    {0x00AD, 0x00AD},    // The soft hyphen
+    {0x034F, 0x034F},    // The combining grapheme joiner
+    {0x061C, 0x061C},    // The Arabic letter mark
+    {0x115F, 0x1160},    // Hangul fillers
+    {0x17B4, 0x17B5},    // Khmer inherent vowels
+    {0x180B, 0x180F},    // Mongolian variation selectors and vowel separator
+    {0x200B, 0x200F},    // The zero width space, non-joiner and joiner, and the marks of direction
+    {0x202A, 0x202E},    // Embeddings and overrides of direction
+    {0x2060, 0x206F},    // The word joiner, invisible operators, isolates of direction
+    {0x3164, 0x3164},    // The Hangul filler
+    {0xFE00, 0xFE0F},    // Variation selectors
+    {0xFEFF, 0xFEFF},    // The zero width no-break space, which is also the byte order mark
+    {0xFFA0, 0xFFA0},    // The halfwidth Hangul filler
+    {0xFFF0, 0xFFF8},    // Not given to any character
+    {0x1BCA0, 0x1BCA3},  // Shorthand format controls
+    {0x1D173, 0x1D17A},  // Musical format controls
+    {0xE0000, 0xE0FFF},  // Tags and more variation selectors
+}};
+
 // So many pixels as a width, which holds FaceMeasure::kMostPixels at the
 // most.
 std::uint16_t Width(std::uint32_t pixels) noexcept {
@@ -59,6 +86,17 @@ draw::Face FaceMeasure::FaceOf(std::uint16_t style) const noexcept {
     return faces_[style];
   }
   return faces_[0];
+}
+
+bool FaceMeasure::Drawn(std::uint32_t codePoint) noexcept {
+  // The first run a character is not past says which it is: for nearly all
+  // of a book's text that is the first of them.
+  for (const Run& run : kNeverDrawn) {
+    if (codePoint <= run.last) {
+      return codePoint < run.first;
+    }
+  }
+  return true;
 }
 
 bool FaceMeasure::GlyphFor(std::uint16_t style, std::uint32_t codePoint, draw::Glyph& glyph) const noexcept {

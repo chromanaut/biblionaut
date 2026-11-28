@@ -100,8 +100,10 @@ class Bench:
         # A machine of four processors, whatever this one has; and nothing
         # counts as short, so that the order is the order they came in.
         self.environment = {**os.environ, "BN_QUEUE_DIR": str(self.queue), "BN_QUEUE_CORES": "4", "BN_QUEUE_BRIEF": "0"}
-        self.environment.pop("BN_QUEUE_HELD", None)
-        self.environment.pop("BN_QUEUE_OFF", None)
+        # The test may itself be run by a command that is having a turn:
+        # nothing of that turn is passed on.
+        for inherited in ("BN_QUEUE_HELD", "BN_QUEUE_OFF", "BN_QUEUE_TURN_CORES", "BN_QUEUE_BACKGROUND_CORES"):
+            self.environment.pop(inherited, None)
         self.started: list[subprocess.Popen] = []
 
     def command(self, *arguments: str) -> list[str]:
@@ -643,8 +645,13 @@ def what_a_job_starts_does_not_wait(queued: Path, work: Path) -> None:
         bench.finish()
 
 
-# Says how it is being run: 1 or 19 if at the lowest priority, as a Mac or
-# as anything else has it, and how many processors it was told it has.
+def priority() -> int:
+    """What this is being run at: 1 or 19 if at the lowest priority, as a Mac or as anything else has it."""
+    return os.getpriority(4, 0) if sys.platform == "darwin" else os.nice(0)
+
+
+# Says how it is being run: at what priority, as priority() has it, and
+# how many processors it was told it has.
 SAYS_HOW = """\
 import os, sys
 low = os.getpriority(4, 0) if sys.platform == "darwin" else os.nice(0)
@@ -656,6 +663,9 @@ def the_background_holds_nothing_up(queued: Path, work: Path) -> None:
     bench = Bench(queued, work, "background")
     environment = {**bench.environment, "BN_QUEUE_BACKGROUND_CORES": "2"}
     lowest = "1" if sys.platform == "darwin" else "19"
+    # What the test itself is run at, which is the lowest if it was started
+    # in the background.
+    own = str(priority())
 
     def how(*options: str, **more) -> str:
         result = subprocess.run(
@@ -727,8 +737,8 @@ def the_background_holds_nothing_up(queued: Path, work: Path) -> None:
         check(how("--background", "--cores", "7") == f"{lowest} 2", "one that asks for more than the background has")
         check(how("--name", "background") == f"{lowest} 2", "the queue named so is the background")
         # Anything else is run as it is, and told the same.
-        check(how("--cores", "3") == "0 3", f"one that shares the machine ({how('--cores', '3')})")
-        check(how() == "0 4", f"one with the whole machine ({how()})")
+        check(how("--cores", "3") == f"{own} 3", f"one that shares the machine ({how('--cores', '3')})")
+        check(how() == f"{own} 4", f"one with the whole machine ({how()})")
         # One that is not there is told of as anywhere.
         missing = subprocess.run(
             bench.command("--background", "no-such-command-anywhere"), env=environment, capture_output=True, text=True, timeout=60
@@ -739,7 +749,7 @@ def the_background_holds_nothing_up(queued: Path, work: Path) -> None:
         )
         # With the queue switched off a command is run as it is, and told nothing.
         off = {**environment, "BN_QUEUE_OFF": "1"}
-        check(how("--background", env=off) == "0 -", f"with the queue off ({how('--background', env=off)})")
+        check(how("--background", env=off) == f"{own} -", f"with the queue off ({how('--background', env=off)})")
     finally:
         bench.finish()
 

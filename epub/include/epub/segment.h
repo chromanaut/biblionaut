@@ -178,7 +178,7 @@ inline constexpr std::uint16_t kBreakDropped = 3U << kBreakDroppedShift;
 struct BlockStyle {
   std::uint16_t has = 0;
   std::uint16_t fromBook = 0;
-  std::uint8_t align = 0;      // 0 left, 1 right, 2 centre, 3 justified, 4 start, 5 end.
+  std::uint8_t align = 0;      // An AlignNumber(): 0 left, 1 right, 2 centre, 3 justified, 4 start, 5 end.
   std::uint8_t direction = 0;  // 0 left to right, 1 right to left.
   std::uint16_t size = 1000;   // Of the reader's text size, in thousandths.
   // The height of a line: a multiple of the text's size in thousandths,
@@ -194,7 +194,7 @@ struct BlockStyle {
   std::uint16_t breaking = 0;  // kBreakPageBefore and the rest.
   std::uint8_t quoteDepth = 0;
   std::uint8_t listDepth = 0;
-  std::uint8_t marker = 0;  // What stands before an item of a list: a number that means what whoever imports says.
+  std::uint8_t marker = 0;  // What stands before an item of a list: a StyleMarker, as its number.
   std::uint32_t markerNumber = 0;
   // Which table of the chapter, the row and the column, how many of each
   // the cell spans, whether it is a header cell (1), how deep in tables.

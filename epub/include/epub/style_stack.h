@@ -79,23 +79,6 @@ enum class StyleDisplay : std::uint8_t {
   kListItem,  // A block that is an item of a list.
 };
 
-// How lines stand between a block's sides.
-enum class StyleAlign : std::uint8_t { kUnset, kLeft, kRight, kCenter, kJustify, kStart, kEnd };
-
-// What stands before an item of a list.
-enum class StyleMarker : std::uint8_t {
-  kNone,
-  kDisc,
-  kCircle,
-  kSquare,
-  kDecimal,
-  kDecimalLeadingZero,
-  kLowerAlpha,
-  kUpperAlpha,
-  kLowerRoman,
-  kUpperRoman,
-};
-
 // To which side an element is floated.
 enum class StyleFloat : std::uint8_t { kNone, kLeft, kRight };
 

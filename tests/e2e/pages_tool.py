@@ -64,13 +64,14 @@ def held(value: int, least: int, most: int) -> int:
     return max(least, min(most, value))
 
 
-def quarters(length: tuple, size: int, width: int) -> int:
-    """A length in quarters of a pixel: its three amounts, each taken whole, added."""
-    return whole(length[0] * size, 1000) + whole(length[1], 2) + whole(length[2] * width, 6400)
+def quarters(length: tuple, width: int) -> int:
+    """A length in quarters of a pixel: its three amounts, each taken whole, added. The first is so many 64ths of
+    the reader's text size, whatever the size of the block's own text."""
+    return whole(length[0] * TEXT_SIZE * 4, 64) + whole(length[1], 2) + whole(length[2] * width, 6400)
 
 
-def pixels(length: tuple, size: int, width: int) -> int:
-    return whole(quarters(length, size, width), 4)
+def pixels(length: tuple, width: int) -> int:
+    return whole(quarters(length, width), 4)
 
 
 def character_width(first: int, style: int) -> int:
@@ -129,30 +130,30 @@ def blocks_of(chapter: dict, width: int, height: int) -> list[dict]:
     for number, made in enumerate(blocks):
         said = made["style"]
         size = said["size"][0][0] if "size" in said else 1000
-        length = lambda name: quarters(said[name][0], size, width) if name in said else 0  # noqa: E731
+        length = lambda name: quarters(said[name][0], width) if name in said else 0  # noqa: E731
         made["rest"] = held(width - length("left") - length("right"), width // 10, width)
         made["first"] = held(made["rest"] - length("indent"), width // 10, width)
         line = whole(TEXT_SIZE * size * 1250, 1_000_000)
         if "line" in said:
             multiple, *amounts = said["line"][0]
-            line = whole(TEXT_SIZE * size * multiple, 1_000_000) if multiple else pixels(tuple(amounts), size, width)
+            line = whole(TEXT_SIZE * size * multiple, 1_000_000) if multiple else pixels(tuple(amounts), width)
         # A block that is a picture, where the picture comes before any text.
         if made["kind"] == 4 and made["pictures"] and made["pictures"][0][2] == 0:
             picture, declared, _ = made["pictures"][0]
-            line = pixels(declared, size, width)
+            line = pixels(declared, width)
             line = line if line > 0 else 100
             if picture in chapter["sizes"]:
                 wide, high = chapter["sizes"][picture]
                 line = whole(high * (width // 4), wide) if wide > width // 4 else high
             line = min(line, height)
         made["line"] = held(line, 1, 65535)
-        space = held(pixels(said["before"][0], size, width), 0, 65535) if "before" in said else 0
+        space = held(pixels(said["before"][0], width), 0, 65535) if "before" in said else 0
         made["gap"] = held(space + after_before, 0, 65535)
         breaking = said["breaking"][0][0] if "breaking" in said else 0
         made["kept"] = kept
         made["together"] = bool(breaking & 4)
         made["starts"] = number == 0 or bool(breaking & 1)
-        after_before = held(pixels(said["after"][0], size, width), 0, 65535) if "after" in said else 0
+        after_before = held(pixels(said["after"][0], width), 0, 65535) if "after" in said else 0
         kept = bool(breaking & 2)
     return blocks
 
@@ -463,6 +464,10 @@ def particular_chapter() -> dict:
     # are as high as text.
     things += [("block", 4, 0, 185, {}), ("text", b"A caption first: "),
                ("picture", 7, 0, (0, 0, 0), (0, 0, 0), b"then the picture"), ("end",)]
+    # Text half as large again, with margins of an em and of two as the
+    # format has them: of the reader's text size, not of the block's.
+    things += plain(1, 187, even[:900], {"size": ((1500,), True), "left": ((64, 0, 0), True),
+                                         "right": ((128, 0, 0), False)})
     things += [("id", b"the-last-block")]
     things += plain(1, 190, b"The last block.")
     return {"state": "whole", "reason": 0, "source_bytes": 500, "languages": [], "sizes": {7: (2000, 1000),
@@ -503,6 +508,10 @@ def check_particular(lines: list[dict], blocks: list[dict]) -> None:
            f"{[by_block(number)[0]['height'] for number in (16, 17, 18)]}")
     expect(by_block(19)[0]["height"] == 20 and bytes([PICTURE]) in by_block(19)[0]["text"],
            "a block that is a picture has lines as high as the picture only where the picture comes first")
+    # An em of the reader's 16 pixels is 64 quarters: 192 less in all, and
+    # 1,568 hold nine words (1,440) and not ten.
+    expect(blocks[20]["rest"] == 1568 and all(len(line["text"].split()) == 9 for line in by_block(20)[:-1]),
+           f"a margin in em is of the reader's text size, whatever the block's: lines of {blocks[20]['rest']}")
 
 
 def main() -> int:

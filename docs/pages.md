@@ -52,8 +52,10 @@ This is the tool's own, until something sets real text in a real face:
 - Widths are in quarters of a pixel, as the made-up face has them, and
   heights in pixels. The page's text is 440 pixels wide and 760 high
   unless told otherwise, and the reader's text size is 16 pixels.
-- A length is its three amounts added: so much of the block's text size,
-  so many pixels, and so much of the page's width.
+- A length is its three amounts added: so much of the reader's text
+  size, so many pixels, and so much of the page's width. What a book
+  wrote in em is of the reader's size by the time a block is written,
+  whatever the size of the block's own text.
 - A block's lines are as wide as the page's text less its margins, and
   its first line less its indent as well; never wider than the page's
   text and never narrower than a tenth of it.

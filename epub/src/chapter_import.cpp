@@ -407,9 +407,7 @@ BlockStyle ChapterImporter::StyleOf(const BlockRecord& record, unsigned dropped)
   };
   field(kBlockAlign, record.align != StyleAlign::kUnset || record.alignFromBook, record.alignFromBook);
   // Nothing said, as the book's, is the side lines start from.
-  style.align = record.align == StyleAlign::kUnset
-                    ? std::uint8_t{4}
-                    : static_cast<std::uint8_t>(static_cast<unsigned>(record.align) - 1U);
+  style.align = AlignNumber(record.align);
   field(kBlockDirection, record.rightToLeft, false);
   style.direction = record.rightToLeft ? 1 : 0;
   field(kBlockSize, record.size != 1000 || record.sizeFromBook, record.sizeFromBook);

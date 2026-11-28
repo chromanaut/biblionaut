@@ -15,7 +15,6 @@ using segment_format::Get32;
 using segment_format::Put16;
 using segment_format::Put32;
 
-constexpr std::uint8_t kMostAlign = 5;
 constexpr std::uint8_t kMostDirection = 1;
 constexpr std::size_t kMasks = 4;
 
@@ -189,7 +188,7 @@ bool LoadBlockStyle(std::span<const std::uint8_t> in, BlockStyle& style) noexcep
   std::size_t at = kMasks;
   if ((has & kBlockAlign) != 0) {
     style.align = in[at++];
-    if (style.align > kMostAlign) {
+    if (style.align > kMostAlignNumber) {
       return false;
     }
   }

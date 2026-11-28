@@ -30,16 +30,16 @@ constexpr std::int64_t kUnknownPicture = 100;
 // How many blocks are kept set.
 constexpr std::size_t kBlocksKept = 256;
 
-// A length in quarters of a pixel, for a block whose text is `size`
-// thousandths of the reader's on a page whose text is `pageWidth` wide.
-// Each of its three amounts is taken whole, what is left over dropped.
-std::int64_t Quarters(const StyleLength& length, std::int64_t size, std::int64_t pageWidth) {
-  return ((length.em * size) / 1000) + (length.px / 2) + ((length.percent * pageWidth) / 6400);
+// A length in quarters of a pixel, on a page whose text is `pageWidth`
+// wide. Its first amount is of the reader's text size, whatever the size
+// of the block's own text: what a book wrote in em was made that when the
+// block was written. Each of its three amounts is taken whole, what is
+// left over dropped.
+std::int64_t Quarters(const StyleLength& length, std::int64_t pageWidth) {
+  return ((length.em * kTextSize * 4) / 64) + (length.px / 2) + ((length.percent * pageWidth) / 6400);
 }
 
-std::int64_t Pixels(const StyleLength& length, std::int64_t size, std::int64_t pageWidth) {
-  return Quarters(length, size, pageWidth) / 4;
-}
+std::int64_t Pixels(const StyleLength& length, std::int64_t pageWidth) { return Quarters(length, pageWidth) / 4; }
 
 std::uint16_t Held(std::int64_t value, std::int64_t least, std::int64_t most) {
   return static_cast<std::uint16_t>(std::clamp(value, least, most));
@@ -68,18 +68,17 @@ void MadeUpSetting::MeasureBlock(const SegmentBlock& block, layout::BlockMeasure
   const std::int64_t size = said.size;
   const std::int64_t pageWidth = geometry_.width;
   const std::int64_t narrowest = pageWidth / 10;
-  measures.restWidth =
-      Held(pageWidth - Quarters(said.marginLeft, size, pageWidth) - Quarters(said.marginRight, size, pageWidth),
-           narrowest, pageWidth);
-  measures.firstWidth = Held(measures.restWidth - Quarters(said.indent, size, pageWidth), narrowest, pageWidth);
+  measures.restWidth = Held(pageWidth - Quarters(said.marginLeft, pageWidth) - Quarters(said.marginRight, pageWidth),
+                            narrowest, pageWidth);
+  measures.firstWidth = Held(measures.restWidth - Quarters(said.indent, pageWidth), narrowest, pageWidth);
   std::int64_t lineHeight = (kTextSize * size * kUsualLineHeight) / 1000000;
   if ((said.has & epub::kBlockLineHeight) != 0) {
-    lineHeight = said.lineMultiple != 0 ? (kTextSize * size * said.lineMultiple) / 1000000
-                                        : Pixels(said.lineHeight, size, pageWidth);
+    lineHeight =
+        said.lineMultiple != 0 ? (kTextSize * size * said.lineMultiple) / 1000000 : Pixels(said.lineHeight, pageWidth);
   }
   measures.lineHeight = Held(lineHeight, 1, 65535);
-  measures.spaceBefore = Held(Pixels(said.spaceBefore, size, pageWidth), 0, 65535);
-  measures.spaceAfter = Held(Pixels(said.spaceAfter, size, pageWidth), 0, 65535);
+  measures.spaceBefore = Held(Pixels(said.spaceBefore, pageWidth), 0, 65535);
+  measures.spaceAfter = Held(Pixels(said.spaceAfter, pageWidth), 0, 65535);
   measures.hyphenPenalty = 0;
 }
 
@@ -90,12 +89,12 @@ void MadeUpSetting::MeasureRun(const SegmentBlock& /*block*/, const epub::RunSty
   measures.hyphenator = hyphenator_;
 }
 
-std::uint16_t MadeUpSetting::PictureHeight(const SegmentBlock& block, const StyleLength& /*width*/,
+std::uint16_t MadeUpSetting::PictureHeight(const SegmentBlock& /*block*/, const StyleLength& /*width*/,
                                            const StyleLength& height, const epub::SegmentPicture* picture) noexcept {
   // As high as the picture is, made to fit the page's width; or as it is
   // declared; or as high as a picture of which nothing is known.
   const std::int64_t pageWidth = geometry_.width;
-  std::int64_t lineHeight = Pixels(height, block.style.size, pageWidth);
+  std::int64_t lineHeight = Pixels(height, pageWidth);
   lineHeight = lineHeight > 0 ? lineHeight : kUnknownPicture;
   if (picture != nullptr && picture->sized && picture->width != 0 && picture->height != 0) {
     const std::int64_t widthInPixels = pageWidth / 4;

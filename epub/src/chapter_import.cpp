@@ -378,7 +378,10 @@ bool ChapterImporter::Emit(const RunStyle& run) noexcept {
 RunStyle ChapterImporter::RunOf(const TextStyle& text) const noexcept {
   RunStyle run;
   run.bits = text.bits;
-  run.fromBook = text.fromBook;
+  // A bit is the book's only where it is set. Where a sheet says of every
+  // paragraph that its text is not bold, each block would otherwise begin
+  // with a style item that changes nothing.
+  run.fromBook = static_cast<std::uint16_t>(text.fromBook & text.bits);
   run.familyClass = static_cast<std::uint8_t>(text.family);
   run.familyFromBook = text.familyFromBook;
   // The StyleStack's number for the language, until a style item is

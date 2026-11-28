@@ -450,6 +450,20 @@ TEST(ChapterImport, WritesAStyleItemWhereTheSettingOfTextChanges) {
                      "{1/0/0/0/1000}A heading"}));
 }
 
+TEST(ChapterImport, KeepsNothingOfWhatABookSaysTextIsNot) {
+  ImportFixture f;
+  // A sheet says of every paragraph what it would be anyway, as many do,
+  // and of text that an element makes bold or raises that it is neither.
+  ASSERT_EQ(f.Import(Page("<p>Plain <b class='n'>not bold</b> <b>bold</b> <span class='b'>the book's</span>"
+                          " x<sup class='v'>2</sup></p><h2 class='n'>Nor a heading</h2>"),
+                     "p { font-weight: normal; font-style: normal; font-variant: normal }"
+                     " .n { font-weight: 400 } .b { font-weight: bold } .v { vertical-align: baseline }"),
+            ImportStatus::kOk);
+  EXPECT_EQ(f.Texts(), Strings({"Plain not bold {1/0/0/0/1000}bold{0/0/0/0/1000} {1/1/0/0/1000}the book's"
+                                "{0/0/0/0/1000} x{0/0/0/0/833}2",
+                                "Nor a heading"}));
+}
+
 TEST(ChapterImport, GivesARunsSizeAsSoMuchOfItsBlocks) {
   ImportFixture f;
   ASSERT_EQ(

@@ -3512,10 +3512,19 @@ def chapter_import_seeds() -> None:
               "<p>Before <span class='gone'> hidden </span> after.</p>"
               "<hr>Inside <b id='in-rule'>a rule</b><br/><img alt='r'/> </hr>")
 
+    # What a sheet says text is not: of every paragraph, where it changes
+    # nothing, and of text that an element made bold, slanted or raised.
+    is_not = ("<p>Plain, <b class='n'>not bold</b>, <i class='n'>not italic</i>, x<sup class='l'>2</sup>, "
+              "<b>and bold all the same</b>.</p><h2 class='n'>Nor a heading</h2><p class='f n'>Nor a first letter.</p>"
+              "<p style='font-weight: 400'>Nor by <b style='font-style: inherit'>its own</b> style.</p>")
+    not_sheet = (sheet + "p, .n { font-weight: normal; font-style: normal; font-variant: normal }\n"
+                 ".l { vertical-align: baseline } .n::first-letter { font-weight: 300 }\n")
+
     seed("white-space-and-names", space)
     seed("as-written", written)
     seed("ids-and-pictures", ids)
     seed("how-text-is-set", set_as, choices=1 << 6)
+    seed("what-text-is-not", is_not, sheets=not_sheet)
     seed("capitals", capitals)
     seed("blocks", blocks)
     seed("a-byte-at-a-time", space + capitals[:1200], choices=3)

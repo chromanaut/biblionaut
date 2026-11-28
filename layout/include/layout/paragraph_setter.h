@@ -46,9 +46,13 @@
 //   - A line may end after a hyphen or a dash written in a word (U+002D,
 //     U+2010, U+2012, U+2013, U+2014) at no price, with nothing more shown:
 //     but not before the word's first character that is neither, not
-//     between two of them, and not between a hyphen-minus and a figure. It
-//     may end at a zero width space (U+200B) the same way, which is on no
-//     line either.
+//     between two of them, not between a hyphen-minus and a figure, and not
+//     where a word joiner (U+2060) or U+FEFF comes straight after it, which
+//     a book puts where no line is to end: on either side of the dash
+//     between two years, say. A joiner keeps a line from ending nowhere
+//     else: one may still end at a space beside it.
+//   - A line may end at a zero width space (U+200B) the same way, which is
+//     on no line either.
 //   - A stretch with nowhere to end a line that is wider than the
 //     paragraph's narrowest line may be ended between any two of its
 //     characters, as a last resort: the lines it runs over are then filled

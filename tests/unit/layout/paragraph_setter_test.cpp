@@ -42,6 +42,9 @@ using Runs = std::vector<Run>;
 
 constexpr std::string_view kSoftHyphen = "\xC2\xAD";
 constexpr std::string_view kZeroWidthSpace = "\xE2\x80\x8B";
+// The two joiners: U+2060, and U+FEFF, the zero width no-break space.
+constexpr std::string_view kWordJoiner = "\xE2\x81\xA0";
+constexpr std::string_view kNoBreakNothing = "\xEF\xBB\xBF";
 
 // How a paragraph is to be set.
 struct Setting {
@@ -542,6 +545,88 @@ TEST(ParagraphSetter, EndsNoLineAfterAHyphenThatIsNotToBeParted) {
   EXPECT_EQ(SetText("aaa- bbb", measure, {.width = 40}).shown, (Shown{"aaa-", "bbb"}));
 }
 
+TEST(ParagraphSetter, EndsNoLineAfterADashThatAJoinerFollows) {
+  TestMeasure measure = Tens();
+
+  // With nothing between the dash and the next letter, a line ends there.
+  EXPECT_EQ(SetText("xx aaa\xE2\x80\x94"
+                    "bbb",
+                    measure, {.width = 90})
+                .shown,
+            (Shown{"xx aaa\xE2\x80\x94", "bbb"}));
+  // With a word joiner after the dash, or U+FEFF, none does: the line ends
+  // at the space.
+  for (const std::string_view joiner : {"\xE2\x81\xA0", "\xEF\xBB\xBF"}) {
+    const std::string word = "aaa\xE2\x80\x94" + std::string(joiner) + "bbb";
+    Set set = SetText("xx " + word, measure, {.width = 90});
+    EXPECT_EQ(set.shown, (Shown{"xx", word}));
+    EXPECT_EQ(set.lastResortCuts, 0U);
+    // And the same a byte at a time.
+    set = SetText("xx " + word, measure, {.width = 90, .atATime = 1});
+    EXPECT_EQ(set.shown, (Shown{"xx", word}));
+    // After a hyphen-minus as after a dash.
+    EXPECT_EQ(SetText("xx aaa-" + std::string(joiner) + "bbb", measure, {.width = 90}).shown,
+              (Shown{"xx", "aaa-" + std::string(joiner) + "bbb"}));
+  }
+  // A joiner that is the last thing in its word is one all the same.
+  EXPECT_EQ(SetText("xx aaa\xE2\x80\x94\xE2\x81\xA0", measure, {.width = 60}).shown,
+            (Shown{"xx", "aaa\xE2\x80\x94\xE2\x81\xA0"}));
+  // Two years with a dash between them and a joiner on either side of it.
+  const std::string years =
+      "1914\xE2\x81\xA0\xE2\x80\x93\xE2\x81\xA0"
+      "1918";
+  EXPECT_EQ(SetText("xx " + years, measure, {.width = 120}).shown, (Shown{"xx", years}));
+  // Two dashes with a joiner between them are not parted, and a line may
+  // end after the second.
+  const std::string dashes = "aa\xE2\x80\x94\xE2\x81\xA0\xE2\x80\x94";
+  EXPECT_EQ(SetText("xx " + dashes + "bb", measure, {.width = 70}).shown, (Shown{"xx", dashes + "bb"}));
+  EXPECT_EQ(SetText("xx " + dashes + "bb", measure, {.width = 80}).shown, (Shown{"xx " + dashes, "bb"}));
+}
+
+TEST(ParagraphSetter, EndsNoLineAfterADashThoughTheJoinerAfterItIsInAnotherStyle) {
+  TestMeasure measure = Tens();
+  const Runs runs = {{.text = "xx aaa\xE2\x80\x94", .style = 0},
+                     {.text = "\xE2\x81\xA0"
+                              "bbb",
+                      .style = 1}};
+
+  EXPECT_EQ(SetRuns(runs, measure, {.width = 90}).shown, (Shown{"xx",
+                                                                "aaa\xE2\x80\x94\xE2\x81\xA0"
+                                                                "bbb"}));
+  EXPECT_EQ(SetRuns(runs, measure, {.width = 90, .atATime = 1}).shown, (Shown{"xx",
+                                                                              "aaa\xE2\x80\x94\xE2\x81\xA0"
+                                                                              "bbb"}));
+}
+
+TEST(ParagraphSetter, AJoinerKeepsALineFromEndingNowhereElse) {
+  TestMeasure measure = Tens();
+
+  // One before a dash: the line ends after the dash as it would.
+  EXPECT_EQ(SetText("xx aaa\xE2\x81\xA0\xE2\x80\x94"
+                    "bbb",
+                    measure, {.width = 90})
+                .shown,
+            (Shown{"xx aaa\xE2\x81\xA0\xE2\x80\x94", "bbb"}));
+  // One between a dash and a space: the line ends at the space.
+  EXPECT_EQ(SetText("aaa\xE2\x80\x94\xE2\x81\xA0 bbb", measure, {.width = 50}).shown,
+            (Shown{"aaa\xE2\x80\x94\xE2\x81\xA0", "bbb"}));
+  // One after a space.
+  EXPECT_EQ(SetText("aaaa \xE2\x81\xA0"
+                    "bbb",
+                    measure, {.width = 50})
+                .shown,
+            (Shown{"aaaa",
+                   "\xE2\x81\xA0"
+                   "bbb"}));
+  // A character that shares two of a joiner's three bytes is none: U+2061,
+  // U+2020, U+20A0, U+FEFE, U+FF3F and U+EEFF.
+  for (const std::string_view other :
+       {"\xE2\x81\xA1", "\xE2\x80\xA0", "\xE2\x82\xA0", "\xEF\xBB\xBE", "\xEF\xBC\xBF", "\xEE\xBB\xBF"}) {
+    EXPECT_EQ(SetText("xx aaa\xE2\x80\x94" + std::string(other) + "bbb", measure, {.width = 90}).shown,
+              (Shown{"xx aaa\xE2\x80\x94", std::string(other) + "bbb"}));
+  }
+}
+
 TEST(ParagraphSetter, EndsALineAfterTheLastOfHyphensInARow) {
   TestMeasure measure = Tens();
   const Set set = SetText("xx aa--bbb", measure, {.width = 70});
@@ -1004,7 +1089,18 @@ std::string MadeUpText(std::uint32_t seed, std::size_t words, bool longWords) {
   std::mt19937 random(seed);
   const auto upTo = [&random](std::uint32_t most) { return static_cast<std::uint32_t>(random() % (most + 1)); };
   const std::vector<std::string> between = {" ", " ", " ", " ", "  ", "\t", "\n", " \n ", "\r\n"};
-  const std::vector<std::string> inside = {"-", "-", "\xC2\xAD", "\xE2\x80\x8B", "\xE2\x80\x94", "--", "\xC2\xA0", "'"};
+  const std::vector<std::string> inside = {"-",
+                                           "-",
+                                           "\xC2\xAD",
+                                           "\xE2\x80\x8B",
+                                           "\xE2\x80\x94",
+                                           "--",
+                                           "\xC2\xA0",
+                                           "'",
+                                           "\xE2\x81\xA0",
+                                           "\xE2\x80\x94\xE2\x81\xA0",
+                                           "-\xEF\xBB\xBF",
+                                           "\xE2\x80\x93\xE2\x81\xA0"};
   const std::vector<std::string> letters = {"a", "b", "a", "b", "c", "d", "\xC3\xA9", "1", "M", "i"};
   std::string text;
   for (std::size_t word = 0; word < words; ++word) {
@@ -1221,7 +1317,9 @@ std::vector<PlainItem> PlainItemsOf(const std::string& text, TestMeasure& measur
         i += dash;
         const bool another = i < word.size() && dashAt(at + i) != 0;
         const bool figure = dash == 1 && i < word.size() && word[i] >= '0' && word[i] <= '9';
-        if (letterSeen && i < word.size() && !another && !figure) {
+        const bool joined = word.compare(i, kWordJoiner.size(), kWordJoiner) == 0 ||
+                            word.compare(i, kNoBreakNothing.size(), kNoBreakNothing) == 0;
+        if (letterSeen && i < word.size() && !another && !figure && !joined) {
           box(i, PlainItem::Kind::kFree);
           from = i;
         }

@@ -10,7 +10,7 @@ costs, by trying for every place every place a line ending there could have
 begun.
 
 For paragraphs made up at random, with words that have hyphens, dashes, soft
-hyphens and zero width spaces in them, parts in a second style, line ends
+hyphens, zero width spaces and word joiners in them, parts in a second style, line ends
 the text asks for, and a made-up language's hyphenation:
 
   - every line bn-lines prints has to be a run of those stretches, in order
@@ -40,6 +40,7 @@ from pathlib import Path
 SOFT_HYPHEN = "­"
 ZERO_WIDTH_SPACE = "​"
 DASHES = "-‐‒–—"
+JOINERS = "⁠﻿"  # A word joiner and U+FEFF: no line ends after a dash that one follows.
 LONGEST_WORD = 63  # Characters: the hyphenator gives a longer word no places.
 
 # The letters of the made-up language, and characters that are none of its.
@@ -250,7 +251,8 @@ def take_apart(written: str, language: Language | None) -> tuple[str, list]:
             if character in DASHES:
                 following = word[index + 1][0] if index + 1 < len(word) else ""
                 minus_before_figure = character == "-" and following.isdigit() and following.isascii()
-                if letter_seen and following and following not in DASHES and not minus_before_figure:
+                joined = following != "" and following in JOINERS
+                if letter_seen and following and following not in DASHES and not minus_before_figure and not joined:
                     place(Place(FREE))
                     stretch = None
             else:
@@ -445,8 +447,12 @@ def check_paragraph(what: str, written: str, lines: list[Line], language: Langua
 def made_up_word(rng: random.Random, most: int) -> str:
     word = ""
     for _ in range(rng.randint(1, most)):
-        chance = rng.randrange(40)
-        if chance < 30:
+        chance = rng.randrange(43)
+        if chance >= 42:
+            word += rng.choice(JOINERS)
+        elif chance >= 40:
+            word += rng.choice(DASHES) + rng.choice(JOINERS)
+        elif chance < 30:
             letter = rng.choice(LETTERS)
             word += letter.upper() if rng.randrange(12) == 0 else letter
         elif chance < 34:
@@ -466,6 +472,13 @@ def made_up_word(rng: random.Random, most: int) -> str:
 
 def made_up_paragraph(rng: random.Random, longest_word: int) -> str:
     """A paragraph as it goes into the file: lines of text, none of them empty."""
+
+    def has_text(line: str) -> bool:
+        """Whether something of the line is on a line: not asterisks, spaces and marks alone."""
+        for nothing in ("*", " ", SOFT_HYPHEN, ZERO_WIDTH_SPACE):
+            line = line.replace(nothing, "")
+        return line != ""
+
     lines = [""]
     for _ in range(rng.randint(1, 70)):
         word = made_up_word(rng, longest_word)
@@ -473,15 +486,15 @@ def made_up_paragraph(rng: random.Random, longest_word: int) -> str:
             word = "*" + word + "*"
         lines[-1] += word
         chance = rng.randrange(20)
-        if chance == 0 and lines[-1].replace("*", "").strip():
+        if chance == 0 and has_text(lines[-1]):
             lines.append("")
         elif chance == 1:
             lines[-1] += "   "
         else:
             lines[-1] += " "
     # No line of the file may be empty, or it would end the paragraph; and
-    # one of asterisks alone would be a line end with nothing on it.
-    lines = [line for line in lines if line.replace("*", "").strip(" ")]
+    # one of asterisks or marks alone would be a line end with nothing on it.
+    lines = [line for line in lines if has_text(line)]
     return "\n".join(lines) if lines else "a"
 
 

@@ -41,6 +41,12 @@
 //     character, where the text between the line ends asked for is whole
 //     characters, in however many styles a character's bytes are given;
 //   - a character is in the style its first byte was given in;
+//   - no line ends after a hyphen or a dash that a word joiner or U+FEFF
+//     follows, unless the text asks for it to: where every word is one the
+//     setter takes whole, and no line was ended where nothing lets one end
+//     (a stretch too wide for a line, or too little memory). A joiner that
+//     a line end is asked for among the bytes of is none: its word ends
+//     there;
 //   - the lines are the same when all the text is offered at once.
 
 #include <algorithm>
@@ -75,6 +81,9 @@ constexpr std::array<std::uint32_t, 4> kPenalties = {0, 400, 12100, 0xFFFFFFFF};
 
 constexpr std::string_view kSoftHyphen = "\xC2\xAD";
 constexpr std::string_view kZeroWidthSpace = "\xE2\x80\x8B";
+// The two joiners: U+2060, and U+FEFF, the zero width no-break space.
+constexpr std::string_view kWordJoiner = "\xE2\x81\xA0";
+constexpr std::string_view kNoBreakNothing = "\xEF\xBB\xBF";
 
 // One thing a paragraph is made of: some text in a style, or a line end
 // that is asked for and is no byte of the text.
@@ -112,9 +121,12 @@ Hyphenator* Language() {
 }
 
 // Sets the paragraph, offering `atATime` bytes of text in a call (0 for all
-// there are), and holds every call to what one call may do.
+// there are), and holds every call to what one call may do. `forced` is
+// whether a line was ended where nothing lets one end: a stretch too wide
+// for a line cut between its characters, or a line ended for want of
+// memory.
 std::vector<TextLine> Set(const std::vector<Part>& parts, const How& how, std::size_t atATime, TestMeasure& measure,
-                          std::size_t textBytes) {
+                          std::size_t textBytes, bool& forced) {
   std::vector<LineBreaker::Node> nodes(how.nodes);
   std::vector<ParagraphSetter::Record> records(how.records);
   ParagraphSetter setter(nodes, records);
@@ -176,6 +188,7 @@ std::vector<TextLine> Set(const std::vector<Part>& parts, const How& how, std::s
                 "one call did more work than a call may");
   BN_FUZZ_CHECK(setter.Breaker().MostWork() <= LineBreaker::MostWorkFor(how.nodes),
                 "one call to the breaker did more work than a call may");
+  forced = setter.LastResortCuts() != 0 || setter.LinesCutShort() != 0;
   return kept.lines;
 }
 
@@ -261,6 +274,51 @@ void CheckLines(const std::vector<TextLine>& lines, const std::string& text, con
   BN_FUZZ_CHECK(IsOnNoLine(text, before, text.size()), "text after the last line should be on a line");
 }
 
+// Whether every word of `text` is one the setter takes whole: no longer
+// than a word may be, and in no more styles. (A line end that is asked for
+// inside one is not looked for, so a word may be called too long that is
+// two.)
+bool WordsAreTakenWhole(const std::string& text, const std::vector<std::uint16_t>& styles) {
+  std::size_t bytes = 0;
+  std::size_t inStyles = 0;
+  for (std::size_t at = 0; at < text.size(); ++at) {
+    if (IsBetweenWords(text[at])) {
+      bytes = 0;
+      continue;
+    }
+    inStyles = bytes == 0 ? 1 : inStyles + (styles[at] != styles[at - 1] ? 1U : 0U);
+    ++bytes;
+    if (bytes > ParagraphSetter::kMaxWordBytes || inStyles > ParagraphSetter::kMaxStyles) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// No line ends after a hyphen or a dash that a word joiner or U+FEFF
+// follows, but where the text asks for it to. `asked` is where in the text
+// a line end was asked for: before the byte of that number. A joiner with
+// one among its bytes is none, since the word ends there.
+void CheckJoiners(const std::vector<TextLine>& lines, const std::string& text, const std::vector<std::size_t>& asked) {
+  for (const TextLine& line : lines) {
+    if (line.last || line.end > text.size() || line.end <= line.begin) {
+      continue;
+    }
+    const bool parted = std::any_of(asked.begin(), asked.end(), [&line](std::size_t at) {
+      return at > line.end && at < line.end + kWordJoiner.size();
+    });
+    if (parted) {
+      continue;
+    }
+    const std::string_view on(text.data() + line.begin, line.end - line.begin);
+    const std::string_view after(text.data() + line.end, text.size() - line.end);
+    const bool dash = on.ends_with('-') || on.ends_with("\xE2\x80\x90") || on.ends_with("\xE2\x80\x92") ||
+                      on.ends_with("\xE2\x80\x93") || on.ends_with("\xE2\x80\x94");
+    BN_FUZZ_CHECK(!dash || !(after.starts_with(kWordJoiner) || after.starts_with(kNoBreakNothing)),
+                  "a line ends after a dash that a joiner follows");
+  }
+}
+
 }  // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
@@ -288,8 +346,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   std::string text;
   std::vector<std::uint16_t> styles;
   bool wholeCharacters = true;
-  std::string sinceLineEnd;  // The text since the last line end asked for.
-  bool inWord = false;       // The byte before was of a word, and no line end was asked for after it.
+  std::string sinceLineEnd;        // The text since the last line end asked for.
+  bool inWord = false;             // The byte before was of a word, and no line end was asked for after it.
+  std::vector<std::size_t> asked;  // Where a line end was asked for: before the byte of the text of that number.
   for (const std::uint8_t byte : input.Rest()) {
     if (byte > 7) {
       const char ch = static_cast<char>(byte);
@@ -305,6 +364,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     }
     const std::uint16_t style = byte == 0 ? parts.back().style : static_cast<std::uint16_t>(byte);
     if (byte == 0) {
+      asked.push_back(text.size());
       wholeCharacters = wholeCharacters && bn::fuzz::IsWholeCharacters(sinceLineEnd);
       sinceLineEnd.clear();
       inWord = false;
@@ -321,17 +381,22 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     return measure;
   };
   TestMeasure measure = measureOf();
-  const std::vector<TextLine> lines = Set(parts, how, atATime, measure, text.size());
+  bool forced = false;
+  const std::vector<TextLine> lines = Set(parts, how, atATime, measure, text.size(), forced);
   BN_FUZZ_CHECK(!measure.measuredAMark, "the measure was given a mark that is on no line");
   BN_FUZZ_CHECK(!measure.badPieces, "the measure was given pieces that do not end in order, where the text does");
   BN_FUZZ_CHECK(!wholeCharacters || !measure.cutInsideACharacter,
                 "the measure was given a piece that begins inside a character");
   CheckLines(lines, text, styles, how, measure);
+  if (!forced && WordsAreTakenWhole(text, styles)) {
+    CheckJoiners(lines, text, asked);
+  }
 
   // And with all the text of each part offered at once, if it was not.
   if (atATime != 0) {
     TestMeasure again = measureOf();
-    const std::vector<TextLine> whole = Set(parts, how, 0, again, text.size());
+    bool forcedAgain = false;
+    const std::vector<TextLine> whole = Set(parts, how, 0, again, text.size(), forcedAgain);
     BN_FUZZ_CHECK(whole.size() == lines.size(), "a paragraph has other lines when its text is offered at once");
     for (std::size_t i = 0; i < lines.size(); ++i) {
       BN_FUZZ_CHECK(whole[i].begin == lines[i].begin && whole[i].end == lines[i].end &&

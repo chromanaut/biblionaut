@@ -49,6 +49,18 @@ std::size_t DashAt(std::string_view text) noexcept {
   return 0;
 }
 
+// Whether `text` begins with a word joiner (U+2060) or U+FEFF, which a book
+// puts where no line is to end.
+bool JoinerAt(std::string_view text) noexcept {
+  if (text.size() < 3) {
+    return false;
+  }
+  const std::uint8_t first = Byte(text[0]);
+  const std::uint8_t second = Byte(text[1]);
+  const std::uint8_t third = Byte(text[2]);
+  return (first == 0xE2 && second == 0x81 && third == 0xA0) || (first == 0xEF && second == 0xBB && third == 0xBF);
+}
+
 // Whether `text` begins with a mark that is set over or under the letter
 // before it (U+0300 to U+036F), which no cut should part from that letter.
 bool MarkAt(std::string_view text) noexcept {
@@ -374,9 +386,11 @@ void ParagraphSetter::NextCut(std::size_t from, std::size_t& end, std::size_t& n
       break;
     }
     // A line may end after it, if the word has begun, something follows
-    // that is not another, and it is not a minus before a figure.
+    // that is neither another nor a joiner, and it is not a minus before a
+    // figure.
     const bool minusBeforeFigure = dash == 1 && past < wordSize_ && word[past] >= '0' && word[past] <= '9';
-    const bool follows = past < wordSize_ && DashAt(Part(word, past, wordSize_)) == 0;
+    const std::string_view rest = Part(word, past, wordSize_);
+    const bool follows = past < wordSize_ && DashAt(rest) == 0 && !JoinerAt(rest);
     if (letterSeen_ && follows && !minusBeforeFigure) {
       end = past;
       next = past;

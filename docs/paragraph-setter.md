@@ -29,7 +29,12 @@ that the caller provides, in whatever unit the lines' widths are in.
   or not joined across the line's end) can have the line counted as it
   will be drawn. After a hyphen or a dash that is written in
   the word, at no price and with nothing more shown: but not after one the
-  word begins with, between two of them, or between a minus and a figure.
+  word begins with, between two of them, between a minus and a figure, or
+  where a word joiner (U+2060) or U+FEFF comes straight after it. A book
+  puts a joiner where no line is to end, on either side of the dash
+  between two years for one; and after a dash is the only place a line
+  could have ended that one keeps it from ending: a joiner beside a space
+  does not hold the words on either side of the space together.
   And at a zero width space.
 - **What it says of a line**: where its text begins and ends in the
   paragraph, how wide it is, how many places between words it has (which
@@ -50,7 +55,7 @@ that the caller provides, in whatever unit the lines' widths are in.
   for each item that is not yet on a line given out: 768 of them (3 KB) go
   with 256 nodes. When the records run out, lines are given out early. The
   setter itself is about 1 KB, most of it the word it has in hand.
-- **Flash**: 5.6 KB, as compiled for the device.
+- **Flash**: 5.7 KB, as compiled for the device.
 - **One call's work**: a paragraph takes many calls, and a call need not
   take all the text it is offered. Each looks at no more than a word's
   worth of bytes (255), asks the hyphenator about one word at the most,

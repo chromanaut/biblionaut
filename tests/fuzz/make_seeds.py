@@ -2221,6 +2221,31 @@ def paragraph_seeds() -> None:
         face=2,
     )
     seed("a-word-in-many-styles", 3, b"".join(bytes([1 + n % 7]) + b"ab" for n in range(60)) + b" and on", face=2)
+    # A word joiner or U+FEFF after a dash, where no line is to end: after a
+    # dash between words, on either side of the dash between two years,
+    # between two dashes, in another style than the dash, and beside a space.
+    seed(
+        "a-joiner-after-a-dash",
+        3,
+        "The lamp was lit—⁠before anyone asked, in 1914⁠–⁠1918, and so—﻿—it went "
+        "on-﻿and on, the harbour—\x02⁠with\x01 its evening—⁠ and its lamp ⁠lit.".encode(),
+        face=0,
+    )
+    seed(
+        "a-joiner-after-a-dash-on-narrow-lines",
+        7,
+        "lit—⁠before 1914⁠–⁠1918 so—﻿—it on-﻿and".encode(),
+        at_a_time=1,
+    )
+    # A line end asked for among a joiner's bytes, after a dash that a line
+    # of twenty characters ends with: the word ends there, so there is no
+    # joiner, and the line ends after the dash.
+    seed(
+        "a-line-end-asked-for-inside-a-joiner",
+        3,
+        "aaaaaaaaaa bbbbbbbb—".encode() + b"\xe2\x81\x00\xa0cccc dddd, and on\xe2\x80\x93\xef\x00\xbb\xbf it goes",
+        face=0,
+    )
     # Characters whose bytes are given in two styles, a soft hyphen among
     # them: each is in the style of its first byte. The second seed has a
     # word in which the second byte of a soft hyphen would be a ninth style.

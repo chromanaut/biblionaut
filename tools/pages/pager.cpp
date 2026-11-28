@@ -1,17 +1,11 @@
 #include "pager.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <span>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
-
-#include "layout/line_breaker.h"
-#include "layout/paragraph_setter.h"
 
 namespace bn::tools {
 
@@ -22,9 +16,10 @@ using epub::ItemKind;
 using epub::SegmentBlock;
 using epub::SegmentItem;
 using epub::SegmentLength;
-using epub::SegmentPicture;
 using epub::SegmentPlace;
 using epub::SegmentStatus;
+using layout::ChapterPlace;
+using layout::PagerStatus;
 
 // The reader's text size, in pixels; the height of a line where a block
 // says nothing of it, in thousandths of its text size; and how high a
@@ -50,29 +45,104 @@ std::uint16_t Held(std::int64_t value, std::int64_t least, std::int64_t most) {
   return static_cast<std::uint16_t>(std::clamp(value, least, most));
 }
 
-// What gathers the lines the setter gives.
-class Lines final : public layout::TextLineSink {
+// What gathers the lines the pager gives of a block.
+class Gathered final : public layout::ChapterLineSink {
  public:
-  void OnLine(const layout::TextLine& line) noexcept override { lines.push_back(line); }
-  std::vector<layout::TextLine> lines;
+  void OnChapterLine(const layout::ChapterLine& line) noexcept override { lines.push_back(line); }
+  std::vector<layout::ChapterLine> lines;
 };
+
+// Whether a line of a page is the line of its block it should be.
+bool Same(const layout::ChapterLine& on, const ChapterLine& line) {
+  return on.begin == line.begin && on.end == line.end && on.width == line.width && on.height == line.height &&
+         on.gap == line.gap && on.Is(layout::kLineKept) == line.keep && on.Is(layout::kLineStarts) == line.starts &&
+         on.Is(layout::kLineHyphen) == line.hyphen && on.Is(layout::kLineLast) == line.last;
+}
 
 }  // namespace
 
+// ---- What a block's record comes to ----
+
+void MadeUpSetting::MeasureBlock(const SegmentBlock& block, layout::BlockMeasures& measures) noexcept {
+  const BlockStyle& said = block.style;
+  const std::int64_t size = said.size;
+  const std::int64_t pageWidth = geometry_.width;
+  const std::int64_t narrowest = pageWidth / 10;
+  measures.restWidth =
+      Held(pageWidth - Quarters(said.marginLeft, size, pageWidth) - Quarters(said.marginRight, size, pageWidth),
+           narrowest, pageWidth);
+  measures.firstWidth = Held(measures.restWidth - Quarters(said.indent, size, pageWidth), narrowest, pageWidth);
+  std::int64_t lineHeight = (kTextSize * size * kUsualLineHeight) / 1000000;
+  if ((said.has & epub::kBlockLineHeight) != 0) {
+    lineHeight = said.lineMultiple != 0 ? (kTextSize * size * said.lineMultiple) / 1000000
+                                        : Pixels(said.lineHeight, size, pageWidth);
+  }
+  measures.lineHeight = Held(lineHeight, 1, 65535);
+  measures.spaceBefore = Held(Pixels(said.spaceBefore, size, pageWidth), 0, 65535);
+  measures.spaceAfter = Held(Pixels(said.spaceAfter, size, pageWidth), 0, 65535);
+  measures.hyphenPenalty = 0;
+}
+
+void MadeUpSetting::MeasureRun(const SegmentBlock& /*block*/, const epub::RunStyle& run,
+                               layout::RunMeasures& measures) noexcept {
+  measures.style = static_cast<std::uint16_t>(((run.bits & epub::kRunBold) != 0 ? 1U : 0U) |
+                                              ((run.bits & epub::kRunItalic) != 0 ? 2U : 0U));
+  measures.hyphenator = hyphenator_;
+}
+
+std::uint16_t MadeUpSetting::PictureHeight(const SegmentBlock& block, const SegmentLength& /*width*/,
+                                           const SegmentLength& height, const epub::SegmentPicture* picture) noexcept {
+  // As high as the picture is, made to fit the page's width; or as it is
+  // declared; or as high as a picture of which nothing is known.
+  const std::int64_t pageWidth = geometry_.width;
+  std::int64_t lineHeight = Pixels(height, block.style.size, pageWidth);
+  lineHeight = lineHeight > 0 ? lineHeight : kUnknownPicture;
+  if (picture != nullptr && picture->sized && picture->width != 0 && picture->height != 0) {
+    const std::int64_t widthInPixels = pageWidth / 4;
+    lineHeight = picture->width > widthInPixels ? (picture->height * widthInPixels) / picture->width : picture->height;
+  }
+  return Held(std::min<std::int64_t>(lineHeight, geometry_.height), 1, 65535);
+}
+
+// ---- The pager, and what the tool adds to it ----
+
+// The chooser is given an entry, and a page a record, for every line a
+// page could hold, a line being a pixel high at the least: so no page is
+// cut short for want of either.
 Pager::Pager(epub::SegmentReader& reader, const PageGeometry& geometry, layout::Hyphenator* hyphenator)
-    : reader_(reader), geometry_(geometry), hyphenator_(hyphenator) {}
+    : reader_(reader),
+      geometry_(geometry),
+      setting_(geometry, hyphenator),
+      nodes_(layout::LineBreaker::kUsualNodes),
+      records_(layout::ParagraphSetter::kUsualRecords),
+      setter_(nodes_, records_),
+      entries_(std::max<std::size_t>(layout::PageFromBottom::kUsualEntries, std::size_t{geometry.height} + 1)),
+      lines_(std::max<std::size_t>(layout::ChapterPager::kMinLines, std::size_t{geometry.height} + 1)),
+      pager_(reader_, setter_, face_, setting_, entries_, lines_) {}
 
 bool Pager::Fail(const std::string& what, SegmentStatus status) {
   error_ = what + ": " + epub::SegmentStatusName(status);
-  placed_ = false;
   return false;
 }
 
-bool Pager::GoTo(std::uint32_t block) {
-  if (placed_ && nextBlock_ == block) {
+bool Pager::Run(PagerStatus begun, const std::string& what) {
+  PagerStatus status = begun;
+  if (status == PagerStatus::kOk) {
+    while (pager_.Step()) {
+    }
+    status = pager_.Status();
+  }
+  if (status == PagerStatus::kOk) {
     return true;
   }
-  placed_ = false;
+  error_ = what + ": " +
+           (status == PagerStatus::kReadFailed  ? epub::SegmentStatusName(pager_.ReaderStatus())
+            : status == PagerStatus::kSetFailed ? layout::ParagraphStatusName(pager_.SetterStatus())
+                                                : layout::PagerStatusName(status));
+  return false;
+}
+
+bool Pager::Read(std::uint32_t block, SetBlock& set, std::string& characters) {
   if (block >= reader_.Blocks()) {
     error_ = "the chapter has no block " + std::to_string(block);
     return false;
@@ -91,205 +161,38 @@ bool Pager::GoTo(std::uint32_t block) {
   if (const SegmentStatus status = reader_.Seek(place); status != SegmentStatus::kOk) {
     return Fail("going to a block", status);
   }
-  for (std::uint32_t passed = indexed; passed < block; ++passed) {
+  for (std::uint32_t at = indexed; at <= block; ++at) {
     SegmentBlock head;
     SegmentStatus status = SegmentStatus::kMore;
     while (status == SegmentStatus::kMore) {
       status = reader_.ReadBlock(head);
     }
-    for (SegmentItem item; status == SegmentStatus::kOk || status == SegmentStatus::kMore;) {
-      status = reader_.NextItem(item);
-      if (status == SegmentStatus::kOk && item.kind == ItemKind::kEnd) {
-        break;
-      }
-    }
     if (status != SegmentStatus::kOk) {
-      return Fail("a block on the way", status);
+      return Fail("a block's head", status);
     }
-  }
-  placed_ = true;
-  nextBlock_ = block;
-  return true;
-}
-
-bool Pager::ReadAndSet(std::uint32_t block, SetBlock& set) {
-  // What the block before asks of this one: read from its head alone, if
-  // it has not been set.
-  bool keptWithBefore = false;
-  std::int64_t spaceAbove = 0;
-  if (block > 0) {
-    if (const auto before = blocks_.find(block - 1); before != blocks_.end()) {
-      keptWithBefore = before->second.keepWithNext;
-      spaceAbove = before->second.spaceAfter;
-    } else {
-      if (!GoTo(block - 1)) {
-        return false;
-      }
-      SegmentBlock head;
-      SegmentStatus status = SegmentStatus::kMore;
-      while (status == SegmentStatus::kMore) {
-        status = reader_.ReadBlock(head);
+    characters.clear();
+    for (;;) {
+      SegmentItem item;
+      status = reader_.NextItem(item);
+      if (status == SegmentStatus::kMore) {
+        continue;
       }
       if (status != SegmentStatus::kOk) {
-        return Fail("the head of the block before", status);
+        return Fail("an item", status);
       }
-      placed_ = false;
-      keptWithBefore = (head.style.breaking & epub::kBreakKeepWithNext) != 0;
-      spaceAbove = std::clamp<std::int64_t>(Pixels(head.style.spaceAfter, head.style.size, geometry_.width), 0, 65535);
-    }
-  }
-
-  if (!GoTo(block)) {
-    return false;
-  }
-  placed_ = false;
-  SegmentBlock head;
-  SegmentStatus status = SegmentStatus::kMore;
-  while (status == SegmentStatus::kMore) {
-    status = reader_.ReadBlock(head);
-  }
-  if (status != SegmentStatus::kOk) {
-    return Fail("a block's head", status);
-  }
-  // Its characters, and the style each run of them is in.
-  std::string characters;
-  std::vector<std::pair<std::size_t, std::uint16_t>> runs;  // Where each run ends, and its style.
-  std::uint16_t style = 0;
-  bool hasPicture = false;
-  std::uint16_t picture = epub::kSegmentNoPicture;
-  SegmentLength declaredHeight;
-  for (;;) {
-    SegmentItem item;
-    status = reader_.NextItem(item);
-    if (status == SegmentStatus::kMore) {
-      continue;
-    }
-    if (status != SegmentStatus::kOk) {
-      return Fail("an item", status);
-    }
-    if (item.kind == ItemKind::kEnd) {
-      set.characters = item.characters;
-      break;
-    }
-    if (item.kind == ItemKind::kStyle) {
-      style = static_cast<std::uint16_t>(((item.style.bits & epub::kRunBold) != 0 ? 1U : 0U) |
-                                         ((item.style.bits & epub::kRunItalic) != 0 ? 2U : 0U));
-      continue;
-    }
-    if (item.kind == ItemKind::kText) {
-      characters += item.text;
-    } else if (item.kind == ItemKind::kPicture) {
-      characters += kPictureByte;
-      if (!hasPicture) {
-        hasPicture = true;
-        picture = item.picture;
-        declaredHeight = item.height;
+      if (item.kind == ItemKind::kEnd) {
+        set.characters = item.characters;
+        break;
       }
-    } else {
-      continue;  // A link's start and end are nothing to a page.
+      if (item.kind == ItemKind::kText) {
+        characters += item.text;
+      } else if (item.kind == ItemKind::kPicture) {
+        characters += kPictureByte;
+      }
     }
-    if (!runs.empty() && runs.back().second == style) {
-      runs.back().first = characters.size();
-    } else {
-      runs.emplace_back(characters.size(), style);
-    }
-  }
-  placed_ = true;
-  nextBlock_ = block + 1;
-
-  const BlockStyle& said = head.style;
-  const std::int64_t size = said.size;
-  const std::int64_t pageWidth = geometry_.width;
-  set.kind = head.kind;
-  set.level = head.level;
-  set.charactersBefore = head.charactersBefore;
-  set.keepWithNext = (said.breaking & epub::kBreakKeepWithNext) != 0;
-  set.spaceAfter = Held(Pixels(said.spaceAfter, size, pageWidth), 0, 65535);
-
-  // How wide its lines are, and how high.
-  const std::int64_t narrowest = pageWidth / 10;
-  const std::uint16_t rest =
-      Held(pageWidth - Quarters(said.marginLeft, size, pageWidth) - Quarters(said.marginRight, size, pageWidth),
-           narrowest, pageWidth);
-  const std::array<std::uint16_t, 1> first = {
-      Held(rest - Quarters(said.indent, size, pageWidth), narrowest, pageWidth)};
-  std::int64_t lineHeight = (kTextSize * size * kUsualLineHeight) / 1000000;
-  if ((said.has & epub::kBlockLineHeight) != 0) {
-    lineHeight = said.lineMultiple != 0 ? (kTextSize * size * said.lineMultiple) / 1000000
-                                        : Pixels(said.lineHeight, size, pageWidth);
-  }
-  if (head.kind == static_cast<std::uint8_t>(epub::SegmentBlockKind::kPicture) && hasPicture) {
-    // As high as the picture is, made to fit the page's width; or as it
-    // is declared; or as high as a picture of which nothing is known.
-    lineHeight = Pixels(declaredHeight, size, pageWidth);
-    lineHeight = lineHeight > 0 ? lineHeight : kUnknownPicture;
-    SegmentPicture sized;
-    bool found = false;
-    if (const SegmentStatus read = reader_.ReadPicture(picture, sized, found); read != SegmentStatus::kOk) {
-      return Fail("a picture's size", read);
-    }
-    if (found && sized.sized && sized.width != 0 && sized.height != 0) {
-      const std::int64_t widthInPixels = pageWidth / 4;
-      lineHeight = sized.width > widthInPixels ? (sized.height * widthInPixels) / sized.width : sized.height;
-    }
-    lineHeight = std::min<std::int64_t>(lineHeight, geometry_.height);
-  }
-  const std::uint16_t height = Held(lineHeight, 1, 65535);
-  const std::uint16_t gap =
-      Held(std::clamp<std::int64_t>(Pixels(said.spaceBefore, size, pageWidth), 0, 65535) + spaceAbove, 0, 65535);
-
-  // Its lines.
-  std::vector<layout::LineBreaker::Node> nodes(layout::LineBreaker::kUsualNodes);
-  std::vector<layout::ParagraphSetter::Record> records(layout::ParagraphSetter::kUsualRecords);
-  layout::ParagraphSetter setter(nodes, records);
-  setter.UseHyphenator(hyphenator_);
-  Lines sink;
-  const bool indented = (said.has & epub::kBlockIndent) != 0 && first[0] != rest;
-  const layout::ParagraphSettings settings{
-      .widths = {.first = indented ? std::span<const std::uint16_t>(first) : std::span<const std::uint16_t>(),
-                 .rest = rest},
-      .hyphenPenalty = 0};
-  if (const layout::ParagraphStatus begun = setter.Begin(settings, face_, sink);
-      begun != layout::ParagraphStatus::kOk) {
-    error_ = std::string("setting a block: ") + layout::ParagraphStatusName(begun);
-    return false;
-  }
-  std::size_t from = 0;
-  for (const auto& [end, runStyle] : runs) {
-    std::string_view text = std::string_view(characters).substr(from, end - from);
-    while (!text.empty()) {
-      text.remove_prefix(setter.AddText(text, runStyle));
-    }
-    from = end;
-  }
-  while (!setter.Finish()) {
-  }
-  ++blocksSet_;
-
-  set.lines.clear();
-  for (const layout::TextLine& line : sink.lines) {
-    ChapterLine made;
-    made.begin = line.begin;
-    made.end = line.end;
-    made.width = line.width;
-    made.hyphen = line.hyphen;
-    made.last = line.last;
-    made.text = characters.substr(line.begin, line.end - line.begin);
-    set.lines.push_back(std::move(made));
-  }
-  if (set.lines.empty()) {
-    // A rule, or a block of nothing but spaces: one line, of nothing.
-    ChapterLine none;
-    none.last = true;
-    set.lines.push_back(none);
-  }
-  const bool together = (said.breaking & epub::kBreakKeepTogether) != 0;
-  for (std::size_t i = 0; i < set.lines.size(); ++i) {
-    ChapterLine& line = set.lines[i];
-    line.height = height;
-    line.gap = i == 0 ? gap : std::uint16_t{0};
-    line.keep = i == 0 ? keptWithBefore : together;
-    line.starts = i == 0 && (block == 0 || (said.breaking & epub::kBreakPageBefore) != 0);
+    set.kind = head.kind;
+    set.level = head.level;
+    set.charactersBefore = head.charactersBefore;
   }
   return true;
 }
@@ -298,8 +201,31 @@ bool Pager::Block(std::uint32_t block, const SetBlock*& set) {
   auto found = blocks_.find(block);
   if (found == blocks_.end()) {
     SetBlock made;
-    if (!ReadAndSet(block, made)) {
+    std::string characters;
+    if (!Read(block, made, characters)) {
       return false;
+    }
+    Gathered gathered;
+    if (!Run(pager_.BeginLines(block, gathered), "setting a block")) {
+      return false;
+    }
+    for (const layout::ChapterLine& line : gathered.lines) {
+      if (line.end < line.begin || line.end > characters.size()) {
+        error_ = "block " + std::to_string(block) + " has a line of characters it has not";
+        return false;
+      }
+      ChapterLine one;
+      one.begin = line.begin;
+      one.end = line.end;
+      one.width = line.width;
+      one.height = line.height;
+      one.gap = line.gap;
+      one.keep = line.Is(layout::kLineKept);
+      one.starts = line.Is(layout::kLineStarts);
+      one.hyphen = line.Is(layout::kLineHyphen);
+      one.last = line.Is(layout::kLineLast);
+      one.text = characters.substr(line.begin, line.end - line.begin);
+      made.lines.push_back(std::move(one));
     }
     if (order_.size() == kBlocksKept) {
       blocks_.erase(order_.front());
@@ -328,151 +254,100 @@ bool Pager::LineHolding(std::uint32_t block, std::uint32_t into, LineRef& line) 
   return true;
 }
 
-layout::PageLine Pager::PageLineOf(const ChapterLine& line, LineRef ref) {
-  tags_.push_back(ref);
-  return {.height = line.height,
-          .gapBefore = line.gap,
-          .keepWithPrevious = line.keep,
-          .startsPage = line.starts,
-          .tag = static_cast<std::uint32_t>(tags_.size() - 1)};
+bool Pager::PlaceOf(LineRef line, ChapterPlace& place) {
+  // One past a block's last line is the first of the block after it.
+  for (;;) {
+    if (line.block >= reader_.Blocks()) {
+      place = pager_.End();
+      return true;
+    }
+    const SetBlock* set = nullptr;
+    if (!Block(line.block, set)) {
+      return false;
+    }
+    if (line.line < set->lines.size()) {
+      place = {.block = line.block, .into = set->lines[line.line].begin};
+      return true;
+    }
+    line = {.block = line.block + 1, .line = 0};
+  }
+}
+
+bool Pager::RefOf(ChapterPlace place, LineRef& line) {
+  if (place.block >= reader_.Blocks()) {
+    line = End();
+    return true;
+  }
+  const SetBlock* set = nullptr;
+  if (!Block(place.block, set)) {
+    return false;
+  }
+  for (std::uint32_t i = 0; i < set->lines.size(); ++i) {
+    if (set->lines[i].begin == place.into) {
+      line = {.block = place.block, .line = i};
+      return true;
+    }
+  }
+  error_ = "a page has a line at " + std::to_string(place.block) + "+" + std::to_string(place.into) +
+           ", where no line of that block begins";
+  return false;
+}
+
+bool Pager::Take(Page& page) {
+  // What the pager has is gone once it is asked for a block's lines, so it
+  // is taken first.
+  const layout::ChapterPage made = pager_.Page();
+  const std::vector<layout::ChapterLine> lines(pager_.Lines().begin(), pager_.Lines().end());
+  page.found = made.found;
+  page.filledDown = made.filledDown;
+  page.cutShort = made.cutShort;
+  page.height = made.height;
+  page.lines.clear();
+  if (!made.found) {
+    return true;
+  }
+  if (!RefOf(made.first, page.first) || !RefOf(made.next, page.next)) {
+    return false;
+  }
+  for (const layout::ChapterLine& on : lines) {
+    LineRef line;
+    const SetBlock* set = nullptr;
+    if (!RefOf(on.Place(), line) || !Block(line.block, set)) {
+      return false;
+    }
+    if (!Same(on, set->lines[line.line])) {
+      error_ = "the line at " + std::to_string(on.block) + "+" + std::to_string(on.begin) +
+               " is not on a page what it is in its block";
+      return false;
+    }
+    page.lines.push_back(line);
+  }
+  return true;
 }
 
 bool Pager::Forward(LineRef first, Page& page) {
   page = Page{};
   page.first = first;
-  tags_.clear();
-  layout::PageFromTop top;
-  if (const layout::PageStatus status = top.Begin(geometry_.height); status != layout::PageStatus::kOk) {
-    error_ = std::string("a page: ") + layout::PageStatusName(status);
-    return false;
-  }
-  // Lines are offered until one is refused or the chapter ends.
-  std::vector<LineRef> offered;
-  bool refused = false;
-  for (LineRef at = first; at.block < reader_.Blocks() && !refused;) {
-    const SetBlock* set = nullptr;
-    if (!Block(at.block, set)) {
-      return false;
-    }
-    if (at.line >= set->lines.size()) {
-      at = {.block = at.block + 1, .line = 0};
-      continue;
-    }
-    offered.push_back(at);
-    refused = !top.Add(PageLineOf(set->lines[at.line], at));
-    ++at.line;
-  }
-  const std::size_t lines = top.Lines();
-  page.found = lines != 0;
-  page.height = top.Height();
-  page.lines.assign(offered.begin(), offered.begin() + static_cast<std::ptrdiff_t>(lines));
-  page.next = lines < offered.size() ? offered[lines] : End();
-  return true;
+  page.next = End();
+  ChapterPlace place;
+  return PlaceOf(first, place) && Run(pager_.BeginDown(place, geometry_.height), "a page") && Take(page);
 }
 
 bool Pager::Back(LineRef before, Page& page) {
   page = Page{};
   page.filledDown = false;
   page.next = before;
-  tags_.clear();
-  // An entry for every line a page could hold, a line being a pixel high
-  // at the least: so the chooser never runs out of them.
-  std::vector<layout::PageFromBottom::Entry> entries(
-      std::max<std::size_t>(layout::PageFromBottom::kUsualEntries, std::size_t{geometry_.height} + 1));
-  layout::PageFromBottom bottom(entries);
-  if (const layout::PageStatus status = bottom.Begin(geometry_.height); status != layout::PageStatus::kOk) {
-    error_ = std::string("a page: ") + layout::PageStatusName(status);
-    return false;
-  }
-  // The block the line is in, down to the line above it; then the block
-  // above, and so on up, until no more are wanted or there are none.
-  std::uint32_t block = before.block;
-  std::uint32_t count = before.line;
-  bool given = false;
-  for (;;) {
-    if (count == 0) {
-      if (block == 0) {
-        break;
-      }
-      --block;
-      const SetBlock* above = nullptr;
-      if (!Block(block, above)) {
-        return false;
-      }
-      count = static_cast<std::uint32_t>(above->lines.size());
-    }
-    const SetBlock* set = nullptr;
-    if (!Block(block, set)) {
-      return false;
-    }
-    bottom.BeginBlock();
-    for (std::uint32_t i = 0; i < count; ++i) {
-      bottom.Add(PageLineOf(set->lines[i], {.block = block, .line = i}));
-    }
-    given = true;
-    if (bottom.EndBlock()) {
-      break;
-    }
-    count = 0;
-  }
-  if (!given || !bottom.Found()) {
-    return true;  // Nothing is above the chapter's first line.
-  }
-  const LineRef first = tags_.at(bottom.FirstTag());
-  if (bottom.AtPageStart()) {
-    // It came to a line that starts a page: that line's page, filled down.
-    return Forward(first, page);
-  }
-  page.found = true;
-  page.first = first;
-  page.cutShort = bottom.CutShort();
-  page.height = bottom.Height();
-  for (LineRef at = first; at != before;) {
-    const SetBlock* set = nullptr;
-    if (!Block(at.block, set)) {
-      return false;
-    }
-    if (at.line >= set->lines.size()) {
-      at = {.block = at.block + 1, .line = 0};
-      continue;
-    }
-    page.lines.push_back(at);
-    ++at.line;
-  }
-  return true;
+  ChapterPlace place;
+  return PlaceOf(before, place) && Run(pager_.BeginUp(place, geometry_.height), "a page") && Take(page);
 }
 
 bool Pager::Entering(std::uint32_t block, std::uint32_t into, Page& page) {
-  LineRef asked;
-  if (!LineHolding(block, into, asked)) {
+  page = Page{};
+  if (block >= reader_.Blocks()) {
+    error_ = "the chapter has no block " + std::to_string(block);
     return false;
   }
-  tags_.clear();
-  layout::PageHolding holding;
-  if (const layout::PageStatus status = holding.Begin(geometry_.height); status != layout::PageStatus::kOk) {
-    error_ = std::string("a page: ") + layout::PageStatusName(status);
-    return false;
-  }
-  // The block the line is in, down to the line; then the blocks above.
-  std::uint32_t at = asked.block;
-  std::uint32_t count = asked.line + 1;
-  for (;;) {
-    const SetBlock* set = nullptr;
-    if (!Block(at, set)) {
-      return false;
-    }
-    count = count == 0 ? static_cast<std::uint32_t>(set->lines.size()) : count;
-    holding.BeginBlock();
-    for (std::uint32_t i = 0; i < count; ++i) {
-      holding.Add(PageLineOf(set->lines[i], {.block = at, .line = i}));
-    }
-    if (holding.EndBlock() || at == 0) {
-      break;
-    }
-    --at;
-    count = 0;
-  }
-  return Forward(holding.Found() ? tags_.at(holding.FirstTag()) : asked, page);
+  return Run(pager_.BeginAbout({.block = block, .into = into}, geometry_.height), "a page") && Take(page);
 }
 
 }  // namespace bn::tools

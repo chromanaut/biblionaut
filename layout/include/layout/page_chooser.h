@@ -181,8 +181,12 @@ class PageFromBottom final {
 
   // The page holds a line.
   bool Found() const noexcept { return Chosen().lines != 0; }
-  // The tag of the line the page begins with.
+  // The tag of the line the page begins with, and which of the blocks
+  // given that line is in: 0 for the first given, 1 for the one given after
+  // it, which is the one above it, and so on. A block with no lines is
+  // counted as any other is.
   std::uint32_t FirstTag() const noexcept { return Chosen().tag; }
+  std::uint32_t FirstBlock() const noexcept { return Chosen().block; }
   // How many lines are on the page, and how high they stand: from the top
   // of the page to the bottom of the last.
   std::uint32_t Lines() const noexcept { return Chosen().lines; }
@@ -200,6 +204,7 @@ class PageFromBottom final {
   // A line the page could begin with, and what the page would then be.
   struct Start {
     std::uint32_t tag = 0;
+    std::uint32_t block = 0;  // Which of the blocks given it is in.
     std::uint32_t lines = 0;  // None if there is no such line.
     std::uint32_t height = 0;
     bool starts = false;
@@ -215,6 +220,7 @@ class PageFromBottom final {
   bool tooTall_ = false;
   bool cutShort_ = false;
   std::uint16_t pageHeight_ = 0;
+  std::uint32_t blocksEnded_ = 0;
 
   // The lines taken from the blocks that are over.
   Start highest_;             // The highest line that fits, and the page from it down.
@@ -266,8 +272,10 @@ class PageHolding final {
   PageStatus Status() const noexcept { return status_; }
   // A line has been given.
   bool Found() const noexcept { return Chosen().lines != 0; }
-  // The tag of the line the page begins with.
+  // The tag of the line the page begins with, and which of the blocks
+  // given that line is in, counted as PageFromBottom counts them.
   std::uint32_t FirstTag() const noexcept { return Chosen().tag; }
+  std::uint32_t FirstBlock() const noexcept { return Chosen().block; }
   // How many lines there are from that one to the line asked for, counting
   // both, and how high they stand.
   std::uint32_t Lines() const noexcept { return Chosen().lines; }
@@ -278,6 +286,7 @@ class PageHolding final {
   // to the line asked for.
   struct Start {
     std::uint32_t tag = 0;
+    std::uint32_t block = 0;  // Which of the blocks given it is in.
     std::uint32_t lines = 0;  // None if there is no such line.
     std::uint32_t height = 0;
   };
@@ -287,6 +296,7 @@ class PageHolding final {
   PageStatus status_ = PageStatus::kNotStarted;
   bool done_ = false;
   std::uint16_t pageHeight_ = 0;
+  std::uint32_t blocksEnded_ = 0;
   Start asked_;    // The line asked for, by itself.
   Start highest_;  // The highest line given in the blocks that are over.
   Start chosen_;

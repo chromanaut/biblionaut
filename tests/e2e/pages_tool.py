@@ -114,7 +114,7 @@ def blocks_of(chapter: dict, width: int, height: int) -> list[dict]:
         elif what == "style":
             style = (1 if thing[1] & 1 else 0) | (2 if thing[1] & 2 else 0)
         elif what == "picture":
-            block["pictures"].append((thing[1], thing[4]))
+            block["pictures"].append((thing[1], thing[4], len(block["characters"])))
             block["characters"] += bytes([PICTURE])
             block["styles"].append(style)
         elif what == "id":
@@ -136,8 +136,9 @@ def blocks_of(chapter: dict, width: int, height: int) -> list[dict]:
         if "line" in said:
             multiple, *amounts = said["line"][0]
             line = whole(TEXT_SIZE * size * multiple, 1_000_000) if multiple else pixels(tuple(amounts), size, width)
-        if made["kind"] == 4 and made["pictures"]:
-            picture, declared = made["pictures"][0]
+        # A block that is a picture, where the picture comes before any text.
+        if made["kind"] == 4 and made["pictures"] and made["pictures"][0][2] == 0:
+            picture, declared, _ = made["pictures"][0]
             line = pixels(declared, size, width)
             line = line if line > 0 else 100
             if picture in chapter["sizes"]:
@@ -458,6 +459,10 @@ def particular_chapter() -> dict:
     things += plain(1, 160, even[:900], {"size": ((1500,), True)})
     things += plain(1, 170, even[:900], {"size": ((750,), False), "line": ((2000, 0, 0, 0), True)})
     things += plain(1, 180, even[:900], {"line": ((0, 0, 256, 0), True)})
+    # A block that is a picture, whose picture comes after text: its lines
+    # are as high as text.
+    things += [("block", 4, 0, 185, {}), ("text", b"A caption first: "),
+               ("picture", 7, 0, (0, 0, 0), (0, 0, 0), b"then the picture"), ("end",)]
     things += [("id", b"the-last-block")]
     things += plain(1, 190, b"The last block.")
     return {"state": "whole", "reason": 0, "source_bytes": 500, "languages": [], "sizes": {7: (2000, 1000),
@@ -496,6 +501,8 @@ def check_particular(lines: list[dict], blocks: list[dict]) -> None:
     expect([(line["begin"], line["end"]) for line in by_block(15)] == [(0, 0)], "a block of nothing but spaces")
     expect([by_block(number)[0]["height"] for number in (16, 17, 18)] == [30, 24, 32], "lines' heights: "
            f"{[by_block(number)[0]['height'] for number in (16, 17, 18)]}")
+    expect(by_block(19)[0]["height"] == 20 and bytes([PICTURE]) in by_block(19)[0]["text"],
+           "a block that is a picture has lines as high as the picture only where the picture comes first")
 
 
 def main() -> int:

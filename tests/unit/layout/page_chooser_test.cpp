@@ -103,7 +103,18 @@ struct Up {
   bool tooTall = false;
   bool cutShort = false;
   std::size_t blocksGiven = 0;
+  std::uint32_t firstBlock = 0;  // Which of the blocks given it says its first line is in.
 };
+
+// Whether the line `first` is in the block that was given after `given`
+// others, the first given having been the block of that number.
+bool IsInBlockGiven(const Blocks& blocks, std::size_t firstGiven, std::uint32_t given, std::size_t first) {
+  if (given > firstGiven) {
+    return false;
+  }
+  const std::size_t block = firstGiven - given;
+  return blocks[block] <= first && (block + 1 == blocks.size() || first < blocks[block + 1]);
+}
 
 // Fills a page up from the line before `end`: gives the block that line is
 // in, down to it, then the blocks above, until no more are wanted or there
@@ -118,6 +129,7 @@ Up FillUp(const Lines& lines, const Blocks& blocks, std::size_t end, std::uint16
     --block;
   }
   Up up;
+  const std::size_t firstGiven = block == 0 ? 0 : block - 1;
   std::size_t blockEnd = end;
   while (block > 0) {
     --block;
@@ -138,6 +150,11 @@ Up FillUp(const Lines& lines, const Blocks& blocks, std::size_t end, std::uint16
   up.atPageStart = page.AtPageStart();
   up.tooTall = page.TooTall();
   up.cutShort = page.CutShort();
+  up.firstBlock = page.FirstBlock();
+  // Whatever page it is, it says truly which block its first line is in.
+  EXPECT_TRUE(!up.found || IsInBlockGiven(blocks, firstGiven, up.firstBlock, up.first))
+      << "a page up to line " << end << " says its first line, " << up.first << ", is in the block given after "
+      << up.firstBlock;
   return up;
 }
 
@@ -147,6 +164,7 @@ struct Holding {
   std::uint32_t lines = 0;
   std::uint32_t height = 0;
   std::size_t blocksGiven = 0;
+  std::uint32_t firstBlock = 0;
 };
 
 // Finds where the page that is to show the line `asked` begins: gives the
@@ -160,6 +178,7 @@ Holding FindHolding(const Lines& lines, const Blocks& blocks, std::size_t asked,
     --block;
   }
   Holding holding;
+  const std::size_t firstGiven = block == 0 ? 0 : block - 1;
   std::size_t blockEnd = asked + 1;
   while (block > 0) {
     --block;
@@ -177,6 +196,10 @@ Holding FindHolding(const Lines& lines, const Blocks& blocks, std::size_t asked,
   holding.first = page.FirstTag();
   holding.lines = page.Lines();
   holding.height = page.Height();
+  holding.firstBlock = page.FirstBlock();
+  EXPECT_TRUE(!holding.found || IsInBlockGiven(blocks, firstGiven, holding.firstBlock, holding.first))
+      << "the page about line " << asked << " says its first line, " << holding.first
+      << ", is in the block given after " << holding.firstBlock;
   return holding;
 }
 
@@ -597,6 +620,43 @@ TEST(PageFromBottom, PassesOverABlockWithNoLines) {
   EXPECT_EQ(page.Height(), 90U);
 }
 
+TEST(PageFromBottom, SaysWhichOfTheBlocksGivenItsFirstLineIsIn) {
+  const Lines lines = Even(100, 20);
+  // Blocks of four lines, and a page that ends two lines into one of them:
+  // with room for one line it begins in that block, and with room for
+  // seven in the block given second after it.
+  EXPECT_EQ(FillUp(lines, BlocksOf(100, 4), 62, 30).firstBlock, 0U);
+  const Up page = FillUp(lines, BlocksOf(100, 4), 62, 150);
+  EXPECT_EQ(page.first, 55U);
+  EXPECT_EQ(page.firstBlock, 2U);
+
+  // A block with no lines is counted like any other.
+  std::array<PageFromBottom::Entry, PageFromBottom::kUsualEntries> entries{};
+  PageFromBottom counted(entries);
+  ASSERT_EQ(counted.Begin(100), PageStatus::kOk);
+  counted.BeginBlock();
+  EXPECT_FALSE(counted.EndBlock());
+  counted.BeginBlock();
+  counted.Add(Plain(20));
+  EXPECT_FALSE(counted.EndBlock());
+  EXPECT_EQ(counted.FirstBlock(), 1U);
+  counted.BeginBlock();
+  EXPECT_FALSE(counted.EndBlock());
+  counted.BeginBlock();
+  counted.Add(Kept(20));
+  counted.Add(Plain(20));
+  EXPECT_FALSE(counted.EndBlock());
+  // Its highest line may not begin a page: the one below it does.
+  EXPECT_EQ(counted.Lines(), 2U);
+  EXPECT_EQ(counted.FirstBlock(), 3U);
+  // And beginning again, the count begins again.
+  ASSERT_EQ(counted.Begin(100), PageStatus::kOk);
+  counted.BeginBlock();
+  counted.Add(Plain(20));
+  EXPECT_FALSE(counted.EndBlock());
+  EXPECT_EQ(counted.FirstBlock(), 0U);
+}
+
 TEST(PageFromBottom, IsWhatHasBeenFoundWhenThereAreNoMoreBlocks) {
   // The lines run out above before the page is full, as at the start of a
   // book.
@@ -764,6 +824,30 @@ TEST(PageHolding, BeginsWithTheLineAskedForWhenTheLinesKeptAboveItAreMoreThanAPa
   }
   // With a page high enough for all of them, it begins up there.
   EXPECT_EQ(FindHolding(lines, BlocksOf(31, 4), 20, 420).first, 0U);
+}
+
+TEST(PageHolding, SaysWhichOfTheBlocksGivenItsFirstLineIsIn) {
+  // A paragraph whose first line is kept with the heading above it: the
+  // page about that line begins in the block given second.
+  const Lines heading = Numbered({Starting(20), Plain(20), Plain(30), Kept(20), Plain(20)});
+  const Holding above = FindHolding(heading, {0, 2, 3}, 3, 300);
+  EXPECT_EQ(above.first, 2U);
+  EXPECT_EQ(above.firstBlock, 1U);
+  EXPECT_EQ(FindHolding(heading, {0, 2, 3}, 4, 300).firstBlock, 0U);
+
+  // Where the lines kept above the one asked for are more than a page, it
+  // begins with the line asked for, though blocks above were given.
+  Lines lines(31, Kept(20));
+  lines[0] = Starting(20);
+  lines = Numbered(lines);
+  const Holding own = FindHolding(lines, BlocksOf(31, 4), 22, 100);
+  EXPECT_EQ(own.first, 22U);
+  EXPECT_GT(own.blocksGiven, 1U);
+  EXPECT_EQ(own.firstBlock, 0U);
+  // And with room for them all, in the last block given.
+  const Holding all = FindHolding(lines, BlocksOf(31, 4), 22, 700);
+  EXPECT_EQ(all.first, 0U);
+  EXPECT_EQ(all.firstBlock, 5U);
 }
 
 TEST(PageHolding, CountsTheGapALineThatStartsAPageBrings) {

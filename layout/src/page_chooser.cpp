@@ -104,6 +104,7 @@ PageStatus PageFromBottom::Begin(std::uint16_t height) noexcept {
   tooTall_ = false;
   cutShort_ = false;
   pageHeight_ = height;
+  blocksEnded_ = 0;
   highest_ = Start{};
   mayBegin_ = Start{};
   topGap_ = 0;
@@ -198,6 +199,8 @@ bool PageFromBottom::EndBlock() noexcept {
     return true;
   }
   inBlock_ = false;
+  const std::uint32_t block = blocksEnded_;
+  ++blocksEnded_;
   if (blockLines_ == 0) {
     return false;  // Nothing in it: the block above is wanted as before.
   }
@@ -207,6 +210,7 @@ bool PageFromBottom::EndBlock() noexcept {
     if (highest_.lines == 0) {
       // Not even the page's last line fits. It has the page to itself.
       highest_.tag = last_.tag;
+      highest_.block = block;
       highest_.lines = 1;
       highest_.height = std::uint32_t{last_.height} + (last_.startsPage ? last_.gapBefore : 0U);
       highest_.starts = last_.startsPage;
@@ -224,6 +228,7 @@ bool PageFromBottom::EndBlock() noexcept {
   const std::uint32_t linesBelow = highest_.lines;
   const Entry& oldest = At(0);
   highest_.tag = oldest.tag;
+  highest_.block = block;
   highest_.lines = linesBelow + static_cast<std::uint32_t>(size_);
   highest_.height = (bottom_ - oldest.top) + below;
   highest_.starts = Has(oldest.flags, kStarts);
@@ -235,6 +240,7 @@ bool PageFromBottom::EndBlock() noexcept {
     const Entry& entry = At(n);
     if (Has(entry.flags, kMayBegin)) {
       mayBegin_.tag = entry.tag;
+      mayBegin_.block = block;
       mayBegin_.lines = linesBelow + static_cast<std::uint32_t>(size_ - n);
       mayBegin_.height = (bottom_ - entry.top) + below;
       mayBegin_.starts = Has(entry.flags, kStarts);
@@ -254,6 +260,7 @@ PageStatus PageHolding::Begin(std::uint16_t height) noexcept {
   // Whatever page there was is gone, whether or not this one can be begun.
   done_ = false;
   pageHeight_ = height;
+  blocksEnded_ = 0;
   asked_ = Start{};
   highest_ = Start{};
   chosen_ = Start{};
@@ -312,6 +319,8 @@ bool PageHolding::EndBlock() noexcept {
     return true;
   }
   inBlock_ = false;
+  const std::uint32_t block = blocksEnded_;
+  ++blocksEnded_;
   if (blockLines_ == 0) {
     return false;  // Nothing in it: the block above is wanted as before.
   }
@@ -320,8 +329,10 @@ bool PageHolding::EndBlock() noexcept {
 
   const bool lowest = highest_.lines == 0;
   if (lowest) {
-    // The line asked for is the last of the first block given.
+    // The line asked for is the last of the first block given that has a
+    // line.
     asked_.tag = last_.tag;
+    asked_.block = block;
     asked_.lines = 1;
     asked_.height = std::uint32_t{last_.height} + (last_.startsPage ? last_.gapBefore : 0U);
   }
@@ -335,6 +346,7 @@ bool PageHolding::EndBlock() noexcept {
     chosen_ = asked_;
     if (height <= pageHeight_ || (lowest && beginLine_ + 1 == lines)) {
       chosen_.tag = beginTag_;
+      chosen_.block = block;
       chosen_.lines = highest_.lines + (lines - beginLine_);
       chosen_.height = height;
     }
@@ -351,6 +363,7 @@ bool PageHolding::EndBlock() noexcept {
     return true;
   }
   highest_.tag = firstTag_;
+  highest_.block = block;
   highest_.lines += lines;
   highest_.height = height;
   topGap_ = firstGap_;

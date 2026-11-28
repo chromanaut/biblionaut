@@ -150,6 +150,9 @@ Setting text:
 - [Setting a paragraph's text in lines](docs/paragraph-setter.md): the
   paragraph setter, and `bn-lines`.
 - [Choosing the lines of a page](docs/page-chooser.md): the page chooser.
+- [A chapter in pages, on a device](docs/chapter-pager.md): the pager, which
+  reads a chapter's blocks, has them set and chooses pages among their
+  lines.
 - [A chapter in pages](docs/pages.md): `bn-pages`, which reads a chapter of a
   bundle and sets it in pages on the desktop.
 - [Timing layout on a device](docs/layout-check.md): the layout check.

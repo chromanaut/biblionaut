@@ -151,6 +151,7 @@ target_link_libraries(epub_tests PRIVATE ZLIB::ZLIB)
 bn_add_unit_test(layout_tests
   SOURCES
     unit/layout/american_english_test.cpp
+    unit/layout/chapter_pager_test.cpp
     unit/layout/face_measure_test.cpp
     unit/layout/hyphenator_test.cpp
     unit/layout/line_breaker_test.cpp
